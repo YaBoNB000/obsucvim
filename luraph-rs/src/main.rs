@@ -3,7 +3,9 @@
 //! Pipeline: parse -> symtab -> [junk] -> [mangle] -> [flatten] -> [strings] -> print
 //! (later: numbers/body/antidbg/vmgen)
 
+mod anti;
 mod antidbg;
+mod guard;
 mod ast;
 mod body;
 mod flatten;
@@ -33,13 +35,37 @@ struct Options {
 	do_numbers: bool,
 	do_body: bool,
 	do_antidbg: bool,
+	/// Anti-debug / environment-integrity guard prelude (2026-08-29):
+	/// self-contained IIFE injected ahead of the payload; aborts on
+	/// hooked/stripped/debugged environments. Standard pipeline only —
+	/// v15 keeps its 3-line sample form (a CHAR-encoded v15 variant is
+	/// a future increment).
+	do_guard: bool,
 	do_vm: bool,
+	/// v15 structural-parity profile (Route A, 2026-08-25): Luau/Roblox-only
+	/// output shaped like a Luraph v15 sample (module table + FC entry).
+	/// P0: flag exists and is Luau-gated; emission still routes through the
+	/// legacy VM pipeline until the v15 emitter lands (P1+, see
+	/// docs/v15-structural-parity-plan.md).
+	do_v15: bool,
 	do_strings: bool,
 	do_flatten: bool,
 	do_junk: bool,
 	/// How many junk blocks to inject at each function head (max preset
 	/// raises this; VM templates stay at 2 to keep the 200-local budget).
 	junk_n: usize,
+	/// 增量㉑ (选项B·环境绑定): bind the output to the target runtime
+	/// (currently "roblox"). Embeds target-runtime API refs into the
+	/// primitive slots so module-table construction fails outside the
+	/// target runtime (real-Luraph mechanism). v15-only. Output then
+	/// only loads in the target runtime (not the CLI test matrix).
+	bind_env: Option<String>,
+	/// 增量51 (IronBrew2 executor 认证守卫移植): emit the EXG attestation
+	/// fragment — output only RUNS inside a full Roblox-script-executor
+	/// environment (identifyexecutor/getgenv/getconstants/... semantics);
+	/// anywhere else dies by wrong key. v15-only. Bound output is syntax-
+	/// checked only (not part of the run-equivalence matrix).
+	bind_executor: bool,
 }
 
 /// Named strength presets. Individual `--no-*` / `--vm` flags that
@@ -53,7 +79,9 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 	opts.do_numbers = false;
 	opts.do_body = false;
 	opts.do_antidbg = false;
+	opts.do_guard = false;
 	opts.do_vm = false;
+	opts.do_v15 = false;
 	opts.junk_n = 2;
 	match name {
 		"low" => {
@@ -80,6 +108,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_numbers = true;
 			opts.do_body = true;
 			opts.do_antidbg = true;
+			opts.do_guard = true;
 		}
 		"vm" => {
 			// high + L6
@@ -91,6 +120,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_numbers = true;
 			opts.do_body = true;
 			opts.do_antidbg = true;
+			opts.do_guard = true;
 			opts.do_vm = true;
 		}
 		"max" => {
@@ -105,12 +135,42 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 			opts.do_numbers = true;
 			opts.do_body = true;
 			opts.do_antidbg = true;
+			opts.do_guard = true;
 			opts.do_vm = true;
 			opts.junk_n = 2;
 		}
+		"v15" => {
+			// Route A (2026-08-25): Luraph-v15 structural clone profile,
+			// Luau/Roblox only. Emission = module table + :<boot>()(...)
+			// shell (P1). L5 whole-program encryption and L7 time traps
+			// stay OFF for this profile: the sample shape has neither
+			// (fingerprints F2/F18), and loadstring/os.clock would mark
+			// the output as not-v15-family. L2 string encryption is also
+			// OFF at P1: chunk-splitting would balloon the literal count
+			// (F10 wants the tens range; sample has 28). Interpreter
+			// strings re-enter encrypted form with the P4 blob, which is
+			// where the sample keeps all program strings.
+			opts.do_mangle = true;
+			opts.do_minify = true;
+			opts.do_strings = false;
+			opts.do_flatten = true;
+			opts.do_junk = true;
+			// numbers OFF: self-mod writes and dispatch constants must
+			// stay raw literals (F5/F14 shape; splitting rewrote the
+			// alias writes and state constants)
+			opts.do_numbers = false;
+			opts.do_body = false;
+			opts.do_antidbg = false;
+			// anti-debug guard: injected INSIDE the FC entry machine
+			// (CHAR-encoded, zero visible strings; the standard prelude
+			// form would break the 3-line sample shape)
+			opts.do_guard = true;
+			opts.do_vm = true;
+			opts.do_v15 = true;
+		}
 		other => {
 			return Err(format!(
-				"unknown --preset '{other}' (want low|medium|high|vm|max)"
+				"unknown --preset '{other}' (want low|medium|high|vm|max|v15)"
 			));
 		}
 	}
@@ -123,27 +183,41 @@ fn print_help() {
 Usage: luraph-rs [options] <input.lua> [output.lua]
 
 Options:
-  --dialect <5.1|luau>   target dialect (default: 5.1)
+  --dialect <luau>       target dialect (仅 luau；5.1 自 2026-09-10 起停止支持)
   -o, --output <file>    output file (default: stdout)
   --seed <n>             PRNG seed (default: time-based; use a fixed seed
                          for reproducible output)
-  --preset <name>        named strength (flags after this override it):
-                           low     L1+L2  name+minify+strings
-                           medium  low+L3 flatten+junk
-                           high    medium+L4+L5+L7  (default)
-                           vm      high+L6 private bytecode VM
-                           max     strongest shipping (= vm; v2 reserved)
+  --preset <name>        named strength (flags after this override it).
+                         DEFAULT (no --preset/--vm): v15 — 产品默认形态
+                         （产品线为 Luau-only）。
+                           v15     Luraph-v15 structural clone (Luau/Roblox
+                                   only) — 默认
+                           low     L1+L2  name+minify+strings (legacy)
+                           medium  low+L3 flatten+junk (legacy)
+                           high    medium+L4+L5+L7 (legacy)
+                           vm      high+L6 private bytecode VM (legacy)
+                           max     strongest legacy shipping (= vm)
   --minify               L1 minify output to a single compact line (default: enabled)
   --no-minify            keep the normalized (indented) printer output
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
   --no-body              disable L5 whole-program encryption (default: enabled)
   --no-antidbg           disable L7 anti-tamper (default: enabled)
+  --no-guard             disable the anti-debug environment guard prelude
+                         (default: enabled for the standard pipeline)
   --vm                   L6: compile the program to private bytecode and
                          run it through a generated obfuscated interpreter
   --no-mangle            disable L1 name mangling (default: enabled)
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
   --no-junk              disable L3 junk code injection (default: enabled)
+  --bind-env <roblox>    增量㉑ 环境绑定（仅 v15）：把目标运行时 API
+                         (Vector3/Vector2/task) 嵌进原语槽，产物只在目标运行
+                         时可加载，通用分析沙箱加载期即失败。绑定态产物不进
+                         通用运行等价矩阵（只语法校验）。
+  --bind-executor        增量51 executor 认证绑定（仅 v15，IronBrew2 守卫
+                         移植）：产物只在完整 Roblox executor 环境内正确运行
+                         （identifyexecutor/getgenv/闭包内省语义全认证），
+                         其他环境错钥静默死亡。绑定态产物只做语法校验。
   -h, --help             show this help
   --version              show version
 ",
@@ -154,7 +228,10 @@ Options:
 fn main() -> ExitCode {
 	let args: Vec<String> = std::env::args().skip(1).collect();
 	let mut opts = Options {
-		dialect: "5.1",
+		// ㉕ (产品定位): v15 架构是产品默认形态（不是特殊模式）——
+		// 默认方言随之为 luau；显式 --dialect 5.1 且无 --preset 时回落
+		// 到旧版 VM 管线（v15 仅 Luau，见 parse_args 末尾的默认装配）。
+		dialect: "luau",
 		input: String::new(),
 		output: None,
 		seed: 0,
@@ -163,14 +240,20 @@ fn main() -> ExitCode {
 		do_numbers: true,
 		do_body: true,
 		do_antidbg: true,
+		do_guard: true,
 		do_vm: false,
+		do_v15: false,
 		do_strings: true,
-		do_flatten: true,
-		do_junk: true,
-		junk_n: 2,
-	};
+	do_flatten: true,
+	do_junk: true,
+	junk_n: 2,
+	bind_env: None,
+	bind_executor: false,
+};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
+	let mut preset_given = false;
+	let mut vm_given = false;
 	while i < args.len() {
 		match args[i].as_str() {
 			"-h" | "--help" => {
@@ -219,9 +302,10 @@ fn main() -> ExitCode {
 				}
 			}
 			"--preset" => {
+				preset_given = true;
 				i += 1;
 				if i >= args.len() {
-					eprintln!("error: --preset requires a value (low|medium|high|vm|max)");
+					eprintln!("error: --preset requires a value (low|medium|high|vm|max|v15)");
 					return ExitCode::FAILURE;
 				}
 				if let Err(e) = apply_preset(&mut opts, args[i].as_str()) {
@@ -235,10 +319,23 @@ fn main() -> ExitCode {
 		"--no-numbers" => opts.do_numbers = false,
 		"--no-body" => opts.do_body = false,
 		"--no-antidbg" => opts.do_antidbg = false,
-		"--vm" => opts.do_vm = true,
+		"--no-guard" => opts.do_guard = false,
+		"--vm" => {
+			vm_given = true;
+			opts.do_vm = true;
+		}
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
+			"--bind-env" => {
+				i += 1;
+				if i >= args.len() {
+					eprintln!("error: --bind-env requires a target (roblox)");
+					return ExitCode::FAILURE;
+				}
+				opts.bind_env = Some(args[i].clone());
+			}
+			"--bind-executor" => opts.bind_executor = true,
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -256,6 +353,66 @@ fn main() -> ExitCode {
 	opts.input = positional[0].clone();
 	if positional.len() > 1 {
 		opts.output = Some(positional[1].clone());
+	}
+
+	// ㉕ (产品定位): 默认即 v15。㉖ 起产品线收敛为 Luau-only——
+	// 未显式给 --preset/--vm 时一律装配 v15 管线（--dialect 5.1
+	// 已在下方校验处拒绝，不再存在回落路径）。
+	if !preset_given && !vm_given {
+		if let Err(e) = apply_preset(&mut opts, "v15") {
+			eprintln!("error: {e}");
+			return ExitCode::FAILURE;
+		}
+	}
+
+	// ㉖ (产品线收敛): 用户拍板——5.1 不用管，每次混淆都按 Luau。
+	// Lua 5.1 目标自 2026-09-10 起不再支持（历史产物不受影响）。
+	if opts.dialect != "luau" {
+		eprintln!(
+			"error: 产品形态已统一为 Luau（v15 架构），不再支持 Lua 5.1 目标\n  \
+			 (product is Luau-only since 2026-09-10; drop --dialect 5.1)"
+		);
+		return ExitCode::FAILURE;
+	}
+	if opts.do_v15 && opts.dialect != "luau" {
+		eprintln!(
+			"error: --preset v15 requires --dialect luau\n  \
+			 the v15 structural profile clones the Luraph v15 shape \
+			 (buffer/bit32/typeof/setfenv),\n  which Lua 5.1 cannot \
+			 run. Use `--preset vm` for the dual-target output."
+		);
+		return ExitCode::FAILURE;
+	}
+	// 增量㉑ (环境绑定): v15-only (the mechanism embeds target-runtime
+	// API refs into the v15 module table). Only "roblox" is a known
+	// target. Bound output only loads in the target runtime.
+	if let Some(e) = &opts.bind_env {
+		if !(opts.do_vm && opts.do_v15) {
+			eprintln!(
+				"error: --bind-env requires --preset v15\n  \
+				 environment binding embeds target-runtime API refs into \
+				 the v15 module table."
+			);
+			return ExitCode::FAILURE;
+		}
+		if e != "roblox" {
+			eprintln!(
+				"error: --bind-env target '{e}' unknown (only 'roblox')\n  \
+				the target must be a runtime whose APIs we can reference."
+			);
+			return ExitCode::FAILURE;
+		}
+	}
+	// 增量51 (executor 认证绑定): v15-only——守卫令牌揉进 v15 的块/常量池
+	// 钥匙流（EXG 碎片 + RTFRAG 穿线）。绑定态产物不进运行等价矩阵——
+	// 认证要求完整 executor 语义，裸 Luau/Roblox Studio/半吊子桩都会死，
+	// 只保留语法校验 + 负面实证（详见 tests/executor_guard_test.sh）。
+	if opts.bind_executor && !(opts.do_vm && opts.do_v15) {
+		eprintln!(
+			"error: --bind-executor requires --preset v15\n  \
+			the executor attestation guard rides the v15 fragment chain."
+		);
+		return ExitCode::FAILURE;
 	}
 
 	let luau = opts.dialect == "luau";
@@ -281,12 +438,27 @@ fn main() -> ExitCode {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
 		let mut rng = rng::Rng::new(seed);
+		// ㊸ (环境绑定去中心化): env 捕获槽预抽于高位数段 (5000-6000)——
+		// 与模块表槽域 (1..top) 天然无碰撞，且必须在 generate 之前定型
+		// （boot 文本要引用槽号；模块表稍后按同一批号发射捕获）。
+		let env_slots: Option<[i64; 4]> = if opts.do_v15 && opts.bind_env.is_some() {
+			let mut es: Vec<i64> = Vec::new();
+			while es.len() < 4 {
+				let n = rng.int(5000, 6000);
+				if !es.contains(&n) {
+					es.push(n);
+				}
+			}
+			Some([es[0], es[1], es[2], es[3]])
+		} else {
+			None
+		};
 		// L6: compile the program to private bytecode; the executable
 		// program becomes the (to-be-obfuscated) interpreter template +
 		// the bytecode passed as string literals to its entry call
 		let vm_raw = std::env::var("LURAPH_VM_RAW").is_ok();
-		let (mut block, mut table) = if opts.do_vm {
-			let program = vmgen::compile(&block, &table, &mut rng, !luau);
+		let (mut block, mut table, v15_done) = if opts.do_vm {
+			let program = vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15);
 			let n = program.fns.len();
 			let tsrc = vmgen::template::generate(
 				&program.opmap,
@@ -294,30 +466,232 @@ fn main() -> ExitCode {
 				&program.carrier,
 				&mut rng,
 				n,
+				opts.do_v15,
+				&program.nop_sites,
+				&program.operand_sums,
+				&program.operand_sums2,
+				(program.ck_km, program.ck_kc),
+				(program.mk1, program.mk2),
+				(
+					program.blob_km,
+					program.blob_kc,
+					program.blob_seed,
+					program.blob_step,
+				),
+				program.section_tags,
+				program.consts_mask_safe,
+				&program.block_starts,
+				&program.s_indices,
+				opts.bind_env.as_deref(),
+				env_slots.as_ref(),
+				opts.bind_executor,
+				opts.do_guard,
 			);
 			if std::env::var("LURAPH_VM_TSRC").is_ok() {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
 			}
 			let mut tblock = parser::parse(&tsrc, luau).map_err(|e| e.to_string())?;
-			let args: Vec<ast::Expr> = program
+			let carrier_bytes: Vec<Vec<u8>> = program
 				.fns
 				.iter()
-				.map(|b| ast::Expr::Str {
-					bytes: program.carrier.encode(b),
-					is_binary: true,
-				})
+				.map(|b| program.carrier.encode(b))
 				.collect();
-			tblock.stmts.push(ast::Stmt::ExprStmt(ast::Expr::Call {
-				func: Box::new(ast::Expr::Ident {
-					name: "VM".to_string(),
-					sym: None,
-				}),
-				args,
-			}));
-			let ttable = symtab::resolve(&mut tblock);
-			(tblock, ttable)
+			if opts.do_v15 {
+				// P3 increment 1 (Route A): CPS bootstrap scaffold. The
+				// interpreter block runs through the passes first (junk +
+				// mangle; strings/numbers/body/antidbg stay off for this
+				// preset), gets printed, and is embedded inside the
+				// interpreter-definition handler of the scaffold:
+				//
+				//   return setmetatable({
+				//     <P2 fields...>,
+				//     <init>  = initializer (return true, s0, nil×10),
+				//     <mul>/<mod> = arithmetic assistants (iL/vL shape),
+				//     <g_k>   = per-carrier staging handlers (checksum
+				//               folded through the assistants),
+				//     <dh>    = interpreter-definition handler:
+				//               <passed interpreter> + entry closure,
+				//     <ctl>   = control handler (2 = done / 1 = continue),
+				//     <loop>  = CPS loop: range tree + `continue` leaves,
+				//     <fc>    = top machine (FC shape): initializer +
+				//               while-flag loop + control-code return,
+				//   }, {}):<fc>()(...);
+				//
+				// Remaining P3 work: scaling the handler chain (splitting
+				// the decode pipeline) + inlining the execution loops
+				// into dual numeric-slot runners (docs plan §P3 A/B).
+				let mut ttable = symtab::resolve(&mut tblock);
+				let mut reserved = mangle::reserved_set(
+					&ttable
+						.globals
+						.iter()
+						.cloned()
+						.collect::<std::collections::HashSet<_>>(),
+				);
+				reserved.extend(ttable.syms.iter().map(|s| s.name.clone()));
+				if opts.do_junk {
+					junk::inject(&mut tblock, &mut ttable, &mut rng, 2);
+				}
+				if opts.do_mangle {
+					// scaffold param names used inside the wrapper
+					// functions must never be shadowed by mangled
+					// interpreter locals (they share the def-runner
+					// scope after wrapping)
+					reserved.extend(
+						["b", "C", "p1", "p2", "p3", "E", "V"]
+							.iter()
+							.map(|s| s.to_string()),
+					);
+					mangle::mangle(&mut ttable, &mut rng, true);
+				}
+				// P3c (measured & reverted): flattening the interpreter
+				// diverges from the sample (its VM core ships loop-based
+				// dispatch, four independent loops for build/verify/
+				// decode/execute) AND breaks TCO-era control flow. The
+				// state-machine smell comes from the CPS scaffold around
+				// it — that is the structural parity we keep.
+				if opts.do_strings {
+					strings::apply_strings(
+						&mut tblock, &mut ttable, &mut rng, &reserved,
+					);
+				}
+				if opts.do_numbers {
+					numbers::apply_numbers(&mut tblock, &mut rng);
+				}
+				// Locate the VM local's post-mangle name (the definition
+				// handler's entry closure must call it by that name).
+				let mut vm_name = String::from("VM");
+				for st in tblock.stmts.iter() {
+					if let ast::Stmt::Local { names, syms, .. } = st {
+						if names.first().map(|s| s.as_str()) == Some("VM") {
+							if let Some(id) = syms.first() {
+								vm_name = ttable.syms[*id as usize]
+									.name
+									.clone();
+							}
+						}
+					}
+				}
+				let interp_src = printer::print_chunk(&ttable, &tblock);
+				// P3-B: the interpreter lives in a numeric-slot runner
+				// ([r1], sample [73] shape); the user-facing entry is
+				// routed through a second numeric-slot runner ([r2],
+				// sample [18] shape). Reserve both slots so P2's
+				// primitive-slot draw can't collide with them.
+				// P3b: the bytecode word table is split across
+				// numeric-slot arrays — reserve enough slots up front
+				// (they join every avoid/exclude list below).
+				let total_bytes: usize = carrier_bytes.iter().map(|c| c.len()).sum();
+				let est_words = total_bytes / 4 + carrier_bytes.len() * vmgen::v15::CHUNKS + 4;
+				let n_bw_slots = est_words / vmgen::v15::BW_SLOT_WORDS + 1;
+				// ㉜ (R016 大载荷): 池地板从 +18 抬到 +96——除分片槽外
+				// 还要装得下 ~65 个原语槽 + 引导/钥匙装配槽，否则
+				// module_fields 抽取枯竭（样本尺度 1..=126 不再够用）。
+				let mut slot_pool: Vec<i64> =
+					(1..=std::cmp::max(126, n_bw_slots as i64 + 96)).collect();
+				rng.shuffle(&mut slot_pool);
+				let r1 = slot_pool[0];
+				let r2 = slot_pool[1];
+				let ks = slot_pool[2]; // LCG keystream state slot
+				let kg = slot_pool[3]; // LCG keystream generator slot
+				let bw_slots: Vec<i64> =
+					slot_pool[4..4 + n_bw_slots].to_vec();
+				// P4 (防御代码隐藏): dedicated string.byte / string.char
+				// slots for the scaffold's own use (verify folds + coded
+				// name construction) — hide primitive access behind the
+				// numeric-slot family instead of dotted globals.
+				let sb_slot = slot_pool[4 + n_bw_slots];
+				let sc_slot = slot_pool[5 + n_bw_slots];
+				// 增量⑩: key-fragment slots (ks-seed half + bm0/bc0
+				// word-mask halves) — blend into the numeric-slot family.
+				let kfrag: Vec<i64> = slot_pool
+					[6 + n_bw_slots..11 + n_bw_slots]
+					.to_vec();
+				// 增量⑬: key-assembly lookup-table slots (st1/st2).
+				let st_slots: Vec<i64> = slot_pool
+					[11 + n_bw_slots..13 + n_bw_slots]
+					.to_vec();
+				// decoy LCG slots (F28): clear of every other slot
+				// mechanism (runners/keystream/primitives/AL/context
+				// slots AND the Nop self-mod instruction positions)
+				let max_len = carrier_bytes.iter().map(|c| c.len()).max().unwrap_or(0);
+				let mut avoid: Vec<i64> = vec![r1, r2, ks, kg, sb_slot, sc_slot];
+				avoid.extend_from_slice(&bw_slots);
+				avoid.extend_from_slice(&kfrag);
+				avoid.extend_from_slice(&st_slots);
+				let (d1, d2) = vmgen::v15::decoy_slots(max_len, &avoid);
+				let (scaffold_fields, fc) = vmgen::v15::scaffold(
+					&mut rng,
+					&interp_src,
+					&vm_name,
+					&carrier_bytes,
+					r1,
+					r2,
+					ks,
+					kg,
+					d1,
+					d2,
+					&program.carrier,
+					&bw_slots,
+					(sb_slot, sc_slot),
+				&kfrag,
+				&st_slots,
+				&ttable.globals,
+			);
+				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
+				exclude.extend_from_slice(&bw_slots);
+				exclude.extend_from_slice(&kfrag);
+				exclude.extend_from_slice(&st_slots);
+				let (mut fields, _env_slots_back) = vmgen::v15::module_fields(
+					&mut rng,
+					&exclude,
+					slot_pool.len() as i64,
+					opts.bind_env.as_deref(),
+					env_slots.as_ref(),
+				);
+				fields.extend(scaffold_fields);
+				rng.shuffle(&mut fields);
+				let module = ast::Expr::Table { fields };
+				let shell = ast::Stmt::Return(vec![ast::Expr::Call {
+					func: Box::new(ast::Expr::Method {
+						obj: Box::new(ast::Expr::Call {
+							func: Box::new(ast::Expr::Ident {
+								name: "setmetatable".to_string(),
+								sym: None,
+							}),
+							args: vec![
+								module,
+								ast::Expr::Table { fields: Vec::new() },
+							],
+						}),
+						name: fc,
+						args: Vec::new(),
+					}),
+					args: vec![ast::Expr::Vararg],
+				}]);
+				let mut shell_block = ast::Block { stmts: vec![shell] };
+				let shell_table = symtab::resolve(&mut shell_block);
+				(shell_block, shell_table, true)
+			} else {
+				let vm_call = ast::Expr::Call {
+					func: Box::new(ast::Expr::Ident {
+						name: "VM".to_string(),
+						sym: None,
+					}),
+					args: carrier_bytes
+						.into_iter()
+						.map(|b| ast::Expr::Str {
+							bytes: b,
+							is_binary: true,
+						})
+						.collect(),
+				};
+				tblock.stmts.push(ast::Stmt::ExprStmt(vm_call));
+				let ttable = symtab::resolve(&mut tblock);
+				(tblock, ttable, false)
+			}
 		} else {
-			(block, table)
+			(block, table, false)
 		};
 		// pipeline: junk -> mangle -> flatten -> strings
 		if opts.do_vm && vm_raw {
@@ -333,49 +707,77 @@ fn main() -> ExitCode {
 				tmark = std::time::Instant::now();
 			}
 		};
-		if opts.do_junk {
-			junk::inject(&mut block, &mut table, &mut rng, 2);
-			tlog("junk");
-		}
-		if opts.do_mangle {
-			mangle::mangle(&mut table, &mut rng);
-			tlog("mangle");
-		}
-		let mut reserved = mangle::reserved_set(
-			&table.globals.iter().cloned().collect::<std::collections::HashSet<_>>(),
-		);
-		reserved.extend(table.syms.iter().map(|s| s.name.clone()));
-		// L3 flatten bloats the VM template's big dispatch if/elseif tree
-		// into a state machine that exceeds Lua 5.1's 200-local-variable
-		// limit, so skip it when the VM is enabled (the VM template is
-		// still obfuscated by mangle/strings/numbers/body/antidbg).
-		if opts.do_flatten && !opts.do_vm {
-			flatten::flatten_block(&mut block, &mut table, &mut rng, &mut reserved);
-			tlog("flatten");
-		}
-		if opts.do_strings {
-			strings::apply_strings(&mut block, &mut table, &mut rng, &reserved);
-			tlog("strings");
-		}
-		if opts.do_numbers {
-			numbers::apply_numbers(&mut block, &mut rng);
-			tlog("numbers");
-		}
-		if opts.do_body {
-			body::apply_body(&mut block, &mut table, &mut rng, &mut reserved, luau);
-			tlog("body");
-		}
-		if opts.do_antidbg {
-			antidbg::apply_antidbg(&mut block, &mut table, &mut rng, &mut reserved);
-			tlog("antidbg");
+		// v15 shell: passes already ran over the interpreter block before
+		// the module-table wrap (see above); re-running them here would
+		// double-mangle / hoist loaders out of the boot handler.
+		let mut reserved = std::collections::HashSet::new();
+		if !v15_done {
+			if opts.do_junk {
+				junk::inject(&mut block, &mut table, &mut rng, 2);
+				tlog("junk");
+			}
+			if opts.do_mangle {
+				mangle::mangle(&mut table, &mut rng, false);
+				tlog("mangle");
+			}
+			reserved = mangle::reserved_set(
+				&table.globals.iter().cloned().collect::<std::collections::HashSet<_>>(),
+			);
+			reserved.extend(table.syms.iter().map(|s| s.name.clone()));
+			// L3 flatten bloats the VM template's big dispatch if/elseif
+			// tree into a state machine that exceeds Lua 5.1's
+			// 200-local-variable limit, so skip it when the VM is enabled
+			// (the VM template is still obfuscated by
+			// mangle/strings/numbers/body/antidbg).
+			if opts.do_flatten && !opts.do_vm {
+				flatten::flatten_block(&mut block, &mut table, &mut rng, &mut reserved);
+				tlog("flatten");
+			}
+			if opts.do_strings {
+				strings::apply_strings(&mut block, &mut table, &mut rng, &reserved);
+				tlog("strings");
+			}
+			if opts.do_numbers {
+				numbers::apply_numbers(&mut block, &mut rng);
+				tlog("numbers");
+			}
+			if opts.do_body {
+				body::apply_body(&mut block, &mut table, &mut rng, &mut reserved, luau);
+				tlog("body");
+			}
+			if opts.do_antidbg {
+				antidbg::apply_antidbg(&mut block, &mut table, &mut rng, &mut reserved);
+				tlog("antidbg");
+			}
 		}
 		tlog("pre-print");
-		let out = printer::print_chunk(&table, &block);
+		// Luau targets print with compound-assignment folding (F24
+		// sample shape); 5.1 keeps plain assignments
+		let out = if luau {
+			printer::print_chunk_luau(&table, &block)
+		} else {
+			printer::print_chunk(&table, &block)
+		};
 		tlog("print");
 		if opts.do_minify {
 			let m = minify::minify(&out, luau).map_err(|e| format!("minify: {}", e))?;
 			tlog("minify");
-			Ok(m)
+			if opts.do_v15 {
+				// F1/F2 shape: one-line body + trailing semicolon, no
+				// trailing newline (sample form).
+				// 增量⑫ (防静态, 报告突破口 #1): NO header comment —
+				// the old `luraph v0.2.0` line told the analyst exactly
+				// which tool/version they were facing. F1 accepts the
+				// 2-line no-header form.
+				Ok(format!("\n{};", m.trim_end_matches('\n')))
+			} else if opts.do_guard {
+				// anti-debug guard prelude ahead of the payload
+				Ok(format!("{}\n{}", guard::guard_prelude(&mut rng, luau), m))
+			} else {
+				Ok(m)
+			}
+		} else if opts.do_guard && !opts.do_v15 {
+			Ok(format!("{}\n{}", guard::guard_prelude(&mut rng, luau), out))
 		} else {
 			Ok(out)
 		}

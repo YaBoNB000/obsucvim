@@ -40,10 +40,6 @@ impl Rng {
 	}
 
 	/// Float in (0, 1].
-	pub fn random(&mut self) -> f64 {
-		self.next_raw() as f64 / MOD as f64
-	}
-
 	/// Int in [min, max] inclusive.
 	///
 	/// Uses the FULL period via 128-bit multiplicative reduction —
@@ -58,10 +54,6 @@ impl Rng {
 		}
 		let span = (max - min + 1) as u64;
 		min + (self.next_raw() as u128 * span as u128 / MOD as u128) as i64
-	}
-
-	pub fn pick<T: Clone>(&mut self, list: &[T]) -> T {
-		list[self.int(0, list.len() as i64 - 1) as usize].clone()
 	}
 
 	pub fn shuffle<T: Clone>(&mut self, t: &mut Vec<T>) {

@@ -100,9 +100,15 @@ pub enum Op {
 	/// (stored by a preceding CallE), tail values at V[a+3+b..]; d =
 	/// append varargs. c = nres (255 = all).
 	CallM,
+	/// P1 (动态内联): V[a] = short string rebuilt from masked operand
+	/// bytes — the string never enters the constant pool. b/c/d carry
+	/// (byte pairs + len) additively masked with the per-position key
+	/// (mk1 * instr_index + mk2) % 65536; the handler unmasks via
+	/// (x - mask) % 65536 and concats CHAR of each byte.
+	MkStr,
 }
 
-pub const N_OPS: usize = 41;
+pub const N_OPS: usize = 42;
 
 pub fn op_base() -> [u8; N_OPS] {
 	#[allow(clippy::declare_interior_mutable_const)]
@@ -119,6 +125,7 @@ pub fn op_base() -> [u8; N_OPS] {
 		(Op::VarArgTabN, 32), (Op::GetGlobal, 33), (Op::SetGlobal, 34),
 		(Op::GetUp, 35), (Op::SetUp, 36), (Op::Return, 37), (Op::Nop, 38),
 		(Op::CallE, 39), (Op::CallM, 40),
+		(Op::MkStr, 41),
 	];
 	let mut out = [0u8; N_OPS];
 	for (op, code) in t {
@@ -173,43 +180,82 @@ pub fn op_index(op: Op) -> usize {
 		Op::Nop => 38,
 		Op::CallE => 39,
 		Op::CallM => 40,
+		Op::MkStr => 41,
 	}
 }
 
 /// Per-build opcode permutation: `mapping[op_index]` = the wire code.
+/// S1 四表全置换派发: 4 套线码，同号异义，`S ∈ {251,99,8,140}` 选表。基础表 0..42，扩展表 64..106/128..170/192..234。
 #[derive(Debug, Clone)]
 pub struct OpMap {
-	/// wire code for each base op (op_index order)
-	pub to_wire: [u8; N_OPS],
+	/// wire code for each base op, per S table (0..3 → S=251/99/8/140)
+	pub to_wire: [[u8; N_OPS]; 4],
+	/// Second wire value that also dispatches to Nop, per table
+	pub nop_alias: [u8; 4],
+	/// S values, per table
+	pub s_values: [u8; 4],
 }
 
 impl OpMap {
 	pub fn new(rng: &mut crate::rng::Rng) -> OpMap {
-		let mut to_wire: Vec<u8> = (0..N_OPS as u8).collect();
-		// Fisher-Yates via the project rng
-		for i in (1..to_wire.len()).rev() {
-			let j = rng.int(0, i as i64) as usize;
-			to_wire.swap(i, j);
+		let mut to_wire = [[0u8; N_OPS]; 4];
+		let mut nop_alias = [0u8; 4];
+		for t in 0..4 {
+			let base = (t * 64) as u8;
+			let mut perm: Vec<u8> = (0..N_OPS as u8).map(|x| x.wrapping_add(base)).collect();
+			for i in (1..perm.len()).rev() {
+				let j = rng.int(0, i as i64) as usize;
+				perm.swap(i, j);
+			}
+			let mut used = [false; 256];
+			for &w in perm.iter() {
+				used[w as usize] = true;
+			}
+			let mut alias = base.wrapping_add(N_OPS as u8);
+			for w in 0..256u16 {
+				let ww = base.wrapping_add(w as u8);
+				if !used[ww as usize] {
+					alias = ww;
+					break;
+				}
+			}
+			to_wire[t] = perm.try_into().unwrap();
+			nop_alias[t] = alias;
 		}
 		OpMap {
-			to_wire: to_wire.try_into().unwrap(),
+			to_wire,
+			nop_alias,
+			s_values: [251, 99, 8, 140],
 		}
 	}
 
 	pub fn code(&self, op: Op) -> u8 {
-		self.to_wire[op_index(op)]
+		self.to_wire[0][op_index(op)]
+	}
+
+	pub fn code_for(&self, op: Op, s_idx: usize) -> u8 {
+		self.to_wire[s_idx][op_index(op)]
 	}
 
 	/// `op == code` test expression text for the interpreter template.
 	pub fn codes_text(&self) -> String {
-		// "OPCODES[1], OPCODES[2], ..." in op_index order (template names
-		// them OP_<name> in this same order)
 		let mut s = String::new();
 		for i in 0..N_OPS {
 			if i > 0 {
 				s.push(',');
 			}
-			s.push_str(&self.to_wire[i].to_string());
+			s.push_str(&self.to_wire[0][i].to_string());
+		}
+		s
+	}
+
+	pub fn codes_text_for(&self, s_idx: usize) -> String {
+		let mut s = String::new();
+		for i in 0..N_OPS {
+			if i > 0 {
+				s.push(',');
+			}
+			s.push_str(&self.to_wire[s_idx][i].to_string());
 		}
 		s
 	}
@@ -316,10 +362,10 @@ pub fn decode_varint(src: &[u8], p: usize) -> Option<(u32, usize)> {
 	Some((v, p + 4))
 }
 
-/// SoA instruction stream: opcode array, then four parallel operand streams.
-/// `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) occupies stream i.
+/// SoA instruction stream: opcode array, then four parallel operand
+/// streams. `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) occupies
+/// stream i. The ncode prefix is written by the caller (P2: varint).
 pub fn encode_soa(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], out: &mut Vec<u8>) {
-	push_u16(out, code.len() as u16);
 	for ins in code {
 		out.push(map.code(ins.op));
 	}
@@ -328,6 +374,40 @@ pub fn encode_soa(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], out: &mut Ve
 		for ins in code {
 			encode_u16var(out, ins.operands()[which]);
 		}
+	}
+}
+
+/// S1 四表: per-S encoding, S ∈ {251,99,8,140}
+pub fn encode_soa_for(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], s_idx: usize, out: &mut Vec<u8>) {
+	for ins in code {
+		out.push(map.code_for(ins.op, s_idx));
+	}
+	for sl in 0..4 {
+		let which = slot_perm[sl] as usize;
+		for ins in code {
+			encode_u16var(out, ins.operands()[which]);
+		}
+	}
+}
+
+/// P2 (instruction-stream noise): which operands each opcode IGNORES.
+/// finish() fills them with per-build random values so the four SoA
+/// streams carry no recognizable zero-padding alignment.
+#[rustfmt::skip]
+pub fn unused_operands(op: Op) -> [bool; 4] {
+	match op {
+		Op::Jmp => [true, false, true, true],
+		Op::Jf | Op::Jt | Op::LoadNil | Op::LoadK | Op::Move
+		| Op::Unm | Op::Not | Op::Len | Op::Closure
+		| Op::VarArgTabN | Op::GetGlobal | Op::SetGlobal
+		| Op::GetUp | Op::SetUp => [false, false, true, true],
+		Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
+		| Op::Concat | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq
+		| Op::Ne | Op::Idiv | Op::GetTab | Op::SetTab | Op::TabN => [false, false, false, true],
+		Op::NewTab | Op::VarArgTab | Op::VarArgC => [false, true, true, true],
+		Op::CallT | Op::Call | Op::CallM | Op::Return | Op::MkStr => [false, false, false, false],
+		Op::CallE => [false, false, true, false],
+		Op::Nop => [true, true, true, true],
 	}
 }
 
@@ -343,24 +423,111 @@ pub enum Const {
 	Str(Vec<u8>),
 }
 
+/// P1 (致命缺点③整改): per-function constant keystream. LCG mod 2^28
+/// (same family as the scaffold keystream); one advance per ENCRYPTED
+/// PAYLOAD BYTE. Additive masking (`(plain + key) % 256`) keeps the
+/// decoder bitop-free (5.1-safe); the mirror in the template parse is
+/// `(x - key) % 256` (Lua's % is non-negative for positive modulus).
+pub struct ConstLcg {
+	pub state: u32,
+	pub km: u32,
+	pub kc: u32,
+}
+
+impl ConstLcg {
+	pub fn new(seed: u32, km: u32, kc: u32) -> ConstLcg {
+		ConstLcg { state: seed, km, kc }
+	}
+	/// Advance and return the key byte for the next payload byte.
+	/// 增量⑰-B (R003-Q2 定理): byte-consuming an LCG as `state % 256`
+	/// collapses the effective seed space to 256 classes — every output
+	/// byte depends only on seed mod 256. Fold ALL four state bytes
+	/// instead so the full 28-bit state feeds each key byte.
+	pub fn next_key(&mut self) -> u8 {
+		self.state = ((self.km as u64 * self.state as u64 + self.kc as u64)
+			% 268_435_456) as u32;
+		fold_key(self.state as u64)
+	}
+	pub fn mask(&mut self, plain: u8) -> u8 {
+		// wrapping add == (plain + key) mod 256; parse mirrors with
+		// (x - key) % 256 (Lua % is non-negative for positive modulus)
+		plain.wrapping_add(self.next_key())
+	}
+}
+
+/// 增量⑰-B: full-state key-byte fold (mirror of the Lua consumer).
+pub(crate) fn fold_key(state: u64) -> u8 {
+	(((state % 256)
+		+ ((state / 256) % 256)
+		+ ((state / 65536) % 256)
+		+ (state / 16777216))
+		% 256) as u8
+}
+
+/// Exact dyadic split of a double: v = ± m · 2^k with integer
+/// m ≤ 2^53-1 (mantissa incl. implicit bit) and k in [-1074, 971].
+/// Reconstruction `m * 2^k` is exact in IEEE-754 (both factors exact,
+/// product = original representable value).
+pub fn num_to_dyadic(v: f64) -> (bool, u64, i32) {
+	let bits = v.to_bits();
+	let neg = bits >> 63 != 0;
+	let exp = ((bits >> 52) & 0x7FF) as i32;
+	let mant = bits & 0x000F_FFFF_FFFF_FFFF;
+	if exp == 0 {
+		// zero or subnormal: no implicit bit, k fixed at -1074
+		(neg, mant, -1074)
+	} else {
+		(neg, mant | 0x0010_0000_0000_0000, exp - 1023 - 52)
+	}
+}
+
+/// 7-bit varint for values up to 2^56 (constant pool use; the decoder
+/// is a byte loop on the template side, exact for m < 2^53).
+pub fn encode_varint64(out: &mut Vec<u8>, mut v: u64) {
+	while v >= 128 {
+		out.push(((v % 128) + 128) as u8);
+		v /= 128;
+	}
+	out.push(v as u8);
+}
+
 impl Const {
-	pub fn encode(&self, out: &mut Vec<u8>) {
+	/// 增量⑨ (防静态): the ENTIRE constant block is keystream-masked —
+	/// type byte, string length AND payload all advance the LCG, so the
+	/// constant section has no cleartext structure (the attack read the
+	/// type byte in cleartext as its structural foothold). Parse mirrors
+	/// byte-for-byte with one masked-read per byte. Numbers stay dyadic
+	/// pairs (type 4) — no ASCII digit text in the blob.
+	pub fn encode(&self, out: &mut Vec<u8>, lcg: &mut ConstLcg) {
 		match self {
-			Const::Nil => out.push(0),
+			Const::Nil => out.push(lcg.mask(0)),
 			Const::Bool(b) => {
-				out.push(1);
-				out.push(*b as u8);
+				out.push(lcg.mask(1));
+				out.push(lcg.mask(*b as u8));
 			}
 			Const::Num(v) => {
-				out.push(2);
-				let text = num_text(*v);
-				push_u16(out, text.len() as u16);
-				out.extend_from_slice(text.as_bytes());
+				out.push(lcg.mask(4));
+				let (neg, m, k) = num_to_dyadic(*v);
+				let mut mbytes: Vec<u8> = Vec::new();
+				encode_varint64(&mut mbytes, m);
+				for b in &mbytes {
+					out.push(lcg.mask(*b));
+				}
+				let kpack = (((k + 2048) * 2 + neg as i32) as u64) & 0xFFFF;
+				let mut kbytes: Vec<u8> = Vec::new();
+				encode_varint64(&mut kbytes, kpack);
+				for b in &kbytes {
+					out.push(lcg.mask(*b));
+				}
 			}
 			Const::Str(b) => {
-				out.push(3);
-				push_u16(out, b.len() as u16);
-				out.extend_from_slice(b);
+				out.push(lcg.mask(3));
+				let l = b.len() as u16;
+				out.push(lcg.mask((l & 0xFF) as u8));
+				out.push(lcg.mask((l >> 8) as u8));
+				for byte in b {
+					out.push(lcg.mask(*byte));
+				}
 			}
 		}
 	}

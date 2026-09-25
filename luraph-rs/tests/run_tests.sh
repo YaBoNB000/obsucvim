@@ -33,11 +33,8 @@ run() { # run <interp> <file>  -> stdout+stderr; returns exit code
 
 for case in "$ROOT"/tests/cases/*.lua; do
 	base="$(basename "$case" .lua)"
-	if [[ "$base" == luau_* ]]; then
-		dialects="luau"
-	else
-		dialects="5.1 luau"
-	fi
+	# ㉖: 产品线 Luau-only（5.1 相位移除）
+	dialects="luau"
 	for d in $dialects; do
 		out="$TMP/${base}__${d}.lua"
 		if ! "$TOOL" --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then
@@ -94,11 +91,8 @@ runvm() { # runvm <interp> <file>
 
 for case in "$ROOT"/tests/cases/*.lua; do
 	base="$(basename "$case" .lua)"
-	if [[ "$base" == luau_* ]]; then
-		dialects="luau"
-	else
-		dialects="5.1 luau"
-	fi
+	# ㉖: 产品线 Luau-only（5.1 相位移除）
+	dialects="luau"
 	for d in $dialects; do
 		out="$TMP/${base}__${d}.vm.lua"
 		if ! "$TOOL" --vm --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then
@@ -143,6 +137,48 @@ for case in "$ROOT"/tests/cases/*.lua; do
 		fi
 	done
 done
+
+# ---------------------------------------------------------------
+# ㊴: 激活门 (--bind-key) 已退役——bind_gate_test.sh 随之移除。
+# ---------------------------------------------------------------
+
+# ---------------------------------------------------------------
+# 增量㉑ — environment binding (--bind-env): bound output only loads
+# in the target runtime; generic sandbox dies at load. Verifies syntax
+# passes + CLI load fails (binding works) + unbound stays runnable.
+# ---------------------------------------------------------------
+source "$ROOT/tests/env_bind_test.sh"
+
+# ---------------------------------------------------------------
+# 增量㊺ — 绑定折叠前移 + ef1 读前写/镜像错位根治: 忠实仿真正向等价
+# （绑定态产物在忠实桩环境必须跑通且输出逐字一致）+ ef1 赋值早于消费
+# 的顺序回归守卫 + hqi 解掩种子前移消费存在性。
+# ---------------------------------------------------------------
+source "$ROOT/tests/faithful_stub_test.sh"
+
+# ---------------------------------------------------------------
+# 增量51 (IronBrew2 executor 认证守卫移植): --bind-executor 绑定态
+# 语法校验通过 + 裸 Luau/半吊子桩双负面实证 + 可见层零痕迹 + 字节级
+# 确定 + 开关关闭零回归。正面运行等价只能由真执行器验证（裸 Luau 无
+# 法构造保真内省桩）——口径与 IronBrew2 fail-closed 设计一致。
+# ---------------------------------------------------------------
+source "$ROOT/tests/executor_guard_test.sh"
+
+# ---------------------------------------------------------------
+# 增量㊾ (R021 回合 — 物化去钩化): 钩住 string.char 的钩子环境下程序
+# 仍正确运行、且载荷既不被整串钩中也不被逐字符序列钩中（短/长载荷，
+# 覆盖 MkStr 与常量池路径）。
+# ---------------------------------------------------------------
+source "$ROOT/tests/charhook_test.sh"
+
+# ---------------------------------------------------------------
+# 增量㉒ (选项B — B-2 碎片即用即毁): prototypes live ENCODED at rest;
+# boot destroys the flat decoded table, per-call DDEC materializes one
+# frame's bytecode into fresh tables. Verifies template shape (ENC/
+# DDEC wiring, PF=nil, MPF entry, no flat-table refs), fragment count,
+# nested-closure equivalence, constant round-trip, deep recursion.
+# ---------------------------------------------------------------
+source "$ROOT/tests/proto_enc_test.sh"
 
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"

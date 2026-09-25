@@ -6,3 +6,17 @@ tools/
 luraph-rs/target/
 # ...but keep the luau CLI main sources used by the rebuild
 !luraph-rs/tools/
+__pycache__/
+
+# 红队战役工件: 生成副本/日志/样本副本不入库(脚本与提取证据入库)
+redteam/harness_run*.lua
+redteam/harness_*.lua
+redteam/*.log
+redteam/sample_luraph15.lua
+redteam/trace_gen_*.py
+redteam/harness_after.lua
+redteam/harness_combined.lua
+redteam/harness_meta*.lua
+redteam/harness_protos*.lua
+redteam/harness_debug.lua
+redteam/harness_wrap.lua

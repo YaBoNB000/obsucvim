@@ -125,6 +125,13 @@ impl<'a> Resolver<'a> {
 				self.resolve_expr(l);
 				self.resolve_expr(r);
 			}
+			Expr::IfExpr { arms, elseb } => {
+				for (c, v) in arms {
+					self.resolve_expr(c);
+					self.resolve_expr(v);
+				}
+				self.resolve_expr(elseb);
+			}
 			Expr::Table { fields } => {
 				for f in fields {
 					match f {
@@ -151,6 +158,10 @@ impl<'a> Resolver<'a> {
 		self_param: bool,
 	) {
 		self.new_scope();
+		// idempotency: blocks may be resolved more than once (the v15
+		// shell re-resolves the already-passed interpreter block inside
+		// the module table); clear so re-declares don't duplicate.
+		param_syms.clear();
 		for p in params {
 			param_syms.push(self.declare(p, true));
 		}
@@ -236,12 +247,19 @@ impl<'a> Resolver<'a> {
 			}
 			Stmt::While { cond, body } => {
 				self.resolve_expr(cond);
+				// the body IS a scope block in Lua/Luau: locals declared
+				// inside die at `end` (and are re-declared each iteration)
+				self.new_scope();
 				self.resolve_block(body);
+				self.pop_scope();
 			}
 			Stmt::Repeat { body, cond } => {
-				// cond sees body locals (repeat-until semantics)
+				// cond sees body locals (repeat-until semantics); the body
+				// itself is still a scope block for everything OUTSIDE it
+				self.new_scope();
 				self.resolve_block(body);
 				self.resolve_expr(cond);
+				self.pop_scope();
 			}
 			Stmt::ForNum {
 				var,
@@ -273,7 +291,17 @@ impl<'a> Resolver<'a> {
 				self.resolve_block(body);
 				self.pop_scope();
 			}
-			Stmt::Do(b) => self.resolve_block(b),
+			Stmt::Do(b) => {
+				// `do ... end` is a scope block: locals inside must NOT
+				// leak past `end`. Skipping this scope let a block-local
+				// bind references AFTER the block (mangle then renamed the
+				// dangling reference into a free identifier the scaffold
+				// could capture with a random handler param — the v15
+				// seed=1 "attempt to call a table value" root cause).
+				self.new_scope();
+				self.resolve_block(b);
+				self.pop_scope();
+			}
 			Stmt::Break | Stmt::Continue => {}
 			Stmt::Return(es) => {
 				for e in es.iter_mut() {

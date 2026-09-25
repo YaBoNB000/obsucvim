@@ -60,6 +60,16 @@ enum CellKind {
 	Up(u16),
 }
 
+/// v15 stage A: wire-operand role (see Ctx::op_roles).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ORole {
+	Val,
+	Reg,
+	Base,
+	Const,
+	Up,
+}
+
 pub struct VmProgram {
 	pub opmap: OpMap,
 	/// M5 hub randomization: operand stream-slot order.
@@ -71,6 +81,53 @@ pub struct VmProgram {
 	/// function blob so the interpreter embeds one decoder.
 	pub carrier: Carrier,
 	pub fns: Vec<Vec<u8>>,
+	/// Nop instruction indexes per function (0-based, parallel to
+	/// `fns`). Consumed by the v15 template to emit literal-constant
+	/// self-modification writes (sample `J[Q]=12` shape, F14/F27).
+	pub nop_sites: Vec<Vec<u16>>,
+	/// P1 (致命缺点③): constant-keystream LCG constants (mod 2^28),
+	/// per build. The compiler masks every constant payload byte with
+	/// the per-function seeded stream; the template parse mirrors it.
+	pub ck_km: u32,
+	pub ck_kc: u32,
+	/// P1 (动态内联): MkStr per-position additive mask constants —
+	/// mask(i) = (mk1 * i + mk2) % 65536 over the FINAL instruction
+	/// index (post Nop-padding). Emitted into the MkStr handler.
+	pub mk1: u16,
+	pub mk2: u16,
+	/// P2 (字节码不规则): blob position-mask keystream (mod 2^28) —
+	/// per-function seed = (blob_seed + fi * blob_step) % 2^28, then
+	/// byte j masked with (state_j % 256). Mirrored by parse.
+	pub blob_km: u32,
+	pub blob_kc: u32,
+	pub blob_seed: u32,
+	pub blob_step: u32,
+	/// P2: section tag bytes, index = section ID:
+	/// 0=HEAD 1=CKSEED 2=UPS 3=CONSTS 4=SLOTS 5=CODE 6=DECOY.
+	/// Per-build random distinct values (no fixed section identity).
+	pub section_tags: [u8; 7],
+	/// v15 stage E3: per-function sum of ALL wire operands (mod 2^32),
+	/// parallel to `fns`. The v15 interpreter re-reads every operand
+	/// stream with inline 7-bit ladders and folds the same checksum
+	/// (F13 shape); a mismatch traps the decode loop.
+	pub operand_sums: Vec<u64>,
+	/// 54-B: 位置加权校验和（pos = 流序号*指令数 + 指令内序号，1 基）
+	pub operand_sums2: Vec<u64>,
+	/// B-3 (状态链式按块解码): per-prototype basic-block leader PCs
+	/// (1-based). Leaders = pc 1 ∪ jump targets ∪ post-jump positions;
+	/// the v15 template encodes each block under a session-keyed
+	/// keystream and the runtime decodes block-by-block (no bulk
+	/// decoder, no whole-stream decoded surface).
+	pub block_starts: Vec<Vec<u16>>,
+	/// S1 四表: per-function S selector (0..3 → S=251/99/8/140)
+	pub s_indices: Vec<u8>,
+	/// ㉒ (选项B — B-2 碎片即用即毁): every numeric constant is
+	/// maskable (integers mask additively; other finite doubles ride
+	/// the Luau shortest-roundtrip tostring/tonumber path). False only
+	/// when NaN/inf literals appear — then the v15 template keeps
+	/// constant tables plaintext inside the encoded prototypes (the
+	/// five instruction streams stay encoded either way).
+	pub consts_mask_safe: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,6 +140,9 @@ struct Ctx<'a> {
 	/// target dialect: true = Lua 5.1 (table-constructor store order:
 	/// array part stores LAST), false = Luau (source order)
 	lua51: bool,
+	/// v15 stage A (operand scattering): registers/consts/upvalues are
+	/// scattered into random slots per function before serialization
+	scatter: bool,
 	/// next nested-function slot (global DFS order over the chunk)
 	next_fn_slot: usize,
 	/// scope chain of declared syms -> cell kind (outermost first)
@@ -134,12 +194,14 @@ impl<'a> Ctx<'a> {
 		rng: &'a mut Rng,
 		symtab: &'a crate::symtab::SymTable,
 		lua51: bool,
+		scatter: bool,
 	) -> Ctx<'a> {
 		Ctx {
 			program,
 			rng,
 			symtab,
 			lua51,
+			scatter,
 			next_fn_slot: 0,
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
@@ -169,6 +231,13 @@ impl<'a> Ctx<'a> {
 	}
 
 	fn kidx(&mut self, c: Const) -> u16 {
+		// ㉒: track mask safety — only NaN/inf fall outside the
+		// tostring/tonumber round-trip used for non-integral doubles
+		if let Const::Num(v) = c {
+			if !v.is_finite() {
+				self.program.consts_mask_safe = false;
+			}
+		}
 		let k = const_key(&c);
 		if let Some(&i) = self.const_map.get(&k) {
 			return i;
@@ -234,7 +303,132 @@ impl<'a> Ctx<'a> {
 		self.scopes.pop();
 	}
 
-	fn finish(mut self, nregs: u16) -> Vec<u8> {
+	/// v15 stage A (operand scattering, luraph15 D1 family): operand
+	/// roles per opcode.
+	///   Reg   = single register — scattered (wire value = slot - 1)
+	///   Base  = base of a CONTIGUOUS register range — kept logical;
+	///           the v15 runtime translates through the per-function
+	///           slot table S (LoadNil/Call*/Return iterate ranges)
+	///   Const = constant index — scattered inside a padded pool
+	///   Up    = upvalue index — scattered through the up permutation
+	///   Val   = opaque value (jump target / count / flag / proto idx)
+	fn op_roles(op: Op) -> [ORole; 4] {
+		use ORole::*;
+		match op {
+			Op::Jmp => [Val, Val, Val, Val],
+			Op::Jf | Op::Jt => [Reg, Val, Val, Val],
+			Op::LoadNil => [Base, Val, Val, Val],
+			Op::LoadK => [Reg, Const, Val, Val],
+			Op::Move => [Reg, Reg, Val, Val],
+			Op::Add
+			| Op::Sub
+			| Op::Mul
+			| Op::Div
+			| Op::Mod
+			| Op::Pow
+			| Op::Idiv
+			| Op::Concat
+			| Op::Lt
+			| Op::Le
+			| Op::Gt
+			| Op::Ge
+			| Op::Eq
+			| Op::Ne
+			| Op::GetTab
+			| Op::SetTab
+			| Op::TabN => [Reg, Reg, Reg, Val],
+			Op::Unm | Op::Not | Op::Len => [Reg, Reg, Val, Val],
+			Op::NewTab | Op::VarArgTab | Op::VarArgC => [Reg, Val, Val, Val],
+			Op::VarArgTabN => [Reg, Reg, Val, Val],
+			Op::CallT => [Base, Reg, Reg, Val],
+			Op::Closure => [Reg, Val, Val, Val],
+			Op::Call | Op::CallE | Op::CallM => [Base, Val, Val, Val],
+			Op::GetGlobal | Op::SetGlobal => [Reg, Const, Val, Val],
+			Op::GetUp => [Reg, Up, Val, Val],
+			Op::SetUp => [Up, Reg, Val, Val],
+			Op::Return => [Base, Val, Val, Val],
+			Op::Nop => [Val, Val, Val, Val],
+			// P1: a = destination register (scattered); b/c/d = masked
+			// packed string bytes (opaque values, never scattered)
+			Op::MkStr => [Reg, Val, Val, Val],
+		}
+	}
+
+	/// v15 stage A: scatter registers/constants/upvalues into random
+	/// slots and rewrite the wire operands accordingly. Returns the
+	/// register slot table S (S[r] = 1-based physical slot of logical
+	/// register r-1), serialized after the constants; the v15
+	/// interpreter consults it for range-based accesses and makefn
+	/// translates upvalue descriptors through the PARENT's S. After
+	/// this pass register/const/up operands share one opaque numeric
+	/// space — static register recovery loses its small-integer anchor.
+	fn scatter_operands(&mut self, nregs: u16) -> Vec<u16> {
+		// 1. register slots: sigma[r] = 1-based physical slot (~50%
+		// density for small frames; extra spread capped at 64 so very
+		// large frames stay in the 2-byte varint tier)
+		let n = nregs as usize;
+		let smax = n + (n / 2).min(64).max(8);
+		let mut pool: Vec<u16> = (1..=smax as u16).collect();
+		self.rng.shuffle(&mut pool);
+		let sigma: Vec<u16> = pool[..n].to_vec();
+
+		// 2. constant pool scattering: real constants land at random
+		// positions in a padded pool; holes get nil / decoy numbers
+		let nc = self.consts.len();
+		let cmax = nc + (nc / 2).max(4);
+		let mut cpos: Vec<usize> = (0..cmax).collect();
+		self.rng.shuffle(&mut cpos);
+		let kappa: Vec<usize> = cpos[..nc].to_vec();
+		let mut consts2: Vec<Const> = vec![Const::Nil; cmax];
+		let mut used = vec![false; cmax];
+		for (i, c) in self.consts.drain(..).enumerate() {
+			consts2[kappa[i]] = c;
+			used[kappa[i]] = true;
+		}
+		for j in 0..cmax {
+			if !used[j] && self.rng.int(0, 3) == 0 {
+				consts2[j] = Const::Num(self.rng.int(0, 999_999) as f64);
+			}
+		}
+		self.consts = consts2;
+
+		// 3. upvalue permutation (upsrc reordered; operands map through
+		// the inverse)
+		let nu = self.upsrc.len();
+		let mut perm: Vec<usize> = (0..nu).collect();
+		self.rng.shuffle(&mut perm);
+		let old_upsrc = std::mem::take(&mut self.upsrc);
+		let mut tau = vec![0usize; nu];
+		for (ni, &oi) in perm.iter().enumerate() {
+			self.upsrc.push(old_upsrc[oi]);
+			tau[oi] = ni;
+		}
+
+		// 4. wire operand rewrite
+		for ins in self.code.iter_mut() {
+			let roles = Self::op_roles(ins.op);
+			let ops = [ins.a, ins.b, ins.c, ins.d];
+			for k in 0..4 {
+				let v = ops[k] as usize;
+				let nv = match roles[k] {
+					ORole::Reg => sigma[v] - 1,
+					ORole::Const => kappa[v] as u16,
+					ORole::Up => tau[v] as u16,
+					_ => ops[k],
+				};
+				match k {
+					0 => ins.a = nv,
+					1 => ins.b = nv,
+					2 => ins.c = nv,
+					_ => ins.d = nv,
+				}
+			}
+		}
+
+		sigma
+	}
+
+	fn finish(mut self, nregs: u16, fn_index: usize) -> (Vec<u8>, Vec<u16>, u64, u64, Vec<u16>) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
 		let needs_return = self
@@ -281,22 +475,221 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		}
+		// P1 (动态内联): rewrite LoadK of SHORT strings (≤5 bytes) into
+		// MkStr — the string never enters the constant pool; its bytes
+		// ride the operand streams as masked immediates. Done BEFORE
+		// scattering so operand a scatters as a register and the packed
+		// b/c/d pass through as opaque values.
+		for ins in self.code.iter_mut() {
+			if ins.op == Op::LoadK {
+				if let Some(Const::Str(bs)) = self.consts.get(ins.b as usize) {
+					if bs.len() <= 5 {
+						let mut bytes = [0u16; 5];
+						for (i, &b) in bs.iter().enumerate() {
+							bytes[i] = b as u16;
+						}
+						let len = bs.len() as u16;
+						ins.op = Op::MkStr;
+						ins.b = bytes[0] + bytes[1] * 256;
+						ins.c = bytes[2] + bytes[3] * 256;
+						ins.d = bytes[4] + len * 256;
+					}
+				}
+			}
+		}
+		// v15 stage A: operand scattering post-pass (rewrites wire
+		// operands; yields the register slot table S serialized below)
+		let s_tab = if self.scatter {
+			Some(self.scatter_operands(nregs))
+		} else {
+			None
+		};
+		// P1: mask MkStr packed operands with a key derived from the
+		// FINAL wire register a (post-scatter): mask = (mk1*a + mk2)
+		// % 65536. The handler recomputes the same key from its a
+		// operand and unmasks via (x - mask) % 65536.
+		let mk1 = self.program.mk1 as u32;
+		let mk2 = self.program.mk2 as u32;
+		for ins in self.code.iter_mut() {
+			if ins.op == Op::MkStr {
+				let msk = (mk1 * ins.a as u32 + mk2) % 65536;
+				ins.b = ((ins.b as u32 + msk) % 65536) as u16;
+				ins.c = ((ins.c as u32 + msk) % 65536) as u16;
+				ins.d = ((ins.d as u32 + msk) % 65536) as u16;
+			}
+		}
 		let map = &self.program.opmap;
 		let perm = &self.program.slot_perm;
-		let mut out = Vec::with_capacity(self.code.len() * 6 + 64);
-		isa::push_u16(&mut out, nregs);
-		isa::push_u16(&mut out, self.nparams);
-		out.push(self.vararg as u8);
-		isa::push_u16(&mut out, self.upsrc.len() as u16);
+		// Nop sites are final here (no more insertions after this point)
+		let nops: Vec<u16> = self
+			.code
+			.iter()
+			.enumerate()
+			.filter(|(_, i)| i.op == Op::Nop)
+			.map(|(p, _)| p as u16)
+			.collect();
+		// P2 (instruction-stream noise): fill every operand slot the
+		// opcode IGNORES with per-build random values — the SoA streams
+		// lose their zero-padding alignment (osum below folds the final
+		// wire values, so the v15 checksum stays consistent).
+		for ins in self.code.iter_mut() {
+			let m = isa::unused_operands(ins.op);
+			if m[0] {
+				ins.a = self.rng.int(0, 65535) as u16;
+			}
+			if m[1] {
+				ins.b = self.rng.int(0, 65535) as u16;
+			}
+			if m[2] {
+				ins.c = self.rng.int(0, 65535) as u16;
+			}
+			if m[3] {
+				ins.d = self.rng.int(0, 65535) as u16;
+			}
+		}
+		// v15 stage E3: fold the sum of ALL wire operands (post-scatter,
+		// post-noise, mod 2^32). The v15 interpreter re-reads every operand
+		// stream via inline 7-bit ladders and re-folds the same checksum
+		// (F13 shape); any tamper breaks it.
+		let mut osum: u64 = 0;
+		for ins in &self.code {
+			osum = (osum + ins.a as u64 + ins.b as u64 + ins.c as u64 + ins.d as u64) % 4294967296;
+		}
+		// 54-B (R025 建议5): 位置加权累计 Σ(pos·v) mod 2^32——pos 定义与
+		// 模板 parse 侧折叠阶梯逐位镜像: 流 s (0=SA..3=SD) 第 i 条指令
+		// (1 基) 的全局位置 = s*ncode + i; 流 s 承载操作数槽 perm[s]。
+		let mut osum2: u64 = 0;
+		let ncode64 = self.code.len() as u64;
+		for (p, ins) in self.code.iter().enumerate() {
+			let vals = [ins.a as u64, ins.b as u64, ins.c as u64, ins.d as u64];
+			for st in 0..4usize {
+				let k = perm[st] as usize;
+				let pos = (st as u64) * ncode64 + (p as u64) + 1;
+				osum2 = (osum2 + (pos % 4294967296) * vals[k]) % 4294967296;
+			}
+		}
+		// ---------------------------------------------------------------
+		// P2 (字节码不规则): section assembly. No fixed field order —
+		// every build permutes the sections, tags their identity with
+		// per-build random bytes, varints every count, sprinkles decoy
+		// sections, then masks the whole blob with a per-function
+		// position keystream. Layout knowledge alone parses nothing.
+		// Section IDs: 0=HEAD 1=CKSEED 2=UPS 3=CONSTS 4=SLOTS 5=CODE.
+		let mut secs: Vec<(usize, Vec<u8>)> = Vec::new();
+		// HEAD
+		let mut head = Vec::new();
+		isa::encode_u16var(&mut head, nregs);
+		isa::encode_u16var(&mut head, self.nparams);
+		isa::encode_u16var(&mut head, self.vararg as u16);
+		secs.push((0, head));
+		// CKSEED (P1 constant keystream seed)
+		let ckseed = self.rng.int(0, 65535) as u16;
+		let mut cksec = Vec::new();
+		isa::encode_u16var(&mut cksec, ckseed);
+		secs.push((1, cksec));
+		// UPS
+		let mut ups = Vec::new();
+		isa::encode_u16var(&mut ups, self.upsrc.len() as u16);
 		for s in &self.upsrc {
-			isa::push_u16(&mut out, *s);
+			isa::encode_u16var(&mut ups, *s);
 		}
-		isa::push_u16(&mut out, self.consts.len() as u16);
+		secs.push((2, ups));
+		// CONSTS (P1: encrypted items; csl = alignment anchor +
+		// integrity check on the parse side)
+		let mut csec: Vec<u8> = Vec::new();
+		let mut lcg =
+			isa::ConstLcg::new(ckseed as u32, self.program.ck_km, self.program.ck_kc);
 		for c in &self.consts {
-			c.encode(&mut out);
+			c.encode(&mut csec, &mut lcg);
 		}
-		isa::encode_soa(&self.code, map, perm, &mut out);
-		out
+		let mut consts_sec = Vec::new();
+		isa::encode_u16var(&mut consts_sec, self.consts.len() as u16);
+		isa::encode_u16var(&mut consts_sec, csec.len() as u16);
+		consts_sec.extend_from_slice(&csec);
+		secs.push((3, consts_sec));
+		// SLOTS (v15 scatter table only)
+		if let Some(s_tab) = &s_tab {
+			let mut slots = Vec::new();
+			isa::encode_u16var(&mut slots, s_tab.len() as u16);
+			for s in s_tab {
+				isa::encode_u16var(&mut slots, *s);
+			}
+			secs.push((4, slots));
+		}
+		// CODE (ncode + W + SoA streams)
+		let mut code = Vec::new();
+		isa::encode_u16var(&mut code, self.code.len() as u16);
+		let s_idx = self.program.s_indices[fn_index] as usize;
+		isa::encode_soa_for(&self.code, map, perm, s_idx, &mut code);
+		secs.push((5, code));
+		// decoy sections: seed-derived garbage runs
+		let ndecoys = self.rng.int(0, 2);
+		for _ in 0..ndecoys {
+			let len = self.rng.int(8, 48);
+			let mut g = Vec::with_capacity(len as usize);
+			for _ in 0..len {
+				g.push(self.rng.int(0, 255) as u8);
+			}
+			secs.push((6, g));
+		}
+		self.rng.shuffle(&mut secs);
+		let tags = &self.program.section_tags;
+		let mut blob: Vec<u8> = Vec::with_capacity(self.code.len() * 6 + 96);
+		for (id, body) in &secs {
+			blob.push(tags[*id]);
+			if *id == 6 {
+				isa::encode_u16var(&mut blob, body.len() as u16);
+			}
+			blob.extend_from_slice(body);
+		}
+		// position mask: per-function keystream over the WHOLE blob
+		// 增量⑬ (对抗 R002): two-phase self-referential mask. Phase 1
+		// masks the first ≤64 bytes with the base keystream; `hf` then
+		// folds that CIPHERTEXT prefix (bytes both sides possess), and
+		// phase 2 re-seeds the keystream to base+hf. The key for the
+		// bulk thus depends on the ciphertext itself — no independent
+		// key object to extract. The template's parse mirrors this
+		// exactly (unmask prefix → fold prefix → reseed → unmask rest).
+		let km = self.program.blob_km as u64;
+		let kc = self.program.blob_kc as u64;
+		let base = (self.program.blob_seed as u64
+			+ fn_index as u64 * self.program.blob_step as u64)
+			% 268_435_456;
+		let ksplit = blob.len().min(64);
+		let mut state = base;
+		for byte in blob.iter_mut().take(ksplit) {
+			state = (km * state + kc) % 268_435_456;
+			*byte = byte.wrapping_add(isa::fold_key(state));
+		}
+		let mut hf: u64 = 0;
+		for &byte in blob.iter().take(ksplit) {
+			hf = (hf * 31 + byte as u64) % 268_435_456;
+		}
+		let mut state = (base + hf) % 268_435_456;
+		for byte in blob.iter_mut().skip(ksplit) {
+			state = (km * state + kc) % 268_435_456;
+			*byte = byte.wrapping_add(isa::fold_key(state));
+		}
+		// B-3: basic-block partition — leaders are pc 1, every jump
+		// target, and the position after every jump (fall-through
+		// merge). Positions are 1-based instruction indexes (pc steps
+		// by 1). Computed after scatter/noise: instruction positions
+		// are final here.
+		let ncode = self.code.len();
+		let mut leaders: Vec<u16> = vec![1];
+		for (idx, ins) in self.code.iter().enumerate() {
+			if matches!(ins.op, Op::Jmp | Op::Jf | Op::Jt) {
+				if ins.b >= 1 && ins.b as usize <= ncode {
+					leaders.push(ins.b);
+				}
+				if idx + 2 <= ncode {
+					leaders.push(idx as u16 + 2);
+				}
+			}
+		}
+		leaders.sort_unstable();
+		leaders.dedup();
+		(blob, nops, osum, osum2, leaders)
 	}
 }
 
@@ -724,12 +1117,30 @@ fn compile_chunk(
 	table: &SymTable,
 	rng: &mut Rng,
 	lua51: bool,
+	scatter: bool,
 ) -> VmProgram {
 	let total = count_fns_count(block);
 	// M5: per-build random operand slot permutation (hub randomization)
 	let mut perm: Vec<u8> = vec![0, 1, 2, 3];
 	rng.shuffle(&mut perm);
 	let slot_perm: [u8; 4] = perm.try_into().unwrap();
+	// P1 (致命缺点③): per-build constant-keystream LCG constants
+	// (odd multiplier/addend, mod 2^28 — scaffold-keystream family) +
+	// MkStr additive-mask constants. The template parse mirrors the
+	// LCG; the MkStr handler mirrors the mask.
+	let ck_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
+	let ck_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
+	let mk1 = rng.int(1, 65535) as u16;
+	let mk2 = rng.int(0, 65535) as u16;
+	// P2 (字节码不规则): blob position-mask keystream + per-function
+	// seed derivation + section tag identity (all per build).
+	let blob_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
+	let blob_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
+	let blob_seed = rng.int(1_048_576, 268_435_455) as u32;
+	let blob_step = rng.int(1_048_576, 268_435_455) as u32;
+	let mut tag_pool: Vec<u8> = (1..=250).collect();
+	rng.shuffle(&mut tag_pool);
+	let section_tags: [u8; 7] = tag_pool[..7].try_into().unwrap();
 	let mut program = VmProgram {
 		opmap: OpMap::new(rng),
 		slot_perm,
@@ -738,13 +1149,36 @@ fn compile_chunk(
 		// is compiled last and becomes slot `total` (PF[#FN] in the
 		// template)
 		fns: vec![Vec::new(); total],
+		nop_sites: vec![Vec::new(); total],
+		operand_sums: vec![0; total],
+		// 54-B (R025 建议5): 位置加权双向校验和 Σ(pos·v)
+		operand_sums2: vec![0; total],
+		ck_km,
+		ck_kc,
+		mk1,
+		mk2,
+		blob_km,
+		blob_kc,
+		blob_seed,
+		blob_step,
+		section_tags,
+		consts_mask_safe: true,
+		block_starts: vec![Vec::new(); total + 1],
+		s_indices: vec![0; total + 1],
 	};
 	{
-		let mut ctx = Ctx::new_main(&mut program, rng, table, lua51);
+		// main chunk index = slot count (children fill 0..total-1)
+		let main_index = program.fns.len();
+        program.s_indices[main_index] = if scatter { rng.int(0, 3) as u8 } else { 0 };
+        let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
-		let bytes = ctx.finish(nregs);
+		let (bytes, nops, osum, osum2, blocks) = ctx.finish(nregs, main_index);
+		program.block_starts[main_index] = blocks;
 		program.fns.push(bytes);
+		program.nop_sites.push(nops);
+		program.operand_sums.push(osum);
+		program.operand_sums2.push(osum2);
 	}
 	program
 }
@@ -1082,7 +1516,11 @@ impl<'a> Ctx<'a> {
 	fn compile_stmt_rest(&mut self, s: &Stmt) {
 		match s {
 			Stmt::Assign { targets, values } => {
-				// targets first (5.1 semantics), then values, then store
+				// targets first (5.1 semantics): 目标表达式（表对象+下
+				// 标）先物化；然后**全部**值求值完毕，才允许第一个存
+				// 储——㉜ (R016 回合): 旧实现「求值一个存一个」违反
+				// Lua 语义，`t[i], t[m] = t[m], t[i]` 这类同表交换会读
+				// 到已被覆写的槽（堆排序/交换算法全灭，语料从未覆盖）。
 				let mut tinfos: Vec<Target> = Vec::new();
 				for t in targets {
 					tinfos.push(self.eval_target(t));
@@ -1100,11 +1538,13 @@ impl<'a> Ctx<'a> {
 					nv
 				};
 				// leading values, source order (bounded by target count)
+				// —— 全部求值进寄存器，存储统一推后
 				let nlead = npre.min(n);
+				let mut lead_regs: Vec<u16> = Vec::new();
 				for i in 0..nlead {
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
-					self.store_target(&tinfos[i], r);
+					lead_regs.push(r);
 				}
 				// extra values before the final one: evaluate (side
 				// effects) and discard
@@ -1112,29 +1552,29 @@ impl<'a> Ctx<'a> {
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
 				}
+				let mut exp_base: Option<u16> = None;
+				let mut nres: usize = 0;
 				if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
 					// final value expands into targets npre..n
-					let nres = (n - npre) as u16;
+					nres = (n - npre) as usize;
 					if last_is_call {
 						let call = values[nv - 1].clone();
 						let (nargs, has_vararg) = call_arg_info(&call);
 						let freg = self.reserve(1 + nargs.max(1));
-						self.compile_call_into(&call, freg, nres, has_vararg);
-						for i in 0..nres as usize {
-							self.store_target(&tinfos[npre + i], freg + 1 + i as u16);
-						}
+						self.compile_call_into(&call, freg, nres as u16, has_vararg);
+						exp_base = Some(freg + 1);
 					} else {
 						// varargs as a table, then fetch the needed prefix
 						let vt = self.tmp();
 						self.emit(Instr::ab(Op::VarArgTab, vt, 0));
-						for i in 0..nres as usize {
+						let base = self.reserve(nres as u16);
+						for i in 0..nres {
 							let kreg = self.tmp();
 							let k = self.kidx(Const::Num((i + 1) as f64));
 							self.emit(Instr::ab(Op::LoadK, kreg, k));
-							let r = self.tmp();
-							self.emit(Instr::abc(Op::GetTab, r, vt, kreg));
-							self.store_target(&tinfos[npre + i], r);
+							self.emit(Instr::abc(Op::GetTab, base + i as u16, vt, kreg));
 						}
+						exp_base = Some(base);
 					}
 				} else if nv > 0 && npre < nv {
 					// final value lies beyond the targets: evaluate for
@@ -1142,6 +1582,15 @@ impl<'a> Ctx<'a> {
 					let i = nv - 1;
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
+				}
+				// ㉜: 值全部就绪——按目标顺序统一存储
+				for i in 0..nlead {
+					self.store_target(&tinfos[i], lead_regs[i]);
+				}
+				if let Some(base) = exp_base {
+					for i in 0..nres {
+						self.store_target(&tinfos[npre + i], base + i as u16);
+					}
 				}
 				// fewer values than targets: remaining targets get nil
 				let knil = self.kidx(Const::Nil);
@@ -1449,9 +1898,25 @@ impl<'a> Ctx<'a> {
 				let k = self.kidx(Const::Num(*value));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}
-			Expr::Str { bytes, .. } => {
+			Expr::Str { bytes, .. } | Expr::LongStr { bytes } => {
 				let k = self.kidx(Const::Str(bytes.clone()));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
+			}
+			Expr::IfExpr { arms, elseb } => {
+				// per-arm cascade: test cond, fall into the value on
+				// truth, jump over the rest otherwise
+				let l_end = self.new_label();
+				for (cond, val) in arms {
+					let l_next = self.new_label();
+					let t = self.tmp();
+					self.compile_expr(cond, t);
+					self.jmp(Op::Jf, t, &l_next);
+					self.compile_expr(val, dst);
+					self.jmp(Op::Jmp, 0, &l_end);
+					self.here(&l_next);
+				}
+				self.compile_expr(elseb, dst);
+				self.here(&l_end);
 			}
 			Expr::Bool { value } => {
 				let k = self.kidx(Const::Bool(*value));
@@ -1905,13 +2370,15 @@ impl<'a> Ctx<'a> {
 		}
 
 		let child_index = self.next_fn_slot;
-		self.next_fn_slot += 1;
-		let nparams = param_syms.len() as u16;
+            self.next_fn_slot += 1;
+            self.program.s_indices[child_index] = if self.scatter { self.rng.int(0, 3) as u8 } else { 0 };
+            let nparams = param_syms.len() as u16;
 		let mut child = Ctx {
 			program: self.program,
 			rng: self.rng,
 			symtab: self.symtab,
 			lua51: self.lua51,
+			scatter: self.scatter,
 			next_fn_slot: self.next_fn_slot,
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
@@ -1952,10 +2419,14 @@ impl<'a> Ctx<'a> {
 		child.pop_scope();
 		let slot_end = child.next_fn_slot;
 		let nregs = child.next_reg;
-		let bytes = child.finish(nregs);
+		let (bytes, nops, osum, osum2, blocks) = child.finish(nregs, child_index);
+			self.program.block_starts[child_index] = blocks;
 		self.next_fn_slot = slot_end;
 		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
 		self.program.fns[child_index] = bytes;
+		self.program.nop_sites[child_index] = nops;
+		self.program.operand_sums[child_index] = osum;
+		self.program.operand_sums2[child_index] = osum2;
 
 		self.emit(Instr::ab(Op::Closure, dst, child_index as u16));
 	}
@@ -2060,8 +2531,14 @@ fn call_arg_info(e: &Expr) -> (u16, bool) {
 // entry point
 // ---------------------------------------------------------------------------
 
-pub fn compile(block: &Block, table: &SymTable, rng: &mut Rng, lua51: bool) -> VmProgram {
-	compile_chunk(block, table, rng, lua51)
+pub fn compile(
+	block: &Block,
+	table: &SymTable,
+	rng: &mut Rng,
+	lua51: bool,
+	scatter: bool,
+) -> VmProgram {
+	compile_chunk(block, table, rng, lua51, scatter)
 }
 
 #[cfg(test)]
@@ -2071,6 +2548,7 @@ mod dbg {
 	use crate::symtab;
 
 	#[test]
+	#[ignore] // dev tool: needs /tmp/nt5.lua
 	fn dbg_header() {
 		let src = std::fs::read_to_string("/tmp/nt5.lua").unwrap();
 		let mut block = parser::parse(&src, false).unwrap();
@@ -2103,12 +2581,12 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
 		for (i, nm) in names.iter().enumerate() {
-			wire2name[prog.opmap.to_wire[i] as usize] = Some(*nm);
+			wire2name[prog.opmap.to_wire[0][i] as usize] = Some(*nm);
 		}
 		for (fi, b) in prog.fns.iter().enumerate() {
 			eprintln!("=== FN[{}] len={}", fi, b.len());
@@ -2164,5 +2642,142 @@ mod dbg {
 				);
 			}
 		}
+	}
+
+	/// v15 stage A: verify the scatter post-pass — S slots distinct and
+	/// spread beyond the dense range, wire operands scattered, consts
+	/// padded.
+	#[test]
+	fn scatter_layout_properties() {
+		let src = "local function f(a, b, c) local x = a + b * c; local y = x - a; return y, x end return f(1, 2, 3)";
+		let mut block = parser::parse(src, true).unwrap();
+		let table = symtab::resolve(&mut block);
+		let mut rng = crate::rng::Rng::new(7);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true);
+		let mut saw_scattered_operand = false;
+		let tags = &prog.section_tags;
+		for (fi, b) in prog.fns.iter().enumerate() {
+			// P2: unmask the whole blob, then tag-walk the sections
+			// 增量⑬: two-phase self-referential mask (fold of the
+			// ciphertext prefix re-seeds the bulk keystream)
+			let base = (prog.blob_seed as u64 + fi as u64 * prog.blob_step as u64) % 268_435_456;
+			let ksplit = b.len().min(64);
+			let mut buf: Vec<u8> = b.clone();
+			let mut state = base;
+			for byte in buf.iter_mut().take(ksplit) {
+				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
+				*byte = byte.wrapping_sub(isa::fold_key(state));
+			}
+			let mut hf: u64 = 0;
+			for &byte in b.iter().take(ksplit) {
+				hf = (hf * 31 + byte as u64) % 268_435_456;
+			}
+			let mut state = (base + hf) % 268_435_456;
+			for byte in buf.iter_mut().skip(ksplit) {
+				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
+				*byte = byte.wrapping_sub(isa::fold_key(state));
+			}
+			let mut p = 0usize;
+			let mut nregs = 0usize;
+			let mut slots: Vec<u16> = Vec::new();
+			let mut ncode = 0usize;
+			let mut streams = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+			let mut got = 0;
+			while got < 6 {
+				let tag = buf[p];
+				p += 1;
+				if tag == tags[0] {
+					let (v, np) = isa::decode_varint(&buf, p).unwrap();
+					nregs = v as usize;
+					p = np;
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // nparams
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // vararg
+					got += 1;
+				} else if tag == tags[1] {
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // ckseed
+					got += 1;
+				} else if tag == tags[2] {
+					let (mut nu, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np;
+					while nu > 0 {
+						let (_, n2) = isa::decode_varint(&buf, p).unwrap();
+						p = n2;
+						nu -= 1;
+					}
+					got += 1;
+				} else if tag == tags[3] {
+					let (_, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np; // nconst
+					let (csl, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np + csl as usize;
+					got += 1;
+				} else if tag == tags[4] {
+					let (mut ns, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np;
+					slots.clear();
+					while ns > 0 {
+						let (v, n2) = isa::decode_varint(&buf, p).unwrap();
+						slots.push(v as u16);
+						p = n2;
+						ns -= 1;
+					}
+					got += 1;
+				} else if tag == tags[6] {
+					let (dl, np) = isa::decode_varint(&buf, p).unwrap();
+					p = np + dl as usize;
+				} else {
+					if tag != tags[5] {
+						panic!(
+							"unknown section tag {tag} at p={} got={} tags={:?}",
+							p, got, tags
+						);
+					}
+					let (v, np) = isa::decode_varint(&buf, p).unwrap();
+					ncode = v as usize;
+					p = np;
+					p += ncode; // W array
+					// consume the four operand streams in place (the
+					// walk must land on the next section tag)
+					for s in 0..4 {
+						for _ in 0..ncode {
+							let (sv, n2) = isa::decode_varint(&buf, p).unwrap();
+							streams[s].push(sv as u16);
+							p = n2;
+						}
+					}
+					got += 1;
+				}
+			}
+			assert_eq!(slots.len(), nregs, "S table length must equal nregs");
+			let mut sorted = slots.clone();
+			sorted.sort_unstable(); sorted.dedup();
+			assert_eq!(sorted.len(), nregs, "S slots must be distinct");
+			let smax = nregs + (nregs / 2).min(64).max(8);
+			for &s in &slots {
+				assert!((1..=smax as u16).contains(&s), "slot in range");
+			}
+			if nregs >= 4 {
+				assert!(
+					*slots.iter().max().unwrap() as usize > nregs,
+					"slots must be spread beyond the dense range"
+				);
+			}
+			// wire operands: single-register operands of arithmetic ops
+			// must reach beyond nregs somewhere
+			let perm = &prog.slot_perm;
+			for i in 0..ncode {
+				let mut vals = [0u16; 4];
+				for s in 0..4 {
+					vals[perm[s] as usize] = streams[s][i];
+				}
+				if vals.iter().any(|&v| v as usize > nregs) {
+					saw_scattered_operand = true;
+				}
+			}
+		}
+		assert!(saw_scattered_operand, "some wire operand must be scattered");
 	}
 }

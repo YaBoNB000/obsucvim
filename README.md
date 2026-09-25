@@ -26,28 +26,75 @@ CARGO_NET_OFFLINE=true cargo build --release
 ## 用法
 
 ```bash
-# 默认 = --preset high（L1–L5 + L7，无 VM）
-./target/release/luraph-rs --dialect 5.1  --seed 42 in.lua out.lua
-./target/release/luraph-rs --dialect luau --seed 42 in.lua out.lua
+# 默认 = v15 管线（产品形态，Luau/Roblox）——零参数、直接可运行
+# ㉖ 起产品线 Luau-only：Lua 5.1 目标不再支持
+./target/release/luraph-rs --seed 42 in.lua out.lua
+# 显式写法等价：
+./target/release/luraph-rs --preset v15 --seed 42 in.lua out.lua
 
-# 命名预设（后面的 --no-* / --vm 会覆盖）
+# 旧版轻量/VM 预设（Luau 目标显式选择，后面的 --no-* / --vm 会覆盖）
 ./target/release/luraph-rs --preset low    --seed 42 in.lua out.lua
 ./target/release/luraph-rs --preset medium --seed 42 in.lua out.lua
 ./target/release/luraph-rs --preset high   --seed 42 in.lua out.lua
 ./target/release/luraph-rs --preset vm     --seed 42 in.lua out.vm.lua
 ./target/release/luraph-rs --preset max    --seed 42 in.lua out.vm.lua
 
-# 等价写法
-./target/release/luraph-rs --vm --dialect 5.1 --seed 42 in.lua out.vm.lua
+# 增量⑱ 输入绑定/激活门 (--bind-key) 已于 ㊴ 整体退役移除
 ```
 
 | 预设 | 打开的层 | 典型体积 | 适用 |
 |---|---|---|---|
-| `low` | L1 + L2 | ~源码量级 | 名称/字符串不可读即可 |
-| `medium` | low + L3 | 数 KB–数十 KB | 还要打散控制流 |
-| `high`（默认） | medium + L4 + L5 + L7 | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
-| `vm` | high + L6 | ~130–160 KB | 反编译器失效；Lua-on-Lua |
-| `max` | 当前 = `vm` | 同 `vm` | 最强在售档；v2（CPS 帧/超级指令）预留 |
+| **默认（= `v15`）** | v15 架构全防护（Luau/Roblox） | ~150 KB | **产品形态**：零参数直接可运行 |
+| `low` | L1 + L2（legacy） | ~源码量级 | 名称/字符串不可读即可 |
+| `medium` | low + L3（legacy） | 数 KB–数十 KB | 还要打散控制流 |
+| `high` | medium + L4 + L5 + L7（legacy） | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
+| `vm` | high + L6（legacy） | ~130–160 KB | 旧版 VM（Lua 5.1 时代产物） |
+| `max` | 当前 = `vm`（legacy） | 同 `vm` | 旧版最强档 |
+| `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~150 KB | 显式写法，等同默认 |
+
+### 产品形态：混淆后零参数直接可运行（默认即 v15）
+
+**核心承诺**：默认产物（v15 管线）**不需要任何参数**，丢进 Luau CLI 或
+Roblox 执行器即可直接运行，输出与源码逐字节一致。防护来自**结构层 +
+运行时防御叠层**（⑲⑳㉑㉒㉓㉔）：
+
+- **加密解释器**：43 个指令 handler + 字节码解析器全部加密成碎片，运行时
+  经 `loadstring` 装配，可见代码里没有指令语义；
+- **去中心化尾链 + 蹦床**（⑲）：没有中心 `while..dispatch` 分派循环，
+  每条指令的分派散在各加密 handler 尾部的尾链附言里，全局 hook 咽喉点消失；
+- **多层编码 + 每构建随机**：载体、转义、钥匙表、指令编号、槽位、命名
+  每个 `--seed` 全量重随机。
+
+此形态与真实 Luraph v15 同属「纯结构防护」路线（真实 v15 本就无运行时
+防御，见 `docs/redteam-luraph15-recon.md`），但本产品把解释器/解析器/分派
+全部入密，结构强度更高。
+
+### [㊴ 退役] 增量⑱：输入绑定 / 激活门（`--bind-key`）
+
+曾把引导链第一层门控到「变长参递送的激活值」上（错/缺钥匙即引导层崩溃）。
+因要求运行时传参、产物无法直接运行，与产品核心需求冲突，**㊴ 起整体退役：
+功能代码、`tests/bind_gate_test.sh`、绑定态示例均已移除**（移除经字节级
+验证对未绑定产物零影响）。现役防线 = 结构层（⑲⑳㉚-㉟）+ 环境绑定
+（㉑）+ 计时守卫（㉙/㊳）。详见 `docs/plan-resemblance-and-security.md`。
+
+### 增量㉑：环境绑定（`--bind-env roblox`，仅 v15）
+
+真实 Luraph v15 的最外层防御。把目标运行时 API（`Vector3.new`/
+`Vector2.new`/`task.defer`）嵌进解释器原语槽——表构造对每个 RHS 求值，
+于是产物**只在目标运行时可加载**：在通用分析沙箱（luau CLI 等，
+`Vector3`/`task` 为 nil）里**加载期即 `index nil` 崩溃**，任何解码都还没
+开始。与 ⑱ 不同：**不需要用户传任何参数**，目标运行时自带这些 API，
+天然「混淆后直接可运行」；只有非目标沙箱跑不了。
+
+```bash
+./target/release/luraph-rs --preset v15 --dialect luau --bind-env roblox in.lua out.lua
+```
+
+绑定态产物不进通用运行等价矩阵（CLI 跑不动是设计目的），只做语法校验 +
+加载失败验证（`tests/env_bind_test.sh`，已内嵌 run_tests.sh）。
+**诚实边界**：挡的是非目标运行时；若攻击方用 Roblox 环境（或桩了这些
+API 的模拟器）运行则不拦，退化为 ⑲⑳ 结构防护 + 反调试。它是「抬门槛」，
+与叠层其余层叠加。
 
 同 `--seed` → 输出逐字节一致；不同 seed → 编码完全不同。  
 分层开关：`--no-mangle` / `--no-minify` / `--no-strings` / `--no-flatten` /
@@ -59,14 +106,19 @@ Luau 输入支持 `//`、`continue`、复合赋值、反引号插值、类型注
 
 ```bash
 cd luraph-rs
-bash tests/run_tests.sh      # 官方矩阵：30 语料 × 双方言 ×（high + vm）= 204 项
-bash tests/run_presets.sh    # 五档预设 × 全语料（405 项）
-bash tests/multiseed.sh      # VM/编码改动必跑
+bash tests/run_tests.sh      # 官方矩阵：全语料 × 双方言 ×（high + vm + v15）
+                             #   + ⑱ 绑定门控 10 项 + ㉑ 环境绑定 4 项 = 250 项
+bash tests/run_presets.sh    # 预设 × 全语料（465 项）
+bash tests/multiseed.sh      # VM/编码改动必跑（含绑定 5 种子扫描）
+bash tests/bind_gate_test.sh # 增量⑱ 激活门独立跑法（已内嵌 run_tests.sh）
+bash tests/env_bind_test.sh  # 增量㉑ 环境绑定独立跑法（已内嵌 run_tests.sh）
 bash tests/bench_presets.sh  # 性能快照（见 docs/performance.md）
 bash tests/gen_examples.sh   # 重生成 luraph-rs/examples/
 ```
 
-当前（2026-08-25）：官方矩阵 **204/204**，预设矩阵 **405/405**，多种子回归 0 失败。
+当前（2026-09-08）：官方矩阵 **250/250**（含 ⑱ 绑定门控 10 项 + ㉑ 环境
+绑定 4 项），预设矩阵 **465/465**，多种子回归 0 失败（含绑定扫描），
+轮廓指纹 32/32，安全指纹 5/5。
 
 ## 性能（摘要）
 
@@ -97,6 +149,7 @@ bash tests/gen_examples.sh   # 重生成 luraph-rs/examples/
 | `docs/vm-l6-implementation.md` | VM 实现笔记（动 `vmgen/` 前必读） |
 | `docs/obfuscation-research.md` | 混淆调研 + 双方言实测 |
 | `docs/luraph15-analysis.md` | Luraph v15 样本分析 |
+| `docs/luraph15-defense-analysis.md` | Luraph v15 防御手段全解析（安全导向） |
 | `luraph-rs/` | Rust 本体（`src/vmgen/` = L6） |
 | `luraph-rs/tests/` | 矩阵 / 预设 / 多种子 / 语料 |
 | `luraph-rs/examples/` | 全语料混淆示例 |
