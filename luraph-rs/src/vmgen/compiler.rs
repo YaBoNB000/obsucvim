@@ -188,6 +188,41 @@ fn const_key(c: &Const) -> (u8, u64) {
 	}
 }
 
+/// H3 测试专用审计流。只在显式设置环境变量时写出构建期统计，正式产物
+/// 不包含这批元数据；格式为每函数一行 key=value，便于跨 seed 回归。
+fn noise_audit(line: &str) {
+	if let Ok(path) = std::env::var("LURAPH_NOISE_AUDIT") {
+		use std::io::Write;
+		if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+			let _ = writeln!(f, "{line}");
+		}
+	}
+}
+
+#[derive(Default)]
+struct ScatterNoiseStats {
+	high_regs: usize,
+	nil_holes: usize,
+	decoy_holes: usize,
+}
+
+/// H3-2/H3-6：ignored operand 不再来自一眼可分的 0..65535 均匀分布。
+/// 绝大多数直接重采样同槽真实操作数，辅以贴近寄存器/常量域的小值；仅保留
+/// 少量中高值与全域值，和高位真实寄存器共同形成双向重叠分布。
+fn sample_noise_operand(rng: &mut Rng, lane: &[u16], all: &[u16]) -> u16 {
+	let pool = if lane.is_empty() { all } else { lane };
+	let roll = rng.int(0, 99);
+	if roll < 58 && !pool.is_empty() {
+		pool[rng.int(0, pool.len() as i64 - 1) as usize]
+	} else if roll < 86 {
+		rng.int(0, 31) as u16
+	} else if roll < 97 {
+		rng.int(96, 4095) as u16
+	} else {
+		rng.int(0, 65535) as u16
+	}
+}
+
 impl<'a> Ctx<'a> {
 	fn new_main(
 		program: &'a mut VmProgram,
@@ -251,6 +286,24 @@ impl<'a> Ctx<'a> {
 	fn emit(&mut self, ins: Instr) -> usize {
 		self.code.push(ins);
 		self.code.len() - 1
+	}
+
+	/// 在最终指令流插入一条无控制流指令，并同步平移标签/跳转槽。
+	/// H3 的 NOP 与活噪声共用此入口，避免随机插入破坏跳转目标。
+	fn insert_noise_instr(&mut self, pos: usize, ins: Instr) {
+		self.code.insert(pos, ins);
+		for (_, (at, jumps)) in self.labels.iter_mut() {
+			if let Some(a) = at {
+				if *a >= pos {
+					*a += 1;
+				}
+			}
+			for j in jumps.iter_mut() {
+				if *j >= pos + 1 {
+					*j += 1;
+				}
+			}
+		}
 	}
 
 	fn new_label(&mut self) -> Label {
@@ -362,20 +415,46 @@ impl<'a> Ctx<'a> {
 	/// translates upvalue descriptors through the PARENT's S. After
 	/// this pass register/const/up operands share one opaque numeric
 	/// space — static register recovery loses its small-integer anchor.
-	fn scatter_operands(&mut self, nregs: u16) -> Vec<u16> {
-		// 1. register slots: sigma[r] = 1-based physical slot (~50%
-		// density for small frames; extra spread capped at 64 so very
-		// large frames stay in the 2-byte varint tier)
+	fn scatter_operands(&mut self, nregs: u16) -> (Vec<u16>, ScatterNoiseStats) {
+		let mut stats = ScatterNoiseStats::default();
+		// H3-6 双向均匀化（真值→噪声域）：真实寄存器不再全部挤在
+		// 0..nregs 的低区。每函数把约 20%..50% 的真实寄存器映射到
+		// ≥96 且与低槽不相交的稀疏高槽；其余仍走低槽。VM 的 V/S 本来就是稀疏表，
+		// 单寄存器和 Base/range 两类 handler 都经 S 翻译，语义不变。
 		let n = nregs as usize;
-		let smax = n + (n / 2).min(64).max(8);
-		let mut pool: Vec<u16> = (1..=smax as u16).collect();
-		self.rng.shuffle(&mut pool);
-		let sigma: Vec<u16> = pool[..n].to_vec();
+		let n_high = if n == 0 {
+			0
+		} else {
+			self.rng.int(((n + 4) / 5).max(1) as i64, ((n + 1) / 2).max(1) as i64)
+				as usize
+		};
+		let n_low = n.saturating_sub(n_high);
+		let low_max = n.max(1) + (n / 2).min(64).max(8);
+		let high_start = (low_max + 1).max(96);
+		let high_end = high_start.saturating_add(4095).min(u16::MAX as usize);
+		assert!(
+			high_start <= u16::MAX as usize
+				&& high_end >= high_start
+				&& high_end - high_start + 1 >= n_high,
+			"H3 sparse register pool exhausted"
+		);
+		let mut low_pool: Vec<u16> = (1..=low_max as u16).collect();
+		let mut high_pool: Vec<u16> = (high_start as u16..=high_end as u16).collect();
+		self.rng.shuffle(&mut low_pool);
+		self.rng.shuffle(&mut high_pool);
+		let mut sigma: Vec<u16> = low_pool[..n_low].to_vec();
+		sigma.extend_from_slice(&high_pool[..n_high]);
+		self.rng.shuffle(&mut sigma);
+		stats.high_regs = sigma.iter().filter(|&&v| v >= 96).count();
 
-		// 2. constant pool scattering: real constants land at random
-		// positions in a padded pool; holes get nil / decoy numbers
+		// H3-5 nil 槽位随机化：常量池 padding 数量与 nil/decoy 比例均按
+		// 构建重掷。decoy 同时覆盖小数值、高数值、布尔和短串，固定
+		// “每四洞一个大整数、其余 nil”模板不再存在。
 		let nc = self.consts.len();
-		let cmax = nc + (nc / 2).max(4);
+		let pad_lo = (nc / 3).max(3);
+		let pad_hi = (nc * 2 / 3).max(pad_lo + 3);
+		let pad = self.rng.int(pad_lo as i64, pad_hi as i64) as usize;
+		let cmax = nc + pad;
 		let mut cpos: Vec<usize> = (0..cmax).collect();
 		self.rng.shuffle(&mut cpos);
 		let kappa: Vec<usize> = cpos[..nc].to_vec();
@@ -385,10 +464,23 @@ impl<'a> Ctx<'a> {
 			consts2[kappa[i]] = c;
 			used[kappa[i]] = true;
 		}
+		let nil_pct = self.rng.int(28, 72);
 		for j in 0..cmax {
-			if !used[j] && self.rng.int(0, 3) == 0 {
-				consts2[j] = Const::Num(self.rng.int(0, 999_999) as f64);
+			if used[j] {
+				continue;
 			}
+			if self.rng.int(0, 99) < nil_pct {
+				stats.nil_holes += 1;
+				continue;
+			}
+			stats.decoy_holes += 1;
+			consts2[j] = match self.rng.int(0, 4) {
+				0 => Const::Num(self.rng.int(0, 31) as f64),
+				1 => Const::Num(self.rng.int(96, 4095) as f64),
+				2 => Const::Num(self.rng.int(4096, 999_999) as f64),
+				3 => Const::Bool(self.rng.int(0, 1) == 1),
+				_ => Const::Str(vec![self.rng.int(65, 90) as u8, self.rng.int(97, 122) as u8]),
+			};
 		}
 		self.consts = consts2;
 
@@ -425,10 +517,10 @@ impl<'a> Ctx<'a> {
 			}
 		}
 
-		sigma
+		(sigma, stats)
 	}
 
-	fn finish(mut self, nregs: u16, fn_index: usize) -> (Vec<u8>, Vec<u16>, u64, u64, Vec<u16>) {
+	fn finish(mut self, mut nregs: u16, fn_index: usize) -> (Vec<u8>, Vec<u16>, u64, u64, Vec<u16>) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
 		let needs_return = self
@@ -439,30 +531,80 @@ impl<'a> Ctx<'a> {
 		if needs_return {
 			self.emit(Instr::abcd(Op::Return, 0, 0, 0, 0));
 		}
-		// M5 dead-instruction padding: Nops at seed-derived positions
-		// (harmless in the dispatch; shifts label bookkeeping)
-		let nops = if self.code.is_empty() {
-			0
+		let base_code_len = self.code.len();
+		let mut noise_seed = 0u64;
+		let nop_count: usize;
+		let mut active_count = 0usize;
+		let mut dead_regs = 0usize;
+		if self.scatter {
+			// H3-1：从构建 seed 的主 PRNG 派生每函数独立噪声 PRNG。噪声
+			// 随构建变化、同 seed 可复现，同时不再被后续模板随机调用数耦合。
+			noise_seed = self
+				.rng
+				.next_raw()
+				^ (fn_index as u64 + 1).wrapping_mul(0x9e37_79b9);
+			let mut nr = Rng::new(noise_seed);
+
+			// H3-4：预留用户代码绝不引用的死寄存器，注入真实执行的
+			// LoadK/Move/LoadNil/NewTab。它们写入 VM 状态而非 handler 内
+			// 一次性 local，故不能只按“NOP/无写回”过滤；结果从不流向用户槽。
+			dead_regs = nr.int(2, 4) as usize;
+			let dead_base = nregs;
+			nregs = nregs
+				.checked_add(dead_regs as u16)
+				.expect("H3 dead register overflow");
+			let decoy_k_count = nr.int(2, 5) as usize;
+			let mut decoy_ks = Vec::with_capacity(decoy_k_count);
+			for _ in 0..decoy_k_count {
+				let v = if nr.int(0, 99) < 75 {
+					nr.int(0, 31)
+				} else {
+					nr.int(96, 4095)
+				};
+				decoy_ks.push(self.kidx(Const::Num(v as f64)));
+			}
+
+			// H3-3：总 padding 比例、NOP/活噪声比例、位置均随机。最小两条
+			// 保证微型函数也不再落回“固定一条全零 NOP”模板。
+			let total_lo = (base_code_len / 12).max(2);
+			let total_hi = (base_code_len / 5).max(total_lo + 1);
+			let total = nr.int(total_lo as i64, total_hi as i64) as usize;
+			active_count = nr.int(1, (total / 2).max(1) as i64) as usize;
+			nop_count = total - active_count;
+			let mut active_flags = vec![true; active_count];
+			active_flags.extend(std::iter::repeat(false).take(nop_count));
+			nr.shuffle(&mut active_flags);
+
+			for active in active_flags {
+				let ins = if active {
+					let dst = dead_base + nr.int(0, dead_regs as i64 - 1) as u16;
+					match nr.int(0, 3) {
+						0 => Instr::ab(
+							Op::LoadK,
+							dst,
+							decoy_ks[nr.int(0, decoy_ks.len() as i64 - 1) as usize],
+						),
+						1 => {
+							let src = dead_base + nr.int(0, dead_regs as i64 - 1) as u16;
+							Instr::ab(Op::Move, dst, src)
+						}
+						2 => Instr::ab(Op::LoadNil, dst, 1),
+						_ => Instr::ab(Op::NewTab, dst, 0),
+					}
+				} else {
+					Instr::op(Op::Nop)
+				};
+				// 插在最终终止指令之前，避免噪声全部落到不可达尾部。
+				let max_pos = self.code.len().saturating_sub(1);
+				let pos = nr.int(0, max_pos as i64) as usize;
+				self.insert_noise_instr(pos, ins);
+			}
 		} else {
-			(self.code.len() / 10).max(1)
-		};
-		for _ in 0..nops {
-			let pos = self.rng.int(0, self.code.len() as i64) as usize;
-			self.code.insert(pos, Instr::op(Op::Nop));
-			// label positions are instruction indexes; jump slots are
-			// (instruction index + 1). An entry shifts iff its
-			// instruction index >= pos, i.e. slot >= pos + 1.
-			for (_, (at, jumps)) in self.labels.iter_mut() {
-				if let Some(a) = at {
-					if *a >= pos {
-						*a += 1;
-					}
-				}
-				for j in jumps.iter_mut() {
-					if *j >= pos + 1 {
-						*j += 1;
-					}
-				}
+			// legacy profile 保持原 M5 行为，H3 仅作用于 v15。
+			nop_count = (self.code.len() / 10).max(1);
+			for _ in 0..nop_count {
+				let pos = self.rng.int(0, self.code.len() as i64) as usize;
+				self.insert_noise_instr(pos, Instr::op(Op::Nop));
 			}
 		}
 		// M5 SoA: jump targets are 1-based INSTRUCTION indexes into the
@@ -499,10 +641,11 @@ impl<'a> Ctx<'a> {
 		}
 		// v15 stage A: operand scattering post-pass (rewrites wire
 		// operands; yields the register slot table S serialized below)
-		let s_tab = if self.scatter {
-			Some(self.scatter_operands(nregs))
+		let (s_tab, scatter_stats) = if self.scatter {
+			let (slots, stats) = self.scatter_operands(nregs);
+			(Some(slots), stats)
 		} else {
-			None
+			(None, ScatterNoiseStats::default())
 		};
 		// P1: mask MkStr packed operands with a key derived from the
 		// FINAL wire register a (post-scatter): mask = (mk1*a + mk2)
@@ -528,23 +671,56 @@ impl<'a> Ctx<'a> {
 			.filter(|(_, i)| i.op == Op::Nop)
 			.map(|(p, _)| p as u16)
 			.collect();
-		// P2 (instruction-stream noise): fill every operand slot the
-		// opcode IGNORES with per-build random values — the SoA streams
-		// lose their zero-padding alignment (osum below folds the final
-		// wire values, so the v15 checksum stays consistent).
-		for ins in self.code.iter_mut() {
-			let m = isa::unused_operands(ins.op);
-			if m[0] {
-				ins.a = self.rng.int(0, 65535) as u16;
+		// H3-2/H3-6：先从本函数真实已用操作数建立逐槽经验分布，再给
+		// ignored slots 采样。旧版全域均匀噪声（常见 10^4）与真值（常见
+		// 0..24）可被阈值秒分；新版多数值直接来自真分布，同时真实寄存器
+		// 已有高槽，两个类别在低/高域双向重叠。
+		let mut real_lanes: [Vec<u16>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+		let mut real_all = Vec::new();
+		let mut real_total = 0usize;
+		let mut real_high = 0usize;
+		for ins in &self.code {
+			let unused = isa::unused_operands(ins.op);
+			let vals = ins.operands();
+			for k in 0..4 {
+				if !unused[k] {
+					real_lanes[k].push(vals[k]);
+					real_all.push(vals[k]);
+					real_total += 1;
+					if vals[k] >= 96 {
+						real_high += 1;
+					}
+				}
 			}
-			if m[1] {
-				ins.b = self.rng.int(0, 65535) as u16;
+		}
+		let mut noise_total = 0usize;
+		let mut noise_high = 0usize;
+		if self.scatter {
+			let mut fill_rng = Rng::new(noise_seed ^ 0xa5a5_5a5a);
+			for ins in self.code.iter_mut() {
+				let unused = isa::unused_operands(ins.op);
+				let mut vals = ins.operands();
+				for k in 0..4 {
+					if unused[k] {
+						vals[k] = sample_noise_operand(&mut fill_rng, &real_lanes[k], &real_all);
+						noise_total += 1;
+						if vals[k] >= 96 {
+							noise_high += 1;
+						}
+					}
+				}
+				ins.a = vals[0];
+				ins.b = vals[1];
+				ins.c = vals[2];
+				ins.d = vals[3];
 			}
-			if m[2] {
-				ins.c = self.rng.int(0, 65535) as u16;
-			}
-			if m[3] {
-				ins.d = self.rng.int(0, 65535) as u16;
+		} else {
+			for ins in self.code.iter_mut() {
+				let m = isa::unused_operands(ins.op);
+				if m[0] { ins.a = self.rng.int(0, 65535) as u16; }
+				if m[1] { ins.b = self.rng.int(0, 65535) as u16; }
+				if m[2] { ins.c = self.rng.int(0, 65535) as u16; }
+				if m[3] { ins.d = self.rng.int(0, 65535) as u16; }
 			}
 		}
 		// v15 stage E3: fold the sum of ALL wire operands (post-scatter,
@@ -689,6 +865,25 @@ impl<'a> Ctx<'a> {
 		}
 		leaders.sort_unstable();
 		leaders.dedup();
+		if self.scatter {
+			noise_audit(&format!(
+				"fn={} seed={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={}",
+				fn_index,
+				noise_seed,
+				base_code_len,
+				self.code.len(),
+				nop_count,
+				active_count,
+				dead_regs,
+				scatter_stats.high_regs,
+				real_total,
+				real_high,
+				noise_total,
+				noise_high,
+				scatter_stats.nil_holes,
+				scatter_stats.decoy_holes,
+			));
+		}
 		(blob, nops, osum, osum2, leaders)
 	}
 }
@@ -2755,14 +2950,13 @@ mod dbg {
 			let mut sorted = slots.clone();
 			sorted.sort_unstable(); sorted.dedup();
 			assert_eq!(sorted.len(), nregs, "S slots must be distinct");
-			let smax = nregs + (nregs / 2).min(64).max(8);
 			for &s in &slots {
-				assert!((1..=smax as u16).contains(&s), "slot in range");
+				assert!((1..=4095).contains(&s), "slot in H3 sparse range");
 			}
-			if nregs >= 4 {
+			if nregs > 0 {
 				assert!(
-					*slots.iter().max().unwrap() as usize > nregs,
-					"slots must be spread beyond the dense range"
+					slots.iter().any(|&s| s >= 96),
+					"H3 must place some real registers in the high noise-like range"
 				);
 			}
 			// wire operands: single-register operands of arithmetic ops

@@ -2375,24 +2375,17 @@ pub fn generate(
 			.map(|s| obf_num(*s, rng))
 			.collect::<Vec<_>>()
 			.join(", ");
-		// ㉓: Nop 别名自改写从可见 boot 挪进 BSS 碎片（编码前执行）。
-		// 可见侧失去 F14/F27 的 ZW 直写形态（安全优先，口径按 P3c 先例
-		// 校准）；语义不变。
+		// ㉓/H3-3: Nop 别名自改写从可见 boot 挪进 BSS 碎片。旧版把
+		// 每个 Nop 的四操作数强制清零，直接重建了“全零×4”分类器；现改为
+		// 由该站点噪声操作数的奇偶决定是否切换 alias，四路值完整保留。
+		// 同一构建同时出现 Nop/NopA 的概率高，且站点形态不再固定。
 		let mut zw_inner = String::new();
 		for (fi, sites) in nop_sites.iter().enumerate() {
 			for &p in sites {
 				zw_inner.push_str(&format!(
-					"PF_[{}].W[{}] = NOPA; PF_[{}].SA[{}] = 0; PF_[{}].SB[{}] = 0; PF_[{}].SC[{}] = 0; PF_[{}].SD[{}] = 0; ",
-					fi + 1,
-					p as usize + 1,
-					fi + 1,
-					p as usize + 1,
-					fi + 1,
-					p as usize + 1,
-					fi + 1,
-					p as usize + 1,
-					fi + 1,
-					p as usize + 1,
+					"do local _nf = PF_[{fi}] local _np = {pos} if (_nf.SA[_np] + _nf.SC[_np] + _np) % 2 == 0 then _nf.W[_np] = NOPA end end; ",
+					fi = fi + 1,
+					pos = p as usize + 1,
 				));
 			}
 		}
