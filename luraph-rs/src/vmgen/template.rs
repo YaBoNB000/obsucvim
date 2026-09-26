@@ -1964,6 +1964,32 @@ pub fn generate(
 		let hc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 		let hseed = rng.int(1_048_576, 268_435_455) as u32;
 		let mut frags: Vec<(u16, Vec<u8>)> = Vec::new(); // (wire, source bytes)
+		// H2-2 (构建差异化：段编号语义↔编号随机映射): 特殊段编号每构建重抽。
+		// 低区（<256，进 HW2 展开域）从「非操作码 wire」空档里抽——操作码
+		// 四表占 {0..42, 64..106, 128..170, 192..234}（含 nop_alias），
+		// 空档 = {43..63, 107..127, 171..191, 235..255}；高区（≥256，留在
+		// HW 表作不透明句柄）从 256..511 抽。R028/R029 实测「av→段映射
+		// 全固定（208=ec、41=LOADK…）」是知识迁移 100% 的根因之一，此处
+		// 彻底消除：同一语义段在两次构建里编号不同，攻击者的段号→语义
+		// 对照表作废。
+		let mut free_lo: Vec<u16> = Vec::new();
+		for (a, b) in [(43u16, 63u16), (107, 127), (171, 191), (235, 255)] {
+			for w in a..=b {
+				free_lo.push(w);
+			}
+		}
+		rng.shuffle(&mut free_lo);
+		let w_bss = free_lo[0];
+		let w_rt = free_lo[1];
+		let w_exg = free_lo[2];
+		let mut hi_pool: Vec<u16> = (256..512).collect();
+		rng.shuffle(&mut hi_pool);
+		let mut hi_iter = hi_pool.into_iter();
+		let cont_wires: Vec<u16> = (0..4).map(|_| hi_iter.next().unwrap()).collect();
+		let exec_wires: Vec<u16> = (0..4).map(|_| hi_iter.next().unwrap()).collect();
+		manifest_key("W_BSS", w_bss as u64);
+		manifest_key("W_RT", w_rt as u64);
+		manifest_key("W_EXG", w_exg as u64);
 		// 增量⑲ (CPS 去中心化, Call 浅化): Luau 无正确尾调用，调用点
 		// 若在链深处执行，用户递归每层会叠 ~K 个链帧 → 深递归溢栈。
 		// 故 Call 家族拆两相：链相位（参数打包 → 暂存 E → return 解链
@@ -2134,7 +2160,7 @@ pub fn generate(
 					post_s,
 					chain_epilogue(rng, &wk),
 				);
-				frags.push(((305 + ci) as u16, exec_src.into_bytes()));
+				frags.push((exec_wires[ci], exec_src.into_bytes()));
 				// chain phase: pack args, stash, unwind to the trampoline
 				body = format!(
 					"{}; E.callx = {}; return",
@@ -2167,7 +2193,7 @@ pub fn generate(
 				body
 			);
 			// 301+ clears every opcode wire (0..=255) and the BSS marker 200
-			frags.push((301 + i as u16, src.into_bytes()));
+			frags.push((cont_wires[i], src.into_bytes()));
 		}
 		// 增量⑭ (对抗 R002 — 解析器隐藏): the prototype parser + the
 		// whole decode/checksum-verify stage move into ONE MORE
@@ -2425,7 +2451,7 @@ pub fn generate(
 			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TOSTR) local OS = {{{}}} local OS2 = {{{}}} {} return function(FN_, NOPA, PS, PT, KM, KC, PB, CKJ) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] or PF_[di].ck2 ~= OS2[di] then PB = (PB + {ckpo}) % 268435456 end; di = di + 1 end {} {} end end",
 			os_list, os_list2, parse_fn, zw_inner, enc_body, ckpo = ck_poison
 		);
-		frags.push((200u16, bs_src.into_bytes()));
+		frags.push((w_bss, bs_src.into_bytes()));
 		// DDEC（wire 206）：每帧解码，工厂形态把钥匙以 boot 期上游值
 		// 注入（钥匙表事后置 nil 不影响）。与编码钥匙流严格镜像。
 		// ㊽: 急切全池解码块（旧 c_block_dec）随 __index 惰性 CDEC 退役。
@@ -2548,13 +2574,13 @@ pub fn generate(
 			ne = rt_newe,
 			loop = trampoline_src.clone().unwrap(),
 		);
-		frags.push((208u16, rt_src.into_bytes()));
+		frags.push((w_rt, rt_src.into_bytes()));
 		// 51: EXG 碎片（executor 认证守卫）随其余碎片一同净化 + 压缩 +
 		// 哈希链钥匙流掩码——可见层零痕迹。HBOOT 通用 `(LS(s) or PD)()`
 		// 调用路径在解码时即运行开机认证（probe(0, true)），结果表
 		// {令牌, 探针} 存入 HW[209]。
 		if let Some(s) = exg_src {
-			frags.push((209u16, s.into_bytes()));
+			frags.push((w_exg, s.into_bytes()));
 		}
 		// ㉘-A: 碎片源码净化（注释剥离 + 全标识符改名 + 单行化）。
 		// 保留集 = Lua 关键字 + 运行时固定全局名；改名映射跨全部碎片
@@ -2679,6 +2705,49 @@ pub fn generate(
 		} else {
 			(String::new(), String::new())
 		};
+        // H1 vault[nonce] 一次性 getter：Sd 包装仅见 GET+nonce，RPK/CKJ 明文不经 _hbf 参数
+        let vault_nonce = rng.int(1, 268435456);
+        let vault_nonce_name = format!("_vn{}", rng.int(10, 99));
+        let vault_name = format!("_vt{}", rng.int(10, 99));
+        let vault_get_name = format!("_vg{}", rng.int(10, 99));
+        let vault_ckj_e = ke.key_expr(ckj, None, rng);
+        let vault_def = format!(
+            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj}}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6] end ",
+            vn = vault_nonce_name,
+            vt = vault_name,
+            vg = vault_get_name,
+            nonce = vault_nonce,
+            ckj = vault_ckj_e
+        );
+        // H2-11 (壳参数序重排): HBOOT 形参与调用实参每构建同序重排——
+        // 「34 参入口」在 R028/R029 里逐字固定（同一参数序 = 同一份钩子
+        // 模板可直接复用）。重排后形参名不变（体内引用不动），仅顺序变，
+        // 攻击者的「按位取第 N 参」模板失效。末两位 = vault getter/nonce。
+        let shell_params: Vec<&str> = vec![
+            "HQ", "hqi", "AL", "BYTE", "CHAR", "FLR", "SUB", "LS", "KA", "KB",
+            "KC", "KM", "HB", "EV", "PD", "FN_", "NOPA_", "TK_", "DC1", "R16",
+            "CKM_", "CKC_", "BKM_", "BKC_", "BSEED_", "BSTEP_", "TYP_", "TSTR_",
+            "GET_", "NONCE_",
+        ];
+        let shell_args: Vec<String> = {
+            let mut v: Vec<String> = vec![
+                "HQ", "hqi", "AL", "BYTE", "CHAR", "FLR", "SUB", "LS", "KA", "KB",
+                "KC", "KM", "HB", "EV", "PD", "FN", "NOPA", "TK", "decarrier", "r16",
+                "CKM", "CKC", "BKM", "BKC", "BSEED", "BSTEP", "TYP", "TSTR",
+            ].into_iter().map(|x| x.to_string()).collect();
+            v.push(vault_get_name.clone());
+            v.push(vault_nonce_name.clone());
+            v
+        };
+        let n_par = shell_params.len();
+        let mut par_perm: Vec<usize> = (0..n_par).collect();
+        rng.shuffle(&mut par_perm);
+        let shell_sig: String = par_perm
+            .iter()
+            .map(|&i| shell_params[i].to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+
 		let hpret = if guard {
 			format!(", {}", guard_holder)
 		} else {
@@ -2691,9 +2760,11 @@ pub fn generate(
 			(String::new(), String::new(), String::new())
 		};
 		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN_, NOPA_, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_, GET_, NONCE_) {guard}local PS_, PT_, KM_, KC_, PB_, CKJ_ = GET_(NONCE_) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
+			"return function({shell_sig}) {guard}local PS_, PT_, KM_, KC_, PB_, CKJ_ = GET_(NONCE_) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == {wbss} then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
+			shell_sig = shell_sig,
+			wbss = w_bss,
 			hpret_decl = hpret_decl,
 			hpret_nil_r = hpret_nil_r,
 			hpret_ret = hpret_ret,
@@ -3150,8 +3221,7 @@ pub fn generate(
 		}
 		// 增量⑲: build-time-shuffled continuation wiring (which CT slot
 		// holds which encrypted re-entry fragment is per-build random).
-		let mut cont_wires: Vec<u16> = (301..305).collect();
-		rng.shuffle(&mut cont_wires);
+		// H2-2: cont_wires 已由构建差异化随机池分配，无需再洗。
 		// ㉗: 续行碎片装进离散可见局部（不再经表索引——表是包装手术点）
 		let ct_fill: String = (0..4)
 			.map(|i| format!("CT{} = HW[{}]\n    ", i + 1, cont_wires[i]))
@@ -3162,7 +3232,7 @@ pub fn generate(
 		rng.shuffle(&mut cx_order);
 		let cx_fill: String = cx_order
 			.iter()
-			.map(|&i| format!("CX{} = HW[{}]\n    ", i + 1, 305 + i))
+			.map(|&i| format!("CX{} = HW[{}]\n    ", i + 1, exec_wires[i]))
 			.collect();
 		// ㊶: 蜜罐表接收/贮存（守卫在 HBOOT 掩码层；贮存行形似 VM 状态）
 		let hp_recv = if guard { String::from(", HPH") } else { String::new() };
@@ -3182,7 +3252,7 @@ pub fn generate(
 				// HW[209] = EXG 工厂（与其余碎片同形态——loadstring 出
 				// 的 chunk 返回工厂本体）；此处唯一一次调用即运行开机
 				// 强制全挑战，返回 {令牌, 探针} 结果表。
-				String::from("\n    local _xg = HW[209]() XTOK, XPROBE = _xg[1], _xg[2]"),
+				format!("\n    local _xg = HW[{}]() XTOK, XPROBE = _xg[1], _xg[2]", w_exg),
 			)
 		} else {
 			(String::new(), String::new())
@@ -3238,21 +3308,11 @@ pub fn generate(
         } else {
             String::new()
         };
-        // H1 vault[nonce] 一次性 getter：Sd 包装仅见 GET+nonce，RPK/CKJ 明文不经 _hbf 参数
-        let vault_nonce = rng.int(1, 268435456);
-        let vault_nonce_name = format!("_vn{}", rng.int(10, 99));
-        let vault_name = format!("_vt{}", rng.int(10, 99));
-        let vault_get_name = format!("_vg{}", rng.int(10, 99));
-        let vault_ckj_e = ke.key_expr(ckj, None, rng);
-        let vault_def = format!(
-            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj}}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6] end ",
-            vn = vault_nonce_name,
-            vt = vault_name,
-            vg = vault_get_name,
-            nonce = vault_nonce,
-            ckj = vault_ckj_e
-        );
-        let vault_args = format!("{}, {}", vault_get_name, vault_nonce_name);
+        let vault_args: String = par_perm
+            .iter()
+            .map(|&i| shell_args[i].clone())
+            .collect::<Vec<_>>()
+            .join(", ");
 
 		let build = format!(
 			r#"{}  {}local HW = {{}}
@@ -3330,12 +3390,12 @@ pub fn generate(
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
-    {vault_def}local _hok, _r1 = PCAL(function() local HB = table.concat(MH) local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return (function(...) MH = nil HB = nil return ... end)(_hbf()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN, NOPA, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR, {vault_args})) end)
+    {vault_def}local _hok, _r1 = PCAL(function() local HB = table.concat(MH) local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return (function(...) MH = nil HB = nil return ... end)(_hbf()({vault_args})) end)
     if not _hok then {hbootfail} end
     HW, MPF, SALT, SH1, SH2{hp_recv} = _r1() _r1 = nil{xtok_extract}
     HQ = nil; hqi = nil
     {hp_stash}
-    {ct_fill}{cx_fill}RTFRAG = HW[208]
+    {ct_fill}{cx_fill}RTFRAG = HW[{wrt}]
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     {hw_expand}
     HW = nil
@@ -3346,6 +3406,8 @@ pub fn generate(
 		hp_stash = hp_stash,
 		vault_def = vault_def,
 		vault_args = vault_args,
+		// H2-2: 段编号随机映射（BSS 标记在 HBOOT 侧）
+		wrt = w_rt,
 		// 51 诊断构建（LURAPH_EXG_TRACE）：HBOOT 失败不再静默吞掉，重抛
 		// 守卫的 XG 编号错误，供真执行器兼容性排查（正式构建 = PD()）。
 		// H1 密封后 HBOOT 单闭包返回，错误在 _r1

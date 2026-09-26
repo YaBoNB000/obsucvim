@@ -85,14 +85,30 @@ if LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 \
 	# 注：E.k[b + 1]（Closure 取子原型）与编码体（㉓ 起）都在加密碎片内，
 	# TSRC 不可见，其存在性由 (3)/(5) 的嵌套闭包运行等价间接验证。
 	# ㉓：解码态原型不再落地可见层——BSS 直接返回编码态树根。
-	# ㉗：运行时（newE/makefn/run+蹦床+DDEC）整体入密为碎片 208，可见
+	# ㉗：运行时（newE/makefn/run+蹦床+DDEC）整体入密为运行时碎片，可见
 	# 层只剩 RTFRAG 提取 + 不透明函数值装配（RUN）。
 	# ㊹ (R018 报告 P0-2 收口): BSS 的 loadstring+调用搬进 HBOOT 掩码层，
 	# 可见层只剩 PCAL 包装的装配调用（FN, NOPA 透传）与 MPF, SALT 接收。
-	for pat in "FN, NOPA," "MPF, SALT" "RTFRAG = HW\[208\]" \
+	# H2-11 (壳参数序重排): 装配调用的实参序每构建重排，故 FN/NOPA 的
+	# 存在性改为「在 _hbf()(...) 实参表内」的结构判定，不再假设相邻序。
+	for pat in "MPF, SALT" "RTFRAG = HW\[[0-9]\+\]" \
 		"local RUN = RTFRAG(" "return RUN(MPF"; do
 		if ! grep -q "$pat" "$ts"; then ok=0; gf "enc" "模板缺少形态: $pat"; fi
 	done
+	# H2-11: 装配调用实参须含 FN 与 NOPA（序任意）。
+	if ! python3 - "$ts" <<'PYCHK'
+import re, sys
+src = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
+src = re.sub(r"\[=*\[.*?\]=*\]", "X", src, flags=re.S)
+m = re.search(r"_hbf\(\)\(([^)]*)\)", src)
+if not m:
+    print("no _hbf() call"); sys.exit(1)
+args = [a.strip() for a in m.group(1).split(",")]
+if "FN" not in args or "NOPA" not in args:
+    print("FN/NOPA missing:", args); sys.exit(1)
+sys.exit(0)
+PYCHK
+	then ok=0; gf "enc" "装配调用实参缺 FN/NOPA"; fi
 	# 平表/解码态/可见运行时残留必须消失（㉗：探针目标清零）。
 	# 先剥掉 HQ 长串密文（base-94 随机字节会巧合命中任何模式）。
 	sed -E 's/\[=*\[.*\]=*\]/[[X]]/' "$ts" > "$ts.stripped"
