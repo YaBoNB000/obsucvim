@@ -2691,7 +2691,7 @@ pub fn generate(
 			(String::new(), String::new(), String::new())
 		};
 		let hboot_src = format!(
-			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN_, NOPA_, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_, PS_, PT_, KM_, KC_, PB_, CKJ_) {guard}local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
+			"return function(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN_, NOPA_, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_, GET_, NONCE_) {guard}local PS_, PT_, KM_, KC_, PB_, CKJ_ = GET_(NONCE_) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == 200 then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
 			hpret_decl = hpret_decl,
@@ -3238,6 +3238,21 @@ pub fn generate(
         } else {
             String::new()
         };
+        // H1 vault[nonce] 一次性 getter：Sd 包装仅见 GET+nonce，RPK/CKJ 明文不经 _hbf 参数
+        let vault_nonce = rng.int(1, 268435456);
+        let vault_nonce_name = format!("_vn{}", rng.int(10, 99));
+        let vault_name = format!("_vt{}", rng.int(10, 99));
+        let vault_get_name = format!("_vg{}", rng.int(10, 99));
+        let vault_ckj_e = ke.key_expr(ckj, None, rng);
+        let vault_def = format!(
+            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj}}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6] end ",
+            vn = vault_nonce_name,
+            vt = vault_name,
+            vg = vault_get_name,
+            nonce = vault_nonce,
+            ckj = vault_ckj_e
+        );
+        let vault_args = format!("{}, {}", vault_get_name, vault_nonce_name);
 
 		let build = format!(
 			r#"{}  {}local HW = {{}}
@@ -3315,7 +3330,7 @@ pub fn generate(
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
-    local _hok, _r1 = PCAL(function() local HB = table.concat(MH) local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return (function(...) MH = nil HB = nil return ... end)(_hbf()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN, NOPA, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR, RPK1, RPK2, RPK3, RPK4, RPK5, CKJ)) end)
+    {vault_def}local _hok, _r1 = PCAL(function() local HB = table.concat(MH) local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return (function(...) MH = nil HB = nil return ... end)(_hbf()(HQ, hqi, AL, BYTE, CHAR, FLR, SUB, LS, KA, KB, KC, KM, HB, EV, PD, FN, NOPA, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TSTR, {vault_args})) end)
     if not _hok then {hbootfail} end
     HW, MPF, SALT, SH1, SH2{hp_recv} = _r1() _r1 = nil{xtok_extract}
     HQ = nil; hqi = nil
@@ -3329,6 +3344,8 @@ pub fn generate(
             hw_expand = hw_expand,
 		hp_recv = hp_recv,
 		hp_stash = hp_stash,
+		vault_def = vault_def,
+		vault_args = vault_args,
 		// 51 诊断构建（LURAPH_EXG_TRACE）：HBOOT 失败不再静默吞掉，重抛
 		// 守卫的 XG 编号错误，供真执行器兼容性排查（正式构建 = PD()）。
 		// H1 密封后 HBOOT 单闭包返回，错误在 _r1
@@ -3355,7 +3372,10 @@ pub fn generate(
 			shcb1 = sh_cb1_e, shcb2 = sh_cb2_e, shcbc = sh_cbc_e,
 			shcc1 = sh_cc1_e, shcc2 = sh_cc2_e, shccc = sh_ccc_e,
 		);
-		hfrag = build;
+		hfrag = build.clone();
+		if std::env::var("LURAPH_BUILD_DBG").is_ok() {
+			eprintln!("BUILD_DBG: {}", build);
+		}
 		String::new()
 	} else {
 		hfrag = String::new();
