@@ -238,10 +238,14 @@ fi
 
 echo "== D12 计时守卫 (㊳ 复通: 接线 + 触发路径 + 误报抽查) =="
 mkdir -p "$W/frags"
-LURAPH_FRAG_SAN="$W/frags" "$TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
-python3 - "$W/d1a.lua" "$W" <<'PYEOF'
+LURAPH_FRAG_SAN="$W/frags" LURAPH_KEY_MANIFEST="$W/d12_keys.txt" \
+	"$TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
+# H2-2 后 RT 碎片 wire 每构建变化；审计必须读 manifest，禁止退回固定 208。
+rt_wire="$(awk -F= '$1=="W_RT" {v=$2} END {print v}' "$W/d12_keys.txt")"
+rt_frag="$W/frags/san_$(printf '%03d' "$rt_wire").src"
+python3 - "$W/d1a.lua" "$W" "$rt_frag" <<'PYEOF'
 import re, sys
-art = sys.argv[1]; W = sys.argv[2]
+art = sys.argv[1]; W = sys.argv[2]; rt_path = sys.argv[3]
 s = open(art).read()
 def blank(src):
     out = list(src); i = 0; n = len(src)
@@ -288,7 +292,7 @@ decl = re.search(r'local\s+[^=;]*\b'+re.escape(a27)+r'\b', code[:mm.start()+10])
 if not (asg and decl):
     print("NOWIRE"); sys.exit(1)
 # 触发路径: 从 RT 碎片抽出守卫前导 + 守卫块本体, 合成 tracer 时钟驱动
-rt = open(W + "/frags/san_208.src").read()
+rt = open(rt_path).read()
 pm = re.search(
     r'local (\w+) = 0 local (\w+) = (\w+) and \3\(\) or 0 '
     r'local (\w+) = 0 local (\w+) = nil local (\w+) = 0 while true do', rt)

@@ -2427,8 +2427,38 @@ pub fn generate(
 			obf_num(rng.int(0, 65535) as u64, rng),
 			obf_num(rng.int(0, 65535) as u64, rng),
 		];
+		// H2-8a（指令字布局随机化）: 块密文中的五路字段不再固定为
+		// W/SA/SB/SC/SD。每构建重排「opcode + 四操作数字段」的物理顺序，
+		// BSS 编码器与 RT 即用解码器共享这份构建期排列；运行时仍只恢复
+		// 逻辑 t0..t4。缓存表也按同一物理顺序存放，故「bx 每 5 字第一项
+		// 就是 opcode」「c[1] 永远是 opcode」两类跨构建探针同时失效。
+		let block_stream_names = ["W", "SA", "SB", "SC", "SD"];
+		let mut block_word_perm: Vec<usize> = (0..5).collect();
+		rng.shuffle(&mut block_word_perm);
+		let enc_lanes = block_word_perm
+			.iter()
+			.map(|&lane| {
+				format!(
+					"st = (KM * st + KC) % 268435456 bx[xo] = (pf.{}[p] + {} + st % 65536) % 65536 xo = xo + 1",
+					block_stream_names[lane], stream_bias[lane]
+				)
+			})
+			.collect::<Vec<_>>()
+			.join(" ");
+		for (physical, &logical) in block_word_perm.iter().enumerate() {
+			manifest_key(
+				match logical {
+					0 => "BLOCK_POS_W",
+					1 => "BLOCK_POS_SA",
+					2 => "BLOCK_POS_SB",
+					3 => "BLOCK_POS_SC",
+					_ => "BLOCK_POS_SD",
+				},
+				physical as u64,
+			);
+		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} for i = 1, #P do local pf = P[i] local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do st = (KM * st + KC) % 268435456 bx[xo] = (pf.W[p] + {bw} + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SA[p] + {ba} + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SB[p] + {bb} + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SC[p] + {bc} + st % 65536) % 65536 xo = xo + 1 st = (KM * st + KC) % 268435456 bx[xo] = (pf.SD[p] + {bd} + st % 65536) % 65536 xo = xo + 1 end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
+			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} for i = 1, #P do local pf = P[i] local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			bs_stream = s_of[1],
@@ -2436,8 +2466,7 @@ pub fn generate(
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
 			xteoff = xte_off,
-			bw = stream_bias[0], ba = stream_bias[1], bb = stream_bias[2],
-			bc = stream_bias[3], bd = stream_bias[4],
+			enc_lanes = enc_lanes,
 		);
 		// ㉓: BSS 碎片 = 解析 + 校验 + 自改写 + 重编码，一步到位——
 		// 解码态原型表只存在于这个 loadstring 出的加密碎片内部。
@@ -2527,10 +2556,34 @@ pub fn generate(
 			)
 		};
 
+		let dec_lanes = block_word_perm
+			.iter()
+			.map(|&lane| {
+				format!(
+					"st = (KM * st + KC) % 268435456 t{}[i] = (x[off] - st % 65536 - {}) % 65536 off = off + 1",
+					lane, stream_bias[lane]
+				)
+			})
+			.collect::<Vec<_>>()
+			.join(" ");
+		let cache_pack = block_word_perm
+			.iter()
+			.map(|lane| format!("t{}", lane))
+			.collect::<Vec<_>>()
+			.join(", ");
+		let mut cache_pos = [0usize; 5];
+		for (physical, &logical) in block_word_perm.iter().enumerate() {
+			cache_pos[logical] = physical + 1;
+		}
+		let cache_hit = (0..5)
+			.map(|logical| format!("c[{}]", cache_pos[logical]))
+			.collect::<Vec<_>>()
+			.join(", ");
 		let bdec_src = format!(
-			"local function bdec(E, bi) local c = E.bch[bi] if c then E.ww, E.w0, E.w1, E.w2, E.w3 = c[1], c[2], c[3], c[4], c[5] E.bp, E.be = c[6], c[7] return end local pf = E.bt local s0 = pf.bs[bi] local l = pf.bl[bi] local st = (PS + pf.sd * PT + s0 * PB + SLT) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do st = (KM * st + KC) % 268435456 t0[i] = (x[off] - st % 65536 - {bw}) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t1[i] = (x[off] - st % 65536 - {ba}) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t2[i] = (x[off] - st % 65536 - {bb}) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t3[i] = (x[off] - st % 65536 - {bc}) % 65536 off = off + 1 st = (KM * st + KC) % 268435456 t4[i] = (x[off] - st % 65536 - {bd}) % 65536 off = off + 1 end E.bch[bi] = {{ t0, t1, t2, t3, t4, s0, s0 + l - 1 }} E.ww, E.w0, E.w1, E.w2, E.w3 = t0, t1, t2, t3, t4 E.bp, E.be = s0, s0 + l - 1 end",
-			bw = stream_bias[0], ba = stream_bias[1], bb = stream_bias[2],
-			bc = stream_bias[3], bd = stream_bias[4]
+			"local function bdec(E, bi) local c = E.bch[bi] if c then E.ww, E.w0, E.w1, E.w2, E.w3 = {cache_hit} E.bp, E.be = c[6], c[7] return end local pf = E.bt local s0 = pf.bs[bi] local l = pf.bl[bi] local st = (PS + pf.sd * PT + s0 * PB + SLT) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do {dec_lanes} end E.bch[bi] = {{ {cache_pack}, s0, s0 + l - 1 }} E.ww, E.w0, E.w1, E.w2, E.w3 = t0, t1, t2, t3, t4 E.bp, E.be = s0, s0 + l - 1 end",
+			cache_hit = cache_hit,
+			dec_lanes = dec_lanes,
+			cache_pack = cache_pack,
 		);
 		// ㉗ (R009/Suda 回合 — 运行时入密): newE/makefn/run+蹦床+DDEC
 		// 整体打包为加密运行时碎片（wire 208）。工厂参数 = 钥匙数值×4
@@ -2663,14 +2716,21 @@ pub fn generate(
 		let sh_iv1 = rng.int(0, SH_M1 as i64 - 1) as u64;
 		let sh_iv2 = rng.int(0, SH_M2 as i64 - 1) as u64;
 		let sh_mul = (rng.int(1_048_576, 16_777_215) | 1) as u64;
+		// H2-6（链种子构成随机化）: 除 wire/链终态各自的随机线性系数外，
+		// 再加入每构建随机的 wire×rv 交叉项。它不是恒零装饰：Rust 加密
+		// 镜像与 HBOOT 解密都实际消费该项，删掉/复用旧固定公式会直接错钥。
+		// 先对 wire×rv 取 2^28 模，随后乘数 <2^24，Lua double 全程 <2^53。
+		let sh_cross = (rng.int(1_048_576, 16_777_215) | 1) as u64;
 		let sh_k1_e = ke.key_expr(sh_k1 as i64, Some(("#hqi", n_hqi)), rng);
 		let sh_k2_e = ke.key_expr(sh_k2 as i64, Some(("#hqi", n_hqi)), rng);
 		let sh_iv1_e = ke.key_expr(sh_iv1 as i64, Some(("#hqi", n_hqi)), rng);
 		let sh_iv2_e = ke.key_expr(sh_iv2 as i64, Some(("#hqi", n_hqi)), rng);
 		let sh_mul_e = ke.key_expr(sh_mul as i64, Some(("#hqi", n_hqi)), rng);
+		let sh_cross_e = ke.key_expr(sh_cross as i64, Some(("#hqi", n_hqi)), rng);
 		manifest_key("CHAIN_K1", sh_k1);
 		manifest_key("CHAIN_K2", sh_k2);
 		manifest_key("CHAIN_MUL", sh_mul);
+		manifest_key("CHAIN_CROSS", sh_cross);
 		manifest_key("CHAIN_IV1", sh_iv1);
 		manifest_key("CHAIN_IV2", sh_iv2);
 		// P4 (防御代码隐藏): the loader/integrity names never appear
@@ -2719,10 +2779,10 @@ pub fn generate(
             nonce = vault_nonce,
             ckj = vault_ckj_e
         );
-        // H2-11 (壳参数序重排): HBOOT 形参与调用实参每构建同序重排——
-        // 「34 参入口」在 R028/R029 里逐字固定（同一参数序 = 同一份钩子
-        // 模板可直接复用）。重排后形参名不变（体内引用不动），仅顺序变，
-        // 攻击者的「按位取第 N 参」模板失效。末两位 = vault getter/nonce。
+        // H2-11（壳参数名 + 参数序双随机）: HBOOT 形参与调用实参每构建
+        // 同序重排；同时入口形参本身使用独立随机名，再在函数内一次性绑定
+        // 到语义局部名。R028/R029 那种「第 N 参 + 固定名字」双重模板都会
+        // 失效。末两项仍是 vault getter/nonce，但其位置与名字均不可复用。
         let shell_params: Vec<&str> = vec![
             "HQ", "hqi", "AL", "BYTE", "CHAR", "FLR", "SUB", "LS", "KA", "KB",
             "KC", "KM", "HB", "EV", "PD", "FN_", "NOPA_", "TK_", "DC1", "R16",
@@ -2740,13 +2800,21 @@ pub fn generate(
             v
         };
         let n_par = shell_params.len();
+        let shell_param_names: Vec<String> = (0..n_par)
+            .map(|i| format!("_sp{}_{}", rng.int(1000, 9999), i))
+            .collect();
         let mut par_perm: Vec<usize> = (0..n_par).collect();
         rng.shuffle(&mut par_perm);
         let shell_sig: String = par_perm
             .iter()
-            .map(|&i| shell_params[i].to_string())
+            .map(|&i| shell_param_names[i].clone())
             .collect::<Vec<_>>()
             .join(", ");
+        let shell_bind = format!(
+            "local {} = {} ",
+            shell_params.join(", "),
+            shell_param_names.join(", ")
+        );
 
 		let hpret = if guard {
 			format!(", {}", guard_holder)
@@ -2760,17 +2828,18 @@ pub fn generate(
 			(String::new(), String::new(), String::new())
 		};
 		let hboot_src = format!(
-			"return function({shell_sig}) {guard}local PS_, PT_, KM_, KC_, PB_, CKJ_ = GET_(NONCE_) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local hs = ({hseed} + w * {hstep} + ((h1 + h2 * 257) % 268435456) * {hmul}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == {wbss} then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
+			"return function({shell_sig}) {shell_bind}{guard}local PS_, PT_, KM_, KC_, PB_, CKJ_ = GET_(NONCE_) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local rv = (h1 + h2 * 257) % 268435456 local hs = ({hseed} + w * {hstep} + rv * {hmul} + ((w * rv) % 268435456) * {hcross}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == {wbss} then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
 			shell_sig = shell_sig,
+			shell_bind = shell_bind,
 			wbss = w_bss,
 			hpret_decl = hpret_decl,
 			hpret_nil_r = hpret_nil_r,
 			hpret_ret = hpret_ret,
 			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
 			k1 = sh_k1_e, k2 = sh_k2_e, m1 = SH_M1, m2 = SH_M2,
-			iv1 = sh_iv1_e, iv2 = sh_iv2_e, hmul = sh_mul_e,
+			iv1 = sh_iv1_e, iv2 = sh_iv2_e, hmul = sh_mul_e, hcross = sh_cross_e,
 		);
 		// ㉘-A: HBOOT 元碎片同样净化（名字/注释不泄漏）；㉚: 自由填充
 		// 尾注，随后其字节作为链头进哈希。
@@ -2794,7 +2863,11 @@ pub fn generate(
 		for (_pos, &fi) in order.iter().enumerate() {
 			let (_wire, src) = &frags[fi];
 			let rv = (ch1 + ch2 * 257) % 268_435_456;
-			let mut state = ((hseed as u64 + *_wire as u64 * hstep as u64 + rv * sh_mul)
+			let wrv = (*_wire as u64 * rv) % 268_435_456;
+			let mut state = ((hseed as u64
+				+ *_wire as u64 * hstep as u64
+				+ rv * sh_mul
+				+ wrv * sh_cross)
 				% 268_435_456) as u64;
 			// ㉟: 加密对象 = 增量链压缩流（HBOOT 先重建源码再走原链）；
 			// ㉚ 链哈希照旧走在**重建后**的解码态源码上（见下方链推进）。

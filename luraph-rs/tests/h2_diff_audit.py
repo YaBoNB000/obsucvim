@@ -35,16 +35,36 @@ print(r, c)
 """
 
 
-def obf(seed, src_text, out):
+def obf(seed, src_text, out, env_extra=None):
     with open(out, "w") as fh:
         fh.write(src_text)
+    env = os.environ.copy()
+    if env_extra:
+        env.update(env_extra)
     res = subprocess.run(
         [str(TOOL), "--preset", "v15", "--seed", str(seed), out, out + ".lua"],
-        capture_output=True, text=True,
+        capture_output=True, text=True, env=env,
     )
     if res.returncode != 0:
         raise SystemExit(f"obfuscate failed: {res.stderr[:300]}")
-    return pathlib.Path(out + ".lua").read_text()
+    return pathlib.Path(out + ".lua").read_text(), res.stderr
+
+
+def manifest(path):
+    """读取测试专用 key manifest；同名项取最后一次。"""
+    values = {}
+    for line in pathlib.Path(path).read_text().splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key] = int(value)
+    return values
+
+
+def hboot_signature(stderr):
+    m = re.search(r"HBOOT_POST_SAN: return function\(([^)]*)\)", stderr)
+    if not m:
+        return []
+    return [x.strip() for x in m.group(1).split(",") if x.strip()]
 
 
 def skeleton(text):
@@ -78,9 +98,18 @@ def ngram_sets(text, n=24, step=7):
 def main():
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "s.lua")
-        a = obf(111111, SRC, out)
-        b = obf(222222, SRC, out)
-        c = obf(111111, SRC, out)  # 同 seed 复现
+        ma_path = os.path.join(td, "manifest-a.txt")
+        mb_path = os.path.join(td, "manifest-b.txt")
+        a, da = obf(111111, SRC, out, {
+            "LURAPH_KEY_MANIFEST": ma_path,
+            "LURAPH_HBOOT_DBG": "1",
+        })
+        b, db = obf(222222, SRC, out, {
+            "LURAPH_KEY_MANIFEST": mb_path,
+            "LURAPH_HBOOT_DBG": "1",
+        })
+        c, _ = obf(111111, SRC, out)  # 同 seed 复现
+        ma, mb = manifest(ma_path), manifest(mb_path)
 
         print("== H2 构建差异化审计 ==")
         print(f"seed111111 size={len(a)}  seed222222 size={len(b)}")
@@ -114,13 +143,40 @@ def main():
         # E. 功能等价（两 seed 都必须跑出同结果）
         oa = subprocess.run([str(LUAU), out + ".lua"], capture_output=True)
         # regenerate b to disk
-        ob = obf(222222, SRC, out)
+        _, _ = obf(222222, SRC, out)
         ob = subprocess.run([str(LUAU), out + ".lua"], capture_output=True)
+        runtime_ok = oa.returncode == 0 and ob.returncode == 0 and oa.stdout == ob.stdout
         print(f"[E] 两构建运行等价: "
-              f"{'YES' if oa.stdout == ob.stdout else 'NO'}  "
+              f"{'YES' if runtime_ok else 'NO'}  "
               f"(out={oa.stdout!r})")
 
-        ok = (a == c) and (oa.stdout == ob.stdout)
+        # F. H2-8a：块密文五字段必须是合法排列，且固定审计 seed 间不同。
+        lane_keys = ["BLOCK_POS_W", "BLOCK_POS_SA", "BLOCK_POS_SB",
+                     "BLOCK_POS_SC", "BLOCK_POS_SD"]
+        posa = [ma.get(k, -1) for k in lane_keys]
+        posb = [mb.get(k, -1) for k in lane_keys]
+        lane_ok = sorted(posa) == list(range(5)) and sorted(posb) == list(range(5))
+        lane_diff = posa != posb
+        print(f"[F] 五字段物理序随机: {'YES' if lane_ok and lane_diff else 'NO'}  "
+              f"(seedA={posa}, seedB={posb})")
+
+        # G. H2-11：预净化 HBOOT 入口名本身随机，且参数序跨构建不同。
+        siga, sigb = hboot_signature(da), hboot_signature(db)
+        sig_shape = (
+            len(siga) == 30 and len(sigb) == 30
+            and len(set(siga)) == 30 and len(set(sigb)) == 30
+            and all(re.fullmatch(r"_sp\d+_\d+", x) for x in siga + sigb)
+        )
+        shell_ok = sig_shape and siga != sigb
+        print(f"[G] 壳参数名/序双随机: {'YES' if shell_ok else 'NO'}  "
+              f"(参数数 {len(siga)}/{len(sigb)})")
+
+        # H. H2-2/H2-6：语义 wire 与链交叉系数均实际跨构建重掷。
+        h2_keys = ["W_BSS", "W_RT", "W_EXG", "CHAIN_CROSS"]
+        key_ok = all(k in ma and k in mb and ma[k] != mb[k] for k in h2_keys)
+        print(f"[H] wire/链种子跨构建重掷: {'YES' if key_ok else 'NO'}")
+
+        ok = (a == c) and runtime_ok and lane_ok and lane_diff and shell_ok and key_ok
         print("\nH2 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
 
