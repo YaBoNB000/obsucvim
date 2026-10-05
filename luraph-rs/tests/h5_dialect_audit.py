@@ -73,6 +73,19 @@ def main():
         cb = [(mb["DIALECT_LANE_BASE"] + (i + 1) * mb["DIALECT_LANE_STEP"]) % 24
               for i in range(len(nb))] if lane_present else []
         lane_per_fn = len(set(ca)) == len(ca) and len(set(cb)) == len(cb)
+        micro_keys = ["MICRO_ROUTE_BASE", "MICRO_ROUTE_STEP", "MICRO_ROUTE_N"]
+        micro_present = all(k in ma and k in mb for k in micro_keys)
+        micro_rerolled = micro_present and tuple(ma[k] for k in micro_keys) != tuple(mb[k] for k in micro_keys)
+        def routes(m, count):
+            n = m["MICRO_ROUTE_N"]
+            return [(m["MICRO_ROUTE_BASE"] + (i + 1) * m["MICRO_ROUTE_STEP"]) % n
+                    for i in range(count)]
+        mra = routes(ma, len(na)) if micro_present else []
+        mrb = routes(mb, len(nb)) if micro_present else []
+        micro_per_fn = (micro_present and 3 <= ma["MICRO_ROUTE_N"] <= 5
+                        and 3 <= mb["MICRO_ROUTE_N"] <= 5
+                        and len(set(mra[:ma["MICRO_ROUTE_N"]])) == min(len(mra), ma["MICRO_ROUTE_N"])
+                        and len(set(mrb[:mb["MICRO_ROUTE_N"]])) == min(len(mrb), mb["MICRO_ROUTE_N"]))
         per_fn = len(na) >= 4 and len(set(na)) >= 3 and len(nb) >= 4 and len(set(nb)) >= 3
         expected = subprocess.run([str(LUAU), str(src)], capture_output=True)
         ra = subprocess.run([str(LUAU), str(td/"a.lua")], capture_output=True)
@@ -86,17 +99,19 @@ def main():
             "s0 * fpb", "fkm * st + fkc",
             "local dp=(LB+i*LS)%24", "local dp=(LB+pf.sd*LS)%24",
             "u[pm[ps]+1]=pv[ps]",
+            "md = (pf.sd * {} + {}) % {}", "E.md", "register_micro_variant",
         ])
-        print("== H4-5 每函数方言审计（A/B：block key + operand lane） ==")
+        print("== H4-5 每函数方言审计（A/B/C：block + lane + micro） ==")
         print(f"[0] 同 seed 确定: {'YES' if deterministic else 'NO'}")
         print(f"[1] 六系数跨构建重掷: {'YES' if rerolled else 'NO'}")
         print(f"[2] 每函数 qf 方言输入分离: {'YES' if per_fn else 'NO'}")
         print(f"[3] lane 方言跨构建/函数分离: {'YES' if lane_rerolled and lane_per_fn else 'NO'}")
-        print(f"[4] BSS/RT 派生镜像接线: {'YES' if mirror else 'NO'}")
-        print(f"[5] 双 seed 运行等价: {'YES' if runtime else 'NO'} ({expected.stdout!r})")
+        print(f"[4] micro route 跨构建/函数分离: {'YES' if micro_rerolled and micro_per_fn else 'NO'}")
+        print(f"[5] BSS/RT/Micro 派生镜像接线: {'YES' if mirror else 'NO'}")
+        print(f"[6] 双 seed 运行等价: {'YES' if runtime else 'NO'} ({expected.stdout!r})")
         ok = (deterministic and rerolled and per_fn and lane_rerolled
-              and lane_per_fn and mirror and runtime)
-        print("\nH4-5A/B 审计: " + ("PASS" if ok else "FAIL"))
+              and lane_per_fn and micro_rerolled and micro_per_fn and mirror and runtime)
+        print("\nH4-5A/B/C 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
 
 

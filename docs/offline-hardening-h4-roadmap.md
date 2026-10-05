@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4 已闭环；H4-5A/B 完成（block key + operand lane）；内部 loader 0 次**
+> 状态：**H4 P0/H4-4 已闭环；H4-5A/B/C 完成（block + lane + micro/shard）；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -857,8 +857,36 @@ R041：118959B → 120472B（+1.27%）
 169/169；H4-5A/B audit PASS
 ```
 
-H4-5 尚未完成；下一阶段推进每函数 micro-op/shard，之后再做 constant-tag 与
-rekey 周期方言。
+### H4-5C 已落地（2026-10-05）
+
+第三阶段切换每函数 micro-op/shard 方言：
+
+- 每构建生成 `3..5` 个完整独立 micro shard，各自拥有独立 micro-op 编号、
+  三字段物理排列和 dispatch 形态；
+- 每个 Handler、Call chain 和 post-call 协议都为每个 shard 生成独立数字
+  descriptor，不再固定绑定一个构建级 shard；
+- 函数在 newE 时通过满周期 `MICRO_ROUTE_BASE/STEP` 得到 shard 方言，选择值
+  写入随机字段名，前 `N` 个函数覆盖全部 shard 后才循环；
+- 每个 handler 内部使用构建随机分支顺序选择 descriptor/executor，不存在一张
+  全局 `function → shard` adapter table；
+- Call chain 与 post-call 使用同一函数 shard，但各自 descriptor mask/stride
+  独立，真实用户调用仍保持浅层帧预算；
+- 全部 shard descriptor 一并进入 `MICRO_CK + CHQ*CHAFF_MICRO` 完整性折叠；
+- `h5_dialect_audit.py` 扩展为 A/B/C 审计，验证 micro route 跨构建变化、
+  函数组内满周期覆盖、静态接线和双 seed 等价。
+
+诚实边界：为控制体积，函数超过 shard 数后会循环复用 shard 家族；其 block-key
+和 operand-lane 方言仍不同。后续 constant-tag/rekey 方言继续提供函数级分离。
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：120472B → 150150B（+24.63%，未超过单阶段 25% 预算）
+169/169；H4-5A/B/C audit PASS
+```
+
+H4-5 尚未完成；下一阶段做每函数 constant-tag 方言，最后收口 rekey 周期。
 
 ---
 
@@ -1015,8 +1043,8 @@ microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解�
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口（实施中）
 
-H4-5A block-key family 与 H4-5B operand lane permutation 已完成；继续完成
-micro-op/shard、constant-tag 与 rekey 方言后再缩小运行窗口。
+H4-5A block-key、H4-5B operand lane、H4-5C micro/shard 已完成；继续完成
+constant-tag 与 rekey 方言后再缩小运行窗口。
 
 ## 阶段 G：H4-7/H4-8 收口
 

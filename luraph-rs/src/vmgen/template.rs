@@ -1041,6 +1041,88 @@ fn encode_micro_program(
 	(text, stored)
 }
 
+#[derive(Clone)]
+struct MicroProgramRef {
+	shard: usize,
+	index: usize,
+	program: String,
+	mask: u8,
+	step: u8,
+}
+
+fn register_micro_variant(
+	recipe: &[(usize, u8, u8)],
+	shard_index: usize,
+	micro_shards: &[MicroShard],
+	micro_used: &mut [std::collections::HashSet<usize>],
+	micro_program_counts: &mut [usize],
+	micro_checksum: &mut u64,
+	rng: &mut Rng,
+) -> MicroProgramRef {
+	for &(kind, _, _) in recipe {
+		micro_used[shard_index].insert(kind);
+	}
+	let mask = rng.int(1, 255) as u8;
+	let step = (rng.int(1, 255) | 1) as u8;
+	let (program, stored) =
+		encode_micro_program(recipe, &micro_shards[shard_index], mask, step);
+	micro_program_counts[shard_index] += 1;
+	let index = micro_program_counts[shard_index];
+	for value in std::iter::once(mask)
+		.chain(std::iter::once(step))
+		.chain(stored.into_iter())
+	{
+		*micro_checksum = (*micro_checksum * 257 + value as u64) % KEY_MOD as u64;
+	}
+	MicroProgramRef { shard: shard_index, index, program, mask, step }
+}
+
+fn micro_variant_assign(v: &MicroProgramRef) -> String {
+	format!(
+		"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] ",
+		shard = v.shard,
+		index = v.index,
+		program = v.program,
+		mask = v.mask,
+		step = v.step,
+	)
+}
+
+fn micro_variant_dispatch(
+	variants: &[MicroProgramRef],
+	head_args: &str,
+	tail_args: &str,
+	rng: &mut Rng,
+) -> String {
+	let mut order: Vec<usize> = (0..variants.len()).collect();
+	rng.shuffle(&mut order);
+	let mut out = String::new();
+	for (branch, &i) in order.iter().enumerate() {
+		let v = &variants[i];
+		let cond = if branch == 0 {
+			if rng.int(0, 1) == 0 {
+				format!("if E.md=={}", v.shard)
+			} else {
+				format!("if {}==E.md", v.shard)
+			}
+		} else if rng.int(0, 1) == 0 {
+			format!("elseif E.md=={}", v.shard)
+		} else {
+			format!("elseif {}==E.md", v.shard)
+		};
+		out.push_str(&format!(
+			"{cond} then local _d=_md{shard}[{index}] _mx{shard}({head},_d[1],_d[2],_d[3]{tail}) ",
+			cond = cond,
+			shard = v.shard,
+			index = v.index,
+			head = head_args,
+			tail = tail_args,
+		));
+	}
+	out.push_str("end");
+	out
+}
+
 fn remap_fragment_fields(
 	src: &str,
 	map: &std::collections::HashMap<String, String>,
@@ -2057,6 +2139,34 @@ pub fn generate(
 			format!("E.w{}", operand_stream[3]),
 		]
 	};
+	let n_micro_shards = if v15 { rng.int(3, 5) as usize } else { 1 };
+	let mut micro_route_steps: Vec<usize> = (1..n_micro_shards)
+		.filter(|s| {
+			let mut a = *s;
+			let mut b = n_micro_shards;
+			while b != 0 {
+				let r = a % b;
+				a = b;
+				b = r;
+			}
+			a == 1
+		})
+		.collect();
+	if micro_route_steps.is_empty() {
+		micro_route_steps.push(1);
+	}
+	let micro_route_base = if v15 {
+		rng.int(0, n_micro_shards as i64 - 1) as usize
+	} else {
+		0
+	};
+	let micro_route_step = micro_route_steps
+		[rng.int(0, micro_route_steps.len() as i64 - 1) as usize];
+	if v15 {
+		manifest_key("MICRO_ROUTE_BASE", micro_route_base as u64);
+		manifest_key("MICRO_ROUTE_STEP", micro_route_step as u64);
+		manifest_key("MICRO_ROUTE_N", n_micro_shards as u64);
+	}
 	let env_names = [
 		"V", "C", "S", "O", "G", "vargs", "vargc", "ups", "makefn", "mget",
 		"resolve_call", "callcap", "HAS_LEN_META", "CHAR", "FLOOR", "ERR",
@@ -2064,8 +2174,8 @@ pub fn generate(
 		"AV", "HW2",
 	];
 	let e_table = format!(
-		"{{{}, k = pf.k, ln = 0, lb = 0, pc = 1, b = 0, callx = 0, done = false, out = {{}}, total = 0, tp = TP}}",
-		env_names.join(", ")
+		"{{{}, k = pf.k, ln = 0, lb = 0, pc = 1, b = 0, callx = 0, done = false, out = {{}}, total = 0, tp = TP, md = (pf.sd * {} + {}) % {}}}",
+		env_names.join(", "), micro_route_step, micro_route_base, n_micro_shards
 	);
 	let hfrag: String;
 	let handler_defs = if v15 {
@@ -2082,11 +2192,6 @@ pub fn generate(
 		// migrated handler is only a masked numeric descriptor. No handler source
 		// reaches the runtime loader.
 		let micro_lits = MicroLits::new(&mut pool, mk);
-		let n_micro_shards = rng.int(3, 5) as usize;
-		// The four post-call protocols are rotated across the available shards;
-		// unlike four independent random draws, this guarantees that every build
-		// uses multiple dispatch dialects for result placement.
-		let call_post_shard_offset = rng.int(0, n_micro_shards as i64 - 1) as usize;
 		let mut micro_shards = Vec::with_capacity(n_micro_shards);
 		let mut micro_used: Vec<std::collections::HashSet<usize>> =
 			vec![std::collections::HashSet::new(); n_micro_shards];
@@ -2098,112 +2203,92 @@ pub fn generate(
 		let mut micro_checksum: u64 = 0;
 		for (name, wire) in &items {
 			if let Some(recipe) = micro_recipe(name) {
-				let shard_index = rng.int(0, n_micro_shards as i64 - 1) as usize;
-				for &(kind, _, _) in &recipe {
-					micro_used[shard_index].insert(kind);
-				}
-				let mask = rng.int(1, 255) as u8;
-				let step = (rng.int(1, 255) | 1) as u8;
-				let (program, stored) =
-					encode_micro_program(&recipe, &micro_shards[shard_index], mask, step);
-				micro_program_counts[shard_index] += 1;
-				let program_index = micro_program_counts[shard_index];
-				for value in std::iter::once(mask)
-					.chain(std::iter::once(step))
-					.chain(stored.into_iter())
-				{
-					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
+				let mut variants = Vec::with_capacity(n_micro_shards);
+				for shard in 0..n_micro_shards {
+					let v = register_micro_variant(
+						&recipe,
+						shard,
+						&micro_shards,
+						&mut micro_used,
+						&mut micro_program_counts,
+						&mut micro_checksum,
+						rng,
+					);
+					micro_fill.push_str(&micro_variant_assign(&v));
+					variants.push(v);
 				}
 				let micro_tail = if name == "Return" {
 					"return".to_string()
 				} else {
 					chain_epilogue(rng, &wk)
 				};
+				let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng);
 				micro_fill.push_str(&format!(
-					"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] HW2[({wire}+AV)%256]=function(E,a,b,c,d) local _d=_md{shard}[{index}] _mx{shard}(E,a,b,c,d,_d[1],_d[2],_d[3]); {tail} end ",
-					program = program,
-					mask = mask,
-					step = step,
+					"HW2[({wire}+AV)%256]=function(E,a,b,c,d) {route}; {tail} end ",
 					wire = *wire as u16,
-					shard = shard_index,
-					index = program_index,
+					route = route,
 					tail = micro_tail,
 				));
 				continue;
 			}
+
 			let ci = call_names
 				.iter()
 				.position(|n| *n == name.as_str())
-				.unwrap_or_else(|| panic!("H4-3 source handler fallback reached: {}", name));
-				// H4-2B: the chain phase is already numeric (M_CALL*).  Encode
-				// result placement as a second descriptor in a deliberately
-				// different/rotated shard.  The executor itself performs only the
-				// shallow call, then enters this post-call program after the user
-				// function has returned; no micro-dispatch frame survives recursion.
-				let post_recipe = micro_post_call_recipe(name).expect("post-call recipe");
-				let post_shard_index = (call_post_shard_offset + ci) % n_micro_shards;
-				for &(kind, _, _) in &post_recipe {
-					micro_used[post_shard_index].insert(kind);
-				}
-				let post_mask = rng.int(1, 255) as u8;
-				let post_step = (rng.int(1, 255) | 1) as u8;
-				let (post_program, post_stored) = encode_micro_program(
-					&post_recipe,
-					&micro_shards[post_shard_index],
-					post_mask,
-					post_step,
-				);
-				micro_program_counts[post_shard_index] += 1;
-				let post_index = micro_program_counts[post_shard_index];
-				for value in std::iter::once(post_mask)
-					.chain(std::iter::once(post_step))
-					.chain(post_stored.into_iter())
-				{
-					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
-				}
-				let post_tail = chain_epilogue(rng, &wk);
-				micro_fill.push_str(&format!(
-					"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] CX{executor}=function(E) local _r=E.tp(E.cf(E[21](E.ca,1,E.cn))) local _d=_md{shard}[{index}] _mx{shard}(E,E.oa,E.ob,E.oc2,E.od,_d[1],_d[2],_d[3],_r,_r.n); {tail} end ",
-					program = post_program,
-					mask = post_mask,
-					step = post_step,
-					shard = post_shard_index,
-					index = post_index,
-					executor = ci + 1,
-					tail = post_tail,
-				));
+				.unwrap_or_else(|| panic!("H4-5C source handler fallback reached: {}", name));
 
-			// The argument-pack/unwind half of each Call is independently encoded
-			// from its post-call descriptor; no Call source fragment is emitted.
+			// Post-call result placement receives the same function-selected shard
+			// as the chain phase, but an independently masked descriptor.
+			let post_recipe = micro_post_call_recipe(name).expect("post-call recipe");
+			let mut post_variants = Vec::with_capacity(n_micro_shards);
+			for shard in 0..n_micro_shards {
+				let v = register_micro_variant(
+					&post_recipe,
+					shard,
+					&micro_shards,
+					&mut micro_used,
+					&mut micro_program_counts,
+					&mut micro_checksum,
+					rng,
+				);
+				micro_fill.push_str(&micro_variant_assign(&v));
+				post_variants.push(v);
+			}
+			let post_route = micro_variant_dispatch(
+				&post_variants,
+				"E,E.oa,E.ob,E.oc2,E.od",
+				",_r,_r.n",
+				rng,
+			);
+			let post_tail = chain_epilogue(rng, &wk);
+			micro_fill.push_str(&format!(
+				"CX{executor}=function(E) local _r=E.tp(E.cf(E[21](E.ca,1,E.cn))) {route}; {tail} end ",
+				executor = ci + 1,
+				route = post_route,
+				tail = post_tail,
+			));
+
 			let recipe = micro_call_recipe(name).expect("numeric Call recipe");
-				let post_shard = (call_post_shard_offset + ci) % n_micro_shards;
-				let shard_delta = rng.int(1, n_micro_shards as i64 - 1) as usize;
-				let shard_index = (post_shard + shard_delta) % n_micro_shards;
-				for &(kind, _, _) in &recipe {
-					micro_used[shard_index].insert(kind);
-				}
-				let mask = rng.int(1, 255) as u8;
-				let step = (rng.int(1, 255) | 1) as u8;
-				let (program, stored) =
-					encode_micro_program(&recipe, &micro_shards[shard_index], mask, step);
-				micro_program_counts[shard_index] += 1;
-				let program_index = micro_program_counts[shard_index];
-				for value in std::iter::once(mask)
-					.chain(std::iter::once(step))
-					.chain(stored.into_iter())
-				{
-					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
-				}
-				micro_fill.push_str(&format!(
-					"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] HW2[({wire}+AV)%256]=function(E,a,b,c,d) local _d=_md{shard}[{index}] _mx{shard}(E,a,b,c,d,_d[1],_d[2],_d[3]); return end ",
-					program = program,
-					mask = mask,
-					step = step,
-					wire = *wire as u16,
-					shard = shard_index,
-					index = program_index,
-				));
-				continue;
+			let mut variants = Vec::with_capacity(n_micro_shards);
+			for shard in 0..n_micro_shards {
+				let v = register_micro_variant(
+					&recipe,
+					shard,
+					&micro_shards,
+					&mut micro_used,
+					&mut micro_program_counts,
+					&mut micro_checksum,
+					rng,
+				);
+				micro_fill.push_str(&micro_variant_assign(&v));
+				variants.push(v);
+			}
+			let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng);
+			micro_fill.push_str(&format!(
+				"HW2[({wire}+AV)%256]=function(E,a,b,c,d) {route}; return end ",
+				wire = *wire as u16,
+				route = route,
+			));
 		}
 		let micro_assignments = std::mem::take(&mut micro_fill);
 		micro_fill.push_str("local _mo={} ");
