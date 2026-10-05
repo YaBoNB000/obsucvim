@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**实施中：H4-0 Loader 泄漏回归闸已落地，H4-1 待开始**
+> 状态：**实施中：H4-0 已完成；H4-1A 首批 12 个 handler 已转数值 Microcode**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -177,6 +177,49 @@ payload result survived   : YES
 ### 当前问题
 
 43 个 handler 和 Nop alias 最终都会变成明文源码并进入 loader。
+
+### H4-1A 已落地（2026-10-05）
+
+首批 12 个低副作用 handler 已迁移：
+
+```text
+LoadK / Move / NewTab / Not
+GetGlobal / SetGlobal
+GetUp / SetUp
+VarArgC
+Jmp / Jf / Jt
+```
+
+实现特征：
+
+- 每构建生成 `3..5` 个 micro shard；
+- 每个 shard 独立 micro-op 编号；
+- 每个 shard 独立三字段物理排列；
+- equality-left、equality-right、阈值树三种 dispatch 形态；
+- handler 仅保留掩码数字 descriptor，不生成 Lua handler 源码；
+- descriptor 的 mask/step/数字流进入 boot 期完整性折叠；
+- 完整性差异直接偏移 `SALT`，无显式错误 oracle；
+- dot-field 通过 fragment 全局改名表同步到 RT 状态字段，不新增公开字段协议。
+
+Loader 审计从：
+
+```text
+54 calls / 54 source-like
+```
+
+下降到：
+
+```text
+42 calls / 42 source-like
+```
+
+固定增量门：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 42
+```
+
+此项是 H4-1 的第一批，不代表 Handler Microcode 已全部完成。
 
 ### 新结构
 
@@ -495,9 +538,12 @@ block state / operand mask / next-key / alias state
 
 阶段 A 已完成，下一提交边界为 H4-1 Handler Microcode。
 
-## 阶段 B：H4-1 Handler Microcode
+## 阶段 B：H4-1 Handler Microcode（实施中：首批 12/43）
 
 只替换 handler HQ 源码碎片；BSS/RT/HBOOT 暂保留，以便定位回归。
+
+当前完成 H4-1A：12 个简单 handler，HQ 源码碎片 `53 → 41`，loader
+调用 `54 → 42`。下一批处理算术/比较/表操作，Call/Return 家族最后迁移。
 
 阶段验收：
 
@@ -544,6 +590,7 @@ bash luraph-rs/tests/multiseed.sh
 python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 42
 bash luraph-rs/tests/defense_audit.sh
 ```
 

@@ -979,6 +979,213 @@ fn sanitize_frag(
 }
 
 
+// H4-1A: first loaderless handler family. Handler semantics are encoded as
+// numeric triples consumed by one of several per-build micro shards; no Lua
+// handler source is reconstructed or handed to loadstring at runtime.
+const M_READ_V: usize = 0;
+const M_WRITE_V: usize = 1;
+const M_READ_C: usize = 2;
+const M_NOT: usize = 3;
+const M_NEW_TABLE: usize = 4;
+const M_GET_GLOBAL: usize = 5;
+const M_SET_GLOBAL: usize = 6;
+const M_READ_UP: usize = 7;
+const M_CELL_GET: usize = 8;
+const M_CELL_SET: usize = 9;
+const M_VARGC: usize = 10;
+const M_SET_PC: usize = 11;
+const M_BRANCH_FALSE: usize = 12;
+const M_BRANCH_TRUE: usize = 13;
+const M_COUNT: usize = 14;
+
+#[derive(Clone)]
+struct MicroShard {
+	codes: [u8; M_COUNT],
+	/// physical field -> logical field (0=op, 1=x, 2=y)
+	field_perm: [usize; 3],
+	shape: u8,
+}
+
+fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
+	let mut pool: Vec<u8> = (7..=250).collect();
+	rng.shuffle(&mut pool);
+	let codes: [u8; M_COUNT] = pool[..M_COUNT].try_into().unwrap();
+	let mut fp = vec![0usize, 1, 2];
+	rng.shuffle(&mut fp);
+	MicroShard {
+		codes,
+		field_perm: [fp[0], fp[1], fp[2]],
+		shape,
+	}
+}
+
+fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
+	let p = match name {
+		"LoadK" => vec![(M_READ_C, 1, 2), (M_WRITE_V, 1, 1)],
+		"Move" => vec![(M_READ_V, 1, 2), (M_WRITE_V, 1, 1)],
+		"NewTab" => vec![(M_NEW_TABLE, 1, 0), (M_WRITE_V, 1, 1)],
+		"Not" => vec![(M_READ_V, 1, 2), (M_NOT, 2, 1), (M_WRITE_V, 1, 2)],
+		"GetGlobal" => vec![
+			(M_READ_C, 1, 2),
+			(M_GET_GLOBAL, 2, 1),
+			(M_WRITE_V, 1, 2),
+		],
+		"SetGlobal" => vec![(M_READ_C, 1, 2), (M_READ_V, 2, 1), (M_SET_GLOBAL, 1, 2)],
+		"GetUp" => vec![
+			(M_READ_UP, 1, 2),
+			(M_CELL_GET, 2, 1),
+			(M_WRITE_V, 1, 2),
+		],
+		"SetUp" => vec![(M_READ_UP, 1, 1), (M_READ_V, 2, 2), (M_CELL_SET, 1, 2)],
+		"VarArgC" => vec![(M_VARGC, 1, 0), (M_WRITE_V, 1, 1)],
+		"Jmp" => vec![(M_SET_PC, 2, 0)],
+		"Jf" => vec![(M_READ_V, 1, 1), (M_BRANCH_FALSE, 1, 2)],
+		"Jt" => vec![(M_READ_V, 1, 1), (M_BRANCH_TRUE, 1, 2)],
+		_ => return None,
+	};
+	Some(p)
+}
+
+fn micro_op_body(index: usize) -> &'static str {
+	match index {
+		M_READ_V => "T[x] = V[O[y] + 1]",
+		M_WRITE_V => "V[O[x] + 1] = T[y]",
+		M_READ_C => "T[x] = C[O[y] + 1]",
+		M_NOT => "T[x] = not T[y]",
+		M_NEW_TABLE => "T[x] = {}",
+		M_GET_GLOBAL => "T[x] = G[T[y]]",
+		M_SET_GLOBAL => "G[T[x]] = T[y]",
+		M_READ_UP => "T[x] = ups[O[y] + 1]",
+		M_CELL_GET => "local q = T[y]; T[x] = q.v[q.i]",
+		M_CELL_SET => "local q = T[x]; q.v[q.i] = T[y]",
+		M_VARGC => "T[x] = vargc",
+		M_SET_PC => "E.pc = O[x]",
+		M_BRANCH_FALSE => "if not T[x] then E.pc = O[y] end",
+		M_BRANCH_TRUE => "if T[x] then E.pc = O[y] end",
+		_ => unreachable!(),
+	}
+}
+
+fn micro_tree(items: &[(u8, String)]) -> String {
+	if items.len() == 1 {
+		return items[0].1.clone();
+	}
+	let mid = items.len() / 2;
+	let pivot = items[mid].0;
+	format!(
+		"if op < {} then {} else {} end",
+		pivot,
+		micro_tree(&items[..mid]),
+		micro_tree(&items[mid..])
+	)
+}
+
+fn micro_shard_source(name: &str, shard: &MicroShard, rng: &mut Rng) -> String {
+	let mut items: Vec<(u8, String)> = (0..M_COUNT)
+		.map(|i| (shard.codes[i], micro_op_body(i).to_string()))
+		.collect();
+	rng.shuffle(&mut items);
+	let dispatch = match shard.shape % 3 {
+		0 => items
+			.iter()
+			.enumerate()
+			.map(|(i, (code, body))| {
+				format!(
+					"{} op == {} then {} ",
+					if i == 0 { "if" } else { "elseif" },
+					code,
+					body
+				)
+			})
+			.collect::<String>()
+			+ "end",
+		1 => items
+			.iter()
+			.enumerate()
+			.map(|(i, (code, body))| {
+				format!(
+					"{} {} == op then {} ",
+					if i == 0 { "if" } else { "elseif" },
+					code,
+					body
+				)
+			})
+			.collect::<String>()
+			+ "end",
+		_ => {
+			items.sort_by_key(|x| x.0);
+			micro_tree(&items)
+		}
+	};
+	let mut logical_pos = [0usize; 3];
+	for (physical, logical) in shard.field_perm.iter().enumerate() {
+		logical_pos[*logical] = physical + 1;
+	}
+	format!(
+		"local function {name}(E,a,b,c,d,P,m,k) local V,C,G,vargc,ups=E[1],E[2],E[5],E[7],E[8] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end end ",
+		name = name,
+		op = logical_pos[0],
+		x = logical_pos[1],
+		y = logical_pos[2],
+		dispatch = dispatch,
+	)
+}
+
+fn encode_micro_program(
+	recipe: &[(usize, u8, u8)],
+	shard: &MicroShard,
+	mask: u8,
+	step: u8,
+) -> (String, Vec<u8>) {
+	let mut stored = Vec::with_capacity(recipe.len() * 3);
+	for &(kind, x, y) in recipe {
+		let logical = [shard.codes[kind], x, y];
+		for &logical_index in &shard.field_perm {
+			let plain = logical[logical_index];
+			let pos = stored.len() + 1;
+			stored.push(
+				((plain as usize + mask as usize + pos * step as usize) % 256) as u8,
+			);
+		}
+	}
+	let text = stored
+		.iter()
+		.map(|x| x.to_string())
+		.collect::<Vec<_>>()
+		.join(",");
+	(text, stored)
+}
+
+fn remap_fragment_fields(
+	src: &str,
+	map: &std::collections::HashMap<String, String>,
+) -> String {
+	let bytes = src.as_bytes();
+	let mut out = String::with_capacity(src.len());
+	let mut i = 0usize;
+	while i < bytes.len() {
+		if bytes[i] == b'.'
+			&& i + 1 < bytes.len()
+			&& (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+		{
+			out.push('.');
+			i += 1;
+			let start = i;
+			while i < bytes.len()
+				&& (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+			{
+				i += 1;
+			}
+			let field = &src[start..i];
+			out.push_str(map.get(field).map(String::as_str).unwrap_or(field));
+		} else {
+			out.push(bytes[i] as char);
+			i += 1;
+		}
+	}
+	out
+}
+
 fn chain_epilogue(rng: &mut Rng, wk: &[String; 4]) -> String {
 	// B-3: fetch reads the decoded BLOCK WINDOW (E.ww/E.w0..w3) instead
 	// of whole-stream tables. Crossing the window bounds (jump target /
@@ -1998,6 +2205,21 @@ pub fn generate(
 		// 在加密碎片里。执行器 wire 305-308（避开 0..255 操作数 wire
 		// 与 BSS 标记 200）。
 		let call_names = ["Call", "CallE", "CallM", "CallT"];
+		// H4-1A: several independently permuted micro shards. They are emitted
+		// as static outer closures (the unavoidable pure-Luau base), while each
+		// migrated handler is only a masked numeric descriptor. No handler source
+		// reaches the runtime loader.
+		let n_micro_shards = rng.int(3, 5) as usize;
+		let mut micro_shards = Vec::with_capacity(n_micro_shards);
+		let mut micro_fill = String::new();
+		for i in 0..n_micro_shards {
+			let shard = new_micro_shard(rng, i as u8);
+			micro_fill.push_str(&micro_shard_source(&format!("_mx{}", i), &shard, rng));
+			micro_shards.push(shard);
+		}
+		let mut micro_program_names: Vec<String> = Vec::new();
+		let mut micro_checksum: u64 = 0;
+		let mut micro_serial = 0usize;
 		// 增量⑲ (递归帧瘦身): Luau 无 TCO，用户递归每层叠数个链帧，
 		// 每帧的 env prelude 绑定是栈槽大头。按 body（含尾链附言）实际
 		// 引用做**选择性绑定**——平均帧槽从 29 降到个位数，深递归极限
@@ -2063,6 +2285,33 @@ pub fn generate(
 			out
 		}
 		for (name, wire) in &items {
+			if let Some(recipe) = micro_recipe(name) {
+				let shard_index = rng.int(0, n_micro_shards as i64 - 1) as usize;
+				let mask = rng.int(1, 255) as u8;
+				let step = (rng.int(1, 255) | 1) as u8;
+				let (program, stored) =
+					encode_micro_program(&recipe, &micro_shards[shard_index], mask, step);
+				let pname = format!("_mp{}", micro_serial);
+				micro_serial += 1;
+				micro_program_names.push(pname.clone());
+				for value in std::iter::once(mask)
+					.chain(std::iter::once(step))
+					.chain(stored.into_iter())
+				{
+					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
+				}
+				micro_fill.push_str(&format!(
+					"local {pname}={{{{{program}}},{mask},{step}}} HW2[({wire}+AV)%256]=function(E,a,b,c,d) _mx{shard}(E,a,b,c,d,{pname}[1],{pname}[2],{pname}[3]); {tail} end ",
+					pname = pname,
+					program = program,
+					mask = mask,
+					step = step,
+					wire = *wire as u16,
+					shard = shard_index,
+					tail = chain_epilogue(rng, &wk),
+				));
+				continue;
+			}
 			let mut body = if name == "Nop" || name == "NopA" {
 				nop.clone()
 			} else {
@@ -2178,6 +2427,19 @@ pub fn generate(
 			);
 			frags.push((*wire as u16, src.into_bytes()));
 		}
+		let micro_expected_e = ke.key_expr(micro_checksum as i64, None, rng);
+		micro_fill.push_str("do local _mc=0 local _md ");
+		for pname in &micro_program_names {
+			micro_fill.push_str(&format!(
+				"_md={pname} _mc=(_mc*257+_md[2])%268435456 _mc=(_mc*257+_md[3])%268435456 for _mi=1,#_md[1] do _mc=(_mc*257+_md[1][_mi])%268435456 end ",
+				pname = pname,
+			));
+		}
+		micro_fill.push_str(&format!(
+			"SALT=(SALT+(_mc-({})))%268435456 end ",
+			micro_expected_e
+		));
+		manifest_key("MICRO_CK", micro_checksum);
 		// 增量⑲ (蹦床重入点入密): the chain re-entry points are
 		// continuation fragments — epilogue-shaped bodies (budget +
 		// fetch E.pc + dispatch) with NO opcode semantics, emitted as
@@ -2664,6 +2926,10 @@ pub fn generate(
 			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
 				.into_bytes();
 		}
+		// H4-1A static micro wrappers live in the outer lexical scope, so their
+		// locals must remain visible to that scope; only dot-fields are remapped
+		// through the fragment-wide map to match RT/handler state field names.
+		micro_fill = remap_fragment_fields(&micro_fill, &frag_map);
 		// ㉚ B-2: 每碎片自由填充尾注（14–22B 随机）——回填搜索空间
 		// + 每构建长度熵；尾注随源码一起进哈希链。
 		for (_wire, src) in frags.iter_mut() {
@@ -3463,10 +3729,11 @@ pub fn generate(
     {hp_stash}
     {ct_fill}{cx_fill}RTFRAG = HW[{wrt}]
     for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
-    {hw_expand}
+    {micro_fill}{hw_expand}
     HW = nil
   end"#,
 		hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
+		micro_fill = micro_fill,
             hw_expand = hw_expand,
 		hp_recv = hp_recv,
 		hp_stash = hp_stash,

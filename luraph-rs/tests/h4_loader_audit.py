@@ -190,6 +190,8 @@ def main() -> int:
     group = ap.add_mutually_exclusive_group()
     group.add_argument("--expect-open", action="store_true")
     group.add_argument("--enforce-zero", action="store_true")
+    ap.add_argument("--max-calls", type=int, default=None,
+                    help="optional incremental ceiling before the final zero-loader gate")
     ap.add_argument("--timeout", type=int, default=25)
     args = ap.parse_args()
 
@@ -265,6 +267,10 @@ def main() -> int:
         print(f"VM/runtime marker args    : {vm_like}")
         print(f"largest observed argument : {largest} bytes")
         print(f"payload result survived   : {'YES' if result_seen and done_ok else 'NO'}")
+        call_budget_ok = args.max_calls is None or len(rows) <= args.max_calls
+        if args.max_calls is not None:
+            print(f"incremental call ceiling  : {len(rows)}/{args.max_calls} "
+                  f"({'PASS' if call_budget_ok else 'FAIL'})")
         if rows:
             preview = ", ".join(str(r["length"]) for r in rows[:12])
             print(f"first argument sizes      : {preview}")
@@ -279,12 +285,14 @@ def main() -> int:
         leak_open = len(rows) > 0 and source_like > 0
 
         if args.enforce_zero:
-            print("\nH4 ZERO-LOADER GATE: " + ("PASS" if zero else "FAIL"))
-            return 0 if zero else 1
+            passed = zero and call_budget_ok
+            print("\nH4 ZERO-LOADER GATE: " + ("PASS" if passed else "FAIL"))
+            return 0 if passed else 1
         if args.expect_open:
-            print("\nH4-0 BASELINE CAPTURE: " + ("PASS" if leak_open else "FAIL"))
-            print("status: " + ("OPEN (expected before H4-1)" if leak_open else "unexpectedly closed"))
-            return 0 if leak_open else 1
+            passed = leak_open and call_budget_ok
+            print("\nH4-0 BASELINE CAPTURE: " + ("PASS" if passed else "FAIL"))
+            print("status: " + ("OPEN (incremental migration in progress)" if leak_open else "unexpectedly closed"))
+            return 0 if passed else 1
 
         print("\nH4 status: " + ("CLOSED" if zero else "OPEN"))
         return 0
