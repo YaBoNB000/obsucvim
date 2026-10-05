@@ -94,6 +94,15 @@ def main():
         tb = [(mb["DIALECT_TAG_BASE"] + (i + 1) * mb["DIALECT_TAG_STEP"]) % 720
               for i in range(len(nb))] if tag_present else []
         tag_per_fn = len(set(ta)) == len(ta) and len(set(tb)) == len(tb)
+        rekey_keys = ["DIALECT_REKEY_PERIOD_Q", "DIALECT_REKEY_PERIOD_I",
+                      "DIALECT_REKEY_STATE_Q", "DIALECT_REKEY_STATE_P"]
+        rekey_present = all(k in ma and k in mb for k in rekey_keys)
+        rekey_rerolled = rekey_present and tuple(ma[k] for k in rekey_keys) != tuple(mb[k] for k in rekey_keys)
+        rpa = [3 + ((q * ma["DIALECT_REKEY_PERIOD_Q"] + (i + 1) * ma["DIALECT_REKEY_PERIOD_I"]) % 7)
+               for i, q in enumerate(na)] if rekey_present else []
+        rpb = [3 + ((q * mb["DIALECT_REKEY_PERIOD_Q"] + (i + 1) * mb["DIALECT_REKEY_PERIOD_I"]) % 7)
+               for i, q in enumerate(nb)] if rekey_present else []
+        rekey_per_fn = len(set(rpa)) >= 2 and len(set(rpb)) >= 2
         per_fn = len(na) >= 4 and len(set(na)) >= 3 and len(nb) >= 4 and len(set(nb)) >= 3
         expected = subprocess.run([str(LUAU), str(src)], capture_output=True)
         ra = subprocess.run([str(LUAU), str(td/"a.lua")], capture_output=True)
@@ -109,20 +118,25 @@ def main():
             "u[pm[ps]+1]=pv[ps]",
             "md = (pf.sd * {} + {}) % {}", "E.md", "register_micro_variant",
             "local td=(TB+i*TS)%720", "q.sd*{})%720", "tm[6]",
+            "local frp=3+((qf*RQ+i*RI)%7)",
+            "local frp=3+((qi*RQ+pf.sd*RI)%7)",
+            "(p-s0+1)%frp", "i%frp",
         ])
-        print("== H4-5 每函数方言审计（A/B/C/D：block + lane + micro + tag） ==")
+        print("== H4-5 每函数方言审计（A/B/C/D/E） ==")
         print(f"[0] 同 seed 确定: {'YES' if deterministic else 'NO'}")
         print(f"[1] 六系数跨构建重掷: {'YES' if rerolled else 'NO'}")
         print(f"[2] 每函数 qf 方言输入分离: {'YES' if per_fn else 'NO'}")
         print(f"[3] lane 方言跨构建/函数分离: {'YES' if lane_rerolled and lane_per_fn else 'NO'}")
         print(f"[4] micro route 跨构建/函数分离: {'YES' if micro_rerolled and micro_per_fn else 'NO'}")
         print(f"[5] constant tag 跨构建/函数分离: {'YES' if tag_rerolled and tag_per_fn else 'NO'}")
-        print(f"[6] BSS/RT/Micro/Tag 镜像接线: {'YES' if mirror else 'NO'}")
-        print(f"[7] 双 seed 运行等价: {'YES' if runtime else 'NO'} ({expected.stdout!r})")
+        print(f"[6] rekey 周期跨构建/函数分离: {'YES' if rekey_rerolled and rekey_per_fn else 'NO'}")
+        print(f"[7] BSS/RT 全方言镜像接线: {'YES' if mirror else 'NO'}")
+        print(f"[8] 双 seed 运行等价: {'YES' if runtime else 'NO'} ({expected.stdout!r})")
         ok = (deterministic and rerolled and per_fn and lane_rerolled
               and lane_per_fn and micro_rerolled and micro_per_fn
-              and tag_rerolled and tag_per_fn and mirror and runtime)
-        print("\nH4-5A/B/C/D 审计: " + ("PASS" if ok else "FAIL"))
+              and tag_rerolled and tag_per_fn and rekey_rerolled
+              and rekey_per_fn and mirror and runtime)
+        print("\nH4-5A/B/C/D/E 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
 
 

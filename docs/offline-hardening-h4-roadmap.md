@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4 已闭环；H4-5A/B/C/D 完成（block + lane + micro + tag）；内部 loader 0 次**
+> 状态：**H4 P0/H4-4/H4-5 已闭环；每函数五类方言完成；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -910,7 +910,38 @@ R041：150150B → 150879B（+0.49%）
 169/169；H4-5A/B/C/D audit PASS
 ```
 
-H4-5 仅余每函数 rekey 周期，下一提交完成后收口整个每函数方言阶段。
+### H4-5E 已落地（2026-10-05）
+
+第五阶段完成每函数 rekey 周期方言：
+
+- 从已有函数方言系数派生 `PERIOD_Q/I` 与 `STATE_Q/P`，不增加新的随机根；
+- 每函数依据 `qf + function index` 选择 `3..9` 条指令的 rekey 周期；
+- BSS 在每个周期边界将 `qf` 与绝对 PC 折入当前 block LCG state；
+- RT bdec 以期望 QF、相同绝对 PC 和周期镜像重播种；
+- rekey 发生在块内，不依赖控制流前驱，不破坏任意块入口解码；
+- 周期和扰动系数不写入 prototype 或每函数表，仅由静态 factory 局部捕获；
+- `h5_dialect_audit.py` 扩展为 A/B/C/D/E 审计，验证周期跨构建变化、
+  函数间分离、BSS/RT 镜像及双 seed 等价。
+
+最终每函数方言面：
+
+```text
+block-key family
+operand lane permutation
+micro-op/shard route
+constant-tag permutation
+rekey period/state perturbation
+```
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：150879B → 152134B（+0.83%）
+169/169；H4-5A/B/C/D/E audit PASS
+```
+
+H4-5 每函数独立方言至此闭环。下一阶段进入 H4-6 单块窗口、重播种与主动销毁。
 
 ---
 
@@ -1067,8 +1098,8 @@ microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解�
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口（实施中）
 
-H4-5A block-key、H4-5B operand lane、H4-5C micro/shard、H4-5D
-constant-tag 已完成；完成 rekey 方言后再缩小运行窗口。
+H4-5 每函数五类方言已全部完成；下一提交边界为 H4-6A block cache 上限与
+主动淘汰，不再继续扩大方言面。
 
 ## 阶段 G：H4-7/H4-8 收口
 
