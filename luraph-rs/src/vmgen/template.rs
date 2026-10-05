@@ -378,276 +378,6 @@ impl KeyEmitter {
 /// out[i] = (in[i] - fold4(state)) % 256. The fold divisor 256 is
 /// computed at RUNTIME (repeated doubling) and SELF-MODIFIED into the
 /// program array (STP) before first use.
-fn emit_metavm(
-	seed_e: &str,
-	m_e: &str,
-	c_e: &str,
-	mb_count: usize,
-	rng: &mut Rng,
-	mpm_seed: i64,
-	mpm_m: i64,
-	mpm_c: i64,
-	mpm_seed_e: &str,
-	mpm_m_e: &str,
-	mpm_c_e: &str,
-) -> String {
-	// randomized opcode numbering (1..=15 permuted)
-	let names = [
-		"LDI", "LDM", "STM", "LD", "ST", "MOV", "ADD", "SUB", "MUL", "DIV",
-		"MOD", "JZ", "JMP", "STP", "HALT",
-	];
-	let mut nums: Vec<i64> = (1..=15).collect();
-	rng.shuffle(&mut nums);
-	let n: std::collections::HashMap<&str, i64> = names
-		.iter()
-		.zip(nums.iter())
-		.map(|(a, b)| (*a, *b))
-		.collect();
-	let in_base: i64 = 100 + rng.int(0, 400);
-	let out_base: i64 = in_base + mb_count as i64 + 50 + rng.int(0, 200);
-	let scratch: i64 = out_base + mb_count as i64 + 20 + rng.int(0, 40);
-
-	// ---- fixed program layout (word offsets; 0-based) -------------
-	// regs: 0=state 1=m 2=c 3=i 4=n 5..7 temps
-	let mut p: Vec<i64> = Vec::new();
-	// helpers: absolute const positions resolved after code gen
-	// code:
-	// 0..26  load state/m/c/n from MM[1..4]; i=1
-	// 27..53 r7 = 256 by doubling
-	// 54     STP c256_slot, r7   (self-mod)
-	// 57=loop: LCG step + fold4 + byte IO + i++ + branch
-	//
-	// word counts: LDI/LDM/STM/LD/ST/MOV/ADD/SUB/MUL/DIV/MOD/STP = 3,
-	// JZ = 3, JMP = 2, HALT = 1.
-	let o3 = |p: &mut Vec<i64>, op: i64, a: i64, b: i64| p.extend_from_slice(&[op, a, b]);
-	// init: LDI r7, <1> ; LD r0, r7 ; ... addresses 1..4 as constants
-	// (the constant value doubles as the MM address it names)
-	// -- const slots appended later; use symbolic refs patched below
-	const FIXUP: i64 = -1;
-	let ldi = |p: &mut Vec<i64>, n: &std::collections::HashMap<&str, i64>, d: i64, sym: i64| {
-		o3(p, n["LDI"], d, sym); // sym = FIXUP placeholder index marker
-	};
-	let _ = ldi;
-	// Emit with raw markers: const refs encoded as -(marker) and patched
-	// marker ids: 1=one 2=two 3=three 4=four 5=zero 6=mod28 7=ib 8=ob
-	//             9=c256 10=sa
-	macro_rules! ins {
-		($op:expr, $a:expr, $b:expr) => {
-			p.extend_from_slice(&[n[$op], $a, $b])
-		};
-	}
-	macro_rules! ins1 {
-		($op:expr, $a:expr) => {
-			p.extend_from_slice(&[n[$op], $a])
-		};
-	}
-	macro_rules! ins0 {
-		($op:expr) => {
-			p.push(n[$op])
-		};
-	}
-	// markers as negative x-operand for LDI/STP; patched after layout
-	// (positions are 1-based in the final array)
-	let mk = |id: i64| -id; // symbolic
-	// --- init ---
-	ins!("LDI", 7, mk(1)); // r7 = 1
-	ins!("LD", 0, 7);      // state = MM[1]
-	ins!("LDI", 7, mk(2)); // r7 = 2
-	ins!("LD", 1, 7);      // m = MM[2]
-	ins!("LDI", 7, mk(3)); // r7 = 3
-	ins!("LD", 2, 7);      // c = MM[3]
-	ins!("LDI", 7, mk(4)); // r7 = 4
-	ins!("LD", 4, 7);      // n = MM[4]
-	ins!("LDI", 3, mk(1)); // i = 1
-	ins!("LDI", 7, mk(1)); // r7 = 1 (doubling seed)
-	for _ in 0..8 {
-		ins!("ADD", 7, 7); // r7 *= 2
-	}
-	ins!("STP", mk(9), 7); // MP[c256] = 256  (self-modify)
-	// --- loop ---
-	let loop_pos = p.len() as i64;
-	ins!("MUL", 0, 1);
-	ins!("ADD", 0, 2);
-	ins!("LDI", 7, mk(6)); // 2^28
-	ins!("MOD", 0, 7);     // state %= 2^28
-	// fold4(state) -> r5
-	ins!("LDI", 7, mk(9)); // 256 (self-modified slot)
-	ins!("MOV", 6, 0);     // t = state
-	ins!("LDI", 5, mk(5)); // acc = 0
-	for _ in 0..4 {
-		ins!("STM", mk(10), 6); // MM[scratch] = t
-		ins!("MOD", 6, 7);      // t % 256
-		ins!("ADD", 5, 6);      // acc +=
-		ins!("LDM", 6, mk(10)); // t = MM[scratch]
-		ins!("DIV", 6, 7);      // t /= 256
-	}
-	ins!("MOD", 5, 7);     // key = acc % 256
-	// byte IO: out[i] = (in[i] - key) % 256
-	ins!("LDI", 6, mk(7)); // IB
-	ins!("ADD", 6, 3);     // IB + i
-	ins!("LDI", 7, mk(1)); // 1
-	ins!("SUB", 6, 7);     // addr_in = IB + i - 1
-	ins!("LD", 6, 6);      // in = MM[addr_in]
-	ins!("SUB", 6, 5);     // in - key
-	ins!("LDI", 7, mk(9)); // 256
-	ins!("MOD", 6, 7);     // % 256 (Lua handles negatives)
-	ins!("LDI", 7, mk(8)); // OB
-	ins!("ADD", 7, 3);     // OB + i
-	ins!("LDI", 5, mk(1)); // 1 (key consumed)
-	ins!("SUB", 7, 5);     // addr_out = OB + i - 1
-	ins!("ST", 7, 6);      // MM[addr_out] = byte
-	ins!("ADD", 3, 5);     // i += 1
-	// branch: continue while n - i + 1 != 0
-	ins!("MOV", 6, 4);
-	ins!("SUB", 6, 3);
-	ins!("ADD", 6, 5);
-	let jz_pos = p.len() as i64;
-	ins!("JZ", 6, FIXUP); // offset patched: skip over JMP to HALT
-	ins1!("JMP", FIXUP);  // offset patched: back to loop
-	ins0!("HALT");
-	let halt_pos = p.len() as i64 - 1;
-	// ---- constants appended after code ------------------------------
-	let mut const_pos: [i64; 11] = [0; 11];
-	let vals: [i64; 10] = [
-		1, 2, 3, 4, 0, 268435456, in_base, out_base, 0, scratch,
-	];
-	for (k, v) in vals.iter().enumerate() {
-		const_pos[k + 1] = p.len() as i64 + 1; // 1-based position
-		p.push(*v);
-	}
-	// patch symbolic markers (operands stored as -id) FIRST, then
-	// JZ/JMP relative offsets (which may be negative words)
-	for w in p.iter_mut() {
-		if *w < 0 {
-			let id = (-*w) as usize;
-			*w = const_pos[id];
-		}
-	}
-	p[jz_pos as usize + 2] = halt_pos - jz_pos; // JZ: land on HALT
-	p[jz_pos as usize + 4] = loop_pos - (jz_pos + 3); // JMP: back to loop
-	// ㉛ (R014 回合 — P1-3): R014 破解的起点 = 明文程序字直接 Python
-	// 静态模拟（173,778 步、0.04s）。程序字改为加性 LCG 掩码落盘、引导
-	// 期即解——静态侦察看到的是一串无结构大整数，模拟前必须先移植解
-	// 掩码环（且钥匙每构建重抽）。掩码 = 每字 +(4096 + ks % 2.64e8)：
-	// 下界 4096 保证负偏移字（回跳 ~-300）掩后仍为正，解掩是纯减法。
-	let mut mks = mpm_seed;
-	for w in p.iter_mut() {
-		mks = (mpm_m * mks + mpm_c) % KEY_MOD;
-		*w += 4096 + mks % 264_000_000;
-	}
-	// ---- emit -------------------------------------------------------
-	let mut mp = String::from("local MP = {");
-	mp.push_str(
-		&p.iter()
-			.map(|v| v.to_string())
-			.collect::<Vec<_>>()
-			.join(", "),
-	);
-	mp.push_str("}\n");
-	mp.push_str(&format!(
-		"    do\n      local mps, mpk, mpq = {}, {}, {}\n      for mpi = 1, #MP do mps = (mpk * mps + mpq) % 268435456 MP[mpi] = MP[mpi] - (4096 + mps % 264000000) end\n    end\n",
-		mpm_seed_e, mpm_m_e, mpm_c_e
-	));
-	let gather = format!(
-		"local MM = {{}}\n    MM[1] = {}\n    MM[2] = {}\n    MM[3] = {}\n    MM[4] = #MB\n    for i = 1, #MB do MM[{} + i] = MB[i] end\n",
-		seed_e, m_e, c_e, in_base - 1
-	);
-	let mut disp = String::from(
-		"    local MR = {0, 0, 0, 0, 0, 0, 0, 0}\n    local mpc = 1\n    while true do\n      local mop = MP[mpc]\n",
-	);
-	let d3 = format!(
-		"      if mop == {} then local d = MP[mpc + 1]; MR[d] = MP[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["LDI"]
-	);
-	let ldm3 = format!(
-		"      elseif mop == {} then local d = MP[mpc + 1]; MR[d] = MM[MP[MP[mpc + 2]]]; mpc = mpc + 3\n",
-		n["LDM"]
-	);
-	let stm3 = format!(
-		"      elseif mop == {} then MM[MP[MP[mpc + 1]]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["STM"]
-	);
-	let ld3 = format!(
-		"      elseif mop == {} then local d = MP[mpc + 1]; MR[d] = MM[MR[MP[mpc + 2]]]; mpc = mpc + 3\n",
-		n["LD"]
-	);
-	let st3 = format!(
-		"      elseif mop == {} then MM[MR[MP[mpc + 1]]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["ST"]
-	);
-	let mov3 = format!(
-		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["MOV"]
-	);
-	let add3 = format!(
-		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] + MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["ADD"]
-	);
-	let sub3 = format!(
-		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] - MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["SUB"]
-	);
-	let mul3 = format!(
-		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] * MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["MUL"]
-	);
-	let div3 = format!(
-		"      elseif mop == {} then MR[MP[mpc + 1]] = FLR(MR[MP[mpc + 1]] / MR[MP[mpc + 2]]); mpc = mpc + 3\n",
-		n["DIV"]
-	);
-	let mod3 = format!(
-		"      elseif mop == {} then MR[MP[mpc + 1]] = MR[MP[mpc + 1]] % MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["MOD"]
-	);
-	let jz3 = format!(
-		"      elseif mop == {} then if MR[MP[mpc + 1]] == 0 then mpc = mpc + MP[mpc + 2] else mpc = mpc + 3 end\n",
-		n["JZ"]
-	);
-	let jmp2 = format!(
-		"      elseif mop == {} then mpc = mpc + MP[mpc + 1]\n",
-		n["JMP"]
-	);
-	let stp3 = format!(
-		"      elseif mop == {} then MP[MP[mpc + 1]] = MR[MP[mpc + 2]]; mpc = mpc + 3\n",
-		n["STP"]
-	);
-	disp.push_str(&d3);
-	disp.push_str(&ldm3);
-	disp.push_str(&stm3);
-	disp.push_str(&ld3);
-	disp.push_str(&st3);
-	disp.push_str(&mov3);
-	disp.push_str(&add3);
-	disp.push_str(&sub3);
-	disp.push_str(&mul3);
-	disp.push_str(&div3);
-	disp.push_str(&mod3);
-	disp.push_str(&jz3);
-	disp.push_str(&jmp2);
-	disp.push_str(&stp3);
-	disp.push_str("      else break end\n    end\n");
-	let mh = format!(
-		"    local MH = {{}}\n    for i = 1, MM[4] do MH[i] = CHAR(MM[{} + i]) end\n",
-		out_base - 1
-	);
-	let out = format!("{}{}{}{}", mp, gather, disp, mh);
-	if std::env::var("LURAPH_MVM_DBG").is_ok() {
-		let map_txt: Vec<String> = names.iter().map(|k| format!("{}={}", k, n[k])).collect();
-		eprintln!("MVMOPS {} INB {} OUTB {} SCR {}", map_txt.join(","), in_base, out_base, scratch);
-		eprintln!("MVM>>>{}<<<MVM", out);
-	}
-	out
-}
-
-/// P4 (防御代码隐藏): runtime string-builder for the interpreter
-/// scope — char codes stored SHUFFLED in a table plus an order list,
-/// concatenated through CHAR. Returns Lua declarations; the built
-/// value ends up in `var`.
-/// ㊶ (保护代码隐藏): 引导层环境名的隐藏构造。旧形态 = 打乱序的
-/// ASCII 码表 + 拼串循环（纸老虎：任何分析者一眼解码）。新形态与
-/// base-94 机制同族：掩码字节数组 + LCG 折叠派生（值为不透明派生
-/// 值，非 ASCII），名字 = CHAR(派生表[索引]...) 多参一次成形。
-/// 分析者要还原名字必须先重建折叠链——与解 base-94 同成本，无捷径。
 fn boot_names_block(rng: &mut Rng, names: &[(&str, &str)], obf_num: &dyn Fn(i64, &mut Rng) -> String) -> String {
 	let mut pool: Vec<u8> = Vec::new();
 	for (_v, name) in names {
@@ -749,122 +479,6 @@ fn sanitize_name(
 // 无路可走。模数取 2^26 附近两个素数（乘法积 < 2^51 精确）。
 pub const SH_M1: u64 = 67_108_859; // 2^26 - 5 (prime)
 pub const SH_M2: u64 = 67_108_819; // 2^26 - 45 (prime)
-
-fn sh_step(h1: u64, h2: u64, b: u8, k1: u64, k2: u64) -> (u64, u64) {
-	let n1 = (h1.wrapping_mul(k1) + b as u64 * (h2 % 97 + 1)) % SH_M1;
-	let n2 = (h2.wrapping_mul(k2) + b as u64 * (n1 % 89 + 1)) % SH_M2;
-	(n1, n2)
-}
-
-fn sh_bytes(bytes: &[u8], mut h1: u64, mut h2: u64, k1: u64, k2: u64) -> (u64, u64) {
-	for &b in bytes {
-		let (a, c) = sh_step(h1, h2, b, k1, k2);
-		h1 = a;
-		h2 = c;
-	}
-	(h1, h2)
-}
-
-/// ㉟ (自研压缩 — 碎片增量链): 每片对「此前全部已解码源码的拼接字典」
-/// 做贪心 LZ 增量编码。HBOOT 引导本来就在 loadstring 之前握着所有解码态
-/// 源码——解码链即压缩链：操作流只有两种，字面段 (00 + 长度 + 字节) 与
-/// 字典引用 (01 + 1 基偏移 + 长度)，全 2 字节小端，字典 ≤ ~50KB 恰好
-/// 65535 封顶。Rust 编码 / HBOOT 解码，逐字节镜像。实测语料碎片
-/// 49.8KB → 24.6KB（49%），且与解码顺序无关（增长字典吸收顺序差异）。
-fn lz_chain_encode(cur: &[u8], dict: &[u8]) -> Vec<u8> {
-	let min_match: usize = 8;
-	// 4-gram 索引（字典上）
-	let mut idx: std::collections::HashMap<[u8; 4], Vec<usize>> =
-		std::collections::HashMap::new();
-	if dict.len() >= 4 {
-		for i in 0..dict.len() - 3 {
-			let g: [u8; 4] = [dict[i], dict[i + 1], dict[i + 2], dict[i + 3]];
-			idx.entry(g).or_default().push(i);
-		}
-	}
-	let mut out: Vec<u8> = Vec::with_capacity(cur.len() / 2 + 16);
-	out.extend_from_slice(&(cur.len() as u16).to_le_bytes());
-	let mut lit: Vec<u8> = Vec::new();
-	fn flush_lit(out: &mut Vec<u8>, lit: &mut Vec<u8>) {
-		let mut rest = &lit[..];
-		while !rest.is_empty() {
-			let n = rest.len().min(65535);
-			out.push(0x00);
-			out.extend_from_slice(&(n as u16).to_le_bytes());
-			out.extend_from_slice(&rest[..n]);
-			rest = &rest[n..];
-		}
-		lit.clear();
-	}
-	let mut i: usize = 0;
-	while i < cur.len() {
-		let mut best_len: usize = 0;
-		let mut best_off: usize = 0;
-		if i + 4 <= cur.len() {
-			let g: [u8; 4] = [cur[i], cur[i + 1], cur[i + 2], cur[i + 3]];
-			if let Some(cands) = idx.get(&g) {
-				for &pos in cands.iter().rev().take(64) {
-					let mut l = 0;
-					while i + l < cur.len()
-						&& pos + l < dict.len()
-						&& cur[i + l] == dict[pos + l]
-					{
-						l += 1;
-					}
-					if l > best_len {
-						best_len = l;
-						best_off = pos + 1; // 1 基
-					}
-				}
-			}
-		}
-		if best_len >= min_match && best_off <= 65535 && best_len <= 65535 {
-			flush_lit(&mut out, &mut lit);
-			out.push(0x01);
-			out.extend_from_slice(&(best_off as u16).to_le_bytes());
-			out.extend_from_slice(&(best_len as u16).to_le_bytes());
-			i += best_len;
-		} else {
-			lit.push(cur[i]);
-			i += 1;
-		}
-	}
-	flush_lit(&mut out, &mut lit);
-	out
-}
-
-/// ㉟: 解码镜像（与 HBOOT 重建器逐字节一致）——构建期往返自检用。
-#[cfg(debug_assertions)]
-fn lz_chain_decode_check(ser: &[u8], dict: &[u8]) -> Vec<u8> {
-	let ulen = ser[0] as usize + (ser[1] as usize) * 256;
-	let mut out: Vec<u8> = Vec::new();
-	let mut pi: usize = 2; // 0 基，跳过 ulen 前缀
-	while pi < ser.len() {
-		if ser[pi] == 0 {
-			let n = ser[pi + 1] as usize + (ser[pi + 2] as usize) * 256;
-			out.extend_from_slice(&ser[pi + 3..pi + 3 + n]);
-			pi += 3 + n;
-		} else {
-			let off = ser[pi + 1] as usize + (ser[pi + 2] as usize) * 256;
-			let n = ser[pi + 3] as usize + (ser[pi + 4] as usize) * 256;
-			out.extend_from_slice(&dict[off - 1..off - 1 + n]);
-			pi += 5;
-		}
-	}
-	out.truncate(ulen);
-	out
-}
-
-/// ㉚: 碎片自由填充尾注（>= 8B，实际 14–22B 随机）——回填搜索空间
-/// + 每构建长度熵。尾注释对 loadstring 无副作用，且进哈希链。
-fn frag_pad(src: &mut Vec<u8>, rng: &mut Rng) {
-	const PADCHARS: &[u8] = b"abcdefghjkmnpqrstuvwxyzABDEFGHJKLMNPQRSTUVWXYZ23456789";
-	src.extend_from_slice(b"--");
-	let pn = rng.int(12, 20);
-	for _ in 0..pn {
-		src.push(PADCHARS[rng.int(0, PADCHARS.len() as i64 - 1) as usize]);
-	}
-}
 
 fn sanitize_frag(
 	src: &str,
@@ -1547,7 +1161,7 @@ pub fn generate(
 	// 51 (IronBrew2 executor 认证守卫移植): true ⇒ 发射 EXG 碎片
 	// (wire 209)，认证令牌揉进原型/常量池钥匙流；非目标环境毒杀。
 	executor_bind: bool,
-	// ㊶ (保护代码隐藏): 守卫整体进 HBOOT 掩码层（可见层零保护痕迹）。
+	// H4-3: 守卫进入静态 HBOOT，敏感 API/元方法词以 CHAR 字节构造。
 	guard: bool,
 ) -> String {
 	let mut oc_items = Vec::new();
@@ -2429,37 +2043,13 @@ pub fn generate(
 		"TYP", "GMT", "RGET", "RSET", "U", "MS",
 		"AV", "HW2",
 	];
-	let prelude_lhs = env_names.join(", ");
-	let prelude_rhs: Vec<String> =
-		(0..env_names.len()).map(|i| format!("E[{}]", i + 1)).collect();
-	let prelude_rhs = prelude_rhs.join(", ");
 	let e_table = format!(
 		"{{{}, k = pf.k, ln = 0, lb = 0, pc = 1, b = 0, callx = 0, done = false, out = {{}}, total = 0, tp = TP}}",
 		env_names.join(", ")
 	);
 	let hfrag: String;
 	let handler_defs = if v15 {
-		let hm = (rng.int(1_048_577, 33_000_001) | 1) as u32;
-		let hc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
-		let hseed = rng.int(1_048_576, 268_435_455) as u32;
-		let mut frags: Vec<(u16, Vec<u8>)> = Vec::new(); // (wire, source bytes)
-		// H2-2 (构建差异化：段编号语义↔编号随机映射): 特殊段编号每构建重抽。
-		// 低区（<256，进 HW2 展开域）从「非操作码 wire」空档里抽——操作码
-		// 四表占 {0..42, 64..106, 128..170, 192..234}（含 nop_alias），
-		// 空档 = {43..63, 107..127, 171..191, 235..255}；高区（≥256，留在
-		// HW 表作不透明句柄）从 256..511 抽。R028/R029 实测「av→段映射
-		// 全固定（208=ec、41=LOADK…）」是知识迁移 100% 的根因之一，此处
-		// 彻底消除：同一语义段在两次构建里编号不同，攻击者的段号→语义
-		// 对照表作废。
-		let mut free_lo: Vec<u16> = Vec::new();
-		for (a, b) in [(43u16, 63u16), (107, 127), (171, 191), (235, 255)] {
-			for w in a..=b {
-				free_lo.push(w);
-			}
-		}
-		rng.shuffle(&mut free_lo);
-		let w_exg = free_lo[0];
-		manifest_key("W_EXG", w_exg as u64);
+		// H4-2C1/C2/H4-3 retire every BSS/RT/EXG/handler source wire.
 		// 增量⑲ / H4-2B (CPS 去中心化, Call 浅化): Luau 无正确尾调用，
 		// 调用点若在链深处执行，用户递归每层会叠 ~K 个链帧。Call 家族
 		// 因此保持两相：数值 chain microcode 打包参数并解链回蹦床；四个
@@ -2486,47 +2076,6 @@ pub fn generate(
 		}
 		let mut micro_program_counts = vec![0usize; n_micro_shards];
 		let mut micro_checksum: u64 = 0;
-		// 增量⑲ (递归帧瘦身): Luau 无 TCO，用户递归每层叠数个链帧，
-		// 每帧的 env prelude 绑定是栈槽大头。按 body（含尾链附言）实际
-		// 引用做**选择性绑定**——平均帧槽从 29 降到个位数，深递归极限
-		// 抬升数倍。word-boundary 判定（std-only，无 regex crate）。
-		fn word_in(h: &str, n: &str) -> bool {
-			let hb = h.as_bytes();
-			let nb = n.as_bytes();
-			let is_ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
-			let mut start = 0usize;
-			while start + nb.len() <= hb.len() {
-				match h[start..].find(n) {
-					Some(off) => {
-						let i = start + off;
-						let before_ok = i == 0 || !is_ident(hb[i - 1]);
-						let j = i + nb.len();
-						let after_ok = j >= hb.len() || !is_ident(hb[j]);
-						if before_ok && after_ok {
-							return true;
-						}
-						start = i + 1;
-					}
-					None => return false,
-				}
-			}
-			false
-		}
-		let selective_prelude = |body: &str| -> String {
-			let mut lhs: Vec<&str> = Vec::new();
-			let mut rhs: Vec<String> = Vec::new();
-			for (i, nm) in env_names.iter().enumerate() {
-				if word_in(body, nm) {
-					lhs.push(nm);
-					rhs.push(format!("E[{}]", i + 1));
-				}
-			}
-			if lhs.is_empty() {
-				String::new()
-			} else {
-				format!("local {} = {} ", lhs.join(", "), rhs.join(", "))
-			}
-		};
 		for (name, wire) in &items {
 			if let Some(recipe) = micro_recipe(name) {
 				let shard_index = rng.int(0, n_micro_shards as i64 - 1) as usize;
@@ -2562,41 +2111,10 @@ pub fn generate(
 				));
 				continue;
 			}
-			let mut body = if name == "Nop" || name == "NopA" {
-				nop.clone()
-			} else {
-				handlers::gen(name, fmt_of[name], true, &mut pool, mk)
-			};
-			body = body.replace("lastbase", "E.lb").replace("lastn", "E.ln");
-			// 增量⑲ (CPS 去中心化尾调用链): the central dispatch loop is
-			// gone — every non-Return handler ends with its own
-			// fetch+dispatch epilogue tail-calling the next handler (pc
-			// threads through E.pc); jumps write E.pc in place; Return
-			// exits the chain with `return U(out, 1, total)`, whose
-			// values propagate back through the all-tail-called chain.
-			// The Call family is split into numeric chain and post-call
-			// descriptors. Only four minimal static executor closures span the
-			// actual user call, keeping the trampoline recursion budget intact.
-			if matches!(name.as_str(), "Jmp" | "Jf" | "Jt") {
-				body = body.replace("pc = b", "E.pc = b");
-			}
-			if name == "Return" {
-				// 增量⑲: the chain cannot hand results back through a
-				// bounded-depth unwind — Return stores them in E and
-				// sets the done flag; the trampoline exits with
-				// U(E.out, 1, E.total).
-				body = body
-					.replace(
-						"return U(out, 1, total)",
-						"E.out = out; E.total = total; E.done = true; return",
-					)
-					.replace(
-						"return U(ov, 1, tot)",
-						"E.out = ov; E.total = tot; E.done = true; return",
-					);
-			} else if let Some(ci) =
-				call_names.iter().position(|n| *n == name.as_str())
-			{
+			let ci = call_names
+				.iter()
+				.position(|n| *n == name.as_str())
+				.unwrap_or_else(|| panic!("H4-3 source handler fallback reached: {}", name));
 				// H4-2B: the chain phase is already numeric (M_CALL*).  Encode
 				// result placement as a second descriptor in a deliberately
 				// different/rotated shard.  The executor itself performs only the
@@ -2634,14 +2152,10 @@ pub fn generate(
 					executor = ci + 1,
 					tail = post_tail,
 				));
-			} else {
-				body.push(' ');
-				body.push_str(&chain_epilogue(rng, &wk));
-			}
+
 			// The argument-pack/unwind half of each Call is independently encoded
 			// from its post-call descriptor; no Call source fragment is emitted.
-			if let Some(recipe) = micro_call_recipe(name) {
-				let ci = call_names.iter().position(|n| *n == name.as_str()).unwrap();
+			let recipe = micro_call_recipe(name).expect("numeric Call recipe");
 				let post_shard = (call_post_shard_offset + ci) % n_micro_shards;
 				let shard_delta = rng.int(1, n_micro_shards as i64 - 1) as usize;
 				let shard_index = (post_shard + shard_delta) % n_micro_shards;
@@ -2670,13 +2184,6 @@ pub fn generate(
 					index = program_index,
 				));
 				continue;
-			}
-			let src = format!(
-				"return function(E,a,b,c,d) {}{} end",
-				selective_prelude(&body),
-				body
-			);
-			frags.push((*wire as u16, src.into_bytes()));
 		}
 		let micro_assignments = std::mem::take(&mut micro_fill);
 		micro_fill.push_str("local _mo={} ");
@@ -3264,13 +2771,14 @@ pub fn generate(
 			step = rt_phase_step,
 			dispatch = rt_phase_dispatch,
 		);
-		// 51: EXG 碎片（executor 认证守卫）随其余碎片一同净化 + 压缩 +
-		// 哈希链钥匙流掩码——可见层零痕迹。HBOOT 通用 `(LS(s) or PD)()`
-		// 调用路径在解码时即运行开机认证（probe(0, true)），结果表
-		// {令牌, 探针} 存入 HW[209]。
-		if let Some(s) = exg_src {
-			frags.push((w_exg, s.into_bytes()));
-		}
+		// H4-3: optional EXG also becomes a static one-shot factory. Keeping it
+		// as the final conditional HQ fragment would leave a hidden loader
+		// fallback in --bind-executor builds even after the default path hit 0.
+		let mut exg_static_src = exg_src.map(|s| {
+			s.strip_prefix("return ")
+				.expect("EXG factory source")
+				.to_string()
+		});
 		// ㉘-A: 碎片源码净化（注释剥离 + 全标识符改名 + 单行化）。
 		// 保留集 = Lua 关键字 + 运行时固定全局名；改名映射跨全部碎片
 		// 一致（字段名跨碎片共享，必须同名）。
@@ -3352,111 +2860,31 @@ pub fn generate(
 			"local _RTPKX_=({}) local _RTPCX_=({}) RTFRAG={} ",
 			rt_phase_poison_e, rt_phase_checksum_e, rt_static_src
 		);
-		for (_wire, src) in frags.iter_mut() {
-			let text = String::from_utf8(std::mem::take(src)).unwrap();
-			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
-				.into_bytes();
-		}
-		// H4-1 static micro wrappers live in the outer lexical scope, so their
-		// locals must remain visible to that scope; only dot-fields are remapped
-		// through the fragment-wide map to match RT/handler state field names.
-		micro_fill = remap_fragment_fields(&micro_fill, &frag_map);
-		// ㉚ B-2: 每碎片自由填充尾注（14–22B 随机）——回填搜索空间
-		// + 每构建长度熵；尾注随源码一起进哈希链。
-		for (_wire, src) in frags.iter_mut() {
-			frag_pad(src, rng);
-		}
-		// ㉘ 研究/测试钩子: 转储净化后的碎片源码（环境门控，默认关）。
-		// ㉚: 每片一行（尾注填充在行尾，检查侧可按 $ 锚定剥离）。
-		if let Ok(dir) = std::env::var("LURAPH_FRAG_SAN") {
-			for (wire, src) in frags.iter() {
-				let mut out = src.clone();
-				out.push(b'\n');
-				std::fs::write(format!("{}/san_{:03}.src", dir, wire), &out).unwrap();
-			}
-		}
-		// mask + base-94 pack. B-2 (㉚): per-fragment keystream seed =
-		// (hseed + wire*hstep + rv_prev*sh_mul) % 2^28，rv_prev = 此前
-		// 全部已解出源码的链式哈希（HBOOT 自身源码为链头）。篡改任何
-		// 一片 ⇒ 其后全部碎片钥匙错位；链上无任何比较语句——哈希就是
-		// 钥匙本身（攻击方四约束之 1/3）。
-		let hstep = rng.int(1_048_576, 268_435_455) as u32;
-		let alpha = carrier.alphabet;
-		let mut slots: Vec<i64> = (1..=2000).collect();
-		rng.shuffle(&mut slots);
-		// 增量⑩: handler-fragment keystream keys KF-assembled, anchored
-		// on #hqi (the fragment-index table declared in the same block).
-		// NOTE: hqi is a Vec of "w, s, l" TRIPLET strings that join into
-		// a flat table — runtime #hqi = 3 * hqi.len().
-		// （㉚ 前移：HBOOT 模板必须在碎片加密之前定型——它是链头）
-		let n_hqi = 3 * frags.len() as i64;
-		// H4-2C2 default builds have zero HQ fragments. A zero-valued anchor
-		// would degenerate `A + m*#hqi` into a raw key-table literal, so fall
-		// back to non-anchored split/affine recipes in that case.
-		let hqi_anchor = if n_hqi == 0 {
-			None
+		let exg_fill = if let Some(src) = exg_static_src.take() {
+			let clean = sanitize_frag(
+				&src,
+				rng,
+				&mut frag_map,
+				&frag_reserved,
+				&mut frag_used,
+			);
+			format!("EXGFRAG={} ", clean)
 		} else {
-			Some(("#hqi", n_hqi))
+			String::new()
 		};
-		let hseed_e = ke.key_expr(hseed as i64, hqi_anchor, rng);
-		let hstep_e = ke.key_expr(hstep as i64, hqi_anchor, rng);
-		let hm_e = ke.key_expr(hm as i64, hqi_anchor, rng);
-		let hc_e = ke.key_expr(hc as i64, hqi_anchor, rng);
-		manifest_key("HQ_SEED", hseed as u64);
-		manifest_key("HQ_STEP", hstep as u64);
-		manifest_key("HQ_KM", hm as u64);
-		manifest_key("HQ_KC", hc as u64);
-		// ㉚ B-2: 哈希链常量——每构建随机乘数/初值/链系数，全部经
-		// #hqi 锚点装配（HBOOT 内零字面量）。k/mul < 2^24 → Lua 侧
-		// 所有乘积 < 2^52 精确（double 无损）。
-		let sh_k1 = (rng.int(1_048_576, 16_777_215) | 1) as u64;
-		let sh_k2 = (rng.int(1_048_576, 16_777_215) | 1) as u64;
+		// Static micro wrappers share RT's randomized field dialect.
+		micro_fill = remap_fragment_fields(&micro_fill, &frag_map);
+		// H4-3: no HQ source fragments remain. Two random lanes carry the
+		// static HBOOT descriptor/environment result into RT's independent
+		// instruction/constant key constraints.
 		let sh_iv1 = rng.int(0, SH_M1 as i64 - 1) as u64;
 		let sh_iv2 = rng.int(0, SH_M2 as i64 - 1) as u64;
-		let sh_mul = (rng.int(1_048_576, 16_777_215) | 1) as u64;
-		// H2-6（链种子构成随机化）: 除 wire/链终态各自的随机线性系数外，
-		// 再加入每构建随机的 wire×rv 交叉项。它不是恒零装饰：Rust 加密
-		// 镜像与 HBOOT 解密都实际消费该项，删掉/复用旧固定公式会直接错钥。
-		// 先对 wire×rv 取 2^28 模，随后乘数 <2^24，Lua double 全程 <2^53。
-		let sh_cross = (rng.int(1_048_576, 16_777_215) | 1) as u64;
-		let sh_k1_e = ke.key_expr(sh_k1 as i64, hqi_anchor, rng);
-		let sh_k2_e = ke.key_expr(sh_k2 as i64, hqi_anchor, rng);
-		let sh_iv1_e = ke.key_expr(sh_iv1 as i64, hqi_anchor, rng);
-		let sh_iv2_e = ke.key_expr(sh_iv2 as i64, hqi_anchor, rng);
-		let sh_mul_e = ke.key_expr(sh_mul as i64, hqi_anchor, rng);
-		let sh_cross_e = ke.key_expr(sh_cross as i64, hqi_anchor, rng);
-		manifest_key("CHAIN_K1", sh_k1);
-		manifest_key("CHAIN_K2", sh_k2);
-		manifest_key("CHAIN_MUL", sh_mul);
-		manifest_key("CHAIN_CROSS", sh_cross);
+		let sh_iv1_e = ke.key_expr(sh_iv1 as i64, None, rng);
+		let sh_iv2_e = ke.key_expr(sh_iv2 as i64, None, rng);
 		manifest_key("CHAIN_IV1", sh_iv1);
 		manifest_key("CHAIN_IV2", sh_iv2);
-		// P4 (防御代码隐藏): the loader/integrity names never appear
-		// in the output — each is runtime-built from shuffled char
-		// codes (user style), then the nativeness check runs exactly
-		// as before (hooked loader -> silent trap, never an oracle).
-		// 增量⑮ (引导桩分层): the HQ decode loop itself becomes an
-		// encrypted META fragment (HBOOT). The visible boot shrinks to
-		// a small meta-decoder with a DIFFERENT codec (additive LCG
-		// over a masked byte array, keystream assembled from the KT
-		// lookup tables). Static analysts must now: port the
-		// meta-decoder -> recover HBOOT -> port the HQ loop -> decode
-		// remaining HQ fragments. The parser is no longer an HQ/loadstring
-		// payload after H4-2C1; it is a separate one-shot numeric boot machine.
-		// ㉚ B-2 (源码自校验哈希链): HBOOT 新增职责——
-		//   * 收 HB 参数（自身源码，可见引导经 table.concat(MH) 传入）
-		//     并先对它走链 → 换掉 HBOOT 即链头偏移；
-		//   * 每片解码钥匙揉入「此前全部源码」的链值（rv * sh_mul）
-		//     → 篡改前片 ⇒ 后片全部解出垃圾；
-		//   * 每片解码后、loadstring 前对解码态源码走链；
-		//   * 返回链终值 (h1, h2) → 可见引导转交 RT 碎片，在块钥匙流
-		//     里做**双独立归零约束**（指令块一条、常量池一条，合计
-		//     ~52bit 二预映像难度）——期望哈希不落任何明文常量。
-		//   SH 助手 = 双车道非线性步（Rust 镜像 sh_step，逐位一致）。
-		// ㊶ (保护代码隐藏, 对照样本形态): 守卫整体进 HBOOT 掩码层——
-		// 环境完整性检查/挂钩检测/蜜罐全部在掩码字节里（文件零痕迹），
-		// 时机 = HBOOT 开头、碎片解码之前，防线不后移。蜜罐表经第 5
-		// 返回值递出、引导存进 HW2 高位槽（运行期持久、形似 VM 状态）。
+		// H4-3 static guard is embedded in the randomized HBOOT closure.
+		// It executes before BSS and its canary holder remains sealed in HPH.
 		let (guard_embed, guard_holder) = if guard {
 			let (g, holder) = crate::guard::hboot_guard_source(rng);
 			(g + " ", holder)
@@ -3471,7 +2899,7 @@ pub fn generate(
         let vault_get_name = format!("_vg{}", rng.int(10, 99));
         let vault_ckj_e = ke.key_expr(ckj, None, rng);
         let vault_def = format!(
-            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7] end ",
+            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS,HBD}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8] end ",
             vn = vault_nonce_name,
             vt = vault_name,
             vg = vault_get_name,
@@ -3483,16 +2911,15 @@ pub fn generate(
         // 到语义局部名。R028/R029 那种「第 N 参 + 固定名字」双重模板都会
         // 失效。末两项仍是 vault getter/nonce，但其位置与名字均不可复用。
         let shell_params: Vec<&str> = vec![
-            "HQ", "hqi", "AL", "BYTE", "CHAR", "FLR", "SUB", "LS", "KA", "KB",
-            "KC", "KM", "HB", "EV", "PD", "FN_", "NOPA_", "TK_", "DC1", "R16",
-            "CKM_", "CKC_", "BKM_", "BKC_", "BSEED_", "BSTEP_", "TYP_", "TSTR_",
-            "GET_", "NONCE_",
+            "AL", "BYTE", "CHAR", "FLR", "SUB", "KA", "KB", "KC", "KM", "EV",
+            "FN_", "NOPA_", "TK_", "DC1", "R16", "CKM_", "CKC_", "BKM_",
+            "BKC_", "BSEED_", "BSTEP_", "TYP_", "TSTR_", "GET_", "NONCE_",
         ];
         let shell_args: Vec<String> = {
             let mut v: Vec<String> = vec![
-                "HQ", "hqi", "AL", "BYTE", "CHAR", "FLR", "SUB", "LS", "KA", "KB",
-                "KC", "KM", "HB", "EV", "PD", "FN", "NOPA", "TK", "decarrier", "r16",
-                "CKM", "CKC", "BKM", "BKC", "BSEED", "BSTEP", "TYP", "TSTR",
+                "AL", "BYTE", "CHAR", "FLR", "SUB", "KA", "KB", "KC", "KM", "EV",
+                "FN", "NOPA", "TK", "decarrier", "r16", "CKM", "CKC", "BKM",
+                "BKC", "BSEED", "BSTEP", "TYP", "TSTR",
             ].into_iter().map(|x| x.to_string()).collect();
             v.push(vault_get_name.clone());
             v.push(vault_nonce_name.clone());
@@ -3526,131 +2953,105 @@ pub fn generate(
 		} else {
 			(String::new(), String::new(), String::new())
 		};
+		// H4-3: static HBOOT uses a one-shot three-phase numeric protocol.
+		// It never reconstructs Lua source and never calls a loader. Environment
+		// probe drift and descriptor drift both flow into HD, which poisons BSS
+		// block encoding plus the two RT key constraints without an error oracle.
+		let mut hb_phase_pool: Vec<u8> = (17..=239).collect();
+		rng.shuffle(&mut hb_phase_pool);
+		let hb_phase_codes = [hb_phase_pool[0], hb_phase_pool[1], hb_phase_pool[2]];
+		let hb_phase_mask = rng.int(1, 255) as u8;
+		let hb_phase_step = (rng.int(1, 255) | 1) as u8;
+		let hb_phase_stored: Vec<u8> = hb_phase_codes
+			.iter()
+			.enumerate()
+			.map(|(i, code)| {
+				((*code as usize + hb_phase_mask as usize + (i + 1) * hb_phase_step as usize)
+					% 256) as u8
+			})
+			.collect();
+		let mut hb_phase_checksum: i64 = 0;
+		for &v in std::iter::once(&hb_phase_mask)
+			.chain(std::iter::once(&hb_phase_step))
+			.chain(hb_phase_stored.iter())
+		{
+			hb_phase_checksum = (hb_phase_checksum * 257 + v as i64) % KEY_MOD;
+		}
+		let hb_phase_poison = rng.int(1, KEY_MOD - 1);
+		let hb_phase_checksum_e = ke.key_expr(hb_phase_checksum, None, rng);
+		let hb_phase_poison_e = ke.key_expr(hb_phase_poison, None, rng);
+		manifest_key("HBOOT_PHASE_CK", hb_phase_checksum as u64);
+		manifest_key("HBOOT_PHASE_POISON", hb_phase_poison as u64);
+		let hb_factory =
+			"_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string();
+		let hb_execute =
+			"_b1,_b2=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD)%268435456,CKJ_)".to_string();
+		let hb_seal = "_ready=1".to_string();
+		let mut hb_phase_branches = vec![
+			(hb_phase_codes[0], hb_factory),
+			(hb_phase_codes[1], hb_execute),
+			(hb_phase_codes[2], hb_seal),
+		];
+		rng.shuffle(&mut hb_phase_branches);
+		let hb_phase_dispatch = hb_phase_branches
+			.iter()
+			.enumerate()
+			.map(|(i, (code, body))| {
+				let head = if i == 0 {
+					if rng.int(0, 1) == 0 {
+						format!("if _op=={}", code)
+					} else {
+						format!("if {}==_op", code)
+					}
+				} else if rng.int(0, 1) == 0 {
+					format!("elseif _op=={}", code)
+				} else {
+					format!("elseif {}==_op", code)
+				};
+				format!("{} then {} ", head, body)
+			})
+			.collect::<String>()
+			+ &format!(
+				"else HD=(HD+({}))%268435456 end",
+				hb_phase_poison_e
+			);
 		let hboot_src = format!(
-			"return function({shell_sig}) {shell_bind}{guard}local PS_, PT_, KM_, KC_, PB_, CKJ_, BSSF_ = GET_(NONCE_) local HW = {{}} local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local rv = (h1 + h2 * 257) % 268435456 local hs = ({hseed} + w * {hstep} + rv * {hmul} + ((w * rv) % 268435456) * {hcross}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end HW[w] = (LS(s) or PD)() end local _lv0 = BSSF_ local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
+			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_=GET_(NONCE_) local HD=HBD_ local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end HD=(HD+(_hc-({expected})))%268435456 local _lv1,_b1,_b2 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD=(HD+({poison}))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD)%{m1} local h2=({iv2}+HD*257)%{m2} local _O1,_O2,_O3,_O4,_O5{hpret_decl}=HW,_b1,_b2,h1,h2{hpret} HW,_b1,_b2,h1,h2{hpret}=nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
 			shell_sig = shell_sig,
 			shell_bind = shell_bind,
+			program = hb_phase_stored
+				.iter()
+				.map(|v| v.to_string())
+				.collect::<Vec<_>>()
+				.join(","),
+			mask = hb_phase_mask,
+			step = hb_phase_step,
+			expected = hb_phase_checksum_e,
+			poison = hb_phase_poison_e,
+			dispatch = hb_phase_dispatch,
 			hpret_decl = hpret_decl,
 			hpret_nil_r = hpret_nil_r,
 			hpret_ret = hpret_ret,
-			hseed = hseed_e, hstep = hstep_e, hm = hm_e, hc = hc_e,
-			k1 = sh_k1_e, k2 = sh_k2_e, m1 = SH_M1, m2 = SH_M2,
-			iv1 = sh_iv1_e, iv2 = sh_iv2_e, hmul = sh_mul_e, hcross = sh_cross_e,
+			iv1 = sh_iv1_e,
+			iv2 = sh_iv2_e,
+			m1 = SH_M1,
+			m2 = SH_M2,
 		);
 		// ㉘-A: HBOOT 元碎片同样净化（名字/注释不泄漏）；㉚: 自由填充
 		// 尾注，随后其字节作为链头进哈希。
 		if std::env::var("LURAPH_HBOOT_DBG").is_ok() {
 			eprintln!("HBOOT_POST_SAN: {}", hboot_src);
 		}
-		let mut hb_bytes =
-			sanitize_frag(&hboot_src, rng, &mut frag_map, &frag_reserved, &mut frag_used)
-				.into_bytes();
-		frag_pad(&mut hb_bytes, rng);
-		// ㉚: 链初值 = HBOOT 自身源码的哈希（boot 以 HB 参数回传同一串）
-		let (mut ch1, mut ch2) = sh_bytes(&hb_bytes, sh_iv1, sh_iv2, sh_k1, sh_k2);
-		// ㉚: 解码顺序 = hqi 洗牌序；Rust 侧按同一顺序走链并逐片加密。
-		let mut order: Vec<usize> = (0..frags.len()).collect();
-		rng.shuffle(&mut order);
-		let mut hq_lines = String::from("local HQ = {}\n");
-		let mut hqi_vals: Vec<i64> = Vec::new();
-		// ㉟: 增量链字典 = HBOOT 自身源码开头（解码侧以 HB 同样初始化），
-		// 其后每片解码态源码依次并入——与 HBOOT 的重建严格同序。
-		let mut lz_dict: Vec<u8> = hb_bytes.clone();
-		for (_pos, &fi) in order.iter().enumerate() {
-			let (_wire, src) = &frags[fi];
-			let rv = (ch1 + ch2 * 257) % 268_435_456;
-			let wrv = (*_wire as u64 * rv) % 268_435_456;
-			let mut state = ((hseed as u64
-				+ *_wire as u64 * hstep as u64
-				+ rv * sh_mul
-				+ wrv * sh_cross)
-				% 268_435_456) as u64;
-			// ㉟: 加密对象 = 增量链压缩流（HBOOT 先重建源码再走原链）；
-			// ㉚ 链哈希照旧走在**重建后**的解码态源码上（见下方链推进）。
-			let payload = lz_chain_encode(src, &lz_dict);
-			#[cfg(debug_assertions)]
-			{
-				let back = lz_chain_decode_check(&payload, &lz_dict);
-				assert!(
-					back == *src,
-					"lz roundtrip fail: wire {} len {} vs {}",
-					_wire,
-					back.len(),
-					src.len()
-				);
-			}
-			lz_dict.extend_from_slice(src);
-			let mut xb: Vec<u8> = payload
-				.iter()
-				.map(|&b| {
-					state = (hm as u64 * state + hc as u64) % 268_435_456;
-					b.wrapping_add(fold_key(state))
-				})
-				.collect();
-			let blen = xb.len();
-			while xb.len() % 4 != 0 {
-				xb.push(0);
-			}
-			let mut digits: Vec<u8> = Vec::with_capacity(xb.len() / 4 * 5);
-			for chunk in xb.chunks(4) {
-				let mut v = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-				let mut d = [0u8; 5];
-				for k in 0..5 {
-					d[4 - k] = alpha[(v % 94) as usize];
-					v /= 94;
-				}
-				digits.extend_from_slice(&d);
-			}
-			let slot = slots[fi];
-			// clash-free long-string level (printer parity): the FIRST
-			// closer `]=*]` in content+closer must land exactly at the
-			// content end (guards content ending in `]=*`, which would
-			// pull the close forward and strand a stray `]`)
-			let digits_s = String::from_utf8(digits).unwrap();
-			let mut lvl = 0usize;
-			loop {
-				let closer = format!("]{}]", "=".repeat(lvl));
-				let joined = format!("{}{}", digits_s, closer);
-				let first = joined.find(&closer);
-				let closer_ok = first == Some(digits_s.len());
-				let opener_ok = lvl > 0 || !digits_s.contains("[[");
-				if closer_ok && opener_ok {
-					break;
-				}
-				lvl += 1;
-			}
-			let o = "=".repeat(lvl);
-			hq_lines.push_str(&format!(
-				"  HQ[{slot}] = [{o}[{d}]{o}]\n",
-				slot = slot,
-				o = o,
-				d = digits_s
-			));
-			hqi_vals.push(*_wire as i64);
-			hqi_vals.push(slot);
-			hqi_vals.push(blen as i64);
-			// ㉚: 链推进——本片解码态源码（含填充尾注）入链；下一片
-			// 的钥匙种子里的 rv 即「此前全部源码」的链值。
-			let (a, c) = sh_bytes(src, ch1, ch2, sh_k1, sh_k2);
-			ch1 = a;
-			ch2 = c;
-		}
-		// ㉚ B-2: 链终值 (sh1, sh2) = 全部源码完整性的期望锚点。构建期
-		// 由此派生两组归零常量（ CBC/CCC = -(H·C) mod 2^28 ）；运行期
-		// HBOOT 走同一条链把终值交回，RT 碎片内做
-		//   D_b = (H1*CB1 + H2*CB2 + CBC) % 2^28 → 揉进指令块钥匙流
-		//   D_c = (H1*CC1 + H2*CC2 + CCC) % 2^28 → 揉进常量池钥匙流
-		// 源码未动 ⇒ D_b = D_c = 0（程序原样跑）；任何一层源码被改 ⇒
-		// 双约束同时非零 ⇒ 解密结构完好、内容全错（攻击方约束之 4）。
-		// 期望哈希不以明文常量落盘——回填重算无目标可打（约束之 1）。
-		// 系数 < 2^25 → H*C 乘积 < 2^51，Lua 侧精确。
-		if std::env::var("LURAPH_LZ_DBG").is_ok() {
-			eprintln!("LZEXP {},{}", ch1, ch2);
-		}
-		let sh1 = ch1 as i64;
-		let sh2 = ch2 as i64;
+		let hboot_static_src =
+			sanitize_frag(&hboot_src, rng, &mut frag_map, &frag_reserved, &mut frag_used);
+		let hboot_fill = format!("HBOOT={} ", hboot_static_src);
+		// Static HBOOT no longer hashes reconstructed source text. Its clean
+		// phase state starts from the two random IVs; descriptor/environment
+		// drift is added to both lanes at runtime before RT consumes them.
+		let sh1 = sh_iv1 as i64;
+		let sh2 = sh_iv2 as i64;
 		let sh_cb1 = rng.int(1_048_576, 33_554_431) | 1;
 		let sh_cb2 = rng.int(1_048_576, 33_554_431) | 1;
 		let sh_cc1 = rng.int(1_048_576, 33_554_431) | 1;
@@ -3812,113 +3213,10 @@ pub fn generate(
 			}
 			h
 		};
-		let hqi_km = rng.int(1_048_577, 33_000_001) | 1;
-		let hqi_ks0 = rng.int(1_048_576, KEY_MOD - 1);
-		let hqi_kc = rng.int(1_048_576, KEY_MOD - 1);
-		let hqi_km_e = ke.key_expr(hqi_km, None, rng);
-		let hqi_ks0_e = ke.key_expr(hqi_ks0, None, rng);
-		let hqi_kc_e = ke.key_expr(hqi_kc, None, rng);
-		manifest_key("HQI_KM", hqi_km as u64);
-		manifest_key("HQI_KS", hqi_ks0 as u64);
-		manifest_key("HQI_KC", hqi_kc as u64);
-		// ㊺ (绑定折叠前移): hqi 段表解掩种子 = 引导期第一个解码步骤。
-		// 绑定态把 ef1（环境值折叠）以分裂乘积直参形揉进种子：忠实环境
-		// ef1 == env_exp ⇒ 解掩种子还原 hqi_ks0（镜像同步）；环境失真 ⇒
-		// 段表先解出垃圾（比元钥匙流污染更早的死亡面）。
-		// ㊻ (R018 报告 P1 收窄形态 — pb 双消费前移): pb（loadstring 原生性
-		// 探针折叠）新增揉进同一种子——引导期第一个解码步骤同时绑定原生性
-		// 探针：挂钩换源 ⇒ 段表阶段即死（比元钥匙流污染更早一步）。
-		// pb 为模式无关因子（绑定/未绑定都消费）；ef1 仍仅绑定态。
-		// 镜像假设 = 干净环境折叠值（pb → c_fold），与元种子消费同款，
-		// 无新增环境假设。精度边界: 四项积各 < 2^44，和 < 2^46，精确。
-		let hqi_pb_mix = rng.int(1_048_576, KEY_MOD - 1);
-		let hqi_pb_mix_hi = (hqi_pb_mix * 65536) % KEY_MOD;
-		let hqi_pb_mix_e = ke.key_expr(hqi_pb_mix, None, rng);
-		let hqi_pb_mix_hi_e = ke.key_expr(hqi_pb_mix_hi, None, rng);
-		manifest_key("HQI_PB_MIX", hqi_pb_mix as u64);
-		manifest_key("HQI_PB_MIX_HI", hqi_pb_mix_hi as u64);
-		let (hqi_seed_rt, hqi_ks0_eff) = if env_slots.is_some() {
-			let hqi_env_mix = rng.int(1_048_576, KEY_MOD - 1);
-			let hqi_env_mix_hi = (hqi_env_mix * 65536) % KEY_MOD;
-			let hqi_env_mix_e = ke.key_expr(hqi_env_mix, None, rng);
-			let hqi_env_mix_hi_e = ke.key_expr(hqi_env_mix_hi, None, rng);
-			manifest_key("HQI_ENV_MIX", hqi_env_mix as u64);
-			manifest_key("HQI_ENV_MIX_HI", hqi_env_mix_hi as u64);
-			(
-				format!(
-					"({} + (ef1 % 65536) * {} + FLR(ef1 / 65536) * {} + (pb % 65536) * {} + FLR(pb / 65536) * {}) % 268435456",
-					hqi_ks0_e, hqi_env_mix_e, hqi_env_mix_hi_e,
-					hqi_pb_mix_e, hqi_pb_mix_hi_e
-				),
-				(hqi_ks0
-					+ (env_exp % 65536) * hqi_env_mix
-					+ (env_exp / 65536) * hqi_env_mix_hi
-					+ (c_fold % 65536) * hqi_pb_mix
-					+ (c_fold / 65536) * hqi_pb_mix_hi)
-					% KEY_MOD,
-			)
-		} else {
-			(
-				format!(
-					"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}) % 268435456",
-					hqi_ks0_e, hqi_pb_mix_e, hqi_pb_mix_hi_e
-				),
-				(hqi_ks0
-					+ (c_fold % 65536) * hqi_pb_mix
-					+ (c_fold / 65536) * hqi_pb_mix_hi)
-					% KEY_MOD,
-			)
-		};
-		let mut hks = hqi_ks0_eff;
-		let hqi_masked: Vec<String> = hqi_vals
-			.iter()
-			.map(|v| {
-				hks = (hqi_km * hks + hqi_kc) % KEY_MOD;
-				(v + hks).to_string()
-			})
-			.collect();
-		let hqi_unmask = format!(
-			"do\n      local hqs, hqm, hqc = {}, {}, {}\n      for hqi_ = 1, #hqi do hqs = (hqm * hqs + hqc) % 268435456 hqi[hqi_] = hqi[hqi_] - hqs end\n    end\n    ",
-			hqi_seed_rt, hqi_km_e, hqi_kc_e
-		);
-		// meta keystream: fresh random constants assembled through the
-		// same KT lookup machinery (no bare literals; a codec DISTINCT
-		// from the base-94 HQ machinery so the analyst gets no free
-		// reuse).
+		// Static HBOOT still consumes the old native-loader/environment fold,
+		// but as a direct key offset (HBD) rather than a source-decryption seed.
 		let meta_seed = rng.int(1_048_576, KEY_MOD - 1);
-		let meta_m = (rng.int(1_048_577, 33_000_001) | 1) as i64;
-		let meta_c = rng.int(1_048_576, KEY_MOD - 1);
 		let meta_seed_e = ke.key_expr(meta_seed, None, rng);
-		let meta_m_e = ke.key_expr(meta_m, None, rng);
-		let meta_c_e = ke.key_expr(meta_c, None, rng);
-		// mask HBOOT bytes with the meta keystream (Rust mirror of the
-		// visible meta-decoder).
-		let mut hb_masked: Vec<u8> = Vec::with_capacity(hb_bytes.len());
-		let mut mst = meta_seed as u64;
-		for &b in hb_bytes.iter() {
-			mst = (meta_m as u64 * mst + meta_c as u64) % 268_435_456;
-			hb_masked.push(b.wrapping_add(fold_key(mst)));
-		}
-		// emit masked bytes as <=90-entry array chunks (BW-family
-		// camouflage; no giant literal array).
-		let mut mb_lines = String::new();
-		let mut mb_names: Vec<String> = Vec::new();
-		for (ci, chunk) in hb_masked.chunks(170).enumerate() {
-			let nm = format!("MB{}", ci + 1);
-			mb_names.push(nm.clone());
-			mb_lines.push_str(&format!(
-				"local {} = {{{}}}\n  ",
-				nm,
-				chunk.iter().map(|b| b.to_string()).collect::<Vec<_>>().join(", ")
-			));
-		}
-		let mut mb_gather = String::from("local MB = {}\n");
-		for nm in &mb_names {
-			mb_gather.push_str(&format!(
-				"    for i = 1, #{} do MB[#MB + 1] = {}[i] end\n",
-				nm, nm
-			));
-		}
 		let mut boot = String::new();
 		let v_ls = "hls";
 		let v_dbg = "hdbg";
@@ -3967,38 +3265,24 @@ pub fn generate(
 			"({} + (pb % 65536) * {} + FLR(pb / 65536) * {}{}) % 268435456",
 			comp_e, probe_mix_e, probe_mix_hi_e, env_term
 		);
-		// ㉛: MP 程序字掩码钥匙（每构建随机，KT 装配）
-		let mpm_seed = rng.int(1_048_576, KEY_MOD - 1);
-		let mpm_m = rng.int(1_048_577, 33_000_001) | 1;
-		let mpm_c = rng.int(1_048_576, KEY_MOD - 1);
-		let mpm_seed_e = ke.key_expr(mpm_seed, None, rng);
-		let mpm_m_e = ke.key_expr(mpm_m, None, rng);
-		let mpm_c_e = ke.key_expr(mpm_c, None, rng);
-		manifest_key("MPM_SEED", mpm_seed as u64);
-		manifest_key("MPM_M", mpm_m as u64);
-		manifest_key("MPM_C", mpm_c as u64);
-		let metavm = emit_metavm(
-			&meta_seed_full, &meta_m_e, &meta_c_e, hb_masked.len(), rng,
-			mpm_seed, mpm_m, mpm_c, &mpm_seed_e, &mpm_m_e, &mpm_c_e,
+		let hbd_expr = format!(
+			"(({})-({}))%268435456",
+			meta_seed_full, meta_seed_e
 		);
-		// LURAPH_BIND_DBG: 仅 Rust 侧镜像诊断（走 stderr，不改产物）。
-		// ㊺ 排查期用它对照「运行期折叠值 == 镜像期望值」。
+		// LURAPH_BIND_DBG: Rust-side mirror only; static HBOOT consumes the
+		// resulting difference directly as HBD instead of decrypting source.
 		if std::env::var("LURAPH_BIND_DBG").is_ok() {
 			eprintln!(
-				"MIRROR hqi_ks0_eff={} hqi_first_masked={} meta_seed={} comp={} env_exp={} c_fold={} hb_len={}",
-				hqi_ks0_eff, hqi_masked.first().map(|s| s.as_str()).unwrap_or("-"),
-				meta_seed, comp, env_exp, c_fold, hb_masked.len()
+				"MIRROR hbd_clean=0 meta_seed={} comp={} env_exp={} c_fold={}",
+				meta_seed, comp, env_exp, c_fold
 			);
 		}
 		// H4-2A/B: continuation and call-executor closures are now emitted by
 		// micro_fill.  Neither family is recovered from HW source fragments.
 		let ct_fill = String::new();
 		let cx_fill = String::new();
-		// ㊶: 蜜罐表接收/贮存（守卫在 HBOOT 掩码层；贮存行形似 VM 状态）
+		// H4-3: 静态 HBOOT 守卫返回蜜罐表；贮存行继续伪装为 VM 状态。
 		let hp_recv = if guard { String::from(", HPH") } else { String::new() };
-		// ㊹: HBOOT 现在返回 6 值 (含 MPF/SALT), PCAL 包装需对应接收位。
-		let hp_r6 = if guard { String::from(", _r6") } else { String::new() };
-		let hp_r6d = hp_r6.clone();
 		let hp_stash = if guard {
 			format!("HW2[{}] = HPH", 256 + rng.int(1, 200))
 		} else {
@@ -4009,10 +3293,8 @@ pub fn generate(
 		let (xtok_decl, xtok_extract) = if exg_consts.is_some() {
 			(
 				String::from("\n  local XTOK, XPROBE"),
-				// HW[209] = EXG 工厂（与其余碎片同形态——loadstring 出
-				// 的 chunk 返回工厂本体）；此处唯一一次调用即运行开机
-				// 强制全挑战，返回 {令牌, 探针} 结果表。
-				format!("\n    local _xg = HW[{}]() XTOK, XPROBE = _xg[1], _xg[2]", w_exg),
+				// H4-3: static one-shot EXG factory; only token/probe survive.
+				String::from("\n    local _xg = EXGFRAG() EXGFRAG = nil XTOK, XPROBE = _xg[1], _xg[2]"),
 			)
 		} else {
 			(String::new(), String::new())
@@ -4075,14 +3357,17 @@ pub fn generate(
             .join(", ");
 
 		let build = format!(
-			r#"{}  {}local HW = {{}}
+			r#"{boot}local HW = {{}}
+  local HBOOT
   local BSS
   local AV = 0
   local HW2 = {{}}
   local CT1, CT2, CT3, CT4
   local CX1, CX2, CX3, CX4
   local RTFRAG
+  local EXGFRAG
   local RPK1, RPK2, RPK3, RPK4, RPK5, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11
+  local HBD
   local SALT
   local SH1, SH2
   local HPH
@@ -4090,8 +3375,8 @@ pub fn generate(
   local MPF
   local CLK
   local CENVPROBE{xtok_decl}
-  do
-    {}local LS = GFE(0)[{v_ls}]
+  {hboot_fill}{exg_fill}do
+    local LS = GFE(0)[{v_ls}]
     local TSTR = GFE(0)[{v_ts}]
     local DBG = GFE(0)[{v_dbg}]
     local INF = DBG and DBG[{v_inf}]
@@ -4099,11 +3384,8 @@ pub fn generate(
     CLK = OS_ and OS_[{v_clock}]
     local pb = 0
     local ef1 = 0
--- NOTE (㊺: ef1 提前声明。两个消费点——hqi 解掩种子与 metavm 元种子
--- ——都在段 C 赋值之后执行（㊸ 曾把段 B/C 排在消费点之后 ⇒ ef1 恒以
--- 初值 0 被消费: 绑定实死 + 补偿失配 ⇒ 目标运行时挂死；㊺ 已重排。
--- 绑定态: 段 A/B/C 先算出终值, hqi 解掩与元种子才消费; 未绑定态:
--- ef1 恒 0 且无任何消费点引用它。)
+-- NOTE (H4-3): ef1 与 native-loader probe 先完成折叠，再计算 HBD。
+-- 忠实环境 HBD=0；失真环境直接污染 BSS/RT 双钥匙，不再解密 HBOOT 源码。
 -- NOTE (㊳ 计时守卫复通): the assignment above feeds the OUTER `local CLK`
 -- (no shadowing local) — the RUN call outside this do-block hands it to the
 -- RT fragment as its timing source. History: ㉙ introduced the watchdog,
@@ -4121,9 +3403,7 @@ pub fn generate(
       end
       pb = (pb + (ok and 0 or {nlok_delta})) % 268435456
     end
-    {env_a}local hqi = {{{}}}
-    {env_b}{env_c}{env_probe}{hqi_unmask}{}    {}
-    local EV = {{}}
+    {env_a}{env_b}{env_c}{env_probe}local EV = {{}}
     do
       local _evs = GFE(1)
       if TYP(_evs) == "table" then
@@ -4137,6 +3417,7 @@ pub fn generate(
 -- NOTE (H4-2C1): BSS is now a one-shot static numeric phase machine. It is
 -- passed through vault[nonce], consumed inside HBOOT, and cleared immediately;
 -- no BSS source string or BSS loader call exists at runtime.
+    HBD = {hbd}
     {bss_fill}{rt_fill}RPK1 = ({pseed} + AV) % 268435456
     RPK2 = ({pstep} + AV) % 268435456
     RPK3 = ({pkm} + AV) % 268435456
@@ -4148,16 +3429,18 @@ pub fn generate(
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
-    {vault_def}local _hok, _r1 = PCAL(function() local HB = table.concat(MH) local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return (function(...) MH = nil HB = nil return ... end)(_hbf()({vault_args})) end) BSS = nil
+    {vault_def}local _hok, _r1 = PCAL(function() return HBOOT({vault_args}) end) HBOOT = nil BSS = nil
     if not _hok then {hbootfail} end
     HW, MPF, SALT, SH1, SH2{hp_recv} = _r1() _r1 = nil{xtok_extract}
-    HQ = nil; hqi = nil
     {hp_stash}
     {ct_fill}{cx_fill}for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     {micro_fill}{hw_expand}
     HW = nil
   end"#,
-		hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
+		boot = boot,
+		hboot_fill = hboot_fill,
+		exg_fill = exg_fill,
+		hbd = hbd_expr,
 		micro_fill = micro_fill,
 		bss_fill = bss_fill,
 		rt_fill = rt_fill,
@@ -4177,7 +3460,6 @@ pub fn generate(
 		xtok_decl = xtok_decl,
 		xtok_extract = xtok_extract,
 		av_fold = av_fold,
-			hqi_unmask = hqi_unmask,
 			env_a = env_gate_a,
 			env_b = env_gate_b,
 			env_c = env_gate_c,

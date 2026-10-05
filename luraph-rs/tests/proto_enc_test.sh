@@ -90,8 +90,8 @@ if LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 \
 	# HBOOT 装配调用仍透传 FN/NOPA，并只向外返回 MPF/SALT 等密封值。
 	# H2-11 (壳参数序重排): 装配调用的实参序每构建重排，故 FN/NOPA 的
 	# 存在性改为「在 _hbf()(...) 实参表内」的结构判定，不再假设相邻序。
-	for pat in "MPF, SALT" "local RTFRAG" "local RUN = RTFRAG(" \
-		"RTFRAG = nil" "return RUN(MPF"; do
+	for pat in "MPF, SALT" "local HBOOT" "HBOOT = nil" "local RTFRAG" \
+		"local RUN = RTFRAG(" "RTFRAG = nil" "return RUN(MPF"; do
 		if ! grep -q "$pat" "$ts"; then ok=0; gf "enc" "模板缺少形态: $pat"; fi
 	done
 	# H2-11: 装配调用实参须含 FN 与 NOPA（序任意）。
@@ -99,21 +99,22 @@ if LURAPH_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 \
 import re, sys
 src = open(sys.argv[1], encoding="utf-8", errors="ignore").read()
 src = re.sub(r"\[=*\[.*?\]=*\]", "X", src, flags=re.S)
-m = re.search(r"_hbf\(\)\(([^)]*)\)", src)
+m = re.search(r"PCAL\(function\(\) return HBOOT\(([^)]*)\) end\)", src)
 if not m:
-    print("no _hbf() call"); sys.exit(1)
+    print("no static HBOOT call"); sys.exit(1)
 args = [a.strip() for a in m.group(1).split(",")]
 if "FN" not in args or "NOPA" not in args:
     print("FN/NOPA missing:", args); sys.exit(1)
 sys.exit(0)
 PYCHK
-	then ok=0; gf "enc" "装配调用实参缺 FN/NOPA"; fi
+	then ok=0; gf "enc" "静态 HBOOT 调用实参缺 FN/NOPA"; fi
 	# 平表/解码态/可见运行时残留必须消失（㉗：探针目标清零）。
 	# 先剥掉 HQ 长串密文（base-94 随机字节会巧合命中任何模式）。
 	sed -E 's/\[=*\[.*\]=*\]/[[X]]/' "$ts" > "$ts.stripped"
 	for pat in "PF\[#FN\]" "PF\[idx\]" "= ENCF(" "PF = nil" "LS(BSS)" \
-		"RTFRAG = HW" "newE = function" "makefn(pf, V, upsf, S)" \
-		"run = function(pf" "DDEC = HW" "CT\[" "CX\["; do
+		"LS(HB)" "table.concat(MH)" "_hbf" "RTFRAG = HW" \
+		"newE = function" "makefn(pf, V, upsf, S)" "run = function(pf" \
+		"DDEC = HW" "CT\[" "CX\["; do
 		if grep -q "$pat" "$ts.stripped"; then ok=0; gf "enc" "模板残留可见运行时/解码态形态: $pat"; fi
 	done
 	[[ "$ok" == "1" ]] && pass=$((pass+1))

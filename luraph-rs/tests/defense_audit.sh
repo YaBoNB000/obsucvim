@@ -19,7 +19,7 @@
 #   D12 计时守卫 (㊳ 复通)  — 接线 (外层局部 + os.clock 赋值) + 触发路径
 #                             (抽出守卫用合成 tracer 时钟驱动 => 必投毒) +
 #                             干净时钟零误报 + 长运行用例误报抽查
-#   D13 LZ 往返自检         — debug 构建 assert (编码即验)
+#   D13 静态协议 debug 自检  — debug 构建 + 运行等价
 #   D14 保护代码隐藏普查    — 可见层死循环/蜜罐词/码表/拼串表零痕迹 (㊶)
 #   D15 环境绑定语义强化    — 朴素桩场景必须静默毒药 (㊸)
 #   D16 可见层零解码源消费点 — 解码源不得落地可见层 (㊹, R018 P0-2)
@@ -244,15 +244,15 @@ else
 	ok "指纹伪造被杀 (rc=$rc10, 无正确输出)"
 fi
 
-echo "== D11 蜜罐哨兵 (㊶: 移入掩码层, 验可见层零痕迹 + 守卫生效) =="
-# 蜜罐由守卫在 HBOOT 掩码层内安装——可见层必须 0 痕迹；守卫活性由
-# D9/D10 (挂钩/指纹伪造必杀) 背书。
+echo "== D11 蜜罐哨兵 (H4-3: 静态 HBOOT 字节构词零痕迹 + 守卫生效) =="
+# 蜜罐由静态 HBOOT 守卫安装；API/元方法词经 CHAR 参数按字节构造，
+# 可见层必须 0 明文痕迹。守卫活性由 D9/D10 双负面背书。
 hp_vis=0
 for pat in "newproxy" "__tostring" "__metatable" "__concat"; do
 	if grep -q "$pat" "$W/d1a.lua"; then hp_vis=1; echo "  可见层发现 $pat"; fi
 done
 if [ "$hp_vis" == "0" ]; then
-	ok "蜜罐/陷阱可见层零痕迹 (掩码层内安装, D9/D10 背书守卫生效)"
+	ok "蜜罐/陷阱可见层零痕迹 (静态字节构词, D9/D10 背书守卫生效)"
 else
 	bad "蜜罐结构仍暴露在可见层"
 fi
@@ -387,7 +387,7 @@ else
 	[ "$got12" == "$exp12" ] && ok "误报抽查: stress 用例守卫开启下运行等价" || bad "守卫开启导致运行分歧 (疑似误报投毒)"
 fi
 
-echo "== D13 LZ 往返自检 (debug 构建) =="
+echo "== D13 静态协议 debug 构建自检 =="
 if [ -x "$ROOT/target/debug/luraph-rs" ]; then
 	DBGOBJ="$ROOT/target/debug/luraph-rs"
 else
@@ -398,7 +398,7 @@ fi
 if [ -x "$DBGOBJ" ]; then
 	if "$DBGOBJ" --preset v15 --dialect luau --seed 31337 "$SRC" "$W/d13.lua" >/dev/null 2>&1 \
 		&& [ "$($LUAU "$W/d13.lua" 2>&1)" == "$EXP1" ]; then
-		ok "debug 构建生成期往返 assert 通过 + 产物运行等价"
+		ok "debug 构建通过 + 静态协议产物运行等价"
 	else
 		bad "LZ 往返自检或运行失败"
 	fi
@@ -406,7 +406,7 @@ else
 	bad "debug 二进制不可用"
 fi
 
-echo "== D14 保护代码隐藏普查 (㊶: 对照样本 15 的隐藏形态) =="
+echo "== D14 保护代码隐藏普查 (H4-3 静态守卫构词形态) =="
 python3 - "$W/d1a.lua" <<'PYEOF2'
 import re, sys
 s = open(sys.argv[1]).read()

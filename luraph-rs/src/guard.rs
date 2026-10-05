@@ -120,15 +120,48 @@ fn assemble_guard(rng: &mut Rng) -> String {
 }
 
 
-/// ㊶ (保护代码隐藏, 对照 main 样本 15 的形态): HBOOT 掩码层嵌入版守卫。
-/// 守卫整体搬进 HBOOT 源码（元钥匙流掩码字节 ⇒ 文件中天然不可见），
-/// 可见层从此对保护代码零痕迹。字符串字面量**保持原样**——掩码层已提供
-/// 不可见性，数字编码（GS/schar 码表）只在可见层才需要，那里是「纸老虎」
-/// （任何分析者都能解码数字表）。返回 (守卫语句, 持有局部名)：守卫 IIFE
-/// 返回 canaries 蜜罐表，由持有局部接住、经 HBOOT 第 5 返回值递出、
-/// 由可见引导存进运行期状态（不透明表值，形似 VM 状态）。
+/// H4-3 静态 HBOOT 嵌入版守卫。API/类型/元方法字符串在进入 parser 前
+/// 改写为 HBOOT `CHAR(...)` 参数构造式；局部名继续独立随机化，因此正式
+/// 产物保持保护词零明文，同时不重建或加载任何 Lua 源码。返回（守卫语句、
+/// 持有局部名）：IIFE 产生的 canaries 经 HBOOT 第 6 个密封值递出，并存入
+/// 运行期状态的高位槽。
 pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
-	let guard_src = assemble_guard(rng);
+	let mut guard_src = assemble_guard(rng);
+	// H4-3: HBOOT is static outer code, so the old source-mask no longer
+	// hides guard anchors. Route sensitive environment/metamethod names
+	// through the HBOOT CHAR parameter before parsing/mangling. Local
+	// `newproxy` is still mangled; only its global fallback is removed because
+	// EV is always supplied by the v15 bootstrap.
+	let chars = |s: &str| {
+		format!(
+			"CHAR({})",
+			s.bytes().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+		)
+	};
+	guard_src = guard_src.replace(
+		"(EV and EV[\"newproxy\"]) or newproxy",
+		&format!("EV[{}]", chars("newproxy")),
+	);
+	for name in ["__tostring", "__metatable", "__concat", "__call", "__iter"] {
+		let expr = chars(name);
+		guard_src = guard_src
+			.replace(&format!(".{}", name), &format!("[{}]", expr))
+			.replace(&format!("{} =", name), &format!("[{}] =", expr))
+			.replace(&format!("\"{}\"", name), &expr);
+	}
+	// Hide the remaining guard string vocabulary. This is deliberately a
+	// finite semantic list rather than a generic source-string decoder, so no
+	// runtime source reconstruction surface is reintroduced.
+	for text in [
+		"type", "pcall", "xpcall", "error", "rawget", "rawset",
+		"getmetatable", "setmetatable", "tostring", "tonumber", "string",
+		"gmatch", "unpack", "table", "print", "warn", "debug", "info",
+		"getfenv", "_G", "function", "number", "l", "s", "[C]",
+		":(%d+):", "loadstring", "load", "tddxhpfcpi", "lsphhfstdm",
+		"vymgglkhqr",
+	] {
+		guard_src = guard_src.replace(&format!("\"{}\"", text), &chars(text));
+	}
 	let mangled = match parser::parse(&guard_src, true).ok() {
 		Some(mut block) => {
 			let mut table = crate::symtab::resolve(&mut block);

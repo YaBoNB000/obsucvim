@@ -11,12 +11,9 @@
 # ㊺ 两处同修。本测试给出此前完全缺失的**正向**断言:
 #   (a) 忠实仿真（__tostring 元方法给 "x, y, z"、typeof 槽给 "Vector3"、
 #       分量如实回传）⇒ 绑定态产物必须跑通且输出与源程序逐字一致。
-#   (b) 顺序守卫: TSRC 里 ef1 的赋值点必须位于两处消费点（hqi 解掩种子、
-#       metavm 元种子）之前——直接回归「读前写」这一整类错误。
-#   (c) 前移消费存在性: hqi 解掩种子必须真引用 ef1（绑定折叠已前移到
-#       引导期第一个解码步骤）。
-#   (d) ㊻ pb 双消费存在性: hqi 解掩种子还必须引用 pb（原生性探针与
-#       环境值折叠共同绑定第一个解码步骤）。
+#   (b) 顺序守卫: TSRC 里 ef1 的赋值点必须早于 H4-3 HBD 消费点。
+#   (c) HBD 必须真实引用 ef1，把环境折叠送入 BSS/RT 双钥匙。
+#   (d) HBD 同时引用 pb，保留原生 loader 探针的独立消费面。
 #
 # 关键仿真约束（Luau CLI 限制，也即真实攻击者需达到的仿真深度）:
 #   * getfenv(0) 恒返回真 _G（setfenv 影子不可见、_G 冻结、协程环境不
@@ -58,30 +55,30 @@ else
 	# ---- (b) 顺序守卫: ef1 赋值点必须早于全部消费点 ----
 	if [[ -f /tmp/vm_tsrc.lua ]]; then
 		asg="$(grep -n 'ef1 = (((' /tmp/vm_tsrc.lua | head -1 | cut -d: -f1)"
-		use_hqi="$(grep -n 'ef1 % 65536' /tmp/vm_tsrc.lua | head -1 | cut -d: -f1)"
-		if [[ -z "$asg" || -z "$use_hqi" ]]; then
-			gf "order-missing" "TSRC 缺 ef1 赋值/消费点（asg=$asg use=$use_hqi）"
-		elif [[ "$asg" -lt "$use_hqi" ]]; then
+		use_hbd="$(grep -n 'HBD = .*ef1 % 65536' /tmp/vm_tsrc.lua | head -1 | cut -d: -f1)"
+		if [[ -z "$asg" || -z "$use_hbd" ]]; then
+			gf "order-missing" "TSRC 缺 ef1 赋值/HBD 消费点（asg=$asg use=$use_hbd）"
+		elif [[ "$asg" -lt "$use_hbd" ]]; then
 			pass=$((pass+1))
 		else
-			gf "order" "ef1 赋值(行$asg)晚于消费(行$use_hqi)——读前写回归"
+			gf "order" "ef1 赋值(行$asg)晚于 HBD 消费(行$use_hbd)——读前写回归"
 		fi
-		# ---- (c) 前移消费存在性: hqi 解掩种子引用 ef1 ----
-		if grep -q 'hqs, hqm, hqc = .*ef1' /tmp/vm_tsrc.lua; then
+		# ---- (c) H4-3 环境值进入 HBD ----
+		if grep -q 'HBD = .*ef1 % 65536' /tmp/vm_tsrc.lua; then
 			pass=$((pass+1))
 		else
-			gf "forward" "hqi 解掩种子未引用 ef1（绑定折叠未前移）"
+			gf "forward" "HBD 未引用 ef1（环境绑定未进入静态 HBOOT 钥匙）"
 		fi
-		# ---- (d) pb 双消费存在性（㊻）: hqi 解掩种子也引用 pb ----
-		if grep -q 'hqs, hqm, hqc = .*pb' /tmp/vm_tsrc.lua; then
+		# ---- (d) 原生 loader 探针也进入 HBD ----
+		if grep -q 'HBD = .*pb % 65536' /tmp/vm_tsrc.lua; then
 			pass=$((pass+1))
 		else
-			gf "pb-dual" "hqi 解掩种子未引用 pb（pb 双消费未前移）"
+			gf "pb-dual" "HBD 未引用 pb（原生性探针消费面丢失）"
 		fi
 	else
 		gf "tsrc" "TSRC 转储缺失（无法做顺序守卫）"
 		pass=$((pass+1)) # 前移存在性无法验证，不重复计罚
-		asg=; use_hqi=
+		asg=; use_hbd=
 		[[ -n "$asg" ]] || true
 	fi
 	rm -f /tmp/vm_tsrc.lua

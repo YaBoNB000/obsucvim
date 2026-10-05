@@ -24,7 +24,10 @@ def check_template_sealing():
     # H1 sealing: HBOOT tail should be sealed closure
     has_sealed = "return function() return _O1,_O2,_O3,_O4,_O5" in txt
     checks.append(("HBOOT 密封闭包 return function() return _O1", has_sealed))
-    has_nil = "HW, _b1, _b2, h1, h2" in txt and "= nil,nil,nil,nil,nil" in txt
+    has_nil = bool(re.search(
+        r"HW\s*,\s*_b1\s*,\s*_b2\s*,\s*h1\s*,\s*h2.*?=\s*nil\s*,\s*nil\s*,\s*nil\s*,\s*nil\s*,\s*nil",
+        txt,
+    ))
     checks.append(("HBOOT 阅后即焚 nil", has_nil))
     has_host_closure = "HW, MPF, SALT, SH1, SH2" in txt and "= _r1()" in txt
     checks.append(("宿主单闭包接收 _r1()", has_host_closure))

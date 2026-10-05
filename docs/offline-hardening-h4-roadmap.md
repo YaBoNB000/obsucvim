@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**实施中：H4-0/H4-1、H4-2A/B/C1/C2 已完成；内部 loader 仅余 HBOOT 1 次**
+> 状态：**H4 P0 已闭环：H4-0/H4-1/H4-2/H4-3 全部完成；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -595,6 +595,42 @@ HBOOT 不再作为“元源码字符串”动态加载，而是由 Rust 直接�
 
 v15 产物内部不再调用任何源码 loader。
 
+### H4-3 已落地（2026-10-05）
+
+- HBOOT 改为构建随机的三阶段静态数值协议：BSS factory、prototype encode、
+  seal；phase 编号、mask/stride 与 branch 顺序每构建重抽；
+- descriptor 差异与原生 loader/环境探针差异统一折入 `HBD`，同时污染 BSS
+  块编码和 RT 的双钥匙约束，不产生固定错误 oracle；
+- H1 `vault[nonce]` 扩展为一次性交付 BSS closure 与 `HBD`，读取后即焚；
+- 原 HBOOT 源码字节数组、MetaVM 解掩程序、HQ/HQI 链和最后一次
+  `loadstring(HBOOT)` 全部从正式产物移除；
+- 可选 EXG 也改为静态一次性 factory，调用后清除，不保留条件式 HQ fallback；
+- 静态守卫的 API/元方法词通过 HBOOT `CHAR` 参数按字节构造，继续满足
+  可见层蜜罐词与保护词零痕迹；
+- HBOOT、BSS、RT、EXG factory 均在装配后置 nil，只保留运行必需闭包；
+- H4 发布门正式从增量上限切换为零调用强制门。
+
+最终结果：
+
+```text
+内部 Loader：54 → 42 → 21 → 11 → 7 → 3 → 2 → 1 → 0
+source-like loader 参数：0
+HQ 源码碎片：0
+payload result survived：YES
+```
+
+正式门禁：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
+```
+
+该门禁完全在本地构建/测试环境执行，不引入服务器、联网密钥或运行期授权。
+
+R041 同输入/同 seed 体积从 H4-2C2 的 `152712B` 降至 `116444B`
+（`-23.75%`），相对 H4-2B 的 `158568B` 共下降 `26.57%`；原先用户看到的
+HBOOT 掩码源码密集数字区随 MetaVM 一并退役。
+
 ---
 
 ## H4-4：Key-Carrying Chaff（P1）
@@ -814,9 +850,10 @@ H4-2C1 BSS 一次性数值 boot 状态机：`3 → 2`；H4-2C2 RT 五阶段数�
 协议：`2 → 1`。Handler/Continuation/Call/BSS/RT 的 HQ 源码碎片现为零，
 唯一剩余 loader 属于 HBOOT，转入 H4-3。
 
-## 阶段 D：H4-3 HBOOT Loaderless
+## 阶段 D：H4-3 HBOOT Loaderless ✅
 
-完成内部 loader 全清零，此阶段才可以宣告 H4 P0 闭环。
+HBOOT 三阶段静态数值协议与静态 EXG 已完成，内部 loader `1 → 0`；
+`--enforce-zero` 正式门通过，H4 P0 闭环。
 
 ## 阶段 E：H4-4 Key-Carrying Chaff
 
@@ -845,7 +882,7 @@ bash luraph-rs/tests/multiseed.sh
 python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 1
+python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
 bash luraph-rs/tests/defense_audit.sh
 ```
 

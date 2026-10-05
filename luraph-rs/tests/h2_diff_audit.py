@@ -61,7 +61,7 @@ def manifest(path):
 
 
 def hboot_signature(stderr):
-    m = re.search(r"HBOOT_POST_SAN: return function\(([^)]*)\)", stderr)
+    m = re.search(r"HBOOT_POST_SAN: (?:return )?function\(([^)]*)\)", stderr)
     if not m:
         return []
     return [x.strip() for x in m.group(1).split(",") if x.strip()]
@@ -163,17 +163,17 @@ def main():
         # G. H2-11：预净化 HBOOT 入口名本身随机，且参数序跨构建不同。
         siga, sigb = hboot_signature(da), hboot_signature(db)
         sig_shape = (
-            len(siga) == 30 and len(sigb) == 30
-            and len(set(siga)) == 30 and len(set(sigb)) == 30
+            len(siga) == 25 and len(sigb) == 25
+            and len(set(siga)) == 25 and len(set(sigb)) == 25
             and all(re.fullmatch(r"_sp\d+_\d+", x) for x in siga + sigb)
         )
         shell_ok = sig_shape and siga != sigb
         print(f"[G] 壳参数名/序双随机: {'YES' if shell_ok else 'NO'}  "
               f"(参数数 {len(siga)}/{len(sigb)})")
 
-        # H. H2-2/H2-6/H4-2C：EXG wire、BSS/RT 数值阶段与链交叉项均重掷。
-        # W_BSS/W_RT retired together with their source fragments.
-        h2_keys = ["W_EXG", "CHAIN_CROSS", "BSS_PHASE_CK", "RT_PHASE_CK"]
+        # H. H4-2C/H4-3：BSS、RT、HBOOT 数值阶段均跨构建重掷。
+        # W_BSS/W_RT/W_EXG retired together with all source fragments.
+        h2_keys = ["BSS_PHASE_CK", "RT_PHASE_CK", "HBOOT_PHASE_CK", "RT_PHASE_POISON"]
         key_ok = all(k in ma and k in mb and ma[k] != mb[k] for k in h2_keys)
         print(f"[H] wire/阶段/链种子跨构建重掷: {'YES' if key_ok else 'NO'}")
 
