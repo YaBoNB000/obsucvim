@@ -84,10 +84,10 @@ else
 	bad "安全指纹: $(cat "$W/d4.out")"
 fi
 
-echo "== D5/D6 密文完整性 + 字节码防篡改 (真长串字节互换) =="
-# ㊷ 修正: 跨度扫描必须括号层级感知(字符串内容里的 [[ ]] 是噪声字符,
-# 裸配对会切出假跨度); 零引用的伪装诱饵串(故意设计)先探针甄别剔除,
-# 其余真跨度必须处处敏感。
+echo "== D5/D6 密文完整性 + 字节码防篡改 (载体/HQ 真跨度字节互换) =="
+# H4-2C2 默认构建已无 HQ 源码碎片；短中型长串是活跃 FN carrier，超大
+# 长串则可能是伪装诱饵。扫描保持括号层级感知，超大跨度先动态甄别，
+# carrier 跨度直接进入 30 点篡改矩阵。
 cat > "$W/d56_scan.py" <<'PYD56'
 import re, subprocess, sys
 art, W, LU = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -113,9 +113,10 @@ while i < n:
                 spans.append((i + len(m.group(0)), jj))
                 i = jj + len(cl); continue
     i += 1
+carrier = [(a, b) for a, b in spans if 100 <= b - a <= 2000]
 big = [(a, b) for a, b in spans if b - a > 2000]
 base = subprocess.run([LU, art], capture_output=True, text=True, timeout=60)
-live, decoy = [], []
+live, decoy = list(carrier), []
 for (a, b) in big:
     p1 = a + (b - a)//2
     p2 = p1 + 13
@@ -133,7 +134,7 @@ for (a, b) in big:
         decoy.append(b - a)
     else:
         live.append((a, b))
-print(f"{len(live)} live spans, {len(decoy)} decoy spans (camo, sizes {decoy})")
+print(f"{len(live)} live carrier/HQ spans, {len(decoy)} decoy spans (camo, sizes {decoy})")
 assert live, "no live spans found"
 seed = 12345
 def rnd(n):
@@ -256,14 +257,14 @@ else
 	bad "蜜罐结构仍暴露在可见层"
 fi
 
-echo "== D12 计时守卫 (㊳ 复通: 接线 + 触发路径 + 误报抽查) =="
-mkdir -p "$W/frags"
-LURAPH_FRAG_SAN="$W/frags" LURAPH_KEY_MANIFEST="$W/d12_keys.txt" \
+echo "== D12 计时守卫 (㊳/H4-2C2: 接线 + 触发路径 + 误报抽查) =="
+rm -f /tmp/vm_tsrc.lua
+LURAPH_VM_TSRC=1 LURAPH_KEY_MANIFEST="$W/d12_keys.txt" \
 	"$TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
-# H2-2 后 RT 碎片 wire 每构建变化；审计必须读 manifest，禁止退回固定 208。
-rt_wire="$(awk -F= '$1=="W_RT" {v=$2} END {print v}' "$W/d12_keys.txt")"
-rt_frag="$W/frags/san_$(printf '%03d' "$rt_wire").src"
-python3 - "$W/d1a.lua" "$W" "$rt_frag" <<'PYEOF'
+# H4-2C2 后 RT 不再是可导出的 HQ 碎片；从构建期 TSRC 中抽取已经字段
+# 随机化的静态 RT 守卫。正式产物没有运行时 dump/fallback 接口。
+rt_static="/tmp/vm_tsrc.lua"
+python3 - "$W/d1a.lua" "$W" "$rt_static" <<'PYEOF'
 import re, sys
 art = sys.argv[1]; W = sys.argv[2]; rt_path = sys.argv[3]
 s = open(art).read()
@@ -315,8 +316,8 @@ asg = re.search(r'\b'+re.escape(a27)+r'=(\w+) and (\w+)\[', code[:mm.start()+10]
 decl = re.search(r'local\s+[^=;]*\b'+re.escape(a27)+r'\b', code[:mm.start()+10])
 if not (asg and decl):
     print("NOWIRE"); sys.exit(1)
-# 触发路径: 从 RT 碎片抽出守卫前导 + 守卫块本体, 合成 tracer 时钟驱动
-rt = open(rt_path).read()
+# 触发路径: 从静态 RT TSRC 抽出守卫前导 + 守卫块本体，合成 tracer 时钟驱动
+rt = blank(open(rt_path).read())
 pm = re.search(
     r'local (\w+) = 0 local (\w+) = (\w+) and \3\(\) or 0 '
     r'local (\w+) = 0 local (\w+) = nil local (\w+) = 0 while true do', rt)
@@ -326,7 +327,7 @@ GE, ID, CLK, NF, PE, CNT = pm.groups()
 gi = rt.find('% 128 == 0')
 # 回溯到该 if 的起点
 ist = rt.rfind('if ', 0, gi)
-br = blank(rt)  # 位置保真: 字符串内容被空格化, 代码标识符不动
+br = rt  # 已位置保真地空格化字符串内容，代码标识符不动
 depth = 0; cut = None
 for m2 in re.finditer(r'\b(then|do|end|until)\b', br):
     if m2.start() < ist:

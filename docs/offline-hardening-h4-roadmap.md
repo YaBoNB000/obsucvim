@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**实施中：H4-0/H4-1、H4-2A/B/C1 已完成；内部 loader 2 次（HBOOT+RT）**
+> 状态：**实施中：H4-0/H4-1、H4-2A/B/C1/C2 已完成；内部 loader 仅余 HBOOT 1 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -522,7 +522,48 @@ python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 2
 ```
 
 R041 同一最小输入/同 seed 的体积由 `158568B` 降至 `152138B`，没有用体积
-膨胀换取 loader 指标。下一提交边界为 H4-2C2 RT 协议镜像。
+膨胀换取 loader 指标。
+
+### H4-2C2 已落地（2026-10-05）
+
+RT 不再作为最后一个 HQ 源码碎片经 loader 恢复。工厂拆为五个离散、静态但
+构建随机的 closure phase：
+
+```text
+CDEC → bdec → makefn → newE → run/trampoline
+```
+
+实现约束：
+
+- 五个 phase code、descriptor mask/stride 和 dispatch 分支顺序每构建重抽；
+- 所有 phase closure 先预声明再按数字协议赋值，不依赖源码拼接或 fallback；
+- descriptor 完整性差异同时污染 `SLT/SLTC`，分别破坏指令块与常量池钥匙；
+- checksum/poison 继续通过 KeyEmitter 外层值装配，不出现大钥匙裸字面量；
+- RT 与 BSS 共享构建随机字段方言，但不共享 phase dispatcher；
+- 初始化 dispatcher 只在工厂装配期存在，返回 `run` 后 descriptor 置 nil；
+- `RTFRAG` 工厂调用完成立即置 nil，运行期不保留万能 RT 构造入口；
+- `W_RT` 与 RT HQ wire 退役；默认构建 `LURAPH_FRAG_SAN` 零源码碎片；
+- HQ 数为零时禁用 `#hqi == 0` 锚定配方，避免锚点退化导致钥匙表裸值；
+- 防御审计 D5/D6 改为篡改活跃 FN carrier，D12 从静态 TSRC 抽取计时守卫，
+  不保留仅为旧碎片架构服务的测试后门。
+
+结果：
+
+```text
+Loader 调用：54 → 42 → 21 → 11 → 7 → 3 → 2 → 1
+HQ 源码碎片：53 → 41 → 20 → 10 → 6 → 2 → 1 → 0
+剩余：HBOOT 1
+```
+
+固定增量门：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 1
+```
+
+R041 同输入/同 seed 从 H4-2C1 的 `152138B` 变为 `152712B`（`+0.38%`），
+仍比 H4-2B 的 `158568B` 小 `3.69%`，未用显著体积膨胀换取清零 HQ。
+下一提交边界为 H4-3 HBOOT 静态化；完成后切换正式门为 `--enforce-zero`。
 
 ---
 
@@ -766,12 +807,12 @@ multiseed = 0 fail
 H1/H2/H3 回归不退化
 ```
 
-## 阶段 C：H4-2 Loaderless Runtime（实施中）
+## 阶段 C：H4-2 Loaderless Runtime ✅
 
-H4-2A continuation 已完成，loader `11 → 7`；H4-2B Call executor 数值
-post-call descriptor 已完成，loader `7 → 3`；H4-2C1 BSS 一次性数值 boot
-状态机已完成，loader `3 → 2`。剩余 RT 仍不得直接搬源码；下一提交边界为
-H4-2C2 RT frame/CDEC/bdec 协议镜像，目标 `2 → 1`。
+H4-2A continuation：`11 → 7`；H4-2B Call executor 数值 post-call：`7 → 3`；
+H4-2C1 BSS 一次性数值 boot 状态机：`3 → 2`；H4-2C2 RT 五阶段数值初始化
+协议：`2 → 1`。Handler/Continuation/Call/BSS/RT 的 HQ 源码碎片现为零，
+唯一剩余 loader 属于 HBOOT，转入 H4-3。
 
 ## 阶段 D：H4-3 HBOOT Loaderless
 
@@ -804,7 +845,7 @@ bash luraph-rs/tests/multiseed.sh
 python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 2
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 1
 bash luraph-rs/tests/defense_audit.sh
 ```
 

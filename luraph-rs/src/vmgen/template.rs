@@ -2458,9 +2458,7 @@ pub fn generate(
 			}
 		}
 		rng.shuffle(&mut free_lo);
-		let w_rt = free_lo[0];
-		let w_exg = free_lo[1];
-		manifest_key("W_RT", w_rt as u64);
+		let w_exg = free_lo[0];
 		manifest_key("W_EXG", w_exg as u64);
 		// 增量⑲ / H4-2B (CPS 去中心化, Call 浅化): Luau 无正确尾调用，
 		// 调用点若在链深处执行，用户递归每层会叠 ~K 个链帧。Call 家族
@@ -3154,13 +3152,9 @@ pub fn generate(
 			dec_lanes = dec_lanes,
 			cache_pack = cache_pack,
 		);
-		// ㉗ (R009/Suda 回合 — 运行时入密): newE/makefn/run+蹦床+DDEC
-		// 整体打包为加密运行时碎片（wire 208）。工厂参数 = 钥匙数值×4
-		// + 不透明依赖值（原语表/环境函数/续行与执行器×8 个离散函数
-		// 值）。可见层从此没有任何一行代码触碰解码数据：文本手术探针
-		// （R008/Suda 实测的三处插入点）全部失去目标。
-		// B-3: newE 不再整流解码——常量即解，指令只解入口块；块缓存
-		// 挂帧（E.bch），帧退即毁。
+		// ㉗ / H4-2C2: newE/makefn/run+蹦床+DDEC 保持同一字段随机方言，
+		// 但不再打包为 RT 源码碎片。五个离散 closure 由一次性数值协议
+		// 装配；newE 仍只解入口块，块缓存挂帧（E.bch），帧退即毁。
 		let rt_newe = format!(
 			"newE = function(pf, V, ups, vargs, vargc)\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
@@ -3186,17 +3180,90 @@ pub fn generate(
 		} else {
 			(String::new(), String::new())
 		};
-		let rt_src = format!(
-			"return function(PS, PT, KM, KC, PB, SLT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, XC1, XC2, XC3, XC4, XE1, XE2, XE3, XE4, CLK, H1, H2, CB1, CB2, CBC, CC1, CC2, CCC, CKJ, CENVPROBE{sigtail})\n  SLT = (SLT + (H1 * CB1 + H2 * CB2 + CBC) % 268435456) % 268435456\n  local SLTC = (SLT + (H1 * CC1 + H2 * CC2 + CCC) % 268435456) % 268435456\n  {xtfb}local CDEC = {dec}\n  {bdec}\n  local newE\n  {mk}  {ne}local run = function(pf, V, ups, vargs, vargc)\n    local E = newE(pf, V, ups, vargs, vargc)\n    {loop}\n  end\n  return run\nend",
+		// H4-2C2: RT is emitted as five independently assigned static closures
+		// selected by a masked, per-build initialization protocol.  The phase
+		// dispatcher exists only while the factory is assembled; the returned
+		// run closure has no generic RT step/dispatcher and RTFRAG is cleared.
+		let bdec_assign = bdec_src.replacen("local function bdec", "bdec = function", 1);
+		let makefn_assign =
+			makefn_decl.replacen("local function makefn", "makefn = function", 1);
+		let run_assign = format!(
+			"run = function(pf,V,ups,vargs,vargc) local E=newE(pf,V,ups,vargs,vargc) {} end",
+			trampoline_src.clone().unwrap(),
+		);
+		let mut rt_phase_pool: Vec<u8> = (17..=239).collect();
+		rng.shuffle(&mut rt_phase_pool);
+		let rt_phase_codes = [
+			rt_phase_pool[0],
+			rt_phase_pool[1],
+			rt_phase_pool[2],
+			rt_phase_pool[3],
+			rt_phase_pool[4],
+		];
+		let rt_phase_mask = rng.int(1, 255) as u8;
+		let rt_phase_step = (rng.int(1, 255) | 1) as u8;
+		let rt_phase_stored: Vec<u8> = rt_phase_codes
+			.iter()
+			.enumerate()
+			.map(|(i, code)| {
+				((*code as usize
+					+ rt_phase_mask as usize
+					+ (i + 1) * rt_phase_step as usize)
+					% 256) as u8
+			})
+			.collect();
+		let mut rt_phase_checksum: i64 = 0;
+		for &v in std::iter::once(&rt_phase_mask)
+			.chain(std::iter::once(&rt_phase_step))
+			.chain(rt_phase_stored.iter())
+		{
+			rt_phase_checksum = (rt_phase_checksum * 257 + v as i64) % KEY_MOD;
+		}
+		let rt_phase_poison = rng.int(1, KEY_MOD - 1);
+		let rt_phase_checksum_e = ke.key_expr(rt_phase_checksum, None, rng);
+		let rt_phase_poison_e = ke.key_expr(rt_phase_poison, None, rng);
+		manifest_key("RT_PHASE_CK", rt_phase_checksum as u64);
+		manifest_key("RT_PHASE_POISON", rt_phase_poison as u64);
+		let mut rt_phase_branches = vec![
+			(rt_phase_codes[0], format!("CDEC={}", cdec_inner)),
+			(rt_phase_codes[1], bdec_assign),
+			(rt_phase_codes[2], makefn_assign),
+			(rt_phase_codes[3], rt_newe),
+			(rt_phase_codes[4], run_assign),
+		];
+		rng.shuffle(&mut rt_phase_branches);
+		let rt_phase_dispatch = rt_phase_branches
+			.iter()
+			.enumerate()
+			.map(|(i, (code, body))| {
+				let head = if i == 0 {
+					if rng.int(0, 1) == 0 {
+						format!("if _op=={}", code)
+					} else {
+						format!("if {}==_op", code)
+					}
+				} else if rng.int(0, 1) == 0 {
+					format!("elseif _op=={}", code)
+				} else {
+					format!("elseif {}==_op", code)
+				};
+				format!("{} then {} ", head, body)
+			})
+			.collect::<String>()
+			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
+		let mut rt_static_src = format!(
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
-			dec = cdec_inner,
-			bdec = bdec_src,
-			mk = makefn_decl,
-			ne = rt_newe,
-			loop = trampoline_src.clone().unwrap(),
+			program = rt_phase_stored
+				.iter()
+				.map(|v| v.to_string())
+				.collect::<Vec<_>>()
+				.join(","),
+			mask = rt_phase_mask,
+			step = rt_phase_step,
+			dispatch = rt_phase_dispatch,
 		);
-		frags.push((w_rt, rt_src.into_bytes()));
 		// 51: EXG 碎片（executor 认证守卫）随其余碎片一同净化 + 压缩 +
 		// 哈希链钥匙流掩码——可见层零痕迹。HBOOT 通用 `(LS(s) or PD)()`
 		// 调用路径在解码时即运行开机认证（probe(0, true)），结果表
@@ -3228,6 +3295,7 @@ pub fn generate(
 			"__iter", "__metatable", "__eq", "__lt", "__le", "__add",
 			"__sub", "__mul", "__div", "__mod", "__pow", "__unm",
 			"__len", "__mode", "__close", "_ENV", "BSSKPX", "BSSKCX",
+			"RTPKX", "RTPCX",
 		] {
 			frag_reserved.insert(g.to_string());
 		}
@@ -3267,6 +3335,23 @@ pub fn generate(
 			"local _BSSPKX_=({}) local _BSSPCX_=({}) BSS={} ",
 			ck_poison_e, phase_checksum_e, bss_static_src
 		);
+		// RT adopts the same field dialect after BSS has established it. Its
+		// descriptor keys are likewise evaluated in the outer lexical scope to
+		// avoid shadowing by RT's KM/KC factory parameters.
+		rt_static_src = sanitize_frag(
+			&rt_static_src,
+			rng,
+			&mut frag_map,
+			&frag_reserved,
+			&mut frag_used,
+		);
+		rt_static_src = rt_static_src
+			.replace("RTPKX", "_RTPKX_")
+			.replace("RTPCX", "_RTPCX_");
+		let rt_fill = format!(
+			"local _RTPKX_=({}) local _RTPCX_=({}) RTFRAG={} ",
+			rt_phase_poison_e, rt_phase_checksum_e, rt_static_src
+		);
 		for (_wire, src) in frags.iter_mut() {
 			let text = String::from_utf8(std::mem::take(src)).unwrap();
 			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
@@ -3305,10 +3390,18 @@ pub fn generate(
 		// a flat table — runtime #hqi = 3 * hqi.len().
 		// （㉚ 前移：HBOOT 模板必须在碎片加密之前定型——它是链头）
 		let n_hqi = 3 * frags.len() as i64;
-		let hseed_e = ke.key_expr(hseed as i64, Some(("#hqi", n_hqi)), rng);
-		let hstep_e = ke.key_expr(hstep as i64, Some(("#hqi", n_hqi)), rng);
-		let hm_e = ke.key_expr(hm as i64, Some(("#hqi", n_hqi)), rng);
-		let hc_e = ke.key_expr(hc as i64, Some(("#hqi", n_hqi)), rng);
+		// H4-2C2 default builds have zero HQ fragments. A zero-valued anchor
+		// would degenerate `A + m*#hqi` into a raw key-table literal, so fall
+		// back to non-anchored split/affine recipes in that case.
+		let hqi_anchor = if n_hqi == 0 {
+			None
+		} else {
+			Some(("#hqi", n_hqi))
+		};
+		let hseed_e = ke.key_expr(hseed as i64, hqi_anchor, rng);
+		let hstep_e = ke.key_expr(hstep as i64, hqi_anchor, rng);
+		let hm_e = ke.key_expr(hm as i64, hqi_anchor, rng);
+		let hc_e = ke.key_expr(hc as i64, hqi_anchor, rng);
 		manifest_key("HQ_SEED", hseed as u64);
 		manifest_key("HQ_STEP", hstep as u64);
 		manifest_key("HQ_KM", hm as u64);
@@ -3326,12 +3419,12 @@ pub fn generate(
 		// 镜像与 HBOOT 解密都实际消费该项，删掉/复用旧固定公式会直接错钥。
 		// 先对 wire×rv 取 2^28 模，随后乘数 <2^24，Lua double 全程 <2^53。
 		let sh_cross = (rng.int(1_048_576, 16_777_215) | 1) as u64;
-		let sh_k1_e = ke.key_expr(sh_k1 as i64, Some(("#hqi", n_hqi)), rng);
-		let sh_k2_e = ke.key_expr(sh_k2 as i64, Some(("#hqi", n_hqi)), rng);
-		let sh_iv1_e = ke.key_expr(sh_iv1 as i64, Some(("#hqi", n_hqi)), rng);
-		let sh_iv2_e = ke.key_expr(sh_iv2 as i64, Some(("#hqi", n_hqi)), rng);
-		let sh_mul_e = ke.key_expr(sh_mul as i64, Some(("#hqi", n_hqi)), rng);
-		let sh_cross_e = ke.key_expr(sh_cross as i64, Some(("#hqi", n_hqi)), rng);
+		let sh_k1_e = ke.key_expr(sh_k1 as i64, hqi_anchor, rng);
+		let sh_k2_e = ke.key_expr(sh_k2 as i64, hqi_anchor, rng);
+		let sh_iv1_e = ke.key_expr(sh_iv1 as i64, hqi_anchor, rng);
+		let sh_iv2_e = ke.key_expr(sh_iv2 as i64, hqi_anchor, rng);
+		let sh_mul_e = ke.key_expr(sh_mul as i64, hqi_anchor, rng);
+		let sh_cross_e = ke.key_expr(sh_cross as i64, hqi_anchor, rng);
 		manifest_key("CHAIN_K1", sh_k1);
 		manifest_key("CHAIN_K2", sh_k2);
 		manifest_key("CHAIN_MUL", sh_mul);
@@ -4044,7 +4137,7 @@ pub fn generate(
 -- NOTE (H4-2C1): BSS is now a one-shot static numeric phase machine. It is
 -- passed through vault[nonce], consumed inside HBOOT, and cleared immediately;
 -- no BSS source string or BSS loader call exists at runtime.
-    {bss_fill}RPK1 = ({pseed} + AV) % 268435456
+    {bss_fill}{rt_fill}RPK1 = ({pseed} + AV) % 268435456
     RPK2 = ({pstep} + AV) % 268435456
     RPK3 = ({pkm} + AV) % 268435456
     RPK4 = ({pkc} + AV) % 268435456
@@ -4060,20 +4153,19 @@ pub fn generate(
     HW, MPF, SALT, SH1, SH2{hp_recv} = _r1() _r1 = nil{xtok_extract}
     HQ = nil; hqi = nil
     {hp_stash}
-    {ct_fill}{cx_fill}RTFRAG = HW[{wrt}]
-    for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
+    {ct_fill}{cx_fill}for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     {micro_fill}{hw_expand}
     HW = nil
   end"#,
 		hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
 		micro_fill = micro_fill,
 		bss_fill = bss_fill,
+		rt_fill = rt_fill,
             hw_expand = hw_expand,
 		hp_recv = hp_recv,
 		hp_stash = hp_stash,
 		vault_def = vault_def,
 		vault_args = vault_args,
-		wrt = w_rt,
 		// 51 诊断构建（LURAPH_EXG_TRACE）：HBOOT 失败不再静默吞掉，重抛
 		// 守卫的 XG 编号错误，供真执行器兼容性排查（正式构建 = PD()）。
 		// H1 密封后 HBOOT 单闭包返回，错误在 _r1
@@ -4196,26 +4288,21 @@ pub fn generate(
 	// （devforum 3307934 官方确认移除），纯尾链每指令积 1 帧、~16k 帧
 	// 溢栈，跑不了任意循环。故采用**预算有界尾链 + 蹦床**：每条链最多
 	// 走 ~CHAIN_BUDGET 条指令（预算耗尽即空返回、整链解开），蹦床循环
-	// 重置预算、轮转 4 个加密重入碎片之一从 E.pc 续跑；Call 家族拆两相，
-	// 实际调用在蹦床浅层执行（深递归帧剖面回到旧设计量级）。分派逻辑
-	// 全在 43 个加密 handler + 4 个重入碎片 + 4 个执行器碎片里，可见
-	// 蹦床无操作码语义（R006 壁垒②）。run() 本体瘦成蹦床（帧开销留给
-	// 用户递归：E 构造移入 newE，其帧随返即销）。
-	// ㉗ (R009/Suda 回合 — 运行时入密): R008/Suda 实测破解 = 三个文本探针
-	// 全部插在**可见**运行时表面（entry 的 run(MPF,...)、可见 newE 内的
-	// DDEC 调用点、可见蹦床的 CT 索引）。根治：把 newE/makefn/run+蹦床
-	// +DDEC 整体装进加密运行时碎片（wire 208），可见层只剩不透明函数值
-	// 交接——可见文本从此没有任何一行触碰解码数据。要提取必须回到的路径
-	// = 破 HQ 碎片加密（五层引导链，每构建重建）。
+	// 重置预算、轮转 4 个静态随机重入 closure 从 E.pc 续跑；Call 家族拆
+	// 两相，实际调用在蹦床浅层执行（深递归帧剖面回到旧设计量级）。
+	// 分派逻辑位于 43 个数值 handler、4 个重入与 4 个执行器 closure；
+	// run() 本体保持无操作码语义，E 构造帧随返即销。
+	// H4-2C2: newE/makefn/run/CDEC/bdec 不再依赖 RT 源码碎片，而由五阶段
+	// 数值初始化协议装配。外层必须先恢复字段方言和 phase descriptor 才能
+	// 定位探针点；工厂调用后立即清除，运行期不留通用构造入口。
 	let run_block: String = if v15 {
-		// ㉗: 运行时碎片（wire 208）已在 hfrag 段装入（newE/makefn/
-		// run+蹦床+DDEC 全入密）；可见层只剩这一次不透明函数值装配。
+		// H4-2C2: static RTFRAG is a one-shot factory; only RUN survives it.
 		run_unpack = String::new();
 		run_soa = String::new();
 		// ㉚ B-2: 链终值 SH1/SH2 + 归零常量 RPK6..11 入密交给 RT 工厂。
 		// 51: executor 绑定态再递启动令牌与周期探针（不透明函数值交接）。
 		format!(
-			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE{})",
+			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE{}) RTFRAG = nil",
 			if executor_bind { ", XTOK, XPROBE" } else { "" }
 		)
 	} else {
