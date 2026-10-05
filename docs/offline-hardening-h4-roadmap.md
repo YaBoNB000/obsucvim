@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4/H4-5 已闭环；每函数五类方言完成；内部 loader 0 次**
+> 状态：**H4 P0/H4-4/H4-5 已闭环；H4-6A 单块缓存上限与主动淘汰完成；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -970,6 +970,30 @@ H4-5 每函数独立方言至此闭环。下一阶段进入 H4-6 单块窗口、
 - 重复执行同块时静态密文不直接对应相同运行窗口；
 - 深递归和 coroutine 回归无泄漏、无栈回退。
 
+### H4-6A 已落地（2026-10-05）
+
+第一阶段先收口 decoded block cache 与退出销毁：
+
+- cache cap 由现有构建/方言值派生为 `0..2`，不新增随机根；
+- cap=0 时，跨块前逐项覆盖当前 `W/a/b/c/d` 五个数字数组并解除引用；
+- cap=1/2 时使用小型 FIFO，超过上限立即移除索引并逐项 nil 覆盖被淘汰块；
+- cache hit 不复制窗口，miss 才解密；队列不允许同一块重复入列；
+- Return 在结果复制完成后覆盖当前窗口、全部缓存块、队列和状态引用；
+- cache cap 只在静态 RT factory 局部存在，帧里不新增可篡改上限字段；
+- 新增 `h6_window_audit.py`，验证 cap 范围、FIFO/覆盖/Return 清场形态、
+  同 seed 确定与双 seed 长控制流等价。
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：152134B → 152535B（+0.26%）
+169/169；H4-6A audit PASS
+```
+
+H4-6 尚未完成；下一阶段处理同块重入重播种，并进一步清除 micro descriptor
+短窗口。
+
 ---
 
 ## H4-7：常量、closure 与调用约定继续去中心化（P2）
@@ -1098,8 +1122,8 @@ microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解�
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口（实施中）
 
-H4-5 每函数五类方言已全部完成；下一提交边界为 H4-6A block cache 上限与
-主动淘汰，不再继续扩大方言面。
+H4-5 每函数五类方言与 H4-6A cache 上限/主动淘汰已完成；下一提交边界为
+H4-6B 同块重入重播种与 micro descriptor 短窗口。
 
 ## 阶段 G：H4-7/H4-8 收口
 
@@ -1122,6 +1146,7 @@ python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
 python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
 python3 luraph-rs/tests/h5_dialect_audit.py
+python3 luraph-rs/tests/h6_window_audit.py
 bash luraph-rs/tests/defense_audit.sh
 ```
 
