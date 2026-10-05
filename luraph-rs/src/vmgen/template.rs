@@ -2507,6 +2507,27 @@ pub fn generate(
 		{
 			manifest_key(&format!("DIALECT_{}", name), *value as u64);
 		}
+		// H4-5D: full-cycle affine walk over all 6! constant-tag
+		// permutations. BSS/CDEC unrank the function's code transiently.
+		let tag_base = ((chaff_fn as u64 * 17 + chaff_pos as u64) % 720) as u16;
+		let mut tag_step = ((chaff_mul as u64 * 19 + chaff_coeffs[3] as u64) % 719 + 1) as u16;
+		loop {
+			let mut a = tag_step as u32;
+			let mut b = 720u32;
+			while b != 0 {
+				let r = a % b;
+				a = b;
+				b = r;
+			}
+			if a == 1 {
+				break;
+			}
+			tag_step = (tag_step % 719) + 1;
+		}
+		let tag_base_e = obf_num(tag_base as u64, rng);
+		let tag_step_e = obf_num(tag_step as u64, rng);
+		manifest_key("DIALECT_TAG_BASE", tag_base as u64);
+		manifest_key("DIALECT_TAG_STEP", tag_step as u64);
 		let c_block_enc = if consts_safe {
 			// ㊼: 每常量独立钥匙流——stj = (基线 + j·CKJ) 再走两步 LCG
 			// 扩散；常量间字节流不再顺序相连（编码侧，BSS 运行期）。
@@ -2528,7 +2549,7 @@ pub fn generate(
 			// 期望值, 解码侧每帧探针折叠, 忠实环境逐位对齐）。
 			s.push_str(&xtec_off);
 			s.push_str(
-				") % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local v = Ct[j] local tv = TYP(v) if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (1 + stj) % 65536 cn[j] = v + stj else local ns = TOSTR(v) ct[j] = (5 + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stj = (KM * stj + KC) % 268435456 csb[si] = (BYTE(ns, cb) + stj % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (2 + stj) % 65536 csl[j] = #v for cb = 1, #v do stj = (KM * stj + KC) % 268435456 csb[si] = (BYTE(v, cb) + stj % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (3 + stj) % 65536 else ct[j] = (4 + stj) % 65536 end else ct[j] = stj % 65536 end end",
+				") % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local v = Ct[j] local tv = TYP(v) if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + stj else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stj = (KM * stj + KC) % 268435456 csb[si] = (BYTE(ns, cb) + stj % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stj = (KM * stj + KC) % 268435456 csb[si] = (BYTE(v, cb) + stj % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end end",
 			);
 			s
 		} else {
@@ -2671,7 +2692,7 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS)%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2692,6 +2713,8 @@ pub fn generate(
 			bi = dialect_e[5],
 			lb = lane_base_e,
 			ls = lane_step_e,
+			tb = tag_base_e,
+			ts = tag_step_e,
 			cw = closure_cond,
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
@@ -2804,6 +2827,10 @@ pub fn generate(
 		// 诚实边界：攻击者改钩其他观测面（如最终 print/使用点）仍可截获
 		// ——R004 同族；本增量封堵的是「物化函数钩子」这一最廉价向量。
 		// 另边界：帧上下文顺序触碰全索引仍可强制全解（= 完整执行该帧）。
+		let tag_decode_rt = format!(
+			"local td=({}+q.sd*{})%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLOOR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end ",
+			tag_base_e, tag_step_e
+		);
 		let cdec_inner = if consts_safe {
 			// ㊿: 绑定态在每帧解码前调用 CENVPROBE()（引导层闭包，已在
 			// bootstrap 定义并经 RTFRAG 传入）重探环境得 cef，揉进 base；
@@ -2839,13 +2866,14 @@ pub fn generate(
 			let mut s = String::from(
 				"function(q, CHAR, UNP, TONUM) local ct, cn, csb, csl, co = q.ct, q.cn, q.csb, q.csl, q.co ",
 			);
+			s.push_str(&tag_decode_rt);
 			s.push_str(probe_call);
 			s.push_str(&format!(
 				"local base = (PS + q.sd * PT + SLTC + QF[q.sd] * CQC{}) % 268435456 ",
 				base_env_s
 			));
 			s.push_str(
-				"local SCH = (\"\")[\"char\"] local raw = {ct,cn,csb,csl,co} local C = {[0]=raw} local done = {} local MT = {} MT.__index = function(t, j) if j == 0 then return rawget(t, 0) end if done[j] then return rawget(t, j) end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local ty = (ct[j] - stj) % 65536 local v if ty == 1 then v = cn[j] - stj elseif ty == 2 or ty == 5 then local l = csl[j] local si = co[j] local s = \"\" for x = 1, l do stj = (KM * stj + KC) % 268435456 s = s .. SCH((csb[si] - stj % 256) % 256) si = si + 1 end if ty == 2 then v = s else v = TONUM(s) end elseif ty == 3 then v = true elseif ty == 4 then v = false end done[j] = true rawset(t, j, v) return v end return setmetatable(C, MT) end",
+				"local SCH = (\"\")[\"char\"] local raw = {ct,cn,csb,csl,co} local C = {[0]=raw} local done = {} local MT = {} MT.__index = function(t, j) if j == 0 then return rawget(t, 0) end if done[j] then return rawget(t, j) end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local ty = (ct[j] - stj) % 65536 local v if ty == tm[2] then v = cn[j] - stj elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" for x = 1, l do stj = (KM * stj + KC) % 268435456 s = s .. SCH((csb[si] - stj % 256) % 256) si = si + 1 end if ty == tm[3] then v = s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true rawset(t, j, v) return v end return setmetatable(C, MT) end",
 			);
 			s
 		} else {

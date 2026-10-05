@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4 已闭环；H4-5A/B/C 完成（block + lane + micro/shard）；内部 loader 0 次**
+> 状态：**H4 P0/H4-4 已闭环；H4-5A/B/C/D 完成（block + lane + micro + tag）；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -886,7 +886,31 @@ R041：120472B → 150150B（+24.63%，未超过单阶段 25% 预算）
 169/169；H4-5A/B/C audit PASS
 ```
 
-H4-5 尚未完成；下一阶段做每函数 constant-tag 方言，最后收口 rekey 周期。
+### H4-5D 已落地（2026-10-05）
+
+第四阶段切换每函数 constant-tag 方言：
+
+- 以构建钥匙派生 `DIALECT_TAG_BASE/STEP`，在 `6! = 720` 个 tag permutation
+  上做满周期遍历；前 720 个函数不会重复；
+- BSS 对每个函数临时 factoradic-unrank 得到 nil/int/string/true/false/float
+  六类 tag 映射，再写入加密 `ct`；
+- RT CDEC 按 `q.sd` 镜像恢复同一映射，惰性首次物化后立即丢弃 permutation；
+- tag permutation 不写入 prototype、常量池隐藏槽或全局 adapter table；
+- 每常量独立 CKJ、环境折叠和 Chaff constant key 保持原样，方言只改变 tag
+  身份，不扩大常量明文窗口；
+- NaN/inf 历史 plaintext fallback 不冒充已覆盖，继续由 block/micro 约束保护；
+- `h5_dialect_audit.py` 扩展为 A/B/C/D 审计，验证 720 周期、跨构建变化、
+  BSS/CDEC 镜像和双 seed 等价。
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：150150B → 150879B（+0.49%）
+169/169；H4-5A/B/C/D audit PASS
+```
+
+H4-5 仅余每函数 rekey 周期，下一提交完成后收口整个每函数方言阶段。
 
 ---
 
@@ -1043,8 +1067,8 @@ microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解�
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口（实施中）
 
-H4-5A block-key、H4-5B operand lane、H4-5C micro/shard 已完成；继续完成
-constant-tag 与 rekey 方言后再缩小运行窗口。
+H4-5A block-key、H4-5B operand lane、H4-5C micro/shard、H4-5D
+constant-tag 已完成；完成 rekey 方言后再缩小运行窗口。
 
 ## 阶段 G：H4-7/H4-8 收口
 
