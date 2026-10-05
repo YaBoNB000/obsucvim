@@ -142,11 +142,14 @@ def main():
         template_coupled = "QF[pf.sd]" in template and "local qf=(i*CF)%65521" in template
         print(f"[7] NOP chaff 进入真实 lane 钥匙: "
               f"{'YES' if chaff_valid and chaff_diff and template_coupled else 'NO'}")
+        block_coupled = "qf * CQB" in template and "QF[pf.sd] * CQB" in template
+        print(f"[8] NOP chaff 进入 block seed   : {'YES' if block_coupled else 'NO'}")
 
         ok = all([
             deterministic, seed_diff, accounting, count_diff, overlap,
             slot_mix, slot_diff, bool(nil_total), bool(decoy_total), runtime,
             no_zero_reset, four_shapes, chaff_valid, chaff_diff, template_coupled,
+            block_coupled,
         ])
         print("\nH3 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
