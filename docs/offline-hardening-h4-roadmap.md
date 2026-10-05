@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**设计冻结，尚未开始实现**
+> 状态：**实施中：H4-0 Loader 泄漏回归闸已落地，H4-1 待开始**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -145,6 +145,30 @@ loader 参数中出现 handler/BSS/RT 特征 = 0
 ### 为什么不会新增破绽
 
 该项仅增加测试代码，不改变正式产物，不引入新的运行时接口。
+
+### 已落地基线（2026-10-05）
+
+脚本：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open
+python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
+```
+
+固定 seed `440041` 的当前架构实测：
+
+```text
+clean run                 : YES (H4_RESULT 451 460)
+spy run completed         : YES
+internal loader calls     : 54
+source-like loader args   : 54
+largest observed argument : 15368 bytes
+payload result survived   : YES
+```
+
+`--expect-open` 用于 H4-0 当前漏洞基线并返回成功；`--enforce-zero` 是 H4 P0
+最终发布门，当前按预期返回失败。H4-3 收口后必须把正式门禁切到
+`--enforce-zero`。
 
 ---
 
@@ -459,16 +483,17 @@ block state / operand mask / next-key / alias state
 
 每阶段单独提交，不允许把架构重写与多项高风险变更混在一次提交中。
 
-## 阶段 A：H4-0 Loader 审计闸
+## 阶段 A：H4-0 Loader 审计闸 ✅
 
-交付：
+已交付：
 
 - loader-spy 假环境；
 - `[C]` 伪造测试；
-- 当前 R035 失败基线；
-- 指标报告。
+- `getfenv(0)` 线程环境克隆；
+- 当前架构 54 次明文 loader 基线；
+- 报告模式与 `--enforce-zero` 发布门。
 
-验收后再改架构。
+阶段 A 已完成，下一提交边界为 H4-1 Handler Microcode。
 
 ## 阶段 B：H4-1 Handler Microcode
 
