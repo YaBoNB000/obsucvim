@@ -463,6 +463,8 @@ fn main() -> ExitCode {
 			let tsrc = vmgen::template::generate(
 				&program.opmap,
 				&program.slot_perm,
+				&program.slot_perms,
+				(program.lane_base, program.lane_step),
 				&program.carrier,
 				&mut rng,
 				n,

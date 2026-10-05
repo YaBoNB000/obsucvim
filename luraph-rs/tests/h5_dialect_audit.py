@@ -65,6 +65,14 @@ def main():
                 "DIALECT_FC_I", "DIALECT_FB_Q", "DIALECT_FB_I"]
         deterministic = a == c and ma == mc and na == nc
         rerolled = all(k in ma and k in mb and ma[k] != mb[k] for k in keys)
+        lane_keys = ["DIALECT_LANE_BASE", "DIALECT_LANE_STEP", "DIALECT_LANE_CK"]
+        lane_present = all(k in ma and k in mb for k in lane_keys)
+        lane_rerolled = lane_present and tuple(ma[k] for k in lane_keys) != tuple(mb[k] for k in lane_keys)
+        ca = [(ma["DIALECT_LANE_BASE"] + (i + 1) * ma["DIALECT_LANE_STEP"]) % 24
+              for i in range(len(na))] if lane_present else []
+        cb = [(mb["DIALECT_LANE_BASE"] + (i + 1) * mb["DIALECT_LANE_STEP"]) % 24
+              for i in range(len(nb))] if lane_present else []
+        lane_per_fn = len(set(ca)) == len(ca) and len(set(cb)) == len(cb)
         per_fn = len(na) >= 4 and len(set(na)) >= 3 and len(nb) >= 4 and len(set(nb)) >= 3
         expected = subprocess.run([str(LUAU), str(src)], capture_output=True)
         ra = subprocess.run([str(LUAU), str(td/"a.lua")], capture_output=True)
@@ -76,15 +84,19 @@ def main():
             "local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1",
             "local fkm=2*((KM+qi*FQ+pf.sd*FI)%16000000)+1",
             "s0 * fpb", "fkm * st + fkc",
+            "local dp=(LB+i*LS)%24", "local dp=(LB+pf.sd*LS)%24",
+            "u[pm[ps]+1]=pv[ps]",
         ])
-        print("== H4-5 每函数方言审计（A：block-key family） ==")
+        print("== H4-5 每函数方言审计（A/B：block key + operand lane） ==")
         print(f"[0] 同 seed 确定: {'YES' if deterministic else 'NO'}")
         print(f"[1] 六系数跨构建重掷: {'YES' if rerolled else 'NO'}")
         print(f"[2] 每函数 qf 方言输入分离: {'YES' if per_fn else 'NO'}")
-        print(f"[3] BSS/RT 派生镜像接线: {'YES' if mirror else 'NO'}")
-        print(f"[4] 双 seed 运行等价: {'YES' if runtime else 'NO'} ({expected.stdout!r})")
-        ok = deterministic and rerolled and per_fn and mirror and runtime
-        print("\nH4-5A 审计: " + ("PASS" if ok else "FAIL"))
+        print(f"[3] lane 方言跨构建/函数分离: {'YES' if lane_rerolled and lane_per_fn else 'NO'}")
+        print(f"[4] BSS/RT 派生镜像接线: {'YES' if mirror else 'NO'}")
+        print(f"[5] 双 seed 运行等价: {'YES' if runtime else 'NO'} ({expected.stdout!r})")
+        ok = (deterministic and rerolled and per_fn and lane_rerolled
+              and lane_per_fn and mirror and runtime)
+        print("\nH4-5A/B 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
 
 

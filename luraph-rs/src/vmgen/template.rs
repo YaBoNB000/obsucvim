@@ -1131,6 +1131,8 @@ fn chain_epilogue(rng: &mut Rng, wk: &[String; 4]) -> String {
 pub fn generate(
 	map: &OpMap,
 	slot_perm: &[u8; 4],
+	slot_perms: &[[u8; 4]],
+	lane_dialect: (u8, u8),
 	carrier: &Carrier,
 	rng: &mut Rng,
 	n_fns: usize,
@@ -2036,23 +2038,25 @@ pub fn generate(
 	// bodies — no single hookable choke point remains (R006 barrier ②:
 	// 全局 hook 咽喉点消失). Handlers therefore need the streams +
 	// dispatch table in their env.
-	// 增量⑲: operand k lives in stream operand_stream[k] (slot_perm
-	// permutation) — the chain epilogues must fetch (a,b,c,d) through
-	// the SAME mapping the old op_prefix used.
-	let s_of = [
-		stream_names[operand_stream[0] as usize],
-		stream_names[operand_stream[1] as usize],
-		stream_names[operand_stream[2] as usize],
-		stream_names[operand_stream[3] as usize],
-	];
-	// B-3: operand k rides in window E.w{operand_stream[k]} (stream-slot
-	// order); the opcode wire rides in E.ww.
-	let wk = [
-		format!("E.w{}", operand_stream[0]),
-		format!("E.w{}", operand_stream[1]),
-		format!("E.w{}", operand_stream[2]),
-		format!("E.w{}", operand_stream[3]),
-	];
+	// H4-5B normalizes per-function physical operand streams to logical
+	// a/b/c/d windows inside bdec; legacy keeps the original global mapping.
+	let wk = if v15 {
+		// H4-5B bdec normalizes each function's physical stream dialect into
+		// logical a/b/c/d windows before dispatch.
+		[
+			"E.w0".to_string(),
+			"E.w1".to_string(),
+			"E.w2".to_string(),
+			"E.w3".to_string(),
+		]
+	} else {
+		[
+			format!("E.w{}", operand_stream[0]),
+			format!("E.w{}", operand_stream[1]),
+			format!("E.w{}", operand_stream[2]),
+			format!("E.w{}", operand_stream[3]),
+		]
+	};
 	let env_names = [
 		"V", "C", "S", "O", "G", "vargs", "vargc", "ups", "makefn", "mget",
 		"resolve_call", "callcap", "HAS_LEN_META", "CHAR", "FLOOR", "ERR",
@@ -2400,6 +2404,18 @@ pub fn generate(
 			.iter()
 			.map(|v| obf_num(*v as u64, rng))
 			.collect();
+		assert_eq!(slot_perms.len(), n_fns, "H4-5B lane dialect count");
+		let mut lane_perm_ck = 0u64;
+		for perm in slot_perms {
+			for &v in perm {
+				lane_perm_ck = (lane_perm_ck * 5 + v as u64 + 1) % KEY_MOD as u64;
+			}
+		}
+		manifest_key("DIALECT_LANE_CK", lane_perm_ck);
+		let lane_base_e = obf_num(lane_dialect.0 as u64, rng);
+		let lane_step_e = obf_num(lane_dialect.1 as u64, rng);
+		manifest_key("DIALECT_LANE_BASE", lane_dialect.0 as u64);
+		manifest_key("DIALECT_LANE_STEP", lane_dialect.1 as u64);
 		for (name, value) in ["FM_Q", "FM_I", "FC_Q", "FC_I", "FB_Q", "FB_I"]
 			.iter()
 			.zip(dialect.iter())
@@ -2570,7 +2586,7 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2589,7 +2605,8 @@ pub fn generate(
 			ki = dialect_e[3],
 			bq = dialect_e[4],
 			bi = dialect_e[5],
-			bs_stream = s_of[1],
+			lb = lane_base_e,
+			ls = lane_step_e,
 			cw = closure_cond,
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
@@ -2769,7 +2786,7 @@ pub fn generate(
 			.join(" ");
 		let cache_pack = block_word_perm
 			.iter()
-			.map(|lane| format!("t{}", lane))
+			.map(|lane| format!("u{}", lane))
 			.collect::<Vec<_>>()
 			.join(", ");
 		let mut cache_pos = [0usize; 5];
@@ -2780,10 +2797,12 @@ pub fn generate(
 			.map(|logical| format!("c[{}]", cache_pos[logical]))
 			.collect::<Vec<_>>()
 			.join(", ");
+		let lane_normalize = "local dp=(LB+pf.sd*LS)%24 local pl={0,1,2,3} local pm={} local ds={6,2,1,1} for ps=1,4 do local pk=ps==4 and 0 or FLOOR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pv={t1,t2,t3,t4} local u={} for ps=1,4 do u[pm[ps]+1]=pv[ps] end local u0,u1,u2,u3,u4=t0,u[1],u[2],u[3],u[4]";
 		let bdec_src = format!(
-			"local function bdec(E, bi) local c = E.bch[bi] if c then E.ww, E.w0, E.w1, E.w2, E.w3 = {cache_hit} E.bp, E.be = c[6], c[7] return end local pf = E.bt local qi=QF[pf.sd] local fkm=2*((KM+qi*FQ+pf.sd*FI)%16000000)+1 local fkc=(KC+qi*KQ+pf.sd*KI)%268435456 local fpb=(PB+qi*BQ+pf.sd*BI)%268435456 local s0 = pf.bs[bi] local l = pf.bl[bi] local st = (PS + pf.sd * PT + s0 * fpb + SLT + QF[pf.sd] * CQB) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do {dec_lanes} end E.bch[bi] = {{ {cache_pack}, s0, s0 + l - 1 }} E.ww, E.w0, E.w1, E.w2, E.w3 = t0, t1, t2, t3, t4 E.bp, E.be = s0, s0 + l - 1 end",
+			"local function bdec(E, bi) local c = E.bch[bi] if c then E.ww, E.w0, E.w1, E.w2, E.w3 = {cache_hit} E.bp, E.be = c[6], c[7] return end local pf = E.bt local qi=QF[pf.sd] local fkm=2*((KM+qi*FQ+pf.sd*FI)%16000000)+1 local fkc=(KC+qi*KQ+pf.sd*KI)%268435456 local fpb=(PB+qi*BQ+pf.sd*BI)%268435456 local s0 = pf.bs[bi] local l = pf.bl[bi] local st = (PS + pf.sd * PT + s0 * fpb + SLT + QF[pf.sd] * CQB) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do {dec_lanes} end {normalize} E.bch[bi] = {{ {cache_pack}, s0, s0 + l - 1 }} E.ww, E.w0, E.w1, E.w2, E.w3 = u0, u1, u2, u3, u4 E.bp, E.be = s0, s0 + l - 1 end",
 			cache_hit = cache_hit,
 			dec_lanes = dec_lanes,
+			normalize = lane_normalize,
 			cache_pack = cache_pack,
 		);
 		// ㉗ / H4-2C2: newE/makefn/run+蹦床+DDEC 保持同一字段随机方言，
@@ -2886,7 +2905,7 @@ pub fn generate(
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local FQ,FI,KQ,KI,BQ,BI={fq},{fi},{kq},{ki},{bq},{bi} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local FQ,FI,KQ,KI,BQ,BI,LB,LS={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
 			qf = qf_expected,
@@ -2898,6 +2917,8 @@ pub fn generate(
 			ki = dialect_e[3],
 			bq = dialect_e[4],
 			bi = dialect_e[5],
+			lb = lane_base_e,
+			ls = lane_step_e,
 			program = rt_phase_stored
 				.iter()
 				.map(|v| v.to_string())

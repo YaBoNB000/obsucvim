@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4 已闭环；H4-5A 每函数 block-key family 完成；内部 loader 0 次**
+> 状态：**H4 P0/H4-4 已闭环；H4-5A/B 完成（block key + operand lane）；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -832,8 +832,33 @@ R041：118121B → 118959B（+0.71%）
 169/169；H4-5A audit PASS
 ```
 
-H4-5 尚未完成；下一独立阶段是每函数 operand lane permutation，再推进
-micro-op/shard 与 constant-tag 方言。
+### H4-5B 已落地（2026-10-05）
+
+第二阶段切换每函数 operand lane permutation：
+
+- 编译器使用由既有构建钥匙派生的 `lane_base/lane_step`，在 24 个四操作数
+  排列上做满周期遍历；前 24 个函数不会重复；
+- 每个函数在 carrier 中按自己的 physical→logical 排列写入 SA/SB/SC/SD；
+- BSS 由函数序号算法解出 permutation，只在 Closure 扫描时定位逻辑 b 所在
+  的物理流，不发射每函数 adapter table；
+- RT bdec 使用同一 factoradic unranking，把四个物理流归一化为逻辑 a/b/c/d
+  临时窗口，随后立即销毁排列临时量；
+- block cache 保存的是已归一化窗口并继续随机物理排布，chain/handler 不需要
+  固定方言切换表；
+- Nop qf 继续按每函数物理流顺序计算，H4-4 四个钥匙面与新 lane 方言保持绑定；
+- `h5_dialect_audit.py` 扩展为 A/B 审计，验证 lane 方言跨构建变化、函数内
+  唯一、BSS/RT 镜像和双 seed 等价。
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：118959B → 120472B（+1.27%）
+169/169；H4-5A/B audit PASS
+```
+
+H4-5 尚未完成；下一阶段推进每函数 micro-op/shard，之后再做 constant-tag 与
+rekey 周期方言。
 
 ---
 
@@ -990,8 +1015,8 @@ microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解�
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口（实施中）
 
-H4-5A 每函数 block-key family 已完成；继续完成其余方言后再缩小运行窗口，
-不得反序同时进行，避免无法定位错钥。
+H4-5A block-key family 与 H4-5B operand lane permutation 已完成；继续完成
+micro-op/shard、constant-tag 与 rekey 方言后再缩小运行窗口。
 
 ## 阶段 G：H4-7/H4-8 收口
 

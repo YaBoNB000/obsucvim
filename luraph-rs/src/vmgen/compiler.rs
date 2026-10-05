@@ -77,6 +77,12 @@ pub struct VmProgram {
 	/// slot i. Encoder writes in this order; the template maps the
 	/// stream positions back to a/b/c/d.
 	pub slot_perm: [u8; 4],
+	/// H4-5B: independent physical operand-stream permutation per function.
+	/// The compact base/step formula is mirrored by BSS/RT; no per-function
+	/// adapter table is emitted in the protected program.
+	pub slot_perms: Vec<[u8; 4]>,
+	pub lane_base: u8,
+	pub lane_step: u8,
 	/// M5 bytecode carrier (base-94 + token escape). Shared by every
 	/// function blob so the interpreter embeds one decoder.
 	pub carrier: Carrier,
@@ -219,6 +225,22 @@ struct ScatterNoiseStats {
 /// H3-2/H3-6：ignored operand 不再来自一眼可分的 0..65535 均匀分布。
 /// 绝大多数直接重采样同槽真实操作数，辅以贴近寄存器/常量域的小值；仅保留
 /// 少量中高值与全域值，和高位真实寄存器共同形成双向重叠分布。
+fn operand_perm_from_code(code: u8) -> [u8; 4] {
+	// Factoradic unranking over [a,b,c,d]. Result maps physical stream slot
+	// -> logical operand, matching isa::encode_soa_for.
+	let mut rem = code as usize % 24;
+	let mut pool = vec![0u8, 1, 2, 3];
+	let mut out = [0u8; 4];
+	for (slot, fact) in [6usize, 2, 1, 1].iter().enumerate() {
+		let pick = if slot == 3 { 0 } else { rem / *fact };
+		if slot != 3 {
+			rem %= *fact;
+		}
+		out[slot] = pool.remove(pick);
+	}
+	out
+}
+
 fn sample_noise_operand(rng: &mut Rng, lane: &[u16], all: &[u16]) -> u16 {
 	let pool = if lane.is_empty() { all } else { lane };
 	let roll = rng.int(0, 99);
@@ -676,7 +698,11 @@ impl<'a> Ctx<'a> {
 			}
 		}
 		let map = &self.program.opmap;
-		let perm = &self.program.slot_perm;
+		let perm = if self.scatter {
+			&self.program.slot_perms[fn_index]
+		} else {
+			&self.program.slot_perm
+		};
 		// Nop sites are final here (no more insertions after this point)
 		let nops: Vec<u16> = self
 			.code
@@ -1394,9 +1420,24 @@ fn compile_chunk(
 	];
 	let chaff_pos = chaff_rng.int(1, 65_520) as u16;
 	let chaff_fn = chaff_rng.int(1, 65_520) as u16;
+	// H4-5B: a full-cycle affine walk over all 24 permutations. It is
+	// independent of the main compiler RNG and therefore does not perturb
+	// established code/noise layouts.
+	let lane_steps = [1u8, 5, 7, 11, 13, 17, 19, 23];
+	let lane_base = (chaff_seed % 24) as u8;
+	let lane_step = lane_steps[((chaff_seed / 24) as usize) % lane_steps.len()];
+	let slot_perms: Vec<[u8; 4]> = (0..=total)
+		.map(|fi| {
+			let code = (lane_base as usize + (fi + 1) * lane_step as usize) % 24;
+			operand_perm_from_code(code as u8)
+		})
+		.collect();
 	let mut program = VmProgram {
 		opmap: OpMap::new(rng),
 		slot_perm,
+		slot_perms,
+		lane_base,
+		lane_step,
 		carrier: Carrier::new(rng),
 		// slots 0..total-1 = nested functions (DFS order); the main chunk
 		// is compiled last and becomes slot `total` (PF[#FN] in the
@@ -2874,7 +2915,7 @@ mod dbg {
 				}
 			}
 			// SoA: [ncode u16][OC bytes][4 × ncode varints]
-			let perm = &prog.slot_perm;
+			let perm = &prog.slot_perms[fi];
 			let ncode = u16(p) as usize;
 			p += 2;
 			let mut ops: Vec<u8> = Vec::with_capacity(ncode);
@@ -3026,7 +3067,7 @@ mod dbg {
 			}
 			// wire operands: single-register operands of arithmetic ops
 			// must reach beyond nregs somewhere
-			let perm = &prog.slot_perm;
+			let perm = &prog.slot_perms[fi];
 			for i in 0..ncode {
 				let mut vals = [0u16; 4];
 				for s in 0..4 {
