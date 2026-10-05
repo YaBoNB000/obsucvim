@@ -470,6 +470,13 @@ fn main() -> ExitCode {
 				&program.nop_sites,
 				&program.operand_sums,
 				&program.operand_sums2,
+				&program.chaff_folds,
+				(
+					program.chaff_mul,
+					program.chaff_coeffs,
+					program.chaff_pos,
+					program.chaff_fn,
+				),
 				(program.ck_km, program.ck_kc),
 				(program.mk1, program.mk2),
 				(

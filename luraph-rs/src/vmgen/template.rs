@@ -1139,6 +1139,9 @@ pub fn generate(
 	operand_sums: &[u64],
 	// 54-B: 位置加权双向校验和（编译器侧 Σ(pos·v) 镜像）
 	operand_sums2: &[u64],
+	// H4-4A: compiler-side expected Nop chaff fold and its shared formula.
+	chaff_folds: &[u16],
+	chaff_formula: (u16, [u16; 4], u16, u16),
 	ck: (u32, u32),
 	mk: (u16, u16),
 	blobk: (u32, u32, u32, u32),
@@ -2441,12 +2444,51 @@ pub fn generate(
 		let block_stream_names = ["W", "SA", "SB", "SC", "SD"];
 		let mut block_word_perm: Vec<usize> = (0..5).collect();
 		rng.shuffle(&mut block_word_perm);
+		// H4-4A: one real operand lane carries a non-zero fold of every Nop's
+		// four physical noise operands. BSS recomputes qf from parsed carrier
+		// values; RT uses the compiler-side expected fold. Removing/zeroing the
+		// chaff therefore corrupts this lane for all later real instructions.
+		let chaff_lane = rng.int(1, 4) as usize; // operand only; never opcode
+		manifest_key("CHAFF_LANE", chaff_lane as u64);
+		let qpos_lists: Vec<String> = nop_sites
+			.iter()
+			.map(|sites| {
+				format!(
+					"{{{}}}",
+					sites
+						.iter()
+						.map(|p| (*p as usize + 1).to_string())
+						.collect::<Vec<_>>()
+						.join(",")
+				)
+			})
+			.collect();
+		let qf_expected = chaff_folds
+			.iter()
+			.map(|v| obf_num(*v as u64, rng))
+			.collect::<Vec<_>>()
+			.join(",");
+		let mut qf_checksum: i64 = 0;
+		for &v in chaff_folds {
+			qf_checksum = (qf_checksum * 257 + v as i64) % KEY_MOD;
+		}
+		let qf_checksum_e = ke.key_expr(qf_checksum, None, rng);
+		manifest_key("CHAFF_CK", qf_checksum as u64);
+		let (chaff_mul, chaff_coeffs, chaff_pos, chaff_fn) = chaff_formula;
+		let chaff_mul_e = obf_num(chaff_mul as u64, rng);
+		let chaff_coeff_e: Vec<String> = chaff_coeffs
+			.iter()
+			.map(|v| obf_num(*v as u64, rng))
+			.collect();
+		let chaff_pos_e = obf_num(chaff_pos as u64, rng);
+		let chaff_fn_e = obf_num(chaff_fn as u64, rng);
 		let enc_lanes = block_word_perm
 			.iter()
 			.map(|&lane| {
+				let qterm = if lane == chaff_lane { " + qf" } else { "" };
 				format!(
-					"st = (KM * st + KC) % 268435456 bx[xo] = (pf.{}[p] + {} + st % 65536) % 65536 xo = xo + 1",
-					block_stream_names[lane], stream_bias[lane]
+					"st = (KM * st + KC) % 268435456 bx[xo] = (pf.{}[p] + {} + st % 65536{}) % 65536 xo = xo + 1",
+					block_stream_names[lane], stream_bias[lane], qterm
 				)
 			})
 			.collect::<Vec<_>>()
@@ -2464,9 +2506,17 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} for i = 1, #P do local pf = P[i] local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
+			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF={cm},{ca},{cb},{cc},{cd},{cp},{cf} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
+			qpos = qpos_lists.join(","),
+			cm = chaff_mul_e,
+			ca = chaff_coeff_e[0],
+			cb = chaff_coeff_e[1],
+			cc = chaff_coeff_e[2],
+			cd = chaff_coeff_e[3],
+			cp = chaff_pos_e,
+			cf = chaff_fn_e,
 			bs_stream = s_of[1],
 			cw = closure_cond,
 			cblock = c_block_enc,
@@ -2633,9 +2683,14 @@ pub fn generate(
 		let dec_lanes = block_word_perm
 			.iter()
 			.map(|&lane| {
+				let qterm = if lane == chaff_lane {
+					" - QF[pf.sd]"
+				} else {
+					""
+				};
 				format!(
-					"st = (KM * st + KC) % 268435456 t{}[i] = (x[off] - st % 65536 - {}) % 65536 off = off + 1",
-					lane, stream_bias[lane]
+					"st = (KM * st + KC) % 268435456 t{}[i] = (x[off] - st % 65536 - {}{}) % 65536 off = off + 1",
+					lane, stream_bias[lane], qterm
 				)
 			})
 			.collect::<Vec<_>>()
@@ -2759,9 +2814,10 @@ pub fn generate(
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
+			qf = qf_expected,
 			program = rt_phase_stored
 				.iter()
 				.map(|v| v.to_string())
@@ -2803,7 +2859,7 @@ pub fn generate(
 			"__iter", "__metatable", "__eq", "__lt", "__le", "__add",
 			"__sub", "__mul", "__div", "__mod", "__pow", "__unm",
 			"__len", "__mode", "__close", "_ENV", "BSSKPX", "BSSKCX",
-			"RTPKX", "RTPCX",
+			"RTPKX", "RTPCX", "RTQCKX",
 		] {
 			frag_reserved.insert(g.to_string());
 		}
@@ -2855,10 +2911,11 @@ pub fn generate(
 		);
 		rt_static_src = rt_static_src
 			.replace("RTPKX", "_RTPKX_")
-			.replace("RTPCX", "_RTPCX_");
+			.replace("RTPCX", "_RTPCX_")
+			.replace("RTQCKX", "_RTQCKX_");
 		let rt_fill = format!(
-			"local _RTPKX_=({}) local _RTPCX_=({}) RTFRAG={} ",
-			rt_phase_poison_e, rt_phase_checksum_e, rt_static_src
+			"local _RTPKX_=({}) local _RTPCX_=({}) local _RTQCKX_=({}) RTFRAG={} ",
+			rt_phase_poison_e, rt_phase_checksum_e, qf_checksum_e, rt_static_src
 		);
 		let exg_fill = if let Some(src) = exg_static_src.take() {
 			let clean = sanitize_frag(

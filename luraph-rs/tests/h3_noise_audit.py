@@ -137,10 +137,16 @@ def main():
         print(f"[6] NOP 四形态且无全零回写   : "
               f"{'YES' if no_zero_reset and four_shapes else 'NO'}")
 
+        chaff_valid = all(1 <= r.get("chaff", 0) <= 65521 for r in rows)
+        chaff_diff = [r.get("chaff") for r in sa] != [r.get("chaff") for r in sb]
+        template_coupled = "QF[pf.sd]" in template and "local qf=(i*CF)%65521" in template
+        print(f"[7] NOP chaff 进入真实 lane 钥匙: "
+              f"{'YES' if chaff_valid and chaff_diff and template_coupled else 'NO'}")
+
         ok = all([
             deterministic, seed_diff, accounting, count_diff, overlap,
             slot_mix, slot_diff, bool(nil_total), bool(decoy_total), runtime,
-            no_zero_reset, four_shapes,
+            no_zero_reset, four_shapes, chaff_valid, chaff_diff, template_coupled,
         ])
         print("\nH3 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1

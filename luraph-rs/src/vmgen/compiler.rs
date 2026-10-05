@@ -113,6 +113,16 @@ pub struct VmProgram {
 	pub operand_sums: Vec<u64>,
 	/// 54-B: 位置加权校验和（pos = 流序号*指令数 + 指令内序号，1 基）
 	pub operand_sums2: Vec<u64>,
+	/// H4-4A Key-Carrying Chaff: per-function fold of all four physical
+	/// operand lanes at Nop sites. BSS recomputes this from the parsed
+	/// carrier and uses it in one real lane mask; RT decodes with this
+	/// compiler-side expectation, so stripping/zeroing chaff desynchronizes
+	/// later real instructions instead of merely removing dead work.
+	pub chaff_folds: Vec<u16>,
+	pub chaff_mul: u16,
+	pub chaff_coeffs: [u16; 4],
+	pub chaff_pos: u16,
+	pub chaff_fn: u16,
 	/// B-3 (状态链式按块解码): per-prototype basic-block leader PCs
 	/// (1-based). Leaders = pc 1 ∪ jump targets ∪ post-jump positions;
 	/// the v15 template encodes each block under a session-keyed
@@ -520,7 +530,11 @@ impl<'a> Ctx<'a> {
 		(sigma, stats)
 	}
 
-	fn finish(mut self, mut nregs: u16, fn_index: usize) -> (Vec<u8>, Vec<u16>, u64, u64, Vec<u16>) {
+	fn finish(
+		mut self,
+		mut nregs: u16,
+		fn_index: usize,
+	) -> (Vec<u8>, Vec<u16>, u64, u64, u16, Vec<u16>) {
 		// implicit trailing return (a chunk/function without an explicit
 		// return returns nothing — the code must terminate)
 		let needs_return = self
@@ -723,6 +737,30 @@ impl<'a> Ctx<'a> {
 				if m[3] { ins.d = self.rng.int(0, 65535) as u16; }
 			}
 		}
+		// H4-4A: fold the actual post-noise Nop operands in PHYSICAL stream
+		// order. This is the encoding-side mirror of BSS's QP walk. +1 keeps
+		// every clean function's lane contribution non-zero.
+		let chaff_mod = 65_521u64;
+		let mut chaff = (((fn_index as u64 + 1) * self.program.chaff_fn as u64)
+			% chaff_mod) as u64;
+		for (p, ins) in self.code.iter().enumerate() {
+			if ins.op == Op::Nop {
+				let logical = [ins.a as u64, ins.b as u64, ins.c as u64, ins.d as u64];
+				let physical = [
+					logical[perm[0] as usize],
+					logical[perm[1] as usize],
+					logical[perm[2] as usize],
+					logical[perm[3] as usize],
+				];
+				let mix = physical[0] * self.program.chaff_coeffs[0] as u64
+					+ physical[1] * self.program.chaff_coeffs[1] as u64
+					+ physical[2] * self.program.chaff_coeffs[2] as u64
+					+ physical[3] * self.program.chaff_coeffs[3] as u64
+					+ (p as u64 + 1) * self.program.chaff_pos as u64;
+				chaff = (chaff * self.program.chaff_mul as u64 + mix) % chaff_mod;
+			}
+		}
+		let chaff_fold = (chaff + 1) as u16;
 		// v15 stage E3: fold the sum of ALL wire operands (post-scatter,
 		// post-noise, mod 2^32). The v15 interpreter re-reads every operand
 		// stream via inline 7-bit ladders and re-folds the same checksum
@@ -867,7 +905,7 @@ impl<'a> Ctx<'a> {
 		leaders.dedup();
 		if self.scatter {
 			noise_audit(&format!(
-				"fn={} seed={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={}",
+				"fn={} seed={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={} chaff={}",
 				fn_index,
 				noise_seed,
 				base_code_len,
@@ -882,9 +920,10 @@ impl<'a> Ctx<'a> {
 				noise_high,
 				scatter_stats.nil_holes,
 				scatter_stats.decoy_holes,
+				chaff_fold,
 			));
 		}
-		(blob, nops, osum, osum2, leaders)
+		(blob, nops, osum, osum2, chaff_fold, leaders)
 	}
 }
 
@@ -1336,6 +1375,25 @@ fn compile_chunk(
 	let mut tag_pool: Vec<u8> = (1..=250).collect();
 	rng.shuffle(&mut tag_pool);
 	let section_tags: [u8; 7] = tag_pool[..7].try_into().unwrap();
+	// H4-4A: build-random fold family for Nop operand chaff. Derive an
+	// independent PRNG from already-drawn build keys so this layer does not
+	// perturb the long-established compiler RNG sequence (which could expose
+	// unrelated, previously untested layout combinations).
+	let chaff_seed = (blob_seed as u64)
+		^ (blob_step as u64).rotate_left(17)
+		^ (ck_km as u64).rotate_left(33)
+		^ blob_kc as u64;
+	let mut chaff_rng = Rng::new(chaff_seed ^ 0x4844_3441);
+	// 65521 is prime and keeps every product/sum exact in Lua doubles.
+	let chaff_mul = chaff_rng.int(1, 65_520) as u16;
+	let chaff_coeffs = [
+		chaff_rng.int(1, 65_520) as u16,
+		chaff_rng.int(1, 65_520) as u16,
+		chaff_rng.int(1, 65_520) as u16,
+		chaff_rng.int(1, 65_520) as u16,
+	];
+	let chaff_pos = chaff_rng.int(1, 65_520) as u16;
+	let chaff_fn = chaff_rng.int(1, 65_520) as u16;
 	let mut program = VmProgram {
 		opmap: OpMap::new(rng),
 		slot_perm,
@@ -1348,6 +1406,11 @@ fn compile_chunk(
 		operand_sums: vec![0; total],
 		// 54-B (R025 建议5): 位置加权双向校验和 Σ(pos·v)
 		operand_sums2: vec![0; total],
+		chaff_folds: vec![0; total],
+		chaff_mul,
+		chaff_coeffs,
+		chaff_pos,
+		chaff_fn,
 		ck_km,
 		ck_kc,
 		mk1,
@@ -1368,12 +1431,13 @@ fn compile_chunk(
         let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
-		let (bytes, nops, osum, osum2, blocks) = ctx.finish(nregs, main_index);
+		let (bytes, nops, osum, osum2, chaff, blocks) = ctx.finish(nregs, main_index);
 		program.block_starts[main_index] = blocks;
 		program.fns.push(bytes);
 		program.nop_sites.push(nops);
 		program.operand_sums.push(osum);
 		program.operand_sums2.push(osum2);
+		program.chaff_folds.push(chaff);
 	}
 	program
 }
@@ -2614,7 +2678,7 @@ impl<'a> Ctx<'a> {
 		child.pop_scope();
 		let slot_end = child.next_fn_slot;
 		let nregs = child.next_reg;
-		let (bytes, nops, osum, osum2, blocks) = child.finish(nregs, child_index);
+		let (bytes, nops, osum, osum2, chaff, blocks) = child.finish(nregs, child_index);
 			self.program.block_starts[child_index] = blocks;
 		self.next_fn_slot = slot_end;
 		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
@@ -2622,6 +2686,7 @@ impl<'a> Ctx<'a> {
 		self.program.nop_sites[child_index] = nops;
 		self.program.operand_sums[child_index] = osum;
 		self.program.operand_sums2[child_index] = osum2;
+		self.program.chaff_folds[child_index] = chaff;
 
 		self.emit(Instr::ab(Op::Closure, dst, child_index as u16));
 	}

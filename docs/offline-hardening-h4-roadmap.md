@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0 已闭环：H4-0/H4-1/H4-2/H4-3 全部完成；内部 loader 0 次**
+> 状态：**H4 P0 已闭环；H4-4A Key-Carrying Chaff 单 lane 试点完成；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -676,6 +676,34 @@ block state / operand mask / next-key / alias state
 - 静态 DCE 不能只靠“用户结果未读取”删除 chaff；
 - 无明显固定投毒常量和单点比较。
 
+### H4-4A 已落地（2026-10-05）
+
+先按路线要求只试点一个低风险 operand lane：
+
+- 编译器对每函数所有 Nop 的四个**物理流操作数**及位置做非零模 `65521`
+  折叠，得到每函数 `qf`；
+- fold 乘数、四 lane 系数、位置系数和函数系数由已有构建钥匙派生的独立
+  PRNG 生成，不额外推进主编译 RNG，避免扰动既有布局空间；
+- 每构建从 `SA/SB/SC/SD` 中随机选一个真实 operand lane；BSS 使用从载体
+  实际重算的 `qf` 加密该 lane，RT 则使用编译器期望 `QF[pf.sd]` 解密；
+- 删除、归零或重排 Nop chaff 后，两侧 qf 不一致，后续真实指令操作数静默
+  错位，不再只是“删掉无用户输出的死工作”；
+- QF 表自身进入独立 `CHAFF_CK` 折叠，差异同时污染 `SLT/SLTC`，不存在
+  明文 `if qf ~= expected then crash`；
+- BSS 实际 qf 不写入 prototype，不新增长期可遍历状态或统一 `mix_chaff()`；
+- H3 审计新增第 7 项，验证 qf 非零、跨 seed 变化并接入真实 lane 镜像。
+
+试点结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：116444B → 117460B（+0.87%）
+169/169；370/370；multiseed FAIL=0；defense 21/21
+```
+
+H4-4 尚未全部完成；下一小阶段才扩展到 block/constant/microcode 三个钥匙面，
+不得一次性混入以免无法定位错钥。
+
 ---
 
 ## H4-5：每函数独立方言（P1）
@@ -855,9 +883,10 @@ H4-2C1 BSS 一次性数值 boot 状态机：`3 → 2`；H4-2C2 RT 五阶段数�
 HBOOT 三阶段静态数值协议与静态 EXG 已完成，内部 loader `1 → 0`；
 `--enforce-zero` 正式门通过，H4 P0 闭环。
 
-## 阶段 E：H4-4 Key-Carrying Chaff
+## 阶段 E：H4-4 Key-Carrying Chaff（实施中）
 
-先在一个低风险 operand lane 试点，再扩到 block/constant/microcode 三面。
+H4-4A 单 operand lane 试点已完成；下一步按独立提交扩展到 block、constant、
+microcode 三面，不与每函数方言改造混合。
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口
 
