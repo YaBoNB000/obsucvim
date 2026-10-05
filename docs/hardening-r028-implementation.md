@@ -28,7 +28,7 @@
 
 **12 项状态**（构建种子驱动，纯离线）：
 1. ✅ 段三元组解码顺序：`frags` 的 `order` 每构建洗牌，哈希链与增量字典同序镜像。
-2. ✅ 段语义↔编号：BSS/RT/EXG 继续使用随机低区 wire；H4-2A 后 continuation 已静态 loaderless，Call executor 仍保留随机高区 wire，等待无语义回退的安全迁移方案。
+2. ✅ 段语义↔编号：BSS/RT/EXG 继续使用随机低区 wire；H4-2A/B 后 continuation 与 Call executor 均已静态 loaderless，Call 结果安放由跨 shard 数值 descriptor 承担，不再保留高区 executor wire。
 3. 🟡 别名面：四套 opcode wire + NOP alias 值已随机；“组数/每组数量可变”仍待做。
 4. ✅ K 常量组：`KeyEmitter` 的 KA/KB/KC/KM 内容、槽位、组装配方每构建重掷。
 5. ✅ LCG：常量、blob、HQ、meta、块钥匙流的乘加子/种子/步数均由构建 seed 生成。

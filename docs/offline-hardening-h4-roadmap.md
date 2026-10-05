@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**实施中：H4-0/H4-1 已完成；H4-2A continuation loaderless，内部 loader 7 次**
+> 状态：**实施中：H4-0/H4-1、H4-2A/B 已完成；内部 loader 3 次（HBOOT+BSS+RT）**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -289,8 +289,9 @@ MkStr
 - Nop/NopA 继续使用 H3 四形态，但形态代码进入随机 shard，不再作为源码碎片；
 - MkStr 保持基于字符串元表 `char` 的去钩化物化路径；
 - Return 直接写 `E.out/E.total/E.done` 后解链，不新增返回适配器；
-- Call 四家族的 chain phase 进入 microcode，参数打包结果仍交给既有四个
-  浅层 executor，以保持 Luau 深递归帧预算；
+- Call 四家族的 chain phase 进入 microcode；H4-2B 又将结果安放阶段编码为
+  独立 post-call descriptor，仅由四个最小浅层 executor 跨越真实用户调用，
+  保持 Luau 深递归帧预算；
 - 每个 shard 只发射实际使用 micro-op，descriptor 分 shard 局部表；
 - descriptor 全局顺序仅保存引用，用于完整性折叠，不保存语义 closure；
 - 修复 `..name` 被 dot-field remapper 误判及 HashSet 非确定性。
@@ -435,12 +436,56 @@ H4-2A 增量门：
 python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 7
 ```
 
+### H4-2B 已落地（2026-10-05）
+
+4 个 Call executor 不再以源码碎片进入 loader。Call 协议保持两相，但两相都
+改为数值描述：
+
+1. `M_CALL/M_CALLE/M_CALLM/M_CALLT` 在 handler shard 中解析函数、收集参数，
+   将调用状态暂存到帧并解链回蹦床；
+2. 四个最小静态 executor 在蹦床浅层直接执行真实用户调用，以 `table.pack`
+   保留尾部 `nil` 与准确返回数量；
+3. 用户调用返回后才进入 `M_POST_CALL/M_POST_CALLE/M_POST_CALLM/
+   M_POST_CALLT` descriptor，分别镜像结果安放协议，再续接随机 chain epilogue。
+
+关键约束：
+
+- micro dispatcher 不跨越用户函数调用存活，不增加深递归持久帧；
+- 4 个 post-call descriptor 轮转分配到 `3..5` 个 shard，保证每个构建至少
+  跨多个独立编号/字段排列/dispatch 方言；
+- post-call descriptor 与 handler descriptor 一起进入 `MICRO_CK` 完整性折叠；
+- `Call/CallM` 保留 `lastbase/lastn` 与固定/全返回槽清理；
+- `CallE` 保留 spill table 与返回数量槽；
+- `CallT` 在调用前快照目标表和旧计数，防止被调用函数改写帧后改变语义；
+- 静态 Call 状态字段先进入碎片随机改名表，避免某些 seed 下与 RT 字段随机名
+  碰撞。该闸实测拦截并修复过 `E.oa` 与 `E.bdec -> oa` 的碰撞回归。
+
+结果：
+
+```text
+Loader 调用：54 → 42 → 21 → 11 → 7 → 3
+HQ 源码碎片：53 → 41 → 20 → 10 → 6 → 2
+```
+
+当前仅剩：
+
+```text
+HBOOT 1 + BSS 1 + RT 1 = 3
+```
+
+H4-2B 增量门：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 3
+```
+
 ### 已验证并回退的候选
 
 曾试验将 Call executor、BSS、RT 直接静态化。虽然 loader 可降至 1，但
 `edge.lua` 的多返回值/块状态协议出现 `attempt to index number with number`，
-说明该方案会用表面上的 loaderless 换取新的语义破绽，因此未保留。后续只能
-在建立数值 descriptor/协议镜像后继续 H4-2B，不采用直接源码搬出碎片的方案。
+说明该方案会用表面上的 loaderless 换取新的语义破绽，因此未保留。H4-2B
+最终采用上面的数值 descriptor/协议镜像完成 Call executor 迁移；BSS/RT 也
+不得直接搬源码，必须沿用相同的“先建立协议镜像、再移除 loader”原则。
 
 ---
 
@@ -686,8 +731,9 @@ H1/H2/H3 回归不退化
 
 ## 阶段 C：H4-2 Loaderless Runtime（实施中）
 
-H4-2A continuation 已完成，loader `11 → 7`。Call executor/BSS/RT 的直接
-静态化原型因语义回归已回退；H4-2B 必须改走数值 descriptor/协议镜像，不能
+H4-2A continuation 已完成，loader `11 → 7`；H4-2B Call executor 数值
+post-call descriptor 已完成，loader `7 → 3`。剩余 BSS/RT 的直接静态化
+原型仍因语义回归保持回退状态；下一提交边界为 H4-2C BSS/RT 协议镜像，不能
 简单把源码从碎片搬到外层。
 
 ## 阶段 D：H4-3 HBOOT Loaderless
@@ -721,7 +767,7 @@ bash luraph-rs/tests/multiseed.sh
 python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 7
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 3
 bash luraph-rs/tests/defense_audit.sh
 ```
 

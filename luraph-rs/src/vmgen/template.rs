@@ -1026,7 +1026,15 @@ const M_CALL: usize = 40;
 const M_CALLE: usize = 41;
 const M_CALLM: usize = 42;
 const M_CALLT: usize = 43;
-const M_COUNT: usize = 44;
+// H4-2B: post-call result placement is a second numeric phase.  The real
+// user call stays in a shallow trampoline executor; only after it returns is
+// one of these per-shard micro-ops entered, so the micro dispatcher never
+// persists on the user recursion stack.
+const M_POST_CALL: usize = 44;
+const M_POST_CALLE: usize = 45;
+const M_POST_CALLM: usize = 46;
+const M_POST_CALLT: usize = 47;
+const M_COUNT: usize = 48;
 
 struct MicroLits {
 	number: String,
@@ -1203,6 +1211,16 @@ fn micro_call_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	}
 }
 
+fn micro_post_call_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
+	match name {
+		"Call" => Some(vec![(M_POST_CALL, 0, 0)]),
+		"CallE" => Some(vec![(M_POST_CALLE, 0, 0)]),
+		"CallM" => Some(vec![(M_POST_CALLM, 0, 0)]),
+		"CallT" => Some(vec![(M_POST_CALLT, 0, 0)]),
+		_ => None,
+	}
+}
+
 fn micro_binary_body(expr: &str, meta: &str, lit: &MicroLits) -> String {
 	format!(
 		"local u,w=T[1],T[2] if TYP(u)=={number} and TYP(w)=={number} then T[x]={expr} else local f=mget(u,{meta}) or mget(w,{meta}) if f then T[x]=f(u,w) else ERR({msg}..TYP(u)..{value},0) end end",
@@ -1298,6 +1316,9 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_CALLE => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local va=O[4]%2==1 local tail=O[4]>=2 local nargs=nf+off if tail then nargs=nargs+V[S[bs+nf+1]] end local av={} if off==1 then av[1]=f end local lim=tail and (nf+V[S[bs+nf+1]]) or nf for j=1,lim do if tail and j>nf then local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[bs+j]] end end if va then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=2".to_string(),
 		M_CALLM => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local nt=V[S[bs+nf+1]] local nargs=nf+nt+off local av={} if off==1 then av[1]=f end for j=1,nf+nt do if j<=nf then av[off+j]=V[S[bs+j]] else local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end end end if O[4]==1 then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=3".to_string(),
 		M_CALLT => "local f=V[S[O[1]+1]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=FLOOR(O[4]/2) local tail=O[4]%2==1 local nt=tail and V[S[O[1]+nf+2]] or 0 local nargs=nf+off+nt local av={} if off==1 then av[1]=f end for j=1,nf+nt do if tail and j>nf then local z=O[1]+j+2 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[O[1]+j+1]] end end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.ctt=V[O[2]+1] E.cnt=V[O[3]+1] E.callx=4".to_string(),
+		M_POST_CALL | M_POST_CALLM => "local bs=O[1]+1 E.lb=bs E.ln=N local wn=N if O[3]~=255 and O[3]>wn then wn=O[3] end for j=1,wn do local s=S[bs+j] if s then V[s]=R[j] else X[bs+j]=R[j] end end".to_string(),
+		M_POST_CALLE => "local bs=O[1]+1 for j=1,N do local s=S[bs+j] if s then V[s]=R[j] else X[bs+j]=R[j] end end V[S[bs]]=N".to_string(),
+		M_POST_CALLT => "local q=E.ctt local n=E.cnt for j=1,N do q[n+j]=R[j] end V[O[3]+1]=n+N".to_string(),
 		_ => unreachable!(),
 	}
 }
@@ -1372,7 +1393,7 @@ fn micro_shard_source(
 		logical_pos[*logical] = physical + 1;
 	}
 	format!(
-		"local function {name}(E,a,b,c,d,P,m,k) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end end ",
+		"local function {name}(E,a,b,c,d,P,m,k,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end end ",
 		name = name,
 		op = logical_pos[0],
 		x = logical_pos[1],
@@ -2440,17 +2461,15 @@ pub fn generate(
 		let w_bss = free_lo[0];
 		let w_rt = free_lo[1];
 		let w_exg = free_lo[2];
-		let mut hi_pool: Vec<u16> = (256..512).collect();
-		rng.shuffle(&mut hi_pool);
-		let exec_wires: Vec<u16> = hi_pool.into_iter().take(4).collect();
 		manifest_key("W_BSS", w_bss as u64);
 		manifest_key("W_RT", w_rt as u64);
 		manifest_key("W_EXG", w_exg as u64);
-		// 增量⑲ (CPS 去中心化, Call 浅化): Luau 无正确尾调用，调用点
-		// 若在链深处执行，用户递归每层会叠 ~K 个链帧 → 深递归溢栈。
-		// 故 Call 家族拆两相：链相位（参数打包 → 暂存 E → return 解链
-		// 回蹦床）+ 浅层执行器（callcap 之后接标准尾链附言继续执行）。
-		// H4-2A 仅静态化 continuation；执行器保留碎片以守住多返回帧语义。
+		// 增量⑲ / H4-2B (CPS 去中心化, Call 浅化): Luau 无正确尾调用，
+		// 调用点若在链深处执行，用户递归每层会叠 ~K 个链帧。Call 家族
+		// 因此保持两相：数值 chain microcode 打包参数并解链回蹦床；四个
+		// 静态浅层 executor 直接发起用户调用，返回后才进入数值 post-call
+		// descriptor 安放结果。micro dispatcher 不跨越用户调用存活，既
+		// 清除四个源码 loader，又守住深递归与多返回协议。
 		let call_names = ["Call", "CallE", "CallM", "CallT"];
 		// H4-1A/B: several independently permuted micro shards. They are emitted
 		// as static outer closures (the unavoidable pure-Luau base), while each
@@ -2458,6 +2477,10 @@ pub fn generate(
 		// reaches the runtime loader.
 		let micro_lits = MicroLits::new(&mut pool, mk);
 		let n_micro_shards = rng.int(3, 5) as usize;
+		// The four post-call protocols are rotated across the available shards;
+		// unlike four independent random draws, this guarantees that every build
+		// uses multiple dispatch dialects for result placement.
+		let call_post_shard_offset = rng.int(0, n_micro_shards as i64 - 1) as usize;
 		let mut micro_shards = Vec::with_capacity(n_micro_shards);
 		let mut micro_used: Vec<std::collections::HashSet<usize>> =
 			vec![std::collections::HashSet::new(); n_micro_shards];
@@ -2508,29 +2531,6 @@ pub fn generate(
 				format!("local {} = {} ", lhs.join(", "), rhs.join(", "))
 			}
 		};
-		// word-boundary replace (std-only, no regex crate)
-		fn replace_word(s: &str, from: &str, to: &str) -> String {
-			let mut out = String::with_capacity(s.len());
-			let mut rest = s;
-			while let Some(i) = rest.find(from) {
-				let before_ok = i == 0
-					|| !rest.as_bytes()[i - 1].is_ascii_alphanumeric()
-						&& rest.as_bytes()[i - 1] != b'_';
-				let end = i + from.len();
-				let after_ok = end == rest.len()
-					|| !rest.as_bytes()[end].is_ascii_alphanumeric()
-						&& rest.as_bytes()[end] != b'_';
-				out.push_str(&rest[..i]);
-				if before_ok && after_ok {
-					out.push_str(to);
-				} else {
-					out.push_str(from);
-				}
-				rest = &rest[end..];
-			}
-			out.push_str(rest);
-			out
-		}
 		for (name, wire) in &items {
 			if let Some(recipe) = micro_recipe(name) {
 				let shard_index = rng.int(0, n_micro_shards as i64 - 1) as usize;
@@ -2578,12 +2578,9 @@ pub fn generate(
 			// threads through E.pc); jumps write E.pc in place; Return
 			// exits the chain with `return U(out, 1, total)`, whose
 			// values propagate back through the all-tail-called chain.
-			// The Call family is NO LONGER inline: with real tail calls
-			// its handler frames never accumulate, so the four Call
-			// handlers run from their HQ fragments like any other
-			// opcode (they were inlined only to dodge per-instruction
-			// frame growth in the old loop — and ⑬'s equivalence-
-			// breaking junk dies with the decoy status).
+			// The Call family is split into numeric chain and post-call
+			// descriptors. Only four minimal static executor closures span the
+			// actual user call, keeping the trampoline recursion budget intact.
 			if matches!(name.as_str(), "Jmp" | "Jf" | "Jt") {
 				body = body.replace("pc = b", "E.pc = b");
 			}
@@ -2604,81 +2601,54 @@ pub fn generate(
 			} else if let Some(ci) =
 				call_names.iter().position(|n| *n == name.as_str())
 			{
-				// ---- split the Call body at the callcap invocation ----
-				let marker = ", nout = callcap(fn, ";
-				let mi = body.find(marker).expect("callcap marker");
-				let ls = body[..mi].rfind("local ").expect("callcap local");
-				let (pre, post) = body.split_at(ls);
-				let after = &body[mi + marker.len()..];
-				let aname = after[..after.find(", nargs)").unwrap()].to_string();
-				let mut stash = format!(
-					"E.cf = fn; E.ca = {}; E.cn = nargs; E.oa = a; E.ob = b; E.oc2 = c; E.od = d",
-					aname
-				);
-				let mut post_s = post.to_string();
-				let mut exec_pre = String::new();
-				// «B» base local (Call/CallE/CallM): recompute in the
-				// executor from the stashed `a` operand
-				if let Some(bi) = pre.find(" = a + 1;") {
-					let bstart = pre[..bi].rfind("local ").unwrap() + 6;
-					let bname = &pre[bstart..bi];
-					exec_pre = format!("local {} = a + 1; ", bname);
+				// H4-2B: the chain phase is already numeric (M_CALL*).  Encode
+				// result placement as a second descriptor in a deliberately
+				// different/rotated shard.  The executor itself performs only the
+				// shallow call, then enters this post-call program after the user
+				// function has returned; no micro-dispatch frame survives recursion.
+				let post_recipe = micro_post_call_recipe(name).expect("post-call recipe");
+				let post_shard_index = (call_post_shard_offset + ci) % n_micro_shards;
+				for &(kind, _, _) in &post_recipe {
+					micro_used[post_shard_index].insert(kind);
 				}
-				if name == "CallT" {
-					// «T»/«N» are read BEFORE the call but consumed after
-					// — the call may mutate V, so stash the VALUES
-					let p1 = pre.find(" = V[b + 1]; local ").unwrap();
-					let tstart = pre[..p1].rfind("local ").unwrap() + 6;
-					let tname = pre[tstart..p1].to_string();
-					let p2 = pre.find(" = V[c + 1]").unwrap();
-					let nstart = pre[..p2].rfind("local ").unwrap() + 6;
-					let nname = pre[nstart..p2].to_string();
-					stash.push_str(&format!(
-						"; E.ctt = {}; E.cnt = {}",
-						tname, nname
-					));
-					post_s = replace_word(&post_s, &tname, "E.ctt");
-					post_s = replace_word(&post_s, &nname, "E.cnt");
+				let post_mask = rng.int(1, 255) as u8;
+				let post_step = (rng.int(1, 255) | 1) as u8;
+				let (post_program, post_stored) = encode_micro_program(
+					&post_recipe,
+					&micro_shards[post_shard_index],
+					post_mask,
+					post_step,
+				);
+				micro_program_counts[post_shard_index] += 1;
+				let post_index = micro_program_counts[post_shard_index];
+				for value in std::iter::once(post_mask)
+					.chain(std::iter::once(post_step))
+					.chain(post_stored.into_iter())
+				{
+					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
 				}
-				// 增量⑲ (帧预算): inline the multi-return capture into
-				// the executor (table.pack via E.tp) — the separate
-				// callcap frame would persist through the whole nested
-				// call (recursion frame budget).
-				let split_marker =
-					format!(", nout = callcap(fn, {}, nargs)", aname);
-				let si = post_s.find(&split_marker).expect("callcap head");
-				let oname = post_s["local ".len()..si].to_string();
-				post_s = format!(
-					"local {} = E.tp(fn(U(E.ca, 1, E.cn))); local nout = {}.n{}",
-					oname,
-					oname,
-					&post_s[si + split_marker.len()..]
-				);
-				// executor fragment: shallow call + result placement +
-				// chain continuation
-				let exec_src = format!(
-					"return function(E) local a, b, c, d = E.oa, E.ob, E.oc2, E.od; local fn, {}, nargs = E.cf, E.ca, E.cn; local V, S, O, U, AV, HW2 = E[1], E[3], E[4], E[21], E[23], E[24]; {}{} {} end",
-					aname,
-					exec_pre,
-					post_s,
-					chain_epilogue(rng, &wk),
-				);
-				frags.push((exec_wires[ci], exec_src.into_bytes()));
-				// chain phase: pack args, stash, unwind to the trampoline
-				body = format!(
-					"{}; E.callx = {}; return",
-					format!("{};{}", pre.trim_end_matches(|c| c == ';' || c == ' '), stash),
-					ci + 1
-				);
+				let post_tail = chain_epilogue(rng, &wk);
+				micro_fill.push_str(&format!(
+					"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] CX{executor}=function(E) local _r=E.tp(E.cf(E[21](E.ca,1,E.cn))) local _d=_md{shard}[{index}] _mx{shard}(E,E.oa,E.ob,E.oc2,E.od,_d[1],_d[2],_d[3],_r,_r.n); {tail} end ",
+					program = post_program,
+					mask = post_mask,
+					step = post_step,
+					shard = post_shard_index,
+					index = post_index,
+					executor = ci + 1,
+					tail = post_tail,
+				));
 			} else {
 				body.push(' ');
 				body.push_str(&chain_epilogue(rng, &wk));
 			}
-			// Call handlers still use the existing generator above to emit their
-			// four shallow executor fragments, but the chain-phase source itself is
-			// replaced by a numeric micro descriptor.
+			// The argument-pack/unwind half of each Call is independently encoded
+			// from its post-call descriptor; no Call source fragment is emitted.
 			if let Some(recipe) = micro_call_recipe(name) {
-				let shard_index = rng.int(0, n_micro_shards as i64 - 1) as usize;
+				let ci = call_names.iter().position(|n| *n == name.as_str()).unwrap();
+				let post_shard = (call_post_shard_offset + ci) % n_micro_shards;
+				let shard_delta = rng.int(1, n_micro_shards as i64 - 1) as usize;
+				let shard_index = (post_shard + shard_delta) % n_micro_shards;
 				for &(kind, _, _) in &recipe {
 					micro_used[shard_index].insert(kind);
 				}
@@ -3207,6 +3177,16 @@ pub fn generate(
 			std::collections::HashMap::new();
 		let mut frag_used: std::collections::HashSet<String> =
 			std::collections::HashSet::new();
+		// H4-2B: these call-protocol fields now live exclusively in static
+		// microcode, so no source fragment would otherwise introduce them into
+		// frag_map. Pre-seed their randomized names before sanitizing BSS/RT;
+		// this also reserves the generated spellings and prevents a seed-specific
+		// collision such as static E.oa vs sanitized E.bdec -> `oa`.
+		for field in ["cf", "ca", "cn", "oa", "ob", "oc2", "od", "ctt", "cnt"] {
+			let mapped = sanitize_name(rng, &frag_reserved, &frag_used);
+			frag_used.insert(mapped.clone());
+			frag_map.insert(field.to_string(), mapped);
+		}
 		for (_wire, src) in frags.iter_mut() {
 			let text = String::from_utf8(std::mem::take(src)).unwrap();
 			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
@@ -3837,16 +3817,10 @@ pub fn generate(
 				meta_seed, comp, env_exp, c_fold, hb_masked.len()
 			);
 		}
-		// H4-2A: continuation closures are static/loaderless. Call executors
-		// remain encrypted fragments until their frame-sensitive post-call path
-		// is migrated without changing multi-return semantics.
+		// H4-2A/B: continuation and call-executor closures are now emitted by
+		// micro_fill.  Neither family is recovered from HW source fragments.
 		let ct_fill = String::new();
-		let mut cx_order: Vec<usize> = (0..4).collect();
-		rng.shuffle(&mut cx_order);
-		let cx_fill: String = cx_order
-			.iter()
-			.map(|&i| format!("CX{} = HW[{}]\n    ", i + 1, exec_wires[i]))
-			.collect();
+		let cx_fill = String::new();
 		// ㊶: 蜜罐表接收/贮存（守卫在 HBOOT 掩码层；贮存行形似 VM 状态）
 		let hp_recv = if guard { String::from(", HPH") } else { String::new() };
 		// ㊹: HBOOT 现在返回 6 值 (含 MPF/SALT), PCAL 包装需对应接收位。
