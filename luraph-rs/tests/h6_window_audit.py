@@ -40,6 +40,9 @@ def main():
         deterministic = a == c and ma == mc
         caps = [ma.get("BLOCK_CACHE_CAP", -1), mb.get("BLOCK_CACHE_CAP", -1)]
         bounded = all(0 <= x <= 2 for x in caps)
+        reseed_keys = ["WINDOW_RESEED_M", "WINDOW_RESEED_B"]
+        reseed_present = all(k in ma and k in mb for k in reseed_keys)
+        reseed_diff = reseed_present and tuple(ma[k] for k in reseed_keys) != tuple(mb[k] for k in reseed_keys)
         exp = subprocess.run([str(LUAU), str(SRC)], capture_output=True)
         ra = subprocess.run([str(LUAU), str(td/"a.lua")], capture_output=True)
         rb = subprocess.run([str(LUAU), str(td/"b.lua")], capture_output=True)
@@ -49,14 +52,19 @@ def main():
         shape = all(x in template for x in [
             "if BC==0 and E.ww", "if #E.bq>BC", "E.bch[oid]=nil",
             "wt[wx]=nil", "E.bq = {{}}", "E.ww,E.w0,E.w1,E.w2,E.w3=nil",
+            "E.er=E.er+1", "let cache_remask = block_word_perm",
+            "c[{pos}][wx]=(c[{pos}][wx]-om+wm)%{modulus}",
+            "(E.ww[{bi}]-E.br)%256", "{wa}[{bi}]-E.br",
+            "for _ti=1,3 do T[_ti]=nil", "for _oi=1,4 do O[_oi]=nil",
         ])
-        print("== H4-6A 单块窗口/缓存审计 ==")
+        print("== H4-6A/B 单块窗口/重播种审计 ==")
         print(f"[0] 同 seed 确定: {'YES' if deterministic else 'NO'}")
         print(f"[1] cache cap 位于 0..2: {'YES' if bounded else 'NO'} (caps={caps})")
-        print(f"[2] FIFO 淘汰 + 数组覆盖 + Return 清场: {'YES' if shape else 'NO'}")
-        print(f"[3] 双 seed 长控制流等价: {'YES' if runtime else 'NO'} ({exp.stdout[:80]!r})")
-        ok = deterministic and bounded and shape and runtime
-        print("\nH4-6A 审计: " + ("PASS" if ok else "FAIL"))
+        print(f"[2] window reseed 跨构建重掷: {'YES' if reseed_diff else 'NO'}")
+        print(f"[3] FIFO/覆盖/重掩码/Micro 清场: {'YES' if shape else 'NO'}")
+        print(f"[4] 双 seed 长控制流等价: {'YES' if runtime else 'NO'} ({exp.stdout[:80]!r})")
+        ok = deterministic and bounded and reseed_diff and shape and runtime
+        print("\nH4-6A/B 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1
 
 

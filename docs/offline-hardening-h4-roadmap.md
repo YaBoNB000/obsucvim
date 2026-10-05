@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4/H4-5 已闭环；H4-6A 单块缓存上限与主动淘汰完成；内部 loader 0 次**
+> 状态：**H4 P0/H4-4/H4-5/H4-6 已闭环；块窗口重掩码与主动销毁完成；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -991,8 +991,34 @@ R041：152134B → 152535B（+0.26%）
 169/169；H4-6A audit PASS
 ```
 
-H4-6 尚未完成；下一阶段处理同块重入重播种，并进一步清除 micro descriptor
-短窗口。
+### H4-6B 已落地（2026-10-05）
+
+第二阶段完成同块重入重掩码与 Micro 临时窗口销毁：
+
+- 每帧维护单调 decode epoch；每次 bdec（包括 cache hit）派生新的 16-bit
+  runtime window mask；
+- 新解块在写入 cache/活动窗口前，opcode 以 mod 256、四 operand lane 以
+  mod 65536 进行运行期二次掩码；
+- chain epilogue 仅在取当前指令时即时解掩 opcode/a/b/c/d，不创建整块明文副本；
+- cache hit 会从旧 mask 原地转换到新 mask，同一块重复进入时内存数字窗口不同；
+- cache 物理顺序随机，重掩码按 `block_word_perm` 识别 opcode 槽，避免将
+  operand 错按 mod 256 处理；
+- epoch/mask 在帧结束时清除，淘汰块继续逐项覆盖；
+- 每次 micro executor 返回前显式清除 `T[1..3]` scratch 与 `O[1..4]` operand
+  临时窗口；长期 descriptor 仅保留已掩码数字，不存在解码态 micro 数组；
+- `h6_window_audit.py` 扩展为 A/B 审计，验证重播种系数、原地重掩码、即时
+  解掩、Micro scratch 清场和双 seed 长控制流等价。
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：152535B → 157275B（+3.11%）
+169/169；H4-6A/B audit PASS
+```
+
+H4-6 单块窗口、重播种与主动销毁至此闭环。下一阶段进入 H4-7 常量、closure
+与调用约定去中心化。
 
 ---
 
@@ -1120,10 +1146,9 @@ HBOOT 三阶段静态数值协议与静态 EXG 已完成，内部 loader `1 → 
 H4-4A operand lane、H4-4B block seed、H4-4C constant key、H4-4D
 microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解码中错钥。
 
-## 阶段 F：H4-5/H4-6 每函数方言与单块窗口（实施中）
+## 阶段 F：H4-5/H4-6 每函数方言与单块窗口 ✅
 
-H4-5 每函数五类方言与 H4-6A cache 上限/主动淘汰已完成；下一提交边界为
-H4-6B 同块重入重播种与 micro descriptor 短窗口。
+H4-5 五类函数方言、H4-6A 缓存上限/淘汰、H4-6B 重掩码/短窗口均已完成。
 
 ## 阶段 G：H4-7/H4-8 收口
 
