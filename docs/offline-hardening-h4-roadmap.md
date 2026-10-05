@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0 已闭环；H4-4A/B 已完成（operand lane + block seed）；内部 loader 0 次**
+> 状态：**H4 P0 已闭环；H4-4A/B/C 已完成（lane + block + constant）；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -723,8 +723,29 @@ R041：117460B → 118108B（+0.55%）
 169/169；H3 chaff 8/8
 ```
 
-H4-4 尚未全部完成；下一小阶段为 constant key，再后才是 microcode checksum，
-不得一次性混入以免无法定位错钥。
+### H4-4C 已落地（2026-10-05）
+
+第三个独立提交只接 constant key：
+
+- 从已有 chaff fold 系数族派生非零 `CHAFF_CONST`，不增加新的原始随机根；
+- BSS 常量编码基线新增 `qf * CHAFF_CONST`；
+- RT 惰性 CDEC 镜像新增 `QF[q.sd] * CHAFF_CONST`；
+- qf 不一致时，字符串、数字、布尔及 nil tag 的首次惰性物化都会走错钥；
+- 常量仍逐索引解密，不扩大为全池窗口；NaN/inf 的历史 plaintext fallback
+  不伪装成已覆盖，仍由既有指令块约束保护；
+- 沿用 QF 完整性折叠，无新增 comparison/crash oracle；
+- H3 审计新增第 9 项，验证 BSS/CDEC 两侧 constant-key 镜像都实际消费 qf。
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：118108B → 118150B（+0.04%）
+169/169；H3 chaff 9/9
+```
+
+H4-4 仅余 microcode checksum 面；下一提交完成后才宣告 Key-Carrying Chaff
+闭环。
 
 ---
 
@@ -907,8 +928,8 @@ HBOOT 三阶段静态数值协议与静态 EXG 已完成，内部 loader `1 → 
 
 ## 阶段 E：H4-4 Key-Carrying Chaff（实施中）
 
-H4-4A operand lane 与 H4-4B block seed 已完成；下一步按独立提交扩展到
-constant key，再后才接 microcode checksum，不与每函数方言改造混合。
+H4-4A operand lane、H4-4B block seed、H4-4C constant key 已完成；仅余
+microcode checksum 面，仍不与每函数方言改造混合。
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口
 

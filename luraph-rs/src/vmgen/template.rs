@@ -2346,6 +2346,16 @@ pub fn generate(
 		} else {
 			(0, 0, String::new())
 		};
+		let (chaff_mul, chaff_coeffs, chaff_pos, chaff_fn) = chaff_formula;
+		// H4-4C: derive the constant-key coefficient from the existing fold
+		// family; no new independent raw coefficient is introduced.
+		let chaff_const = ((chaff_coeffs[1] as u64 * 263
+			+ chaff_fn as u64 * 5
+			+ chaff_pos as u64 * 3)
+			% 65_520
+			+ 1) as u16;
+		let chaff_const_e = obf_num(chaff_const as u64, rng);
+		manifest_key("CHAFF_CONST", chaff_const as u64);
 		let c_block_enc = if consts_safe {
 			// ㊼: 每常量独立钥匙流——stj = (基线 + j·CKJ) 再走两步 LCG
 			// 扩散；常量间字节流不再顺序相连（编码侧，BSS 运行期）。
@@ -2359,7 +2369,7 @@ pub fn generate(
 				String::new()
 			};
 			let mut s = String::from(
-				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 for j = 1, m do co[j] = si local stj = (PS + i * PT + SALT + j * CKJ",
+				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 for j = 1, m do co[j] = si local stj = (PS + i * PT + SALT + j * CKJ + qf * CQC",
 			);
 			s.push_str(&cenv_off);
 			// 53: 常量面独立系数族偏移（xtec = token*xm3+xm4）；块面仍用
@@ -2474,7 +2484,6 @@ pub fn generate(
 		}
 		let qf_checksum_e = ke.key_expr(qf_checksum, None, rng);
 		manifest_key("CHAFF_CK", qf_checksum as u64);
-		let (chaff_mul, chaff_coeffs, chaff_pos, chaff_fn) = chaff_formula;
 		let chaff_mul_e = obf_num(chaff_mul as u64, rng);
 		let chaff_coeff_e: Vec<String> = chaff_coeffs
 			.iter()
@@ -2516,7 +2525,7 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
+			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2528,6 +2537,7 @@ pub fn generate(
 			cp = chaff_pos_e,
 			cf = chaff_fn_e,
 			cqb = chaff_block_e,
+			cqc = chaff_const_e,
 			bs_stream = s_of[1],
 			cw = closure_cond,
 			cblock = c_block_enc,
@@ -2678,7 +2688,7 @@ pub fn generate(
 			);
 			s.push_str(probe_call);
 			s.push_str(&format!(
-				"local base = (PS + q.sd * PT + SLTC{}) % 268435456 ",
+				"local base = (PS + q.sd * PT + SLTC + QF[q.sd] * CQC{}) % 268435456 ",
 				base_env_s
 			));
 			s.push_str(
@@ -2825,11 +2835,12 @@ pub fn generate(
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
 			qf = qf_expected,
 			cqb = chaff_block_e,
+			cqc = chaff_const_e,
 			program = rt_phase_stored
 				.iter()
 				.map(|v| v.to_string())
