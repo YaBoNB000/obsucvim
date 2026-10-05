@@ -979,7 +979,7 @@ fn sanitize_frag(
 }
 
 
-// H4-1A: first loaderless handler family. Handler semantics are encoded as
+// H4-1A/B: loaderless handler families. Handler semantics are encoded as
 // numeric triples consumed by one of several per-build micro shards; no Lua
 // handler source is reconstructed or handed to loadstring at runtime.
 const M_READ_V: usize = 0;
@@ -996,7 +996,80 @@ const M_VARGC: usize = 10;
 const M_SET_PC: usize = 11;
 const M_BRANCH_FALSE: usize = 12;
 const M_BRANCH_TRUE: usize = 13;
-const M_COUNT: usize = 14;
+const M_ADD: usize = 14;
+const M_SUB: usize = 15;
+const M_MUL: usize = 16;
+const M_DIV: usize = 17;
+const M_MOD: usize = 18;
+const M_POW: usize = 19;
+const M_IDIV: usize = 20;
+const M_UNM: usize = 21;
+const M_LEN: usize = 22;
+const M_CONCAT: usize = 23;
+const M_LT: usize = 24;
+const M_LE: usize = 25;
+const M_GT: usize = 26;
+const M_GE: usize = 27;
+const M_EQ: usize = 28;
+const M_NE: usize = 29;
+const M_LOAD_NIL_RANGE: usize = 30;
+const M_TABN: usize = 31;
+const M_VARG_TABLE: usize = 32;
+const M_VARG_TABN: usize = 33;
+const M_CLOSURE: usize = 34;
+const M_COUNT: usize = 35;
+
+struct MicroLits {
+	number: String,
+	string: String,
+	boolean: String,
+	nil: String,
+	add: String,
+	sub: String,
+	mul: String,
+	div: String,
+	mod_: String,
+	pow: String,
+	unm: String,
+	len: String,
+	concat: String,
+	lt: String,
+	le: String,
+	eq: String,
+	arith_msg: String,
+	compare_msg: String,
+	concat_msg: String,
+	value_msg: String,
+	with_msg: String,
+}
+
+impl MicroLits {
+	fn new(pool: &mut StrPool) -> MicroLits {
+		MicroLits {
+			number: pool.lit("number"),
+			string: pool.lit("string"),
+			boolean: pool.lit("boolean"),
+			nil: pool.lit("nil"),
+			add: pool.lit("__add"),
+			sub: pool.lit("__sub"),
+			mul: pool.lit("__mul"),
+			div: pool.lit("__div"),
+			mod_: pool.lit("__mod"),
+			pow: pool.lit("__pow"),
+			unm: pool.lit("__unm"),
+			len: pool.lit("__len"),
+			concat: pool.lit("__concat"),
+			lt: pool.lit("__lt"),
+			le: pool.lit("__le"),
+			eq: pool.lit("__eq"),
+			arith_msg: pool.lit("attempt to perform arithmetic on a "),
+			compare_msg: pool.lit("attempt to compare "),
+			concat_msg: pool.lit("attempt to perform concatenation on a "),
+			value_msg: pool.lit(" value"),
+			with_msg: pool.lit(" with "),
+		}
+	}
+}
 
 #[derive(Clone)]
 struct MicroShard {
@@ -1041,27 +1114,118 @@ fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 		"Jmp" => vec![(M_SET_PC, 2, 0)],
 		"Jf" => vec![(M_READ_V, 1, 1), (M_BRANCH_FALSE, 1, 2)],
 		"Jt" => vec![(M_READ_V, 1, 1), (M_BRANCH_TRUE, 1, 2)],
+		"Add" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_ADD, 3, 0), (M_WRITE_V, 1, 3)],
+		"Sub" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_SUB, 3, 0), (M_WRITE_V, 1, 3)],
+		"Mul" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_MUL, 3, 0), (M_WRITE_V, 1, 3)],
+		"Div" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_DIV, 3, 0), (M_WRITE_V, 1, 3)],
+		"Mod" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_MOD, 3, 0), (M_WRITE_V, 1, 3)],
+		"Pow" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_POW, 3, 0), (M_WRITE_V, 1, 3)],
+		"Idiv" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_IDIV, 3, 0), (M_WRITE_V, 1, 3)],
+		"Unm" => vec![(M_READ_V, 1, 2), (M_UNM, 2, 1), (M_WRITE_V, 1, 2)],
+		"Len" => vec![(M_READ_V, 1, 2), (M_LEN, 2, 1), (M_WRITE_V, 1, 2)],
+		"Concat" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_CONCAT, 3, 0), (M_WRITE_V, 1, 3)],
+		"Lt" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_LT, 3, 0), (M_WRITE_V, 1, 3)],
+		"Le" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_LE, 3, 0), (M_WRITE_V, 1, 3)],
+		"Gt" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_GT, 3, 0), (M_WRITE_V, 1, 3)],
+		"Ge" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_GE, 3, 0), (M_WRITE_V, 1, 3)],
+		"Eq" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_EQ, 3, 0), (M_WRITE_V, 1, 3)],
+		"Ne" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_NE, 3, 0), (M_WRITE_V, 1, 3)],
+		"LoadNil" => vec![(M_LOAD_NIL_RANGE, 1, 2)],
+		"TabN" => vec![
+			(M_READ_V, 1, 1),
+			(M_READ_V, 2, 2),
+			(M_READ_V, 3, 3),
+			(M_TABN, 0, 0),
+			(M_WRITE_V, 2, 2),
+		],
+		"VarArgTab" => vec![(M_VARG_TABLE, 1, 0), (M_WRITE_V, 1, 1)],
+		"VarArgTabN" => vec![
+			(M_READ_V, 1, 1),
+			(M_READ_V, 2, 2),
+			(M_VARG_TABN, 0, 0),
+			(M_WRITE_V, 2, 2),
+		],
+		"Closure" => vec![(M_CLOSURE, 1, 2)],
 		_ => return None,
 	};
 	Some(p)
 }
 
-fn micro_op_body(index: usize) -> &'static str {
+fn micro_binary_body(expr: &str, meta: &str, lit: &MicroLits) -> String {
+	format!(
+		"local u,w=T[1],T[2] if TYP(u)=={number} and TYP(w)=={number} then T[x]={expr} else local f=mget(u,{meta}) or mget(w,{meta}) if f then T[x]=f(u,w) else ERR({msg}..TYP(u)..{value},0) end end",
+		number = lit.number,
+		meta = meta,
+		msg = lit.arith_msg,
+		value = lit.value_msg,
+	)
+}
+
+fn micro_compare_body(native: &str, meta: &str, swapped: bool, lit: &MicroLits) -> String {
+	let call = if swapped { "f(w,u)" } else { "f(u,w)" };
+	format!(
+		"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} and tw=={number}) or (tu=={string} and tw=={string}) then T[x]={native} else local f=mget(u,{meta}) or mget(w,{meta}) if f then T[x]={call} else ERR({msg}..tu..{with_}..tw,0) end end",
+		number = lit.number,
+		string = lit.string,
+		meta = meta,
+		msg = lit.compare_msg,
+		with_ = lit.with_msg,
+	)
+}
+
+fn micro_op_body(index: usize, lit: &MicroLits) -> String {
 	match index {
-		M_READ_V => "T[x] = V[O[y] + 1]",
-		M_WRITE_V => "V[O[x] + 1] = T[y]",
-		M_READ_C => "T[x] = C[O[y] + 1]",
-		M_NOT => "T[x] = not T[y]",
-		M_NEW_TABLE => "T[x] = {}",
-		M_GET_GLOBAL => "T[x] = G[T[y]]",
-		M_SET_GLOBAL => "G[T[x]] = T[y]",
-		M_READ_UP => "T[x] = ups[O[y] + 1]",
-		M_CELL_GET => "local q = T[y]; T[x] = q.v[q.i]",
-		M_CELL_SET => "local q = T[x]; q.v[q.i] = T[y]",
-		M_VARGC => "T[x] = vargc",
-		M_SET_PC => "E.pc = O[x]",
-		M_BRANCH_FALSE => "if not T[x] then E.pc = O[y] end",
-		M_BRANCH_TRUE => "if T[x] then E.pc = O[y] end",
+		M_READ_V => "T[x] = V[O[y] + 1]".to_string(),
+		M_WRITE_V => "V[O[x] + 1] = T[y]".to_string(),
+		M_READ_C => "T[x] = C[O[y] + 1]".to_string(),
+		M_NOT => "T[x] = not T[y]".to_string(),
+		M_NEW_TABLE => "T[x] = {}".to_string(),
+		M_GET_GLOBAL => "T[x] = G[T[y]]".to_string(),
+		M_SET_GLOBAL => "G[T[x]] = T[y]".to_string(),
+		M_READ_UP => "T[x] = ups[O[y] + 1]".to_string(),
+		M_CELL_GET => "local q = T[y]; T[x] = q.v[q.i]".to_string(),
+		M_CELL_SET => "local q = T[x]; q.v[q.i] = T[y]".to_string(),
+		M_VARGC => "T[x] = vargc".to_string(),
+		M_SET_PC => "E.pc = O[x]".to_string(),
+		M_BRANCH_FALSE => "if not T[x] then E.pc = O[y] end".to_string(),
+		M_BRANCH_TRUE => "if T[x] then E.pc = O[y] end".to_string(),
+		M_ADD => micro_binary_body("u+w", &lit.add, lit),
+		M_SUB => micro_binary_body("u-w", &lit.sub, lit),
+		M_MUL => micro_binary_body("u*w", &lit.mul, lit),
+		M_DIV => micro_binary_body("u/w", &lit.div, lit),
+		M_MOD => micro_binary_body("u%w", &lit.mod_, lit),
+		M_POW => micro_binary_body("u^w", &lit.pow, lit),
+		M_IDIV => "T[x] = FLOOR(T[1] / T[2])".to_string(),
+		M_UNM => format!(
+			"local u=T[y] if TYP(u)=={number} then T[x]=-u else local f=mget(u,{meta}) if f then T[x]=f(u) else ERR({msg}..TYP(u)..{value},0) end end",
+			number = lit.number, meta = lit.unm, msg = lit.arith_msg, value = lit.value_msg,
+		),
+		M_LEN => format!(
+			"local u=T[y] local f=HAS_LEN_META and mget(u,{meta}) if f then T[x]=f(u) else T[x]=#u end",
+			meta = lit.len,
+		),
+		M_CONCAT => format!(
+			"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} or tu=={string}) and (tw=={number} or tw=={string}) then T[x]=u..w else local f=mget(u,{meta}) or mget(w,{meta}) if f then T[x]=f(u,w) else ERR({msg}..tu..{value},0) end end",
+			number = lit.number, string = lit.string, meta = lit.concat,
+			msg = lit.concat_msg, value = lit.value_msg,
+		),
+		M_LT => micro_compare_body("u<w", &lit.lt, false, lit),
+		M_LE => micro_compare_body("u<=w", &lit.le, false, lit),
+		M_GT => micro_compare_body("u>w", &lit.lt, true, lit),
+		M_GE => micro_compare_body("u>=w", &lit.le, true, lit),
+		M_EQ | M_NE => {
+			let result = if index == M_NE { "not eqv" } else { "eqv" };
+			format!(
+				"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) local eqv if tu==tw and (tu=={number} or tu=={string} or tu=={boolean} or tu=={nil_}) then eqv=u==w else local f=mget(u,{meta}) or mget(w,{meta}) if f then eqv=f(u,w) else eqv=u==w end end T[x]={result}",
+				number = lit.number, string = lit.string, boolean = lit.boolean,
+				nil_ = lit.nil, meta = lit.eq,
+			)
+		}
+		M_LOAD_NIL_RANGE => "for j=1,O[y] do V[S[O[x]+j]]=nil end".to_string(),
+		M_TABN => "T[2]=T[2]+1 T[1][T[2]]=T[3]".to_string(),
+		M_VARG_TABLE => "local q={} for j=1,vargc do q[j]=vargs[j] end T[x]=q".to_string(),
+		M_VARG_TABN => "for j=1,vargc do T[1][T[2]+j]=vargs[j] end T[2]=T[2]+vargc".to_string(),
+		M_CLOSURE => "V[O[x]+1]=makefn(E.k[O[y]+1],V,ups,S)".to_string(),
 		_ => unreachable!(),
 	}
 }
@@ -1080,12 +1244,24 @@ fn micro_tree(items: &[(u8, String)]) -> String {
 	)
 }
 
-fn micro_shard_source(name: &str, shard: &MicroShard, rng: &mut Rng) -> String {
-	let mut items: Vec<(u8, String)> = (0..M_COUNT)
-		.map(|i| (shard.codes[i], micro_op_body(i).to_string()))
+fn micro_shard_source(
+	name: &str,
+	shard: &MicroShard,
+	used: &std::collections::HashSet<usize>,
+	lit: &MicroLits,
+	rng: &mut Rng,
+) -> String {
+	let mut kinds: Vec<usize> = used.iter().copied().collect();
+	kinds.sort_unstable();
+	let mut items: Vec<(u8, String)> = kinds
+		.into_iter()
+		.map(|i| (shard.codes[i], micro_op_body(i, lit)))
 		.collect();
 	rng.shuffle(&mut items);
-	let dispatch = match shard.shape % 3 {
+	let dispatch = if items.is_empty() {
+		String::new()
+	} else {
+		match shard.shape % 3 {
 		0 => items
 			.iter()
 			.enumerate()
@@ -1116,13 +1292,14 @@ fn micro_shard_source(name: &str, shard: &MicroShard, rng: &mut Rng) -> String {
 			items.sort_by_key(|x| x.0);
 			micro_tree(&items)
 		}
+		}
 	};
 	let mut logical_pos = [0usize; 3];
 	for (physical, logical) in shard.field_perm.iter().enumerate() {
 		logical_pos[*logical] = physical + 1;
 	}
 	format!(
-		"local function {name}(E,a,b,c,d,P,m,k) local V,C,G,vargc,ups=E[1],E[2],E[5],E[7],E[8] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end end ",
+		"local function {name}(E,a,b,c,d,P,m,k) local V,C,S,G,vargs,vargc,ups,makefn,mget,HAS_LEN_META,FLOOR,ERR,TYP=E[1],E[2],E[3],E[5],E[6],E[7],E[8],E[9],E[10],E[13],E[15],E[16],E[17] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end end ",
 		name = name,
 		op = logical_pos[0],
 		x = logical_pos[1],
@@ -1165,6 +1342,7 @@ fn remap_fragment_fields(
 	let mut i = 0usize;
 	while i < bytes.len() {
 		if bytes[i] == b'.'
+			&& (i == 0 || bytes[i - 1] != b'.')
 			&& i + 1 < bytes.len()
 			&& (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
 		{
@@ -2205,21 +2383,21 @@ pub fn generate(
 		// 在加密碎片里。执行器 wire 305-308（避开 0..255 操作数 wire
 		// 与 BSS 标记 200）。
 		let call_names = ["Call", "CallE", "CallM", "CallT"];
-		// H4-1A: several independently permuted micro shards. They are emitted
+		// H4-1A/B: several independently permuted micro shards. They are emitted
 		// as static outer closures (the unavoidable pure-Luau base), while each
 		// migrated handler is only a masked numeric descriptor. No handler source
 		// reaches the runtime loader.
+		let micro_lits = MicroLits::new(&mut pool);
 		let n_micro_shards = rng.int(3, 5) as usize;
 		let mut micro_shards = Vec::with_capacity(n_micro_shards);
+		let mut micro_used: Vec<std::collections::HashSet<usize>> =
+			vec![std::collections::HashSet::new(); n_micro_shards];
 		let mut micro_fill = String::new();
 		for i in 0..n_micro_shards {
-			let shard = new_micro_shard(rng, i as u8);
-			micro_fill.push_str(&micro_shard_source(&format!("_mx{}", i), &shard, rng));
-			micro_shards.push(shard);
+			micro_shards.push(new_micro_shard(rng, i as u8));
 		}
-		let mut micro_program_names: Vec<String> = Vec::new();
+		let mut micro_program_counts = vec![0usize; n_micro_shards];
 		let mut micro_checksum: u64 = 0;
-		let mut micro_serial = 0usize;
 		// 增量⑲ (递归帧瘦身): Luau 无 TCO，用户递归每层叠数个链帧，
 		// 每帧的 env prelude 绑定是栈槽大头。按 body（含尾链附言）实际
 		// 引用做**选择性绑定**——平均帧槽从 29 降到个位数，深递归极限
@@ -2287,13 +2465,15 @@ pub fn generate(
 		for (name, wire) in &items {
 			if let Some(recipe) = micro_recipe(name) {
 				let shard_index = rng.int(0, n_micro_shards as i64 - 1) as usize;
+				for &(kind, _, _) in &recipe {
+					micro_used[shard_index].insert(kind);
+				}
 				let mask = rng.int(1, 255) as u8;
 				let step = (rng.int(1, 255) | 1) as u8;
 				let (program, stored) =
 					encode_micro_program(&recipe, &micro_shards[shard_index], mask, step);
-				let pname = format!("_mp{}", micro_serial);
-				micro_serial += 1;
-				micro_program_names.push(pname.clone());
+				micro_program_counts[shard_index] += 1;
+				let program_index = micro_program_counts[shard_index];
 				for value in std::iter::once(mask)
 					.chain(std::iter::once(step))
 					.chain(stored.into_iter())
@@ -2301,13 +2481,13 @@ pub fn generate(
 					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
 				}
 				micro_fill.push_str(&format!(
-					"local {pname}={{{{{program}}},{mask},{step}}} HW2[({wire}+AV)%256]=function(E,a,b,c,d) _mx{shard}(E,a,b,c,d,{pname}[1],{pname}[2],{pname}[3]); {tail} end ",
-					pname = pname,
+					"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] HW2[({wire}+AV)%256]=function(E,a,b,c,d) local _d=_md{shard}[{index}] _mx{shard}(E,a,b,c,d,_d[1],_d[2],_d[3]); {tail} end ",
 					program = program,
 					mask = mask,
 					step = step,
 					wire = *wire as u16,
 					shard = shard_index,
+					index = program_index,
 					tail = chain_epilogue(rng, &wk),
 				));
 				continue;
@@ -2427,14 +2607,21 @@ pub fn generate(
 			);
 			frags.push((*wire as u16, src.into_bytes()));
 		}
-		let micro_expected_e = ke.key_expr(micro_checksum as i64, None, rng);
-		micro_fill.push_str("do local _mc=0 local _md ");
-		for pname in &micro_program_names {
-			micro_fill.push_str(&format!(
-				"_md={pname} _mc=(_mc*257+_md[2])%268435456 _mc=(_mc*257+_md[3])%268435456 for _mi=1,#_md[1] do _mc=(_mc*257+_md[1][_mi])%268435456 end ",
-				pname = pname,
+		let micro_assignments = std::mem::take(&mut micro_fill);
+		micro_fill.push_str("local _mo={} ");
+		for i in 0..n_micro_shards {
+			micro_fill.push_str(&format!("local _md{}={{}} ", i));
+			micro_fill.push_str(&micro_shard_source(
+				&format!("_mx{}", i),
+				&micro_shards[i],
+				&micro_used[i],
+				&micro_lits,
+				rng,
 			));
 		}
+		micro_fill.push_str(&micro_assignments);
+		let micro_expected_e = ke.key_expr(micro_checksum as i64, None, rng);
+		micro_fill.push_str("do local _mc=0 local _md for _mj=1,#_mo do _md=_mo[_mj] _mc=(_mc*257+_md[2])%268435456 _mc=(_mc*257+_md[3])%268435456 for _mi=1,#_md[1] do _mc=(_mc*257+_md[1][_mi])%268435456 end end ");
 		micro_fill.push_str(&format!(
 			"SALT=(SALT+(_mc-({})))%268435456 end ",
 			micro_expected_e
@@ -2926,7 +3113,7 @@ pub fn generate(
 			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
 				.into_bytes();
 		}
-		// H4-1A static micro wrappers live in the outer lexical scope, so their
+		// H4-1 static micro wrappers live in the outer lexical scope, so their
 		// locals must remain visible to that scope; only dot-fields are remapped
 		// through the fragment-wide map to match RT/handler state field names.
 		micro_fill = remap_fragment_fields(&micro_fill, &frag_map);

@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**实施中：H4-0 已完成；H4-1A 首批 12 个 handler 已转数值 Microcode**
+> 状态：**实施中：H4-0 已完成；H4-1B 已迁移 33/43 个 handler**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -220,6 +220,56 @@ python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 42
 ```
 
 此项是 H4-1 的第一批，不代表 Handler Microcode 已全部完成。
+
+### H4-1B 已落地（2026-10-05）
+
+第二批新增迁移 21 个 handler：
+
+```text
+Add / Sub / Mul / Div / Mod / Pow / Idiv / Unm / Len / Concat
+Lt / Le / Gt / Ge / Eq / Ne
+LoadNil / TabN / VarArgTab / VarArgTabN / Closure
+```
+
+累计 `33/43` 个 handler 已 loaderless。为完整保持 Lua 语义，算术、比较、
+拼接、长度和相等判断的 micro-op 仍包含 metamethod fallback，并通过 `MS`
+数字字符串池取得类型名、元方法名及错误文本，不新增明文短字符串。
+
+实现收口：
+
+- 每个 shard 只发射实际被分配使用的 micro-op，不再复制整套语义；
+- descriptor 按 shard 分表保存，避免 33 个同作用域 local 触发 Luau 200
+  register 上限；
+- 额外顺序表只保存 descriptor 引用，用于保持完整性折叠顺序；
+- shard 分表与顺序表均为 boot 局部，不是全局语义 closure 表；
+- 对 `HashSet` 先排序再 seed 洗牌，修复跨进程同 seed 非确定性。
+
+Loader 审计进一步下降：
+
+```text
+54 → 42 → 21 calls
+```
+
+HQ 源码碎片：
+
+```text
+53 → 41 → 20
+```
+
+当前剩余 10 个源码 handler：
+
+```text
+GetTab / SetTab
+CallT / Call / CallE / CallM / Return
+Nop / NopA
+MkStr
+```
+
+固定增量门更新为：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 21
+```
 
 ### 新结构
 
@@ -538,12 +588,13 @@ block state / operand mask / next-key / alias state
 
 阶段 A 已完成，下一提交边界为 H4-1 Handler Microcode。
 
-## 阶段 B：H4-1 Handler Microcode（实施中：首批 12/43）
+## 阶段 B：H4-1 Handler Microcode（实施中：33/43）
 
 只替换 handler HQ 源码碎片；BSS/RT/HBOOT 暂保留，以便定位回归。
 
-当前完成 H4-1A：12 个简单 handler，HQ 源码碎片 `53 → 41`，loader
-调用 `54 → 42`。下一批处理算术/比较/表操作，Call/Return 家族最后迁移。
+H4-1A/B 累计迁移 33 个 handler，HQ 源码碎片 `53 → 41 → 20`，loader
+调用 `54 → 42 → 21`。下一批处理 GetTab/SetTab、Nop/MkStr；Call/Return
+家族最后迁移。
 
 阶段验收：
 
@@ -590,7 +641,7 @@ bash luraph-rs/tests/multiseed.sh
 python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 42
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 21
 bash luraph-rs/tests/defense_audit.sh
 ```
 
