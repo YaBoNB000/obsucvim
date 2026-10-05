@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0 已闭环；H4-4A/B/C 已完成（lane + block + constant）；内部 loader 0 次**
+> 状态：**H4 P0 已闭环；H4-4 Key-Carrying Chaff 四面闭环；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -744,8 +744,38 @@ R041：118108B → 118150B（+0.04%）
 169/169；H3 chaff 9/9
 ```
 
-H4-4 仅余 microcode checksum 面；下一提交完成后才宣告 Key-Carrying Chaff
-闭环。
+### H4-4D 已落地（2026-10-05）
+
+第四个独立提交完成 microcode checksum 面：
+
+- BSS 在重编码每个 prototype 时，将实际 qf 按 `257` 链聚合成 `QAG`；
+- `QAG` 经 HBOOT 密封闭包作为 `CHQ` 交给外层，不写入 prototype registry；
+- micro descriptor 的运行期完整性折叠新增 `CHQ * CHAFF_MICRO`；
+- Rust 期望值同步改为 `MICRO_CK + CHAFF_CK * CHAFF_MICRO`；
+- qf 不一致时，micro checksum 差异污染 `SALT`，随后破坏真实块钥匙；
+- `CHQ` 仅在 boot/micro 接线阶段存活，不新增全局 getter 或独立比较点；
+- H1 密封出口扩展为 6 个内部值，守卫蜜罐顺延到第 7 位，PCAL 仍只能看到
+  一次性 closure；
+- H3 审计新增第 10 项，验证 actual-QAG 与 micro descriptor 确实组合消费。
+
+最终四面依赖：
+
+```text
+NOP Chaff → operand lane
+          → block seed
+          → constant key
+          → microcode checksum
+```
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：118150B → 118121B（-0.02%，构建随机布局波动）
+169/169；H3 chaff 10/10
+```
+
+H4-4 Key-Carrying Chaff 至此闭环。下一阶段为 H4-5 每函数独立方言。
 
 ---
 
@@ -926,10 +956,10 @@ H4-2C1 BSS 一次性数值 boot 状态机：`3 → 2`；H4-2C2 RT 五阶段数�
 HBOOT 三阶段静态数值协议与静态 EXG 已完成，内部 loader `1 → 0`；
 `--enforce-zero` 正式门通过，H4 P0 闭环。
 
-## 阶段 E：H4-4 Key-Carrying Chaff（实施中）
+## 阶段 E：H4-4 Key-Carrying Chaff ✅
 
-H4-4A operand lane、H4-4B block seed、H4-4C constant key 已完成；仅余
-microcode checksum 面，仍不与每函数方言改造混合。
+H4-4A operand lane、H4-4B block seed、H4-4C constant key、H4-4D
+microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解码中错钥。
 
 ## 阶段 F：H4-5/H4-6 每函数方言与单块窗口
 

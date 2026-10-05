@@ -146,12 +146,14 @@ def main():
         print(f"[8] NOP chaff 进入 block seed   : {'YES' if block_coupled else 'NO'}")
         const_coupled = "qf * CQC" in template and "QF[q.sd] * CQC" in template
         print(f"[9] NOP chaff 进入 constant key : {'YES' if const_coupled else 'NO'}")
+        micro_coupled = "CHQ*({chaff})" in template and "MICRO_CHAFF_CK" in template
+        print(f"[10] NOP chaff 进入 micro checksum: {'YES' if micro_coupled else 'NO'}")
 
         ok = all([
             deterministic, seed_diff, accounting, count_diff, overlap,
             slot_mix, slot_diff, bool(nil_total), bool(decoy_total), runtime,
             no_zero_reset, four_shapes, chaff_valid, chaff_diff, template_coupled,
-            block_coupled, const_coupled,
+            block_coupled, const_coupled, micro_coupled,
         ])
         print("\nH3 审计: " + ("PASS" if ok else "FAIL"))
         return 0 if ok else 1

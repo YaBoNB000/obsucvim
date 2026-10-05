@@ -174,7 +174,8 @@ def main():
         # H. H4-2C/H4-3：BSS、RT、HBOOT 数值阶段均跨构建重掷。
         # W_BSS/W_RT/W_EXG retired together with all source fragments.
         h2_keys = ["BSS_PHASE_CK", "RT_PHASE_CK", "HBOOT_PHASE_CK",
-                   "RT_PHASE_POISON", "CHAFF_CK", "CHAFF_CONST"]
+                   "RT_PHASE_POISON", "CHAFF_CK", "CHAFF_CONST",
+                   "MICRO_CHAFF_CK"]
         key_ok = all(k in ma and k in mb and ma[k] != mb[k] for k in h2_keys)
         print(f"[H] wire/阶段/链种子跨构建重掷: {'YES' if key_ok else 'NO'}")
 

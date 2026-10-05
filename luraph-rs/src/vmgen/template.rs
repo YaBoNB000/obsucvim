@@ -1180,6 +1180,19 @@ pub fn generate(
 	// 增量⑩: key-fragment emitter — every key constant below is drawn
 	// through ke.key_expr (no bare key literal survives in the output).
 	let mut ke = KeyEmitter::new(rng);
+	// H4-4 shared chaff expectation. Compute it before micro descriptors so
+	// the same compiler-side fold can key operand/block/constant/micro faces.
+	let mut qf_checksum: i64 = 0;
+	for &v in chaff_folds {
+		qf_checksum = (qf_checksum * 257 + v as i64) % KEY_MOD;
+	}
+	let chaff_micro = (((chaff_formula.1[2] as u64) * 269
+		+ chaff_formula.0 as u64 * 7
+		+ chaff_formula.3 as u64)
+		% 65_520
+		+ 1) as u16;
+	manifest_key("CHAFF_CK", qf_checksum as u64);
+	manifest_key("CHAFF_MICRO", chaff_micro as u64);
 	let oc_boot: String = if v15 {
 		let ocm = rng.int(1, 65535);
 		let occ = rng.int(1, 65535);
@@ -2202,13 +2215,21 @@ pub fn generate(
 			));
 		}
 		micro_fill.push_str(&micro_assignments);
-		let micro_expected_e = ke.key_expr(micro_checksum as i64, None, rng);
+		// H4-4D: bind the actual BSS-side chaff aggregate (CHQ) into the
+		// micro descriptor checksum. Clean builds satisfy both terms; Nop
+		// stripping now poisons SALT through the micro face as well.
+		let chaff_micro_e = obf_num(chaff_micro as u64, rng);
+		let micro_chaff_expected =
+			(micro_checksum as i64 + qf_checksum * chaff_micro as i64) % KEY_MOD;
+		let micro_expected_e = ke.key_expr(micro_chaff_expected, None, rng);
 		micro_fill.push_str("do local _mc=0 local _md for _mj=1,#_mo do _md=_mo[_mj] _mc=(_mc*257+_md[2])%268435456 _mc=(_mc*257+_md[3])%268435456 for _mi=1,#_md[1] do _mc=(_mc*257+_md[1][_mi])%268435456 end end ");
 		micro_fill.push_str(&format!(
-			"SALT=(SALT+(_mc-({})))%268435456 end ",
-			micro_expected_e
+			"_mc=(_mc+CHQ*({chaff}))%268435456 SALT=(SALT+(_mc-({expected})))%268435456 end ",
+			chaff = chaff_micro_e,
+			expected = micro_expected_e,
 		));
 		manifest_key("MICRO_CK", micro_checksum);
+		manifest_key("MICRO_CHAFF_CK", micro_chaff_expected as u64);
 		// H4-2A: continuation entry points contain no protected user semantics;
 		// emit them as static outer closures instead of reconstructing source and
 		// handing it to loadstring. Field names are remapped with RT below.
@@ -2478,12 +2499,7 @@ pub fn generate(
 			.map(|v| obf_num(*v as u64, rng))
 			.collect::<Vec<_>>()
 			.join(",");
-		let mut qf_checksum: i64 = 0;
-		for &v in chaff_folds {
-			qf_checksum = (qf_checksum * 257 + v as i64) % KEY_MOD;
-		}
 		let qf_checksum_e = ke.key_expr(qf_checksum, None, rng);
-		manifest_key("CHAFF_CK", qf_checksum as u64);
 		let chaff_mul_e = obf_num(chaff_mul as u64, rng);
 		let chaff_coeff_e: Vec<String> = chaff_coeffs
 			.iter()
@@ -2525,7 +2541,7 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local Wt, ks = pf.W, pf.{bs_stream} local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * PB + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -3029,7 +3045,7 @@ pub fn generate(
 		};
 		// H1 泄漏封堵：HBOOT 多值直返 → 单出口闭包（upvalue 封存），宿主仅得 entry，PCAL/return 探针一针抓不到 proto/密钥
 		let (hpret_decl, hpret_nil_r, hpret_ret) = if guard {
-			(format!(", _O6"), format!(", nil"), format!(", _O6"))
+			(format!(", _O7"), format!(", nil"), format!(", _O7"))
 		} else {
 			(String::new(), String::new(), String::new())
 		};
@@ -3065,7 +3081,7 @@ pub fn generate(
 		let hb_factory =
 			"_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string();
 		let hb_execute =
-			"_b1,_b2=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD)%268435456,CKJ_)".to_string();
+			"_b1,_b2,_b3=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD)%268435456,CKJ_)".to_string();
 		let hb_seal = "_ready=1".to_string();
 		let mut hb_phase_branches = vec![
 			(hb_phase_codes[0], hb_factory),
@@ -3096,7 +3112,7 @@ pub fn generate(
 				hb_phase_poison_e
 			);
 		let hboot_src = format!(
-			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_=GET_(NONCE_) local HD=HBD_ local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end HD=(HD+(_hc-({expected})))%268435456 local _lv1,_b1,_b2 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD=(HD+({poison}))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD)%{m1} local h2=({iv2}+HD*257)%{m2} local _O1,_O2,_O3,_O4,_O5{hpret_decl}=HW,_b1,_b2,h1,h2{hpret} HW,_b1,_b2,h1,h2{hpret}=nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
+			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_=GET_(NONCE_) local HD=HBD_ local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end HD=(HD+(_hc-({expected})))%268435456 local _lv1,_b1,_b2,_b3 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD=(HD+({poison}))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD)%{m1} local h2=({iv2}+HD*257)%{m2} local _O1,_O2,_O3,_O4,_O5,_O6{hpret_decl}=HW,_b1,_b2,h1,h2,_b3{hpret} HW,_b1,_b2,h1,h2,_b3{hpret}=nil,nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5,_O6{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
 			shell_sig = shell_sig,
@@ -3448,6 +3464,7 @@ pub fn generate(
   local EXGFRAG
   local RPK1, RPK2, RPK3, RPK4, RPK5, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11
   local HBD
+  local CHQ
   local SALT
   local SH1, SH2
   local HPH
@@ -3511,7 +3528,7 @@ pub fn generate(
     RPK11 = {shccc}
     {vault_def}local _hok, _r1 = PCAL(function() return HBOOT({vault_args}) end) HBOOT = nil BSS = nil
     if not _hok then {hbootfail} end
-    HW, MPF, SALT, SH1, SH2{hp_recv} = _r1() _r1 = nil{xtok_extract}
+    HW, MPF, SALT, SH1, SH2, CHQ{hp_recv} = _r1() _r1 = nil{xtok_extract}
     {hp_stash}
     {ct_fill}{cx_fill}for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     {micro_fill}{hw_expand}
