@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**实施中：H4-0/H4-1 已完成；43/43 个 handler 已转数值 Microcode**
+> 状态：**实施中：H4-0/H4-1 已完成；H4-2A continuation loaderless，内部 loader 7 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -410,6 +410,38 @@ RT loadstring 次数  = 0
 完整解码 proto 常驻 = 0
 ```
 
+### H4-2A 已落地（2026-10-05）
+
+- 4 个 continuation 改为静态、构建随机 closure；
+- continuation 高位 wire 与 `HW[...]` 装配路径退役；
+- Call executor、BSS、RT 暂保留加密碎片，避免改变多返回值与 proto 协议。
+
+结果：
+
+```text
+Loader 调用：54 → 42 → 21 → 11 → 7
+HQ 源码碎片：53 → 41 → 20 → 10 → 6
+```
+
+当前剩余 loader：
+
+```text
+HBOOT 1 + Call executor 4 + BSS 1 + RT 1 = 7
+```
+
+H4-2A 增量门：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 7
+```
+
+### 已验证并回退的候选
+
+曾试验将 Call executor、BSS、RT 直接静态化。虽然 loader 可降至 1，但
+`edge.lua` 的多返回值/块状态协议出现 `attempt to index number with number`，
+说明该方案会用表面上的 loaderless 换取新的语义破绽，因此未保留。后续只能
+在建立数值 descriptor/协议镜像后继续 H4-2B，不采用直接源码搬出碎片的方案。
+
 ---
 
 ## H4-3：HBOOT 静态化并移除最后内部 Loader（P0）
@@ -652,9 +684,11 @@ multiseed = 0 fail
 H1/H2/H3 回归不退化
 ```
 
-## 阶段 C：H4-2 BSS/RT Loaderless
+## 阶段 C：H4-2 Loaderless Runtime（实施中）
 
-分别落地 BSS 和 RT，建议拆成两个提交。
+H4-2A continuation 已完成，loader `11 → 7`。Call executor/BSS/RT 的直接
+静态化原型因语义回归已回退；H4-2B 必须改走数值 descriptor/协议镜像，不能
+简单把源码从碎片搬到外层。
 
 ## 阶段 D：H4-3 HBOOT Loaderless
 
@@ -687,7 +721,7 @@ bash luraph-rs/tests/multiseed.sh
 python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 11
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 7
 bash luraph-rs/tests/defense_audit.sh
 ```
 

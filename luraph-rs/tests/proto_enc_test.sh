@@ -9,8 +9,8 @@
 # 检查项：
 #   (1) pe-enc   模板形态：ENC/DDEC 接线齐全、PF 销毁、入口走 MPF、
 #                makefn 不再查 PF 平表、Closure 经 E.k 取子原型；
-#   (2) pe-frags H4-1C 后 HQ 碎片数 = 4 重入 + 4 执行器 + BSS + RT = 10；
-#                43 个 handler（含 NopA）已全部转数值 microcode；
+#   (2) pe-frags H4-2A 后 HQ 碎片数 = 4 Call executor + BSS + RT = 6；
+#                43 Handler 与 4 continuation 已 loaderless；
 #   (3) pe-run   嵌套闭包程序运行等价（3 种子）；
 #   (4) pe-const 常量往返：小数/大整数/布尔/含转义字符串逐字还原；
 #   (5) pe-rec   深递归 + 闭包计数器运行等价。
@@ -123,11 +123,12 @@ else
 fi
 
 # ---------- (2) 碎片计数 ----------
-n_hq=$(grep -c "HQ\[" /tmp/vm_tsrc.lua 2>/dev/null || echo 0)
-if [[ "$n_hq" == "10" ]]; then
+n_hq=$(grep -c "HQ\[" /tmp/vm_tsrc.lua 2>/dev/null || true)
+n_hq=${n_hq:-0}
+if [[ "$n_hq" == "6" ]]; then
 	pass=$((pass+1))
 else
-	gf "frags" "H4-1C HQ 碎片数 $n_hq != 10（4 重入+4 执行器+BSS+RT；43 handler 已 microcode）"
+	gf "frags" "H4-2A HQ 碎片数 $n_hq != 6（4 Call executor+BSS+RT；continuation 已 loaderless）"
 fi
 
 # ---------- (3) 嵌套闭包运行等价（3 种子） ----------

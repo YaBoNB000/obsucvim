@@ -2442,19 +2442,15 @@ pub fn generate(
 		let w_exg = free_lo[2];
 		let mut hi_pool: Vec<u16> = (256..512).collect();
 		rng.shuffle(&mut hi_pool);
-		let mut hi_iter = hi_pool.into_iter();
-		let cont_wires: Vec<u16> = (0..4).map(|_| hi_iter.next().unwrap()).collect();
-		let exec_wires: Vec<u16> = (0..4).map(|_| hi_iter.next().unwrap()).collect();
+		let exec_wires: Vec<u16> = hi_pool.into_iter().take(4).collect();
 		manifest_key("W_BSS", w_bss as u64);
 		manifest_key("W_RT", w_rt as u64);
 		manifest_key("W_EXG", w_exg as u64);
 		// 增量⑲ (CPS 去中心化, Call 浅化): Luau 无正确尾调用，调用点
 		// 若在链深处执行，用户递归每层会叠 ~K 个链帧 → 深递归溢栈。
 		// 故 Call 家族拆两相：链相位（参数打包 → 暂存 E → return 解链
-		// 回蹦床）+ 执行器碎片（蹦床在浅层调用，callcap 之后接标准尾
-		// 链附言继续执行）。递归帧剖面回到旧设计量级，而分派逻辑仍全
-		// 在加密碎片里。执行器 wire 305-308（避开 0..255 操作数 wire
-		// 与 BSS 标记 200）。
+		// 回蹦床）+ 浅层执行器（callcap 之后接标准尾链附言继续执行）。
+		// H4-2A 仅静态化 continuation；执行器保留碎片以守住多返回帧语义。
 		let call_names = ["Call", "CallE", "CallM", "CallT"];
 		// H4-1A/B: several independently permuted micro shards. They are emitted
 		// as static outer closures (the unavoidable pure-Luau base), while each
@@ -2737,22 +2733,15 @@ pub fn generate(
 			micro_expected_e
 		));
 		manifest_key("MICRO_CK", micro_checksum);
-		// 增量⑲ (蹦床重入点入密): the chain re-entry points are
-		// continuation fragments — epilogue-shaped bodies (budget +
-		// fetch E.pc + dispatch) with NO opcode semantics, emitted as
-		// four more encrypted fragments (wires 201-204). The trampoline
-		// loop rotates through them; nothing in the visible code ever
-		// fetches W[..] or touches HW2.
-		let n_cont = 4usize;
-		for i in 0..n_cont {
-			let body =
-				chain_epilogue(rng, &wk);
-			let src = format!(
-				"return function(E) local AV, HW2 = E[23], E[24] {} end",
-				body
-			);
-			// 301+ clears every opcode wire (0..=255) and the BSS marker 200
-			frags.push((cont_wires[i], src.into_bytes()));
+		// H4-2A: continuation entry points contain no protected user semantics;
+		// emit them as static outer closures instead of reconstructing source and
+		// handing it to loadstring. Field names are remapped with RT below.
+		for i in 0..4usize {
+			micro_fill.push_str(&format!(
+				"CT{}=function(E) local AV,HW2=E[23],E[24] {} end ",
+				i + 1,
+				chain_epilogue(rng, &wk)
+			));
 		}
 		// 增量⑭ (对抗 R002 — 解析器隐藏): the prototype parser + the
 		// whole decode/checksum-verify stage move into ONE MORE
@@ -3848,15 +3837,10 @@ pub fn generate(
 				meta_seed, comp, env_exp, c_fold, hb_masked.len()
 			);
 		}
-		// 增量⑲: build-time-shuffled continuation wiring (which CT slot
-		// holds which encrypted re-entry fragment is per-build random).
-		// H2-2: cont_wires 已由构建差异化随机池分配，无需再洗。
-		// ㉗: 续行碎片装进离散可见局部（不再经表索引——表是包装手术点）
-		let ct_fill: String = (0..4)
-			.map(|i| format!("CT{} = HW[{}]\n    ", i + 1, cont_wires[i]))
-			.collect();
-		// call executors: fixed callx->wire mapping (the chain phases
-		// stash E.callx = 1..4), emit order shuffled (cosmetic)
+		// H4-2A: continuation closures are static/loaderless. Call executors
+		// remain encrypted fragments until their frame-sensitive post-call path
+		// is migrated without changing multi-return semantics.
+		let ct_fill = String::new();
 		let mut cx_order: Vec<usize> = (0..4).collect();
 		rng.shuffle(&mut cx_order);
 		let cx_fill: String = cx_order
@@ -4036,7 +4020,6 @@ pub fn generate(
 		hp_stash = hp_stash,
 		vault_def = vault_def,
 		vault_args = vault_args,
-		// H2-2: 段编号随机映射（BSS 标记在 HBOOT 侧）
 		wrt = w_rt,
 		// 51 诊断构建（LURAPH_EXG_TRACE）：HBOOT 失败不再静默吞掉，重抛
 		// 守卫的 XG 编号错误，供真执行器兼容性排查（正式构建 = PD()）。
@@ -4074,10 +4057,9 @@ pub fn generate(
 		String::new()
 	};
 	let (fetch, branches) = if v15 {
-		// 增量⑲ (CPS 去中心化): the old fetch string is dead — run() is
-		// now the trampoline loop (see run_loop below); every dispatch
-		// step lives inside the encrypted handler epilogues / the four
-		// encrypted continuation fragments.
+		// 增量⑲/H4-2A: the old fetch string is dead — run() is the trampoline;
+		// dispatch steps live in numeric handler epilogues and four static,
+		// build-randomized continuation closures.
 		(String::new(), String::new())
 	} else {
 		(fetch, branches)
