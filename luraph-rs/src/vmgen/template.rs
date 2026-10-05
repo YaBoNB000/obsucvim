@@ -1017,13 +1017,28 @@ const M_TABN: usize = 31;
 const M_VARG_TABLE: usize = 32;
 const M_VARG_TABN: usize = 33;
 const M_CLOSURE: usize = 34;
-const M_COUNT: usize = 35;
+const M_GET_TABLE: usize = 35;
+const M_SET_TABLE: usize = 36;
+const M_NOP: usize = 37;
+const M_MKSTR: usize = 38;
+const M_RETURN: usize = 39;
+const M_CALL: usize = 40;
+const M_CALLE: usize = 41;
+const M_CALLM: usize = 42;
+const M_CALLT: usize = 43;
+const M_COUNT: usize = 44;
 
 struct MicroLits {
 	number: String,
 	string: String,
 	boolean: String,
 	nil: String,
+	function: String,
+	table_: String,
+	index: String,
+	newindex: String,
+	char_: String,
+	empty: String,
 	add: String,
 	sub: String,
 	mul: String,
@@ -1039,17 +1054,26 @@ struct MicroLits {
 	arith_msg: String,
 	compare_msg: String,
 	concat_msg: String,
+	index_msg: String,
 	value_msg: String,
 	with_msg: String,
+	mk1: u16,
+	mk2: u16,
 }
 
 impl MicroLits {
-	fn new(pool: &mut StrPool) -> MicroLits {
+	fn new(pool: &mut StrPool, mk: (u16, u16)) -> MicroLits {
 		MicroLits {
 			number: pool.lit("number"),
 			string: pool.lit("string"),
 			boolean: pool.lit("boolean"),
 			nil: pool.lit("nil"),
+			function: pool.lit("function"),
+			table_: pool.lit("table"),
+			index: pool.lit("__index"),
+			newindex: pool.lit("__newindex"),
+			char_: pool.lit("char"),
+			empty: pool.lit(""),
 			add: pool.lit("__add"),
 			sub: pool.lit("__sub"),
 			mul: pool.lit("__mul"),
@@ -1065,8 +1089,11 @@ impl MicroLits {
 			arith_msg: pool.lit("attempt to perform arithmetic on a "),
 			compare_msg: pool.lit("attempt to compare "),
 			concat_msg: pool.lit("attempt to perform concatenation on a "),
+			index_msg: pool.lit("attempt to index a "),
 			value_msg: pool.lit(" value"),
 			with_msg: pool.lit(" with "),
+			mk1: mk.0,
+			mk2: mk.1,
 		}
 	}
 }
@@ -1146,9 +1173,34 @@ fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 			(M_WRITE_V, 2, 2),
 		],
 		"Closure" => vec![(M_CLOSURE, 1, 2)],
+		"GetTab" => vec![
+			(M_READ_V, 1, 2),
+			(M_READ_V, 2, 3),
+			(M_GET_TABLE, 3, 0),
+			(M_WRITE_V, 1, 3),
+		],
+		"SetTab" => vec![
+			(M_READ_V, 1, 1),
+			(M_READ_V, 2, 2),
+			(M_READ_V, 3, 3),
+			(M_SET_TABLE, 0, 0),
+		],
+		"Nop" | "NopA" => vec![(M_NOP, 0, 0)],
+		"MkStr" => vec![(M_MKSTR, 0, 0)],
+		"Return" => vec![(M_RETURN, 0, 0)],
 		_ => return None,
 	};
 	Some(p)
+}
+
+fn micro_call_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
+	match name {
+		"Call" => Some(vec![(M_CALL, 0, 0)]),
+		"CallE" => Some(vec![(M_CALLE, 0, 0)]),
+		"CallM" => Some(vec![(M_CALLM, 0, 0)]),
+		"CallT" => Some(vec![(M_CALLT, 0, 0)]),
+		_ => None,
+	}
 }
 
 fn micro_binary_body(expr: &str, meta: &str, lit: &MicroLits) -> String {
@@ -1173,7 +1225,7 @@ fn micro_compare_body(native: &str, meta: &str, swapped: bool, lit: &MicroLits) 
 	)
 }
 
-fn micro_op_body(index: usize, lit: &MicroLits) -> String {
+fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	match index {
 		M_READ_V => "T[x] = V[O[y] + 1]".to_string(),
 		M_WRITE_V => "V[O[x] + 1] = T[y]".to_string(),
@@ -1226,6 +1278,26 @@ fn micro_op_body(index: usize, lit: &MicroLits) -> String {
 		M_VARG_TABLE => "local q={} for j=1,vargc do q[j]=vargs[j] end T[x]=q".to_string(),
 		M_VARG_TABN => "for j=1,vargc do T[1][T[2]+j]=vargs[j] end T[2]=T[2]+vargc".to_string(),
 		M_CLOSURE => "V[O[x]+1]=makefn(E.k[O[y]+1],V,ups,S)".to_string(),
+		M_GET_TABLE => format!(
+			"local o,j=T[1],T[2] local r if TYP(o)=={table_} then r=RGET(o,j) if r==nil then local f=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] end end else local mt=GMT(o) if mt and mt[{index}]~=nil then local f=mt[{index}] if TYP(f)=={function} then r=f(o,j) else r=f[j] end else ERR({msg}..TYP(o)..{value},0) end end T[x]=r",
+			table_ = lit.table_, index = lit.index, function = lit.function,
+			msg = lit.index_msg, value = lit.value_msg,
+		),
+		M_SET_TABLE => format!(
+			"local o,j,w=T[1],T[2],T[3] if TYP(o)~={table_} then local mt=GMT(o) local f=mt and mt[{newindex}] if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) else ERR({msg}..TYP(o)..{value},0) end else if RGET(o,j)==nil then local f=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) else RSET(o,j,w) end else RSET(o,j,w) end end",
+			table_ = lit.table_, newindex = lit.newindex, function = lit.function,
+			msg = lit.index_msg, value = lit.value_msg,
+		),
+		M_NOP => nop.to_string(),
+		M_MKSTR => format!(
+			"local ms=({mk1}*O[1]+{mk2})%65536 local q1=(O[2]-ms)%65536 local q2=(O[3]-ms)%65536 local q3=(O[4]-ms)%65536 local n=FLOOR(q3/256) local q={{q1%256,FLOOR(q1/256),q2%256,FLOOR(q2/256),q3%256}} local ch={empty}[{char_}] local s={empty} for j=1,n do s=s..ch(q[j]) end V[O[1]+1]=s",
+			mk1 = lit.mk1, mk2 = lit.mk2, empty = lit.empty, char_ = lit.char_,
+		),
+		M_RETURN => "local out={} local n=O[2] local total if n==255 then local pre=O[4] for j=1,pre do out[j]=V[S[O[1]+j]] end if O[3]==1 then for j=1,vargc do out[pre+j]=vargs[j] end total=pre+vargc else for j=1,E.ln do local s=S[E.lb+j] if s then out[pre+j]=V[s] else out[pre+j]=X[E.lb+j] end end total=pre+E.ln end else for j=1,n do out[j]=V[S[O[1]+j]] end total=n end E.out=out E.total=total E.done=true".to_string(),
+		M_CALL => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nargs=O[2]+off local av={} if off==1 then av[1]=f end for j=1,O[2] do av[off+j]=V[S[bs+j]] end if O[4]==1 then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=1".to_string(),
+		M_CALLE => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local va=O[4]%2==1 local tail=O[4]>=2 local nargs=nf+off if tail then nargs=nargs+V[S[bs+nf+1]] end local av={} if off==1 then av[1]=f end local lim=tail and (nf+V[S[bs+nf+1]]) or nf for j=1,lim do if tail and j>nf then local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[bs+j]] end end if va then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=2".to_string(),
+		M_CALLM => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local nt=V[S[bs+nf+1]] local nargs=nf+nt+off local av={} if off==1 then av[1]=f end for j=1,nf+nt do if j<=nf then av[off+j]=V[S[bs+j]] else local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end end end if O[4]==1 then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=3".to_string(),
+		M_CALLT => "local f=V[S[O[1]+1]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=FLOOR(O[4]/2) local tail=O[4]%2==1 local nt=tail and V[S[O[1]+nf+2]] or 0 local nargs=nf+off+nt local av={} if off==1 then av[1]=f end for j=1,nf+nt do if tail and j>nf then local z=O[1]+j+2 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[O[1]+j+1]] end end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.ctt=V[O[2]+1] E.cnt=V[O[3]+1] E.callx=4".to_string(),
 		_ => unreachable!(),
 	}
 }
@@ -1249,13 +1321,14 @@ fn micro_shard_source(
 	shard: &MicroShard,
 	used: &std::collections::HashSet<usize>,
 	lit: &MicroLits,
+	nop: &str,
 	rng: &mut Rng,
 ) -> String {
 	let mut kinds: Vec<usize> = used.iter().copied().collect();
 	kinds.sort_unstable();
 	let mut items: Vec<(u8, String)> = kinds
 		.into_iter()
-		.map(|i| (shard.codes[i], micro_op_body(i, lit)))
+		.map(|i| (shard.codes[i], micro_op_body(i, lit, nop)))
 		.collect();
 	rng.shuffle(&mut items);
 	let dispatch = if items.is_empty() {
@@ -1299,7 +1372,7 @@ fn micro_shard_source(
 		logical_pos[*logical] = physical + 1;
 	}
 	format!(
-		"local function {name}(E,a,b,c,d,P,m,k) local V,C,S,G,vargs,vargc,ups,makefn,mget,HAS_LEN_META,FLOOR,ERR,TYP=E[1],E[2],E[3],E[5],E[6],E[7],E[8],E[9],E[10],E[13],E[15],E[16],E[17] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end end ",
+		"local function {name}(E,a,b,c,d,P,m,k) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end end ",
 		name = name,
 		op = logical_pos[0],
 		x = logical_pos[1],
@@ -2387,7 +2460,7 @@ pub fn generate(
 		// as static outer closures (the unavoidable pure-Luau base), while each
 		// migrated handler is only a masked numeric descriptor. No handler source
 		// reaches the runtime loader.
-		let micro_lits = MicroLits::new(&mut pool);
+		let micro_lits = MicroLits::new(&mut pool, mk);
 		let n_micro_shards = rng.int(3, 5) as usize;
 		let mut micro_shards = Vec::with_capacity(n_micro_shards);
 		let mut micro_used: Vec<std::collections::HashSet<usize>> =
@@ -2480,6 +2553,11 @@ pub fn generate(
 				{
 					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
 				}
+				let micro_tail = if name == "Return" {
+					"return".to_string()
+				} else {
+					chain_epilogue(rng, &wk)
+				};
 				micro_fill.push_str(&format!(
 					"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] HW2[({wire}+AV)%256]=function(E,a,b,c,d) local _d=_md{shard}[{index}] _mx{shard}(E,a,b,c,d,_d[1],_d[2],_d[3]); {tail} end ",
 					program = program,
@@ -2488,7 +2566,7 @@ pub fn generate(
 					wire = *wire as u16,
 					shard = shard_index,
 					index = program_index,
-					tail = chain_epilogue(rng, &wk),
+					tail = micro_tail,
 				));
 				continue;
 			}
@@ -2600,6 +2678,37 @@ pub fn generate(
 				body.push(' ');
 				body.push_str(&chain_epilogue(rng, &wk));
 			}
+			// Call handlers still use the existing generator above to emit their
+			// four shallow executor fragments, but the chain-phase source itself is
+			// replaced by a numeric micro descriptor.
+			if let Some(recipe) = micro_call_recipe(name) {
+				let shard_index = rng.int(0, n_micro_shards as i64 - 1) as usize;
+				for &(kind, _, _) in &recipe {
+					micro_used[shard_index].insert(kind);
+				}
+				let mask = rng.int(1, 255) as u8;
+				let step = (rng.int(1, 255) | 1) as u8;
+				let (program, stored) =
+					encode_micro_program(&recipe, &micro_shards[shard_index], mask, step);
+				micro_program_counts[shard_index] += 1;
+				let program_index = micro_program_counts[shard_index];
+				for value in std::iter::once(mask)
+					.chain(std::iter::once(step))
+					.chain(stored.into_iter())
+				{
+					micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
+				}
+				micro_fill.push_str(&format!(
+					"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] HW2[({wire}+AV)%256]=function(E,a,b,c,d) local _d=_md{shard}[{index}] _mx{shard}(E,a,b,c,d,_d[1],_d[2],_d[3]); return end ",
+					program = program,
+					mask = mask,
+					step = step,
+					wire = *wire as u16,
+					shard = shard_index,
+					index = program_index,
+				));
+				continue;
+			}
 			let src = format!(
 				"return function(E,a,b,c,d) {}{} end",
 				selective_prelude(&body),
@@ -2616,6 +2725,7 @@ pub fn generate(
 				&micro_shards[i],
 				&micro_used[i],
 				&micro_lits,
+				&nop,
 				rng,
 			));
 		}
