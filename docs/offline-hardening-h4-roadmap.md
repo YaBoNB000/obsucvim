@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**实施中：H4-0/H4-1、H4-2A/B 已完成；内部 loader 3 次（HBOOT+BSS+RT）**
+> 状态：**实施中：H4-0/H4-1、H4-2A/B/C1 已完成；内部 loader 2 次（HBOOT+RT）**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -487,6 +487,43 @@ python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 3
 最终采用上面的数值 descriptor/协议镜像完成 Call executor 迁移；BSS/RT 也
 不得直接搬源码，必须沿用相同的“先建立协议镜像、再移除 loader”原则。
 
+### H4-2C1 已落地（2026-10-05）
+
+BSS 不再作为 HQ 源码碎片重建并交给 loader，而是构建期生成的一次性静态 boot
+状态机。它不直接按固定顺序串行执行原流程，而是使用三阶段数值协议：
+
+```text
+carrier parse + 双校验 → Nop alias rewrite → encoded prototype rebuild
+```
+
+实现约束：
+
+- 三个 phase code 每构建从独立编号池重抽；
+- phase descriptor 使用随机 mask、奇数 stride 与随机 branch 顺序；
+- descriptor 完整性折叠不匹配时偏移 `PB`，让编码侧与 RT 块解码侧静默错钥；
+- BSS 与 RT/Handler 不共享 dispatcher，不形成新的永久万能 decoder；
+- BSS closure 经 H1 `vault[nonce]` 一次性交给 HBOOT，不进入公开形参表；
+- HBOOT 消费完成后外层 `BSS = nil`，不保留全局或长期可遍历 parser 对象；
+- BSS 先进入与 RT 相同的构建随机字段/标识符方言，保持 prototype 协议一致；
+- `W_BSS` 与 BSS HQ wire 正式退役。
+
+Loader 审计：
+
+```text
+Loader 调用：54 → 42 → 21 → 11 → 7 → 3 → 2
+HQ 源码碎片：53 → 41 → 20 → 10 → 6 → 2 → 1
+剩余：HBOOT 1 + RT 1
+```
+
+固定增量门：
+
+```bash
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 2
+```
+
+R041 同一最小输入/同 seed 的体积由 `158568B` 降至 `152138B`，没有用体积
+膨胀换取 loader 指标。下一提交边界为 H4-2C2 RT 协议镜像。
+
 ---
 
 ## H4-3：HBOOT 静态化并移除最后内部 Loader（P0）
@@ -732,9 +769,9 @@ H1/H2/H3 回归不退化
 ## 阶段 C：H4-2 Loaderless Runtime（实施中）
 
 H4-2A continuation 已完成，loader `11 → 7`；H4-2B Call executor 数值
-post-call descriptor 已完成，loader `7 → 3`。剩余 BSS/RT 的直接静态化
-原型仍因语义回归保持回退状态；下一提交边界为 H4-2C BSS/RT 协议镜像，不能
-简单把源码从碎片搬到外层。
+post-call descriptor 已完成，loader `7 → 3`；H4-2C1 BSS 一次性数值 boot
+状态机已完成，loader `3 → 2`。剩余 RT 仍不得直接搬源码；下一提交边界为
+H4-2C2 RT frame/CDEC/bdec 协议镜像，目标 `2 → 1`。
 
 ## 阶段 D：H4-3 HBOOT Loaderless
 
@@ -767,7 +804,7 @@ bash luraph-rs/tests/multiseed.sh
 python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 3
+python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 2
 bash luraph-rs/tests/defense_audit.sh
 ```
 

@@ -9,8 +9,8 @@
 # 检查项：
 #   (1) pe-enc   模板形态：ENC/DDEC 接线齐全、PF 销毁、入口走 MPF、
 #                makefn 不再查 PF 平表、Closure 经 E.k 取子原型；
-#   (2) pe-frags H4-2B 后 HQ 碎片数 = BSS + RT = 2；
-#                43 Handler、4 continuation 与 4 Call executor 已 loaderless；
+#   (2) pe-frags H4-2C1 后 HQ 碎片数 = RT = 1；BSS 已改为一次性
+#                数值 boot 状态机，Handler/continuation/Call 均 loaderless；
 #   (3) pe-run   嵌套闭包程序运行等价（3 种子）；
 #   (4) pe-const 常量往返：小数/大整数/布尔/含转义字符串逐字还原；
 #   (5) pe-rec   深递归 + 闭包计数器运行等价。
@@ -125,10 +125,10 @@ fi
 # ---------- (2) 碎片计数 ----------
 n_hq=$(grep -c "HQ\[" /tmp/vm_tsrc.lua 2>/dev/null || true)
 n_hq=${n_hq:-0}
-if [[ "$n_hq" == "2" ]]; then
+if [[ "$n_hq" == "1" ]]; then
 	pass=$((pass+1))
 else
-	gf "frags" "H4-2B HQ 碎片数 $n_hq != 2（仅 BSS+RT；Call executor/continuation 已 loaderless）"
+	gf "frags" "H4-2C1 HQ 碎片数 $n_hq != 1（仅 RT；BSS/Call/continuation/Handler 已 loaderless）"
 fi
 
 # ---------- (3) 嵌套闭包运行等价（3 种子） ----------

@@ -171,10 +171,11 @@ def main():
         print(f"[G] 壳参数名/序双随机: {'YES' if shell_ok else 'NO'}  "
               f"(参数数 {len(siga)}/{len(sigb)})")
 
-        # H. H2-2/H2-6：语义 wire 与链交叉系数均实际跨构建重掷。
-        h2_keys = ["W_BSS", "W_RT", "W_EXG", "CHAIN_CROSS"]
+        # H. H2-2/H2-6/H4-2C1：wire、BSS 数值阶段与链交叉项均重掷。
+        # W_BSS has retired together with the BSS source fragment.
+        h2_keys = ["W_RT", "W_EXG", "CHAIN_CROSS", "BSS_PHASE_CK"]
         key_ok = all(k in ma and k in mb and ma[k] != mb[k] for k in h2_keys)
-        print(f"[H] wire/链种子跨构建重掷: {'YES' if key_ok else 'NO'}")
+        print(f"[H] wire/阶段/链种子跨构建重掷: {'YES' if key_ok else 'NO'}")
 
         ok = (a == c) and runtime_ok and lane_ok and lane_diff and shell_ok and key_ok
         print("\nH2 审计: " + ("PASS" if ok else "FAIL"))

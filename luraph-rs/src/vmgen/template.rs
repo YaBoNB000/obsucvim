@@ -1893,7 +1893,7 @@ pub fn generate(
         p = cstart
         C = {}
         __CONSTS__
-        if p ~= cstart + csl then while true do end end
+        if p ~= cstart + csl then CK = (CK or 0) + p + 1; CK2 = (CK2 or 0) + cstart + csl + 1 end
         st = 3
       end
     end
@@ -2458,10 +2458,8 @@ pub fn generate(
 			}
 		}
 		rng.shuffle(&mut free_lo);
-		let w_bss = free_lo[0];
-		let w_rt = free_lo[1];
-		let w_exg = free_lo[2];
-		manifest_key("W_BSS", w_bss as u64);
+		let w_rt = free_lo[0];
+		let w_exg = free_lo[1];
 		manifest_key("W_RT", w_rt as u64);
 		manifest_key("W_EXG", w_exg as u64);
 		// 增量⑲ / H4-2B (CPS 去中心化, Call 浅化): Luau 无正确尾调用，
@@ -2713,20 +2711,12 @@ pub fn generate(
 				chain_epilogue(rng, &wk)
 			));
 		}
-		// 增量⑭ (对抗 R002 — 解析器隐藏): the prototype parser + the
-		// whole decode/checksum-verify stage move into ONE MORE
-		// encrypted HQ fragment (wire marker 200). What R002 ported
-		// straight out of the visible text (section tags, LCG unmask,
-		// varint ladders, constant decode, and the OS checksum oracle)
-		// now exists only inside the same encryption as the handlers —
-		// the visible interpreter shrinks to the boot stub.
-		// ㉓ (R008 回合 — 解码窗口入密): R008 实测破解路径 = 对可见
-		// boot 做文本手术，在「解码态原型表落地可见局部」的一点插入转储
-		// （或干脆抹掉 ENC 调用），㉒ 的内存侧防护对静态手术无效。根治：
-		// 解码态原型**从不出现在可见代码里**——BSS 碎片(解析器)直接内联
-		// 自改写 + ENC 重编码，只把**编码态树根**递回可见层。可见 boot
-		// 从此只见密文；攻击者要拿解码态必须先破 HQ 加密（碎片钥匙→
-		// HBOOT→HQ 循环→BSS 碎片→碎片内移植解析器+编码器，每构建重建）。
+		// ㉓ / H4-2C1 (解码窗口封闭): parser、校验、自改写和重编码
+		// remain in one one-shot BSS state-machine closure. The decoded PF_
+		// table never crosses that closure boundary; only the encoded tree root
+		// is handed back to HBOOT. H4-2C1 removes the cheap loader-argument dump:
+		// an analyst must now reconstruct/instrument the per-build numeric phase
+		// machine in the already-obfuscated outer program.
 		// 原型编码钥匙（每原型独立 LCG 流，种子 = pseed + i*pstep）。
 		let pseed = rng.int(1_048_576, 268_435_455) as i64;
 		let pstep = rng.int(1_048_576, 268_435_455) as i64;
@@ -2893,7 +2883,7 @@ pub fn generate(
 			.map(|s| obf_num(*s, rng))
 			.collect::<Vec<_>>()
 			.join(", ");
-		// ㉓/H3-3: Nop 别名自改写从可见 boot 挪进 BSS 碎片。旧版把
+		// ㉓/H3-3/H4-2C1: Nop 别名自改写保留在一次性 BSS 状态机。旧版把
 		// 每个 Nop 的四操作数强制清零，直接重建了“全零×4”分类器；现改为
 		// 由该站点噪声操作数的奇偶决定是否切换 alias，四路值完整保留。
 		// 同一构建同时出现 Nop/NopA 的概率高，且站点形态不再固定。
@@ -2907,7 +2897,7 @@ pub fn generate(
 				));
 			}
 		}
-		// ㉒ 编码体（㉓ 起内联于 BSS 碎片）：五流加性掩码 + 常量编码 +
+		// ㉒ 编码体（H4-2C1 起内联于 BSS 数值状态机）：五流加性掩码 + 常量编码 +
 		// Closure 扫描链原型树，返回编码态树根。
 		// B-3 (状态链式按块解码 — 阶段一: 按块加密集散 + 会话钥匙):
 		// 每原型的指令流按基本块分割（编译器给的 leader 表），每块用
@@ -2979,19 +2969,87 @@ pub fn generate(
 			xteoff = xte_off,
 			enc_lanes = enc_lanes,
 		);
-		// ㉓: BSS 碎片 = 解析 + 校验 + 自改写 + 重编码，一步到位——
-		// 解码态原型表只存在于这个 loadstring 出的加密碎片内部。
-		// ㉚ B-2 (惩罚形态升级，攻击方约束之 4): 字节码校验和失配不再
-		// `while true do end`（grep 即得的死循环 oracle）——改为毒化块
-		// 步长 PB：加密侧（本碎片）与解密侧（RT 碎片的 RPK5）从此错位，
-		// 程序照跑、每个块的指令全错，且无任何可见比较/循环可补。
+		// H4-2C1: BSS is a one-shot static boot state machine, not a source
+		// fragment.  Parsing, Nop rewriting and re-encoding are selected by a
+		// masked numeric phase program; the phase map, mask, stride and branch
+		// order are all per-build.  The dispatcher dies with BSS after HBOOT and
+		// is not shared with RT or handler microcode.
+		//
+		// ㉚ B-2 (惩罚形态升级，攻击方约束之 4): bytecode checksum or
+		// phase-descriptor mismatch poisons PB.  The encoder and RT decoder then
+		// use different block strides, producing silent wrong semantics rather
+		// than a fixed error/death oracle.
 		let ck_poison = rng.int(1, 268_435_455);
+		let ck_poison_e = ke.key_expr(ck_poison, None, rng);
 		manifest_key("BSS_CKPOISON", ck_poison as u64);
-		let bs_src = format!(
-			"return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP, TYP, TOSTR) local OS = {{{}}} local OS2 = {{{}}} {} return function(FN_, NOPA, PS, PT, KM, KC, PB, CKJ) local PF_ = {{}} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] or PF_[di].ck2 ~= OS2[di] then PB = (PB + {ckpo}) % 268435456 end; di = di + 1 end {} {} end end",
-			os_list, os_list2, parse_fn, zw_inner, enc_body, ckpo = ck_poison
+		let mut phase_pool: Vec<u8> = (17..=239).collect();
+		rng.shuffle(&mut phase_pool);
+		let phase_codes = [phase_pool[0], phase_pool[1], phase_pool[2]];
+		let phase_mask = rng.int(1, 255) as u8;
+		let phase_step = (rng.int(1, 255) | 1) as u8;
+		let phase_stored: Vec<u8> = phase_codes
+			.iter()
+			.enumerate()
+			.map(|(i, code)| {
+				((*code as usize + phase_mask as usize + (i + 1) * phase_step as usize)
+					% 256) as u8
+			})
+			.collect();
+		let mut phase_checksum: i64 = 0;
+		for &v in std::iter::once(&phase_mask)
+			.chain(std::iter::once(&phase_step))
+			.chain(phase_stored.iter())
+		{
+			phase_checksum = (phase_checksum * 257 + v as i64) % KEY_MOD;
+		}
+		let phase_checksum_e = ke.key_expr(phase_checksum, None, rng);
+		manifest_key("BSS_PHASE_CK", phase_checksum as u64);
+		let phase_parse = format!(
+			"local di=1 while di<=#FN_ do PF_[di]=parse(FN_[di],di) if PF_[di].ck~=OS[di] or PF_[di].ck2~=OS2[di] then PB=(PB+{ckpo})%268435456 end di=di+1 end",
+			ckpo = "BSSKPX",
 		);
-		frags.push((w_bss, bs_src.into_bytes()));
+		let phase_rewrite = if zw_inner.is_empty() {
+			"local _nz=PB%2 _nz=_nz-_nz".to_string()
+		} else {
+			zw_inner.clone()
+		};
+		let phase_encode = enc_body.clone();
+		let mut phase_branches = vec![
+			(phase_codes[0], phase_parse),
+			(phase_codes[1], phase_rewrite),
+			(phase_codes[2], phase_encode),
+		];
+		rng.shuffle(&mut phase_branches);
+		let phase_dispatch = phase_branches
+			.iter()
+			.enumerate()
+			.map(|(i, (code, body))| {
+				let head = if i == 0 {
+					if rng.int(0, 1) == 0 {
+						format!("if _op=={}", code)
+					} else {
+						format!("if {}==_op", code)
+					}
+				} else if rng.int(0, 1) == 0 {
+					format!("elseif _op=={}", code)
+				} else {
+					format!("elseif {}==_op", code)
+				};
+				format!("{} then {} ", head, body)
+			})
+			.collect::<String>()
+			+ "else PB=(PB+BSSKPX)%268435456 end";
+		let mut bss_static_src = format!(
+			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end PB=(PB+(_bc-{expected}))%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch} _bi=_bi+1 end end end",
+			os = os_list,
+			os2 = os_list2,
+			parse = parse_fn,
+			program = phase_stored.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
+			mask = phase_mask,
+			step = phase_step,
+			expected = "BSSKCX",
+			dispatch = phase_dispatch,
+		);
 		// DDEC（wire 206）：每帧解码，工厂形态把钥匙以 boot 期上游值
 		// 注入（钥匙表事后置 nil 不影响）。与编码钥匙流严格镜像。
 		// ㊽: 急切全池解码块（旧 c_block_dec）随 __index 惰性 CDEC 退役。
@@ -3169,7 +3227,7 @@ pub fn generate(
 			"__index", "__newindex", "__tostring", "__concat", "__call",
 			"__iter", "__metatable", "__eq", "__lt", "__le", "__add",
 			"__sub", "__mul", "__div", "__mod", "__pow", "__unm",
-			"__len", "__mode", "__close", "_ENV",
+			"__len", "__mode", "__close", "_ENV", "BSSKPX", "BSSKCX",
 		] {
 			frag_reserved.insert(g.to_string());
 		}
@@ -3187,6 +3245,28 @@ pub fn generate(
 			frag_used.insert(mapped.clone());
 			frag_map.insert(field.to_string(), mapped);
 		}
+		// BSS is static but must participate in the same per-build identifier/
+		// field dialect as RT. Sanitize it first so RT adopts its field map; the
+		// resulting closure is passed once through the vault and then destroyed.
+		bss_static_src = sanitize_frag(
+			&bss_static_src,
+			rng,
+			&mut frag_map,
+			&frag_reserved,
+			&mut frag_used,
+		);
+		// KeyEmitter expressions use outer KA/KB/KC/KM locals; evaluating them
+		// inside BSS would be unsafe because BSS has same-spelled key parameters.
+		// Materialize two outer lexical values first, then let the one-shot BSS
+		// closure capture those values. Long sentinel names cannot collide with
+		// sanitize_name's 2..4-character identifiers and disappear in final mangle.
+		bss_static_src = bss_static_src
+			.replace("BSSKPX", "_BSSPKX_")
+			.replace("BSSKCX", "_BSSPCX_");
+		let bss_fill = format!(
+			"local _BSSPKX_=({}) local _BSSPCX_=({}) BSS={} ",
+			ck_poison_e, phase_checksum_e, bss_static_src
+		);
 		for (_wire, src) in frags.iter_mut() {
 			let text = String::from_utf8(std::mem::take(src)).unwrap();
 			*src = sanitize_frag(&text, rng, &mut frag_map, &frag_reserved, &mut frag_used)
@@ -3268,8 +3348,8 @@ pub fn generate(
 		// over a masked byte array, keystream assembled from the KT
 		// lookup tables). Static analysts must now: port the
 		// meta-decoder -> recover HBOOT -> port the HQ loop -> decode
-		// the 44 fragments -> port the parser (⑭). Every layer is a
-		// fresh per-build reimplementation.
+		// remaining HQ fragments. The parser is no longer an HQ/loadstring
+		// payload after H4-2C1; it is a separate one-shot numeric boot machine.
 		// ㉚ B-2 (源码自校验哈希链): HBOOT 新增职责——
 		//   * 收 HB 参数（自身源码，可见引导经 table.concat(MH) 传入）
 		//     并先对它走链 → 换掉 HBOOT 即链头偏移；
@@ -3290,14 +3370,15 @@ pub fn generate(
 		} else {
 			(String::new(), String::new())
 		};
-        // H1 vault[nonce] 一次性 getter：Sd 包装仅见 GET+nonce，RPK/CKJ 明文不经 _hbf 参数
+        // H1/H4-2C1 vault[nonce] 一次性 getter：Sd 包装仅见 GET+nonce；
+        // RPK/CKJ 与静态 BSS closure 均不经过 HBOOT 的公开形参表。
         let vault_nonce = rng.int(1, 268435456);
         let vault_nonce_name = format!("_vn{}", rng.int(10, 99));
         let vault_name = format!("_vt{}", rng.int(10, 99));
         let vault_get_name = format!("_vg{}", rng.int(10, 99));
         let vault_ckj_e = ke.key_expr(ckj, None, rng);
         let vault_def = format!(
-            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj}}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6] end ",
+            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7] end ",
             vn = vault_nonce_name,
             vt = vault_name,
             vg = vault_get_name,
@@ -3353,12 +3434,11 @@ pub fn generate(
 			(String::new(), String::new(), String::new())
 		};
 		let hboot_src = format!(
-			"return function({shell_sig}) {shell_bind}{guard}local PS_, PT_, KM_, KC_, PB_, CKJ_ = GET_(NONCE_) local HW = {{}} local BSS local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local rv = (h1 + h2 * 257) % 268435456 local hs = ({hseed} + w * {hstep} + rv * {hmul} + ((w * rv) % 268435456) * {hcross}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end if w == {wbss} then BSS = s else HW[w] = (LS(s) or PD)() end end local _bq = LS(BSS) if TYP_(_bq) ~= \"function\" then _bq = PD end local _lv0 = _bq() local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
+			"return function({shell_sig}) {shell_bind}{guard}local PS_, PT_, KM_, KC_, PB_, CKJ_, BSSF_ = GET_(NONCE_) local HW = {{}} local h1 = {iv1} local h2 = {iv2} local SH = function(a, c, b) a = (a * {k1} + b * (c % 97 + 1)) % {m1} c = (c * {k2} + b * (a % 89 + 1)) % {m2} return a, c end do local hn = #HB for i = 1, hn do h1, h2 = SH(h1, h2, BYTE(HB, i)) end end local DICT = HB local hi = 1 while hi <= #hqi do local w = hqi[hi] local seg = HQ[hqi[hi + 1]] local flen = hqi[hi + 2] hi = hi + 3 local rv = (h1 + h2 * 257) % 268435456 local hs = ({hseed} + w * {hstep} + rv * {hmul} + ((w * rv) % 268435456) * {hcross}) % 268435456 local t = {{}} local ti = 1 local n = #seg for i = 1, n, 5 do local v = 0 v = v * 94 + AL[BYTE(seg, i)] v = v * 94 + AL[BYTE(seg, i + 1)] v = v * 94 + AL[BYTE(seg, i + 2)] v = v * 94 + AL[BYTE(seg, i + 3)] v = v * 94 + AL[BYTE(seg, i + 4)] local b1 = v % 256; v = FLR(v / 256) local b2 = v % 256; v = FLR(v / 256) local b3 = v % 256; v = FLR(v / 256) local b4 = v % 256 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b1 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b2 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b3 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 hs = ({hm} * hs + {hc}) % 268435456; t[ti] = CHAR((b4 - (((hs % 256) + (FLR(hs / 256) % 256) + (FLR(hs / 65536) % 256) + FLR(hs / 16777216)) % 256)) % 256); ti = ti + 1 end local s = SUB(table.concat(t), 1, flen) local DC = {{}} local pi = 3 while pi <= flen do if BYTE(s, pi) == 0 then local ln = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 DC[#DC + 1] = SUB(s, pi + 3, pi + 2 + ln) pi = pi + 3 + ln else local off = BYTE(s, pi + 1) + BYTE(s, pi + 2) * 256 local ln = BYTE(s, pi + 3) + BYTE(s, pi + 4) * 256 DC[#DC + 1] = SUB(DICT, off, off + ln - 1) pi = pi + 5 end end s = SUB(table.concat(DC), 1, BYTE(s, 1) + BYTE(s, 2) * 256) DICT = DICT .. s for i = 1, #s do h1, h2 = SH(h1, h2, BYTE(s, i)) end HW[w] = (LS(s) or PD)() end local _lv0 = BSSF_ local _lv1 = _lv0(BYTE, CHAR, FLR, SUB, AL, TK_, DC1, R16, CKM_, CKC_, BKM_, BKC_, BSEED_, BSTEP_, TYP_, TSTR_) local _b1, _b2 = _lv1(FN_, NOPA_, PS_, PT_, KM_, KC_, PB_, CKJ_) local _O1,_O2,_O3,_O4,_O5{hpret_decl} = HW, _b1, _b2, h1, h2{hpret} HW, _b1, _b2, h1, h2{hpret} = nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
 			shell_sig = shell_sig,
 			shell_bind = shell_bind,
-			wbss = w_bss,
 			hpret_decl = hpret_decl,
 			hpret_nil_r = hpret_nil_r,
 			hpret_ret = hpret_ret,
@@ -3961,12 +4041,10 @@ pub fn generate(
     do
       {av_fold}
     end
--- NOTE (㊹ R018 报告 P0-2 收口 — 可见层零解码源): AV 与 RPK 前移, BSS 的
--- loadstring+调用整体搬进 HBOOT——解码态源码 (BSS 全文) 永不落地可见层。
--- 攻击者无法再在「解码后、loadstring 前」对明文 BSS 字符串做 gsub 手术
--- (R018 报告的实证攻击路径); 要钩 BSS 必须先破 HBOOT 掩码。链哈希照常
--- 覆盖 BSS 源码 (碎片链成员), 篡改 ⇒ 钥匙流污染。
-    RPK1 = ({pseed} + AV) % 268435456
+-- NOTE (H4-2C1): BSS is now a one-shot static numeric phase machine. It is
+-- passed through vault[nonce], consumed inside HBOOT, and cleared immediately;
+-- no BSS source string or BSS loader call exists at runtime.
+    {bss_fill}RPK1 = ({pseed} + AV) % 268435456
     RPK2 = ({pstep} + AV) % 268435456
     RPK3 = ({pkm} + AV) % 268435456
     RPK4 = ({pkc} + AV) % 268435456
@@ -3977,7 +4055,7 @@ pub fn generate(
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
-    {vault_def}local _hok, _r1 = PCAL(function() local HB = table.concat(MH) local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return (function(...) MH = nil HB = nil return ... end)(_hbf()({vault_args})) end)
+    {vault_def}local _hok, _r1 = PCAL(function() local HB = table.concat(MH) local _hbf = LS(HB) if TYP(_hbf) ~= "function" then _hbf = PD end return (function(...) MH = nil HB = nil return ... end)(_hbf()({vault_args})) end) BSS = nil
     if not _hok then {hbootfail} end
     HW, MPF, SALT, SH1, SH2{hp_recv} = _r1() _r1 = nil{xtok_extract}
     HQ = nil; hqi = nil
@@ -3989,6 +4067,7 @@ pub fn generate(
   end"#,
 		hq_lines, mb_lines, boot, hqi_masked.join(", "), mb_gather, metavm,
 		micro_fill = micro_fill,
+		bss_fill = bss_fill,
             hw_expand = hw_expand,
 		hp_recv = hp_recv,
 		hp_stash = hp_stash,
