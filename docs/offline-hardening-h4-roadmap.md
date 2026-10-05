@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0 已闭环；H4-4 Key-Carrying Chaff 四面闭环；内部 loader 0 次**
+> 状态：**H4 P0/H4-4 已闭环；H4-5A 每函数 block-key family 完成；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -808,6 +808,33 @@ H4-4 Key-Carrying Chaff 至此闭环。下一阶段为 H4-5 每函数独立方�
 - 子函数 closure metadata 也必须随方言加密；
 - 方言切换不通过可识别的固定 adapter table。
 
+### H4-5A 已落地（2026-10-05）
+
+第一阶段只切换每函数 block-key family：
+
+- 从既有 build/chaff 系数族派生六个构建随机系数，不新增可枚举的每函数
+  dialect table；
+- BSS 对函数 `i` 和实际 `qf` 派生独立奇数 `fkm`、加数 `fkc` 与块步长
+  `fpb`；
+- RT bdec 使用 `pf.sd` 与期望 `QF[pf.sd]` 镜像派生同一组三值；
+- 指令块的 LCG 与 block-start 项均改用 `fkm/fkc/fpb`，常量钥匙面保持上一
+  阶段不动，便于单独定位回归；
+- 派生值不存进 prototype、全局 map 或 adapter table，离开 bdec 即销毁；
+- Chaff 不一致时同时改变该函数的 key family，而不是只偏移一个共享 seed；
+- 新增 `h5_dialect_audit.py`，验证六系数跨构建重掷、每函数 qf 分离、
+  BSS/RT 镜像接线、同 seed 确定及双 seed 运行等价。
+
+结果：
+
+```text
+内部 Loader：0（--enforce-zero PASS）
+R041：118121B → 118959B（+0.71%）
+169/169；H4-5A audit PASS
+```
+
+H4-5 尚未完成；下一独立阶段是每函数 operand lane permutation，再推进
+micro-op/shard 与 constant-tag 方言。
+
 ---
 
 ## H4-6：单块数值窗口、重播种与主动销毁（P1）
@@ -961,9 +988,10 @@ HBOOT 三阶段静态数值协议与静态 EXG 已完成，内部 loader `1 → 
 H4-4A operand lane、H4-4B block seed、H4-4C constant key、H4-4D
 microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解码中错钥。
 
-## 阶段 F：H4-5/H4-6 每函数方言与单块窗口
+## 阶段 F：H4-5/H4-6 每函数方言与单块窗口（实施中）
 
-先方言隔离，再缩小运行窗口；不得反序同时进行，避免无法定位错钥。
+H4-5A 每函数 block-key family 已完成；继续完成其余方言后再缩小运行窗口，
+不得反序同时进行，避免无法定位错钥。
 
 ## 阶段 G：H4-7/H4-8 收口
 
@@ -985,6 +1013,7 @@ python3 luraph-rs/tests/redteam_probe_regression.py
 python3 luraph-rs/tests/h2_diff_audit.py
 python3 luraph-rs/tests/h3_noise_audit.py
 python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
+python3 luraph-rs/tests/h5_dialect_audit.py
 bash luraph-rs/tests/defense_audit.sh
 ```
 

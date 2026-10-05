@@ -28,7 +28,7 @@
 
 **12 项状态**（构建种子驱动，纯离线）：
 1. ✅ 段三元组解码顺序：`frags` 的 `order` 每构建洗牌，哈希链与增量字典同序镜像。
-2. ✅ 段语义↔编号：H4-2A/B 已清除 continuation/Call wire，H4-2C1/C2 以彼此独立的一次性数值协议替代 BSS/RT wire；H4-3 又静态化 HBOOT/EXG 并清除全部 source fragment 与 loader；H4-4A/B/C/D 已让 Nop chaff 折叠同时承担 operand lane、block seed、constant key 与 microcode checksum。
+2. ✅ 段语义↔编号：H4-2A/B 已清除 continuation/Call wire，H4-2C1/C2 以彼此独立的一次性数值协议替代 BSS/RT wire；H4-3 又静态化 HBOOT/EXG 并清除全部 source fragment 与 loader；H4-4A/B/C/D 已让 Nop chaff 承担四个真实钥匙面；H4-5A 已将 block LCG/stride 派生为每函数 key family。
 3. 🟡 别名面：四套 opcode wire + NOP alias 值已随机；“组数/每组数量可变”仍待做。
 4. ✅ K 常量组：`KeyEmitter` 的 KA/KB/KC/KM 内容、槽位、组装配方每构建重掷。
 5. ✅ LCG：常量、blob、HQ、meta、块钥匙流的乘加子/种子/步数均由构建 seed 生成。
