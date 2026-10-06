@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 主体已闭环；H5-P0/H5-2 已完成 Micro 密封、全 Shard 动态方言、MkStr 上下文绑定与默认外壳精简；内部 loader 0 次**
+> 状态：**H4 主体已闭环；H5-P0 Micro Descriptor 静态表已密封退役；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -1162,34 +1162,6 @@ python3 luraph-rs/tests/h5_p0_micro_audit.py
 这只关闭最廉价的静态映射路径；Superoperator、纯字面量下标折叠和固定 junk
 模板仍是后续 P1/P2，不作“不可恢复”承诺。
 
-### R058 复核后的 H5-2 修订（2026-10-06）
-
-针对外层 `C[1..15]`、首个 micro shard 明文 opcode 比较和 MkStr 固定仿射三项：
-
-- **H5-2A**：每个 micro shard 独立生成模 `251` 的 multiplier/addend/context
-  三元组；micro opcode 与比较目标同时叠入 `E.vd` 函数上下文，三种 dispatch
-  形态均不再发射 `op == raw_micro_literal`；
-- **H5-2B**：BSS 在识别 MkStr wire 后，以 `qf + proto id + absolute PC` 对
-  b/c/d 三个 packed operand 再掩码；micro 使用帧内 `E.sk/E.si` 镜像恢复，
-  全局 `mk1/mk2` 不再足以离线解短字符串；
-- **H5-2C**：默认纯离线 profile 退役可机械剥离的 staging/CPS module shell，
-  直接使用已混淆解释器与 encrypted carrier；`b[n](b)`、`C[1]..C[15]` 和外层
-  continue forest 消失。`--bind-env/--bind-executor` 暂保兼容 shell，因为其
-  探针有意捕获 module table，后续需独立迁移，不能静默破坏绑定语义。
-
-同源码/同 seed：
-
-```text
-R058：187607B → 137102B（-26.92%，减少 50505B）
-```
-
-新增：
-
-```text
-python3 luraph-rs/tests/h5_context_audit.py
-python3 luraph-rs/tests/h5_shell_audit.py <artifact>
-```
-
 ---
 
 # 5. 明确排除的加固点
@@ -1299,8 +1271,6 @@ python3 luraph-rs/tests/h6_window_audit.py
 python3 luraph-rs/tests/h7_decentralization_audit.py
 python3 luraph-rs/tests/h8_poison_audit.py
 python3 luraph-rs/tests/h5_p0_micro_audit.py
-python3 luraph-rs/tests/h5_context_audit.py
-python3 luraph-rs/tests/h5_shell_audit.py <artifact>
 bash luraph-rs/tests/defense_audit.sh
 ```
 

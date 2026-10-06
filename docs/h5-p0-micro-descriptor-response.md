@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线 Luau
 >
-> 状态：**P0/H5-2 已闭环；静态 descriptor table、默认外层固定壳和 raw micro opcode baseline 已退役**
+> 状态：**P0 已闭环；静态 47 组 descriptor table 已退役**
 
 ## 1. R057 失守结论
 
@@ -124,73 +124,7 @@ R057 同源码/同 seed：196299B → 204355B（+4.10%）
 R058：187607B，m=134034，r=9827
 ```
 
-## 4. H5-2：第二轮静态特征整改
-
-### 4.1 全 shard 动态 Micro-op 映射
-
-每个 shard 现在具有独立的模 `251`：
-
-```text
-op_mul / op_add / op_ctx
-```
-
-解释器先计算函数上下文 `ox = f(E.vd)`，再将解出的 micro opcode 映射到
-`(op*mul+add+ox)%251`；语义分支目标也通过同一 shard 专属表达式生成。第一
-套解释器不再保留 `op == raw literal` 基线，其余 shard 也不共享变换参数。
-
-### 4.2 MkStr 绑定函数与指令上下文
-
-编译器原有 `mk1*a+mk2` 只作为第一层。BSS 根据真实 MkStr wire，在 per-function
-lane permutation 归一前将以下状态叠加到 b/c/d：
-
-```text
-qf + proto id + absolute PC
-```
-
-运行时从 `E.sk/E.si` 镜像恢复。仅提取一组全局乘数和加数不能再解出全部短
-字符串。
-
-### 4.3 默认外层壳退役
-
-默认 v15 不再生成固定 staging/CPS module shell：
-
-```text
-C[1]..C[15]
-b[n](b)
-setmetatable(...):entry()(...)
-外层 range tree + continue forest
-```
-
-解释器完成既有 mangle/string/number passes 后直接接收 encrypted carriers。
-绑定态暂保 compatibility shell，以免破坏 module-table 环境捕获。
-
-同源码、同 seed 实测：
-
-```text
-R058：187607B → 137102B（-26.92%，减少 50505B）
-R059：121992B，m=249153，r=5342
-```
-
-专项门禁：
-
-```text
-python3 luraph-rs/tests/h5_context_audit.py
-python3 luraph-rs/tests/h5_shell_audit.py <artifact>
-```
-
-最终矩阵：
-
-```text
-cargo test：28 passed / 0 failed / 1 ignored
-run_tests：169/169
-run_presets：370/370
-multiseed：FAIL=0
-H2/H3/H4/H5/H6/H7/H8/H5-P0/H5-2：PASS
-防御审计：PASS 21 / FAIL 0
-R059 luau-compile + 运行等价：PASS
-```
-
-## 5. 诚实边界与后续项
+## 4. 诚实边界与后续项
 
 本阶段修复的是 R057 最便宜、最致命的“47 组 descriptor 与解码参数并排静态
 交付”路径，不宣称纯离线 Micro-ISA 永远无法恢复。
