@@ -857,6 +857,17 @@ fn micro_compare_body(native: &str, meta: &str, swapped: bool, lit: &MicroLits) 
 	)
 }
 
+fn call_slot(logical: usize, family: usize) -> String {
+	// Each Call family receives a different rotation, while E.vd makes the
+	// physical slots differ per prototype and E.cs differs per build.
+	format!("E[25+((E.vd+{}*E.cs)%17)]", logical + family * 9)
+}
+
+fn frame_slot(logical: usize) -> String {
+	// Return/last-call state lives in a disjoint per-function permutation.
+	format!("E[42+((E.vd+{}*E.cs)%17)]", logical)
+}
+
 fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	match index {
 		M_READ_V => "T[x] = V[O[y] + 1]".to_string(),
@@ -907,8 +918,8 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		}
 		M_LOAD_NIL_RANGE => "for j=1,O[y] do V[S[O[x]+j]]=nil end".to_string(),
 		M_TABN => "T[2]=T[2]+1 T[1][T[2]]=T[3]".to_string(),
-		M_VARG_TABLE => "local q={} for j=1,vargc do q[j]=vargs[j] end T[x]=q".to_string(),
-		M_VARG_TABN => "for j=1,vargc do T[1][T[2]+j]=vargs[j] end T[2]=T[2]+vargc".to_string(),
+		M_VARG_TABLE => "local q={} for j=1,vargc do q[j]=vargs[1+((j+E.vd-1)%vargc)] end T[x]=q".to_string(),
+		M_VARG_TABN => "for j=1,vargc do T[1][T[2]+j]=vargs[1+((j+E.vd-1)%vargc)] end T[2]=T[2]+vargc".to_string(),
 		M_CLOSURE => "V[O[x]+1]=makefn(E.bt[O[y]],V,ups,S)".to_string(),
 		M_GET_TABLE => format!(
 			"local o,j=T[1],T[2] local r if TYP(o)=={table_} then r=RGET(o,j) if r==nil then local f=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] end end else local mt=GMT(o) if mt and mt[{index}]~=nil then local f=mt[{index}] if TYP(f)=={function} then r=f(o,j) else r=f[j] end else ERR({msg}..TYP(o)..{value},0) end end T[x]=r",
@@ -925,14 +936,40 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 			"local ms=({mk1}*O[1]+{mk2})%65536 local q1=(O[2]-ms)%65536 local q2=(O[3]-ms)%65536 local q3=(O[4]-ms)%65536 local n=FLOOR(q3/256) local q={{q1%256,FLOOR(q1/256),q2%256,FLOOR(q2/256),q3%256}} local ch={empty}[{char_}] local s={empty} for j=1,n do s=s..ch(q[j]) end V[O[1]+1]=s",
 			mk1 = lit.mk1, mk2 = lit.mk2, empty = lit.empty, char_ = lit.char_,
 		),
-		M_RETURN => "local out={} local n=O[2] local total if n==255 then local pre=O[4] for j=1,pre do out[j]=V[S[O[1]+j]] end if O[3]==1 then for j=1,vargc do out[pre+j]=vargs[j] end total=pre+vargc else for j=1,E.ln do local s=S[E.lb+j] if s then out[pre+j]=V[s] else out[pre+j]=X[E.lb+j] end end total=pre+E.ln end else for j=1,n do out[j]=V[S[O[1]+j]] end total=n end E.out=out E.total=total E.done=true".to_string(),
-		M_CALL => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nargs=O[2]+off local av={} if off==1 then av[1]=f end for j=1,O[2] do av[off+j]=V[S[bs+j]] end if O[4]==1 then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=1".to_string(),
-		M_CALLE => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local va=O[4]%2==1 local tail=O[4]>=2 local nargs=nf+off if tail then nargs=nargs+V[S[bs+nf+1]] end local av={} if off==1 then av[1]=f end local lim=tail and (nf+V[S[bs+nf+1]]) or nf for j=1,lim do if tail and j>nf then local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[bs+j]] end end if va then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=2".to_string(),
-		M_CALLM => "local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local nt=V[S[bs+nf+1]] local nargs=nf+nt+off local av={} if off==1 then av[1]=f end for j=1,nf+nt do if j<=nf then av[off+j]=V[S[bs+j]] else local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end end end if O[4]==1 then for j=1,vargc do av[nargs+j]=vargs[j] end nargs=nargs+vargc end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.callx=3".to_string(),
-		M_CALLT => "local f=V[S[O[1]+1]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=FLOOR(O[4]/2) local tail=O[4]%2==1 local nt=tail and V[S[O[1]+nf+2]] or 0 local nargs=nf+off+nt local av={} if off==1 then av[1]=f end for j=1,nf+nt do if tail and j>nf then local z=O[1]+j+2 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[O[1]+j+1]] end end E.cf=fn E.ca=av E.cn=nargs E.oa=O[1] E.ob=O[2] E.oc2=O[3] E.od=O[4] E.ctt=V[O[2]+1] E.cnt=V[O[3]+1] E.callx=4".to_string(),
-		M_POST_CALL | M_POST_CALLM => "local bs=O[1]+1 E.lb=bs E.ln=N local wn=N if O[3]~=255 and O[3]>wn then wn=O[3] end for j=1,wn do local s=S[bs+j] if s then V[s]=R[j] else X[bs+j]=R[j] end end".to_string(),
+		M_RETURN => {
+			let lb = frame_slot(0);
+			let ln = frame_slot(1);
+			let out_slot = frame_slot(2);
+			let total_slot = frame_slot(3);
+			format!("local out={{}} local n=O[2] local total if n==255 then local pre=O[4] for j=1,pre do out[j]=V[S[O[1]+j]] end if O[3]==1 then for j=1,vargc do out[pre+j]=vargs[1+((j+E.vd-1)%vargc)] end total=pre+vargc else for j=1,{ln} do local s=S[{lb}+j] if s then out[pre+j]=V[s] else out[pre+j]=X[{lb}+j] end end total=pre+{ln} end else for j=1,n do out[j]=V[S[O[1]+j]] end total=n end {out_slot}=out {total_slot}=total E.done=(E.vd+E.cs)%65521", lb=lb, ln=ln, out_slot=out_slot, total_slot=total_slot)
+		}
+		M_CALL => {
+			let z: Vec<String> = (0..7).map(|i| call_slot(i, 1)).collect();
+			format!("local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nargs=O[2]+off local av={{}} if off==1 then av[1]=f end for j=1,O[2] do av[off+j]=V[S[bs+j]] end if O[4]==1 then for j=1,vargc do av[nargs+j]=vargs[1+((j+E.vd-1)%vargc)] end nargs=nargs+vargc end {f}=fn {a}=av {n}=nargs {oa}=O[1] {ob}=O[2] {oc}=O[3] {od}=O[4] E.callx=(E.vd+1)%17", f=z[0], a=z[1], n=z[2], oa=z[3], ob=z[4], oc=z[5], od=z[6])
+		}
+		M_CALLE => {
+			let z: Vec<String> = (0..7).map(|i| call_slot(i, 2)).collect();
+			format!("local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local va=O[4]%2==1 local tail=O[4]>=2 local nargs=nf+off if tail then nargs=nargs+V[S[bs+nf+1]] end local av={{}} if off==1 then av[1]=f end local lim=tail and (nf+V[S[bs+nf+1]]) or nf for j=1,lim do if tail and j>nf then local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[bs+j]] end end if va then for j=1,vargc do av[nargs+j]=vargs[1+((j+E.vd-1)%vargc)] end nargs=nargs+vargc end {f}=fn {a}=av {n}=nargs {oa}=O[1] {ob}=O[2] {oc}=O[3] {od}=O[4] E.callx=(E.vd+2)%17", f=z[0], a=z[1], n=z[2], oa=z[3], ob=z[4], oc=z[5], od=z[6])
+		}
+		M_CALLM => {
+			let z: Vec<String> = (0..7).map(|i| call_slot(i, 3)).collect();
+			format!("local bs=O[1]+1 local f=V[S[bs]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=O[2] local nt=V[S[bs+nf+1]] local nargs=nf+nt+off local av={{}} if off==1 then av[1]=f end for j=1,nf+nt do if j<=nf then av[off+j]=V[S[bs+j]] else local z=bs+j+1 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end end end if O[4]==1 then for j=1,vargc do av[nargs+j]=vargs[1+((j+E.vd-1)%vargc)] end nargs=nargs+vargc end {f}=fn {a}=av {n}=nargs {oa}=O[1] {ob}=O[2] {oc}=O[3] {od}=O[4] E.callx=(E.vd+3)%17", f=z[0], a=z[1], n=z[2], oa=z[3], ob=z[4], oc=z[5], od=z[6])
+		}
+		M_CALLT => {
+			let z: Vec<String> = (0..9).map(|i| call_slot(i, 4)).collect();
+			format!("local f=V[S[O[1]+1]] local fn,selfv=resolve_call(f) local off=selfv and 1 or 0 local nf=FLOOR(O[4]/2) local tail=O[4]%2==1 local nt=tail and V[S[O[1]+nf+2]] or 0 local nargs=nf+off+nt local av={{}} if off==1 then av[1]=f end for j=1,nf+nt do if tail and j>nf then local z=O[1]+j+2 local s=S[z] if s then av[off+j]=V[s] else av[off+j]=X[z] end else av[off+j]=V[S[O[1]+j+1]] end end {f}=fn {a}=av {n}=nargs {oa}=O[1] {ob}=O[2] {oc}=O[3] {od}=O[4] {tt}=V[O[2]+1] {tn}=V[O[3]+1] E.callx=(E.vd+4)%17", f=z[0], a=z[1], n=z[2], oa=z[3], ob=z[4], oc=z[5], od=z[6], tt=z[7], tn=z[8])
+		}
+		M_POST_CALL | M_POST_CALLM => {
+			let lb = frame_slot(0);
+			let ln = frame_slot(1);
+			format!("local bs=O[1]+1 {lb}=bs {ln}=N local wn=N if O[3]~=255 and O[3]>wn then wn=O[3] end for j=1,wn do local s=S[bs+j] if s then V[s]=R[j] else X[bs+j]=R[j] end end", lb=lb, ln=ln)
+		}
 		M_POST_CALLE => "local bs=O[1]+1 for j=1,N do local s=S[bs+j] if s then V[s]=R[j] else X[bs+j]=R[j] end end V[S[bs]]=N".to_string(),
-		M_POST_CALLT => "local q=E.ctt local n=E.cnt for j=1,N do q[n+j]=R[j] end V[O[3]+1]=n+N".to_string(),
+		M_POST_CALLT => {
+			let q = call_slot(7, 4);
+			let n = call_slot(8, 4);
+			format!("local q={q} local n={n} for j=1,N do q[n+j]=R[j] end V[O[3]+1]=n+N", q=q, n=n)
+		}
 		_ => unreachable!(),
 	}
 }
@@ -1007,7 +1044,7 @@ fn micro_shard_source(
 		logical_pos[*logical] = physical + 1;
 	}
 	format!(
-		"local function {name}(E,a,b,c,d,P,m,k,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
+		"local function {name}(E,a,b,c,d,P,m,k,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
 		name = name,
 		op = logical_pos[0],
 		x = logical_pos[1],
@@ -1959,8 +1996,10 @@ pub fn generate(
 		// 慢机；100 倍 + 连续 2 窗 → 不误伤偶发 GC 停顿。
 		let frame_cleanup = "local ws={E.ww,E.w0,E.w1,E.w2,E.w3} for wl=1,5 do local wt=ws[wl] if wt then for wx=1,#wt do wt[wx]=nil end end end if E.bq then for qi=1,#E.bq do local bc=E.bch[E.bq[qi]] if bc then for wl=1,5 do local wt=bc[wl] if wt then for wx=1,#wt do wt[wx]=nil end bc[wl]=nil end end end end end E.bch={} E.bq={} E.ww,E.w0,E.w1,E.w2,E.w3=nil,nil,nil,nil,nil E.br=nil E.er=nil ";
 		Some(format!(
-			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx > 0 then\n        local cx = E.callx == 1 and XE1 or E.callx == 2 and XE2 or E.callx == 3 and XE3 or XE4\n        E.callx = 0\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 SLTC = SLTC + 7777777 end end end\n      if E.done then {cleanup}return U(E.out, 1, E.total) end\n    end",
+			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx ~= nil then\n        local ck = (E.callx - E.vd) % 17\n        local cx = ck == 1 and XE1 or ck == 2 and XE2 or ck == 3 and XE3 or XE4\n        E.callx = nil\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 SLTC = SLTC + 7777777 end end end\n      if E.done ~= nil then local _fo={out_slot} local _fn={total_slot} {cleanup}for _wi=25,58 do E[_wi]=nil end return U(_fo, 1, _fn) end\n    end",
 			budget_e,
+			out_slot = frame_slot(2),
+			total_slot = frame_slot(3),
 			cleanup = frame_cleanup,
 		))
 	} else {
@@ -1992,6 +2031,7 @@ pub fn generate(
       src = nil
     end
     local npa = (pf.np - (qf * NQ + fi * NI + MA) % 65536) % 65536
+    local vd = (qf * NQ + fi * NI + MM) % 65521
     mu = nil
     mst = nil
     return function(...)
@@ -1999,7 +2039,7 @@ pub fn generate(
       local vargc = #all - npa
       if vargc < 0 then vargc = 0 end
       local vargs = {}
-      for i = 1, vargc do vargs[i] = all[npa + i] end
+      for i = 1, vargc do vargs[1 + ((i + vd - 1) % vargc)] = all[npa + i] end
       local V2 = {}
       for i = 1, npa do V2[pf.S[i]] = all[i] end
       -- 增量⑲: the trampoline lives INSIDE the closure (one frame per
@@ -2179,13 +2219,13 @@ pub fn generate(
 		manifest_key("MICRO_ROUTE_N", n_micro_shards as u64);
 	}
 	let env_names = [
-		"V", "C", "S", "O", "G", "vargs", "vargc", "ups", "makefn", "mget",
+		"V", "C", "S", "O", "G", "vargs", "(vargc+vd)%65536", "ups", "makefn", "mget",
 		"resolve_call", "callcap", "HAS_LEN_META", "CHAR", "FLOOR", "ERR",
 		"TYP", "GMT", "RGET", "RSET", "U", "MS",
 		"AV", "HW2",
 	];
 	let e_table = format!(
-		"{{{}, ln = 0, lb = 0, pc = 1, b = 0, callx = 0, done = false, out = {{}}, total = 0, tp = TP, md = (fi * {} + {}) % {}}}",
+		"{{{}, pc = 1, b = 0, callx = nil, done = nil, vd = vd, cs = CS, tp = TP, md = (fi * {} + {}) % {}}}",
 		env_names.join(", "), micro_route_step, micro_route_base, n_micro_shards
 	);
 	let hfrag: String;
@@ -2265,16 +2305,21 @@ pub fn generate(
 				micro_fill.push_str(&micro_variant_assign(&v));
 				post_variants.push(v);
 			}
+			let family = ci + 1;
+			let z: Vec<String> = (0..7).map(|i| call_slot(i, family)).collect();
 			let post_route = micro_variant_dispatch(
 				&post_variants,
-				"E,E.oa,E.ob,E.oc2,E.od",
+				&format!("E,{},{},{},{}", z[3], z[4], z[5], z[6]),
 				",_r,_r.n",
 				rng,
 			);
 			let post_tail = chain_epilogue(rng, &wk);
 			micro_fill.push_str(&format!(
-				"CX{executor}=function(E) local _r=E.tp(E.cf(E[21](E.ca,1,E.cn))) {route}; {tail} end ",
-				executor = ci + 1,
+				"CX{executor}=function(E) local _r=E.tp({func}(E[21]({args},1,{nargs}))) {route}; for _ci=25,41 do E[_ci]=nil end {tail} end ",
+				executor = family,
+				func = z[0],
+				args = z[1],
+				nargs = z[2],
 				route = post_route,
 				tail = post_tail,
 			));
@@ -2572,6 +2617,10 @@ pub fn generate(
 		let window_block_e = obf_num(window_block as u64, rng);
 		manifest_key("WINDOW_RESEED_M", window_mul as u64);
 		manifest_key("WINDOW_RESEED_B", window_block as u64);
+		// H4-7B: prime-17 slot permutation for Call/Return frame protocols.
+		let call_slot_step = ((rekey[0] as u64 + tag_step as u64 + chaff_fn as u64) % 16 + 1) as u8;
+		let call_slot_step_e = obf_num(call_slot_step as u64, rng);
+		manifest_key("CALL_SLOT_STEP", call_slot_step as u64);
 		// H4-7A1: closure metadata uses a separate per-function family.  The
 		// encoded prototype keeps only masked parameter/upvalue descriptors;
 		// makefn reconstructs one descriptor at a time when a closure is born.
@@ -3027,7 +3076,7 @@ pub fn generate(
 		// 但不再打包为 RT 源码碎片。五个离散 closure 由一次性数值协议
 		// 装配；newE 仍只解入口块，块缓存挂帧（E.bch），帧退即毁。
 		let rt_newe = format!(
-			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
+			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    local vd=(QF[fi]*NQ+fi*NI+MM)%65521\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
 		);
 		// ㉚ B-2: 链终值 (H1, H2) + 归零常量 (CB*/CC*) 以工厂参数入密。
@@ -3123,7 +3172,7 @@ pub fn generate(
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
 			qf = qf_expected,
@@ -3132,6 +3181,7 @@ pub fn generate(
 			bc = block_cache_cap_e,
 			wm = window_mul_e,
 			wb = window_block_e,
+			cs = call_slot_step_e,
 			fq = dialect_e[0],
 			fi = dialect_e[1],
 			kq = dialect_e[2],
@@ -3200,16 +3250,6 @@ pub fn generate(
 			std::collections::HashMap::new();
 		let mut frag_used: std::collections::HashSet<String> =
 			std::collections::HashSet::new();
-		// H4-2B: these call-protocol fields now live exclusively in static
-		// microcode, so no source fragment would otherwise introduce them into
-		// frag_map. Pre-seed their randomized names before sanitizing BSS/RT;
-		// this also reserves the generated spellings and prevents a seed-specific
-		// collision such as static E.oa vs sanitized E.bdec -> `oa`.
-		for field in ["cf", "ca", "cn", "oa", "ob", "oc2", "od", "ctt", "cnt"] {
-			let mapped = sanitize_name(rng, &frag_reserved, &frag_used);
-			frag_used.insert(mapped.clone());
-			frag_map.insert(field.to_string(), mapped);
-		}
 		// BSS is static but must participate in the same per-build identifier/
 		// field dialect as RT. Sanitize it first so RT adopts its field map; the
 		// resulting closure is passed once through the vault and then destroyed.
