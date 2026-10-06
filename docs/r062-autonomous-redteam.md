@@ -63,6 +63,12 @@ table-driven mod expression：52 个
 
 若要提高成本，可研究按站点分散字节物化原语（而不是一条统一 `char` 路径）；这只能让单 API hook 少收一部分值，不能阻止完整动态跟踪，也可能引入新的固定汇合点。
 
+### P1-D：入口 `setmetatable` 可透明截获整个模块表
+
+R062 产物从 `setmetatable({...}, {}):<entry>(...)` 开始。用 loader 控制的环境把 `setmetatable` 换成“先浅拷贝参数表、再调用原函数”的透明 wrapper，样本仍正确运行（返回 `1713`），guard 未报错；wrapper 在首次入口时已捕获 **216 个字段**，其中 93 个数字键、187 个函数值和 16 个字符串值。复现脚本：`luraph-rs/tests/r062_root_table_hook_probe.sh`。它不直接解出全部用户字节码，但让攻击者在启动前一次性拿到整个模块入口表及其中的闭包/载体字段，是比逐点插桩便宜得多的动态观察点。
+
+这依赖攻击者能控制 chunk 的加载环境（如自建 loader/executor）；普通 Luau 全局表只读不等于加载环境不可控。潜在修法是研究不经过单一全局 `setmetatable` 的入口构造/入口路由，但会改变 v15 外形且必须保留 chunk return 与环境绑定语义，需先审批。
+
 ### P2-A：固定 seed 下字符串层跨构建可复现
 
 site 参数由 `Rng::new(seed ^ domain_tag)` 按 AST 遍历顺序抽取。固定 `--seed` 是支持的可复现功能；同 seed、同 AST 会重复相同的 site 参数与密文。默认的 time seed 通常会变化，但客户若长期固定 seed，会降低字符串层的跨构建差异。
