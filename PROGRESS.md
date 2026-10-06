@@ -1,6 +1,8 @@
 # 项目进度（PROGRESS）
 
-> 最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
+> 2026-10-06 R064 后续：修复 v15 interpreter 在 executor 保护字符串/表元表时的索引兼容性；新增 protected-meta 回归，`run_tests` 169/169、`run_presets` 370/370、多种子 0 失败。深审记录 `docs/r064-deep-self-audit.md`；显式尾部 nil 的变参计数仍待修。
+>
+> 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
 > （真实 Luraph v15.0 产物 171.7KB）做全面深度破解。穿透全部旧墙：
 > ①环境绑定——chunk 顶端 `local` 遮蔽 + 万能自生长桩（不碰只读 `_G`），
 > 样本在 Luau CLI 完整运行；②CPS 分散解码——不解 150 微 handler，

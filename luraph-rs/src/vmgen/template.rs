@@ -739,7 +739,7 @@ fn micro_post_call_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 
 fn micro_binary_body(expr: &str, meta: &str, lit: &MicroLits) -> String {
 	format!(
-		"local u,w=T[1],T[2] if TYP(u)=={number} and TYP(w)=={number} then T[x]={expr} else local f=mget(u,{meta}) or mget(w,{meta}) if f then T[x]=f(u,w) else ERR({msg}..TYP(u)..{value},0) end end",
+		"local u,w=T[1],T[2] if TYP(u)=={number} and TYP(w)=={number} then T[x]={expr} else local f,h=mget(u,{meta}) if not f then local g,h2=mget(w,{meta}) f=g h=h or h2 end if f then T[x]=f(u,w) elseif h then T[x]={expr} else ERR({msg}..TYP(u)..{value},0) end end",
 		number = lit.number,
 		meta = meta,
 		msg = lit.arith_msg,
@@ -750,7 +750,7 @@ fn micro_binary_body(expr: &str, meta: &str, lit: &MicroLits) -> String {
 fn micro_compare_body(native: &str, meta: &str, swapped: bool, lit: &MicroLits) -> String {
 	let call = if swapped { "f(w,u)" } else { "f(u,w)" };
 	format!(
-		"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} and tw=={number}) or (tu=={string} and tw=={string}) then T[x]={native} else local f=mget(u,{meta}) or mget(w,{meta}) if f then T[x]={call} else ERR({msg}..tu..{with_}..tw,0) end end",
+		"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} and tw=={number}) or (tu=={string} and tw=={string}) then T[x]={native} else local f,h=mget(u,{meta}) if not f then local g,h2=mget(w,{meta}) f=g h=h or h2 end if f then T[x]={call} elseif h then T[x]={native} else ERR({msg}..tu..{with_}..tw,0) end end",
 		number = lit.number,
 		string = lit.string,
 		meta = meta,
@@ -800,7 +800,7 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_POW => micro_binary_body("u^w", &lit.pow, lit),
 		M_IDIV => "T[x] = FLOOR(T[1] / T[2])".to_string(),
 		M_UNM => format!(
-			"local u=T[y] if TYP(u)=={number} then T[x]=-u else local f=mget(u,{meta}) if f then T[x]=f(u) else ERR({msg}..TYP(u)..{value},0) end end",
+			"local u=T[y] if TYP(u)=={number} then T[x]=-u else local f,hidden=mget(u,{meta}) if f then T[x]=f(u) elseif hidden then T[x]=-u else ERR({msg}..TYP(u)..{value},0) end end",
 			number = lit.number, meta = lit.unm, msg = lit.arith_msg, value = lit.value_msg,
 		),
 		M_LEN => format!(
@@ -808,7 +808,7 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 			meta = lit.len,
 		),
 		M_CONCAT => format!(
-			"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} or tu=={string}) and (tw=={number} or tw=={string}) then T[x]=u..w else local f=mget(u,{meta}) or mget(w,{meta}) if f then T[x]=f(u,w) else ERR({msg}..tu..{value},0) end end",
+			"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} or tu=={string}) and (tw=={number} or tw=={string}) then T[x]=u..w else local f,h=mget(u,{meta}) if not f then local g,h2=mget(w,{meta}) f=g h=h or h2 end if f then T[x]=f(u,w) elseif h then T[x]=u..w else ERR({msg}..tu..{value},0) end end",
 			number = lit.number, string = lit.string, meta = lit.concat,
 			msg = lit.concat_msg, value = lit.value_msg,
 		),
@@ -830,12 +830,12 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_VARG_TABN => "for j=1,vargc do T[1][T[2]+j]=vargs[1+((j+E.vd-1)%vargc)] end T[2]=T[2]+vargc".to_string(),
 		M_CLOSURE => "V[O[x]+1]=makefn(E.bt[O[y]],V,ups,S)".to_string(),
 		M_GET_TABLE => format!(
-			"local o,j=T[1],T[2] local r if TYP(o)=={table_} then r=RGET(o,j) if r==nil then local f=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] end end else local mt=GMT(o) if mt and mt[{index}]~=nil then local f=mt[{index}] if TYP(f)=={function} then r=f(o,j) else r=f[j] end else ERR({msg}..TYP(o)..{value},0) end end T[x]=r",
-			table_ = lit.table_, index = lit.index, function = lit.function,
+			"local o,j=T[1],T[2] local r if TYP(o)=={string} then r=o[j] elseif TYP(o)=={table_} then r=RGET(o,j) if r==nil then local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] end end else local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] else ERR({msg}..TYP(o)..{value},0) end end T[x]=r",
+			table_ = lit.table_, string = lit.string, index = lit.index, function = lit.function,
 			msg = lit.index_msg, value = lit.value_msg,
 		),
 		M_SET_TABLE => format!(
-			"local o,j,w=T[1],T[2],T[3] if TYP(o)~={table_} then local mt=GMT(o) local f=mt and mt[{newindex}] if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) else ERR({msg}..TYP(o)..{value},0) end else if RGET(o,j)==nil then local f=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) else RSET(o,j,w) end else RSET(o,j,w) end end",
+			"local o,j,w=T[1],T[2],T[3] if TYP(o)~={table_} then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) elseif hidden then o[j]=w else ERR({msg}..TYP(o)..{value},0) end else if RGET(o,j)==nil then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) elseif hidden then o[j]=w else RSET(o,j,w) end else RSET(o,j,w) end end",
 			table_ = lit.table_, newindex = lit.newindex, function = lit.function,
 			msg = lit.index_msg, value = lit.value_msg,
 		),
@@ -3916,17 +3916,24 @@ pub fn generate(
 	let rt_helpers = format!(
 		"local function mget(x, k)
     local mt = GMT(x)
-    if mt then return mt[k] end
-    return nil
+    if TYP(mt) == {table} then return mt[k], false end
+    return nil, mt ~= nil
   end
   local function resolve_call(f)
     if TYP(f) == {function} then return f, false end
     local mt = GMT(f)
-    local cc = mt and mt[{call}]
-    if TYP(cc) == {function} then return cc, true end
-    if TYP(cc) == {table} then
-      local cf = cc[f]
-      if TYP(cf) == {function} then return cf, false end
+    if TYP(mt) == {table} then
+      local cc = mt[{call}]
+      if TYP(cc) == {function} then return cc, true end
+      if TYP(cc) == {table} then
+        local cf = cc[f]
+        if TYP(cf) == {function} then return cf, false end
+      end
+    elseif mt ~= nil then
+      -- A protected __metatable value is intentionally opaque. Keep the
+      -- object callable through Luau's native path instead of indexing the
+      -- protection sentinel as if it were the real metatable.
+      return f, false
     end
     ERR({callmsg} .. TYP(f) .. {value}, 0)
   end

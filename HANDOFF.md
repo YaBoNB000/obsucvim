@@ -264,6 +264,8 @@
 > 历史节点：2026-08-29（v15 阶段 A 操作数散布 + 安全项收官；官方 204
 > + 预设 405 + 多 seed 5×8 全绿）
 
+> **R064 后续（2026-10-06）**：`template.rs` 的 `mget`/`M_GET_TABLE`/`M_SET_TABLE` 与相关 operator/call 路径现会处理 `getmetatable` 返回的非表保护标记；新增 `tests/protected_meta_compat_test.sh` 覆盖字符串方法和受保护的 `__index/__newindex/__call` 等语义。`run_tests` 169/169、`run_presets` 370/370、多种子 0 失败。样本与边界见 `docs/r064-deep-self-audit.md`。仍待修复：显式尾部 nil 的 vararg 数量不能用 `#all` 计算。
+
 ---
 
 ## 1. 项目是什么

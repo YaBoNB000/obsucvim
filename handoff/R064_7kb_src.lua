@@ -143,7 +143,7 @@ local function summarize(records)
         local h = fold_text(wire, row[5])
         local state, callno, argc = meter(row[4], row[1], row[2], h, row[3])
         total = (total + h + state + callno * argc + i * row[4]) % MOD
-        local prefix = string.sub(row[2], 1, 2)
+        local prefix = row[2]:sub(1, 2)
         histogram[prefix] = histogram[prefix] + 1
         ring.push(h)
         encoded[#encoded + 1] = wire

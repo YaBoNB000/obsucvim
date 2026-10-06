@@ -11,6 +11,12 @@
 开，示例文件为单行紧凑形态）。生成命令：`bash tests/gen_examples.sh`
 （固定 `--seed 42 --preset v15`，同构建字节级确定）。
 
+**R064 示例/兼容性回归（2026-10-06）**：`handoff/R064_7kb_src.lua`
+（约 7KB）与 `handoff/R064_7kb_target.luau.lua`（seed 64066）构成单独的
+v15 示例对。源码保留字符串方法语法 `row[2]:sub(...)`，并通过
+`tests/protected_meta_compat_test.sh` 在字符串/表元表被保护的环境模拟下
+验证 native fallback。
+
 **增量55（2026-09-23，自研防绕过——HBOOT 装配面收窄）**：`HB =
 table.concat(MH)` 收进 HBOOT 调用的 PCAL 闭包（boot 级零具名装配语句），
 调用后 `MH`/`HB` 即焚——R025 式可见层锚点失去 boot 级目标。绑定态守卫与

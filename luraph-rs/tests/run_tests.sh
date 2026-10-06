@@ -184,6 +184,11 @@ source "$ROOT/tests/proto_enc_test.sh"
 # required internal metatables; retain hook arguments and inspect live tables.
 bash "$ROOT/tests/r063_entry_table_hook_regression.sh"
 
+# Protected metatables may make getmetatable(string/table) return a sentinel
+# string. String methods and hidden __index/__newindex must still follow native
+# Luau indexing semantics instead of indexing the protection sentinel.
+bash "$ROOT/tests/protected_meta_compat_test.sh"
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then
