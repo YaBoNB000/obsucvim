@@ -164,196 +164,94 @@ fn obf_num(n: u64, rng: &mut Rng) -> String {
 
 use super::manifest_key;
 
-/// 增量⑩ (防静态, 报告突破口 #5/#2) + 增量⑬ (对抗 R002 符号求值):
-/// key material is never emitted as a literal AND no key has a closed
-/// arithmetic form. R002 folded every `(A*B+C)%2^28` fragment recipe
-/// offline, so increment ⑬ moves assembly through per-build random
-/// LOOKUP TABLES: each key is a sum/product of entries from four baked
-/// tables (KA/KB/KC random 28-bit values, KM small multipliers). The
-/// tables sit in the output as plain number arrays; recovering a key
-/// now requires data-flow tracing from the use site through obfuscated
-/// indexes into the right tables — no pattern to recognize, no formula
-/// to fold. Recipes (drawn per key):
-///
-///   add2     `(KA[a] + KB[b]) % 2^28`
-///   add3     `(KA[a] + KB[b] + KC[c]) % 2^28`
-///   affine   `(KA[a] * KM[m] + KC[c]) % 2^28`   (product < 2^45, exact)
-///   anchored `(KA[a] + KM[m] * <anchor>) % 2^28` (anchor = a boot-time
-///             table length, e.g. #APH / #hqi)
-///
-/// Indexes go through obf_num as before. All arithmetic stays exact in
-/// doubles.
+/// R063 KeyEmitter redesign: key shares are masked by a build-known digest
+/// of the carrier-length vector, then unmasked inline from the runtime FN
+/// table (or its sanitized HBoot parameter). Each use site has an independent
+/// digest dialect and no shared clear-key table/getter. This raises static
+/// extraction cost; it is not
+/// cryptographic secrecy because the carrier and decoder are client-side.
 const KEY_MOD: i64 = 268_435_456; // 2^28
-const KT_ENTRIES: usize = 96;
 
-struct KeyEmitter {
-	/// table values; None = still free (filled randomly at emission)
-	ka: Vec<Option<i64>>,
-	kb: Vec<Option<i64>>,
-	kc: Vec<Option<i64>>,
-	km: Vec<Option<i64>>,
-	/// shuffled free 1-based positions per table
-	pa: Vec<usize>,
-	pb: Vec<usize>,
-	pc: Vec<usize>,
-	pm: Vec<usize>,
+struct KeyEmitter<'a> {
+	carrier_lengths: &'a [usize],
 }
 
-impl KeyEmitter {
-	fn new(rng: &mut Rng) -> KeyEmitter {
-		let mut mk = || {
-			let mut p: Vec<usize> = (1..=KT_ENTRIES).collect();
-			rng.shuffle(&mut p);
-			p
-		};
-		KeyEmitter {
-			ka: vec![None; KT_ENTRIES],
-			kb: vec![None; KT_ENTRIES],
-			kc: vec![None; KT_ENTRIES],
-			km: vec![None; KT_ENTRIES],
-			pa: mk(),
-			pb: mk(),
-			pc: mk(),
-			pm: mk(),
-		}
+impl<'a> KeyEmitter<'a> {
+	fn new(carrier_lengths: &'a [usize]) -> KeyEmitter<'a> {
+		assert!(!carrier_lengths.is_empty(), "KeyEmitter needs the main carrier");
+		KeyEmitter { carrier_lengths }
 	}
-	/// Reserve one entry in `tab` and store `v`; returns its 1-based
-	/// position (the recipe re-obfuscates the index on emission).
-	fn put(&mut self, tab: u8, v: i64) -> usize {
-		let (vals, poss) = match tab {
-			0 => (&mut self.ka, &mut self.pa),
-			1 => (&mut self.kb, &mut self.pb),
-			2 => (&mut self.kc, &mut self.pc),
-			_ => (&mut self.km, &mut self.pm),
-		};
-		let pos = poss.pop().expect("key-table exhaustion");
-		vals[pos - 1] = Some(v);
-		pos
-	}
-	/// Assembly expression that evaluates to `key` at runtime.
-	/// `anchor` = (Lua expression, its build-known runtime value).
+
+	/// Default VM-scope form; `FN` is the existing table of carrier strings
+	/// supplied to the VM. Optional anchors are real runtime values and are
+	/// included in the digest rather than algebraically cancelled.
 	fn key_expr(
 		&mut self,
 		key: i64,
 		anchor: Option<(&str, i64)>,
 		rng: &mut Rng,
 	) -> String {
-		if std::env::var("LURAPH_KEY_DBG").is_ok() {
-			return format!("{}", key);
-		}
-		let idx = |v: usize, rng: &mut Rng| obf_num(v as u64, rng);
-		let form = if anchor.is_some() { rng.int(0, 3) } else { rng.int(0, 2) };
-		match form {
-			0 => {
-				// add2: K = (A + B) % M
-				let a = rng.int(1_048_576, KEY_MOD - 1);
-				let b = (key - a).rem_euclid(KEY_MOD);
-				let ia = self.put(0, a);
-				let ib = self.put(1, b);
-				format!(
-					"((KA[{}] + KB[{}]) % {})",
-					idx(ia, rng),
-					idx(ib, rng),
-					KEY_MOD
-				)
-			}
-			1 => {
-				// add3: K = (A + B + C) % M
-				let a = rng.int(1_048_576, KEY_MOD - 1);
-				let b = rng.int(1_048_576, KEY_MOD - 1);
-				let c = (key - a - b).rem_euclid(KEY_MOD);
-				let ia = self.put(0, a);
-				let ib = self.put(1, b);
-				let ic = self.put(2, c);
-				format!(
-					"((KA[{}] + KB[{}] + KC[{}]) % {})",
-					idx(ia, rng),
-					idx(ib, rng),
-					idx(ic, rng),
-					KEY_MOD
-				)
-			}
-			2 => {
-				// affine: K = (A*m + C) % M (m small, product exact)
-				let a = rng.int(1_048_576, KEY_MOD - 1);
-				let m = rng.int(1, 16383) | 1;
-				let c = (key - a * m).rem_euclid(KEY_MOD);
-				let ia = self.put(0, a);
-				let im = self.put(3, m);
-				let ic = self.put(2, c);
-				format!(
-					"((KA[{}] * KM[{}] + KC[{}]) % {})",
-					idx(ia, rng),
-					idx(im, rng),
-					idx(ic, rng),
-					KEY_MOD
-				)
-			}
-			_ => {
-				// anchored: K = (A + m*anchor) % M
-				let (ae, av) = anchor.unwrap();
-				let m = rng.int(1, 999);
-				let a = (key - m * av).rem_euclid(KEY_MOD);
-				let ia = self.put(0, a);
-				let im = self.put(3, m);
-				format!(
-					"((KA[{}] + KM[{}] * {}) % {})",
-					idx(ia, rng),
-					idx(im, rng),
-					ae,
-					KEY_MOD
-				)
-			}
-		}
+		self.key_expr_with_data(key, anchor, "FN", rng)
 	}
-	/// 增量⑬ (R002 §3.37 — dead-stage proof): an expression that is 0
-	/// at runtime but PROVABLY so only by fetching three table values:
-	/// the reserved KA/KB/KC entries sum to 0 mod 7 by construction.
+
+	/// Emit a site-local hash/unmask expression. `data_expr` names the runtime
+	/// carrier-length array used both by the builder-side digest and this
+	/// decoder. Sanitized HBoot receives that existing array as `FN_`.
+	fn key_expr_with_data(
+		&mut self,
+		key: i64,
+		anchor: Option<(&str, i64)>,
+		data_expr: &str,
+		rng: &mut Rng,
+	) -> String {
+		let key = key.rem_euclid(KEY_MOD);
+		let anchor_value = anchor.map(|(_, value)| value).unwrap_or(0).rem_euclid(KEY_MOD);
+		let anchor_expr = anchor.map(|(expr, _)| expr).unwrap_or("0");
+
+		// Lua/Luau doubles stay exact here: state*mul < 2^44; carrier
+		// lengths and index*step remain far below the 2^53 integer limit.
+		let (seed, mul, step, bias, encoded) = loop {
+			let seed = rng.int(0, KEY_MOD - 1);
+			let mul = rng.int(257, 65_535);
+			let step = rng.int(1, 65_535);
+			let bias = rng.int(0, KEY_MOD - 1);
+			let mut state = (seed + anchor_value) % KEY_MOD;
+			for (index, &length) in self.carrier_lengths.iter().enumerate() {
+				state = (state * mul
+					+ length as i64
+					+ (index as i64 + 1) * step
+					+ bias)
+					% KEY_MOD;
+			}
+			let encoded = (key - state).rem_euclid(KEY_MOD);
+			// Avoid identity masking and direct key-number coincidences.
+			if state != 0
+				&& encoded != key
+				&& seed != key
+				&& mul != key
+				&& step != key
+				&& bias != key
+			{
+				break (seed, mul, step, bias, encoded);
+			}
+		};
+
+		format!(
+			"(function(d) local s=({seed}+({anchor_expr}))%{modulus} for i=1,#d do s=(s*{mul}+#d[i]+i*{step}+{bias})%{modulus} end return ({encoded}+s)%{modulus} end)({data})",
+			seed = seed,
+			anchor_expr = anchor_expr,
+			modulus = KEY_MOD,
+			mul = mul,
+			step = step,
+			bias = bias,
+			encoded = encoded,
+			data = data_expr,
+		)
+	}
+
+	/// A zero-valued decoy uses the same per-site carrier binding.
 	fn dead_zero(&mut self, rng: &mut Rng) -> String {
-		let a = rng.int(1_048_576, KEY_MOD - 1);
-		let b = rng.int(1_048_576, KEY_MOD - 1);
-		let base = rng.int(1_048_576, KEY_MOD - 1);
-		let fix = (7 - (a + b + base).rem_euclid(7)) % 7;
-		let c = base + fix;
-		let ia = self.put(0, a);
-		let ib = self.put(1, b);
-		let ic = self.put(2, c);
-		format!(
-			"((KA[{}] + KB[{}] + KC[{}]) % 7)",
-			obf_num(ia as u64, rng),
-			obf_num(ib as u64, rng),
-			obf_num(ic as u64, rng)
-		)
-	}
-	/// Emit the four lookup tables (free entries filled with random
-	/// camouflage values).
-	fn block(mut self, rng: &mut Rng) -> String {
-		let fill = |vals: &mut Vec<Option<i64>>, lo: i64, hi: i64, rng: &mut Rng| {
-			for v in vals.iter_mut() {
-				if v.is_none() {
-					*v = Some(rng.int(lo, hi));
-				}
-			}
-		};
-		fill(&mut self.ka, 1_048_576, KEY_MOD - 1, rng);
-		fill(&mut self.kb, 1_048_576, KEY_MOD - 1, rng);
-		fill(&mut self.kc, 1_048_576, KEY_MOD - 1, rng);
-		fill(&mut self.km, 1, 16383, rng);
-		let emit = |name: &str, vals: &Vec<Option<i64>>| {
-			let body = vals
-				.iter()
-				.map(|v| v.unwrap().to_string())
-				.collect::<Vec<_>>()
-				.join(", ");
-			format!("local {} = {{{}}}", name, body)
-		};
-		format!(
-			"{}\n  {}\n  {}\n  {}\n  ",
-			emit("KA", &self.ka),
-			emit("KB", &self.kb),
-			emit("KC", &self.kc),
-			emit("KM", &self.km)
-		)
+		self.key_expr(0, None, rng)
 	}
 }
 
@@ -1249,6 +1147,7 @@ pub fn generate(
 	slot_perms: &[[u8; 4]],
 	lane_dialect: (u8, u8),
 	carrier: &Carrier,
+	carrier_lengths: &[usize],
 	rng: &mut Rng,
 	n_fns: usize,
 	v15: bool,
@@ -1300,7 +1199,7 @@ pub fn generate(
 	// alias becomes NOPA = (p1 + p2) % 256 (no literal alias byte).
 	// 增量⑩: key-fragment emitter — every key constant below is drawn
 	// through ke.key_expr (no bare key literal survives in the output).
-	let mut ke = KeyEmitter::new(rng);
+	let mut ke = KeyEmitter::new(carrier_lengths);
 	// H4-4 shared chaff expectation. Compute it before micro descriptors so
 	// the same compiler-side fold can key operand/block/constant/micro faces.
 	let mut qf_checksum: i64 = 0;
@@ -1754,13 +1653,8 @@ pub fn generate(
 		// 增量⑫ (防静态, 报告突破口 #14): the dead-dispatch decoy used a
 		// literal `DF = 0`, so static dead-code elimination proved the
 		// loop unreachable and discarded it (zero-reference decoy spotted).
-		// 增量⑬ (对抗 R002 §3.37): the attacker proved `ck % 1 == 0`
-		// algebraically and discarded the whole decoy stage. Derive DF
-		// from the key-lookup tables instead: three reserved KA/KB/KC
-		// entries sum to 0 mod 7 BY CONSTRUCTION, so DF is still 0 at
-		// runtime, but proving it dead now requires fetching those table
-		// values through obfuscated indexes — no universal identity to
-		// fold away.
+		// R063: DF is assembled from a per-site digest of carrier lengths,
+		// not from a shared key-table entry.
 		let df_e = ke.dead_zero(rng);
 		sm.push_str(&format!("  local DA = {{}}\n  local DP = 1\n  local DF = {}\n  while DF > 0 do\n    local f = DA[DP]\n    if f >= 4 then\n      if f < 6 then\n        if f ~= 5 then DF = 0 else DF = 0 end\n      else DF = 0 end\n    elseif f < 2 then DF = 0\n    else DF = 0 end\n", df_e));
 		// P3c: decoy fetch points — the sample ships several dispatch
@@ -1781,11 +1675,6 @@ pub fn generate(
 			));
 		}
 		sm.push_str("    DP = DP + 1\n  end\n");
-		// 存量缺陷清理（R007 回合）：boot 完成后钥匙表与解析钥匙已无
-		// 引用（DF 诱饵在本行之前求值完毕），全部抹除——内存转储拿不
-		// 到任何钥匙装配材料。（注意：这些都是 VM 体局部，mangle 后
-		// 名字随机；nil 赋值经管线无损。）
-		sm.push_str("  KA = nil; KB = nil; KC = nil; KM = nil\n");
 		sm.push_str("  CKM = nil; CKC = nil; BKM = nil; BKC = nil; BSEED = nil; BSTEP = nil\n");
 		sm.push_str("  OCt = nil\n");
 		sm
@@ -3331,11 +3220,10 @@ pub fn generate(
 			&frag_reserved,
 			&mut frag_used,
 		);
-		// KeyEmitter expressions use outer KA/KB/KC/KM locals; evaluating them
-		// inside BSS would be unsafe because BSS has same-spelled key parameters.
-		// Materialize two outer lexical values first, then let the one-shot BSS
-		// closure capture those values. Long sentinel names cannot collide with
-		// sanitize_name's 2..4-character identifiers and disappear in final mangle.
+		// Key expressions are evaluated in this outer VM scope before the
+		// sanitized one-shot BSS closure is created. Materialize the two phase
+		// values here and pass them into that closure through collision-proof
+		// sentinels; do not let the fragment resolve them as globals.
 		bss_static_src = bss_static_src
 			.replace("BSSKPX", "_BSSPKX_")
 			.replace("BSSKCX", "_BSSPCX_");
@@ -3380,8 +3268,8 @@ pub fn generate(
 		// instruction/constant key constraints.
 		let sh_iv1 = rng.int(0, SH_M1 as i64 - 1) as u64;
 		let sh_iv2 = rng.int(0, SH_M2 as i64 - 1) as u64;
-		let sh_iv1_e = ke.key_expr(sh_iv1 as i64, None, rng);
-		let sh_iv2_e = ke.key_expr(sh_iv2 as i64, None, rng);
+		let sh_iv1_e = ke.key_expr_with_data(sh_iv1 as i64, None, "FN_", rng);
+		let sh_iv2_e = ke.key_expr_with_data(sh_iv2 as i64, None, "FN_", rng);
 		manifest_key("CHAIN_IV1", sh_iv1);
 		manifest_key("CHAIN_IV2", sh_iv2);
 		// H4-3 static guard is embedded in the randomized HBOOT closure.
@@ -3412,13 +3300,13 @@ pub fn generate(
         // 到语义局部名。R028/R029 那种「第 N 参 + 固定名字」双重模板都会
         // 失效。末两项仍是 vault getter/nonce，但其位置与名字均不可复用。
         let shell_params: Vec<&str> = vec![
-            "AL", "BYTE", "CHAR", "FLR", "SUB", "KA", "KB", "KC", "KM", "EV",
+            "AL", "BYTE", "CHAR", "FLR", "SUB", "CARR1_", "CARR2_", "CARR3_", "CARR4_", "EV",
             "FN_", "NOPA_", "TK_", "DC1", "R16", "CKM_", "CKC_", "BKM_",
             "BKC_", "BSEED_", "BSTEP_", "TYP_", "TSTR_", "GET_", "NONCE_",
         ];
         let shell_args: Vec<String> = {
             let mut v: Vec<String> = vec![
-                "AL", "BYTE", "CHAR", "FLR", "SUB", "KA", "KB", "KC", "KM", "EV",
+                "AL", "BYTE", "CHAR", "FLR", "SUB", "FN", "FN", "FN", "FN", "EV",
                 "FN", "NOPA", "TK", "decarrier", "r16", "CKM", "CKC", "BKM",
                 "BKC", "BSEED", "BSTEP", "TYP", "TSTR",
             ].into_iter().map(|x| x.to_string()).collect();
@@ -3479,8 +3367,8 @@ pub fn generate(
 			hb_phase_checksum = (hb_phase_checksum * 257 + v as i64) % KEY_MOD;
 		}
 		let hb_phase_poison = rng.int(1, KEY_MOD - 1);
-		let hb_phase_checksum_e = ke.key_expr(hb_phase_checksum, None, rng);
-		let hb_phase_poison_e = ke.key_expr(hb_phase_poison, None, rng);
+		let hb_phase_checksum_e = ke.key_expr_with_data(hb_phase_checksum, None, "FN_", rng);
+		let hb_phase_poison_e = ke.key_expr_with_data(hb_phase_poison, None, "FN_", rng);
 		manifest_key("HBOOT_PHASE_CK", hb_phase_checksum as u64);
 		manifest_key("HBOOT_PHASE_POISON", hb_phase_poison as u64);
 		let hb_factory =
@@ -4052,9 +3940,7 @@ pub fn generate(
 	);
 	let ms_block = if v15 { pool.boot_block() } else { String::new() };
 
-	// 增量⑩: the key-fragment table + all fragment writes land at the
-	// very top of the VM body (before the first key use in oc_boot).
-	let kf_block = ke.block(rng);
+	// R063: key sites decode independently from the carrier-length context.
 	// 增量⑱ (输入绑定): bound output gives the VM a vararg tail — the
 	// ㊴ (激活门退役): 入口签名 = 载体参数 + 程序自身变长参（历史
 	// 未绑定形态，字节级保持）。
@@ -4111,10 +3997,12 @@ pub fn generate(
 			run_loop = run_loop,
 		)
 	};
+	// R063 ordering invariant: the carrier vector must exist before OC boot,
+	// because every KeyEmitter expression consumes its live length vector.
 	format!(
 		r#"local VM = function({vm_params})
-  {kf_block}{oc_table}
   local FN = {{{params}}}
+  {oc_table}
   local PF = {{}}
   {p_fill}  {prim_unpack}
   {ms_block}{helpers}
@@ -4140,7 +4028,6 @@ end
 	entry_tail = entry_tail,
 	run_block = run_block,
 	params = params,
-		kf_block = kf_block,
 		oc_table = oc_table,
 		p_fill = p_fill,
 		prim_unpack = prim_unpack,

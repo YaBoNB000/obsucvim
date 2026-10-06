@@ -478,12 +478,21 @@ fn main() -> ExitCode {
 			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program = vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15);
 			let n = program.fns.len();
+			let carrier_bytes: Vec<Vec<u8>> = program
+				.fns
+				.iter()
+				.map(|b| program.carrier.encode(b))
+				.collect();
+			// Keep this order aligned with template FN = {F1, F2, ...}; R063
+			// uses it only to build the per-site carrier-length digest masks.
+			let carrier_lengths: Vec<usize> = carrier_bytes.iter().map(Vec::len).collect();
 			let tsrc = vmgen::template::generate(
 				&program.opmap,
 				&program.slot_perm,
 				&program.slot_perms,
 				(program.lane_base, program.lane_step),
 				&program.carrier,
+				&carrier_lengths,
 				&mut rng,
 				n,
 				opts.do_v15,
@@ -519,11 +528,6 @@ fn main() -> ExitCode {
 				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
 			}
 			let mut tblock = parser::parse(&tsrc, luau).map_err(|e| e.to_string())?;
-			let carrier_bytes: Vec<Vec<u8>> = program
-				.fns
-				.iter()
-				.map(|b| program.carrier.encode(b))
-				.collect();
 			if opts.do_v15 {
 				// P3 increment 1 (Route A): CPS bootstrap scaffold. The
 				// interpreter block runs through the passes first (junk +
@@ -531,7 +535,7 @@ fn main() -> ExitCode {
 				// preset), gets printed, and is embedded inside the
 				// interpreter-definition handler of the scaffold:
 				//
-				//   return setmetatable({
+				//   local module = {
 				//     <P2 fields...>,
 				//     <init>  = initializer (return true, s0, nil×10),
 				//     <mul>/<mod> = arithmetic assistants (iL/vL shape),
@@ -543,7 +547,8 @@ fn main() -> ExitCode {
 				//     <loop>  = CPS loop: range tree + `continue` leaves,
 				//     <fc>    = top machine (FC shape): initializer +
 				//               while-flag loop + control-code return,
-				//   }, {}):<fc>()(...);
+				//   }
+				//   return module:<fc>()(...);
 				//
 				// Remaining P3 work: scaling the handler chain (splitting
 				// the decode pipeline) + inlining the execution loops
@@ -680,24 +685,38 @@ fn main() -> ExitCode {
 				fields.extend(scaffold_fields);
 				rng.shuffle(&mut fields);
 				let module = ast::Expr::Table { fields };
-				let shell = ast::Stmt::Return(vec![ast::Expr::Call {
-					func: Box::new(ast::Expr::Method {
-						obj: Box::new(ast::Expr::Call {
-							func: Box::new(ast::Expr::Ident {
-								name: "setmetatable".to_string(),
-								sym: None,
+				// Keep the aggregate module table in a lexical local instead of
+				// passing it through the loader-controlled global setmetatable.
+				// The old empty metatable had no dispatch role; v15 handlers use
+				// the table as their explicit `self` argument. Other setmetatable
+				// uses inside the VM (for example lazy constants) remain intact.
+				let root_reserved = std::collections::HashSet::<String>::new();
+				let root_name = mangle::gen_name(
+					&mut rng,
+					&mangle::reserved_set(&root_reserved),
+				);
+				let root_ref = || ast::Expr::Ident {
+					name: root_name.clone(),
+					sym: None,
+				};
+				let shell = ast::Block {
+					stmts: vec![
+						ast::Stmt::Local {
+							names: vec![root_name.clone()],
+							syms: vec![0],
+							values: vec![Some(module)],
+						},
+						ast::Stmt::Return(vec![ast::Expr::Call {
+							func: Box::new(ast::Expr::Method {
+								obj: Box::new(root_ref()),
+								name: fc,
+								args: Vec::new(),
 							}),
-							args: vec![
-								module,
-								ast::Expr::Table { fields: Vec::new() },
-							],
-						}),
-						name: fc,
-						args: Vec::new(),
-					}),
-					args: vec![ast::Expr::Vararg],
-				}]);
-				let mut shell_block = ast::Block { stmts: vec![shell] };
+							args: vec![ast::Expr::Vararg],
+						}]),
+					],
+				};
+				let mut shell_block = shell;
 				let shell_table = symtab::resolve(&mut shell_block);
 				(shell_block, shell_table, true)
 			} else {

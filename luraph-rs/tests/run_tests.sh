@@ -180,6 +180,10 @@ source "$ROOT/tests/charhook_test.sh"
 # ---------------------------------------------------------------
 source "$ROOT/tests/proto_enc_test.sh"
 
+# R063: replace the module-wide setmetatable capture point without removing
+# required internal metatables; retain hook arguments and inspect live tables.
+bash "$ROOT/tests/r063_entry_table_hook_regression.sh"
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

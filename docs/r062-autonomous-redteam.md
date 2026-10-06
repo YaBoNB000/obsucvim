@@ -73,7 +73,7 @@ table-driven mod expression：52 个
 
 R062 产物从 `setmetatable({...}, {}):<entry>(...)` 开始。用 loader 控制的环境把 `setmetatable` 换成“先浅拷贝参数表、再调用原函数”的透明 wrapper，样本仍正确运行（返回 `1713`），guard 未报错；wrapper 在首次入口时已捕获 **216 个字段**，其中 93 个数字键、187 个函数值和 16 个字符串值。复现脚本：`luraph-rs/tests/r062_root_table_hook_probe.sh`。它不直接解出全部用户字节码，但让攻击者在启动前一次性拿到整个模块入口表及其中的闭包/载体字段，是比逐点插桩便宜得多的动态观察点。
 
-这依赖攻击者能控制 chunk 的加载环境（如自建 loader/executor）；普通 Luau 全局表只读不等于加载环境不可控。潜在修法是研究不经过单一全局 `setmetatable` 的入口构造/入口路由，但会改变 v15 外形且必须保留 chunk return 与环境绑定语义，需先审批。
+这依赖攻击者能控制 chunk 的加载环境（如自建 loader/executor）；普通 Luau 全局表只读不等于加载环境不可控。R063 已把入口模块表保存在随机命名的词法局部变量中，并保留方法调用、chunk return 和其他必需的 `setmetatable` 行为；live-reference hook 回归未捕获到模块总表。它不阻止对其他运行时对象或局部状态的调试观察，且旧 R062 目标文件不变。
 
 ### P2-A：固定 seed 下字符串层跨构建可复现
 
@@ -83,8 +83,14 @@ site 参数由 `Rng::new(seed ^ domain_tag)` 按 AST 遍历顺序抽取。固定
 
 `r062_string_seal_experiment.sh` 的 canary grep 单独看只证明最终 Lua 源文本没有直接 canary；外层 VM carrier 本来就加密，不能独立证明 CDEC 之后的常量仍是密文。已新增 `sealed_literal_stays_ciphertext_after_proto_and_constant_unmasking` white-box 单测：解开测试原型 blob 与常量 keystream，确认常量区含 site ciphertext、没有原字节，并且编译器启用了 `LoadStr`。它验证的是 serializer/compiler 路径，不是完整输出的不可逆性，也不覆盖动态运行态。
 
-## 建议的下一项（R063 候选，尚未实施）
+## 建议的下一项（R064 候选，尚未实施）
 
 研究 per-build / per-proto 的 codec dialect，并让字节流参数真实消费函数/指令上下文；保留密文 C 池、不加入全局 getter、不加固定失败分支、不缓存全量明文。若可行，限制运算中间值低于 `2^53` 并用独立配对编码/解码测试证明等价。
 
 **风险与预期：**这仍只是增加跨构建工具复用成本；所有 decoder 与参数都在客户端，逆向当前构建仍可恢复。若仅随机替换 257/65521 常数，却留下相同固定结构，收益有限；若把 key 混进错误的中心状态或增加明文缓存，则会新造旁路/观察点。名称常量扩展还涉及全局和 metamethod 语义。因这些方案会改变默认 codec/读取协议与性能面，先列为审批候选，不在本阶段擅自启用。
+
+## R063 修补状态
+
+2026-10-06：入口表不再传入 loader 可替换的全局 `setmetatable`；VM 其余必需的元表调用保留。KeyEmitter 的旧明文表已改成逐使用点、绑定现有 carrier 长度的内联 digest，没有共享 key getter/缓存。R063 代码、自检边界和测试结果记录在 `docs/r063-remediation-status.md`。R062 已提交样本仍是历史产物，不会因生成器改动而自动变化。
+
+自检否决过一个更简单的“多分支算术式”候选：对 52 个表达式做分支折叠可恢复 51 个不同值，故没有保留。当前 carrier-length 方案仍非密码学保护，能够静态重建 carrier 长度或动态执行客户端的人仍可能复算 key。另，透明包装环境 `string.byte` 的实验在 R063 和旧 R062 上都能正常执行并观察 carrier 解析输入；这是原有动态解析面的条件性风险，不是 R063 新增的 `string.byte` 物化调用。旧结构指纹审计 D3 当前为 24/32，阈值未降低；在继续其他保护阶段前，需要处理该结构回归并进一步攻击 carrier-length 派生路径。
