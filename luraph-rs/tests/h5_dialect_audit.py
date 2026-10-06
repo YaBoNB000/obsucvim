@@ -117,7 +117,7 @@ def main():
             "local dp=(LB+i*LS)%24", "local dp=(LB+fi*LS)%24",
             "u[pm[ps]+1]=pv[ps]",
             "md = (fi * {} + {}) % {}", "E.md", "register_micro_variant",
-            "local td=(TB+i*TS)%720", "fi*{})%720", "tm[6]",
+            "local td=(TB+i*TS+", "local td=({}+fi*{}+", "tm[6]",
             "local frp=3+((qf*RQ+i*RI)%7)",
             "local frp=3+((qi*RQ+fi*RI)%7)",
             "(p-s0+1)%frp", "i%frp",

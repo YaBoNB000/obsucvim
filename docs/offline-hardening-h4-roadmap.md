@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4/H4-5/H4-6/H4-7 已闭环；Closure/调用/常量去中心化完成；内部 loader 0 次**
+> 状态：**H4 P0/H4-4/H4-5/H4-6/H4-7/H4-8 已闭环；数值完整性失败已分散投毒；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -1109,6 +1109,44 @@ H4-7 至此闭环。下一阶段为 H4-8 分散语义投毒；纯离线完整动
 
 篡改测试只能确认“结果不正确”，不能稳定定位第一触发点或得到统一异常文本。
 
+### H4-8 已落地（2026-10-06）
+
+分两条高风险提交边界完成：
+
+- **H4-8A / BSS fan-out**：BSS phase/carrier 校验差值进入独立 `BD` 数字 lane，
+  不再通过修改公共 `PB` 形成单点修复面；`BD` 按函数和索引分别改变 block
+  seed、constant tag/payload、child token、upvalue descriptor 与 `nparams`；
+- **H4-8B / RT fan-out**：源码链、常量链、QF checksum、RT phase checksum
+  分别保留为 `PZ1..PZ4`，micro checksum 使用独立 `MZD`；这些差值以不同
+  函数公式进入 block seed、constant tag/base 和 frame-local poison，不再先
+  汇入一个 `SLT/SLTC/SALT` 修复值；
+- 每帧根据函数方言生成 `2..16` 个 trampoline window 的延迟点；非零 poison
+  在该点改变 micro shard route，同时立即参与后续 block seed；
+- 计时守卫不再写固定 `+7777777`，而是生成函数相关的 frame-local 数值并把
+  激活点推迟 `2..8` 个 window；没有全局 `tampered` 布尔或统一 poison 函数；
+- HBOOT 环境/phase 差值拆为 `HD1/HD2` 两条 lane，分别进入 BSS 编码与两条
+  RT 约束。gross bootstrap/原生性认证失败仍沿用既有 guard 拒绝路径；本阶段
+  去中心化的是能够继续进入数值执行管线的完整性差值，不虚假宣称客户端不可跟踪。
+
+新增 `h8_poison_audit.py`，验证 BSS 六面 fan-out、RT 独立 PZ/MZD、函数级
+延迟、HBOOT 双 lane、固定 poison literal 消失、跨函数/跨构建 poison
+signature 分离及双 seed 运行等价。
+
+结果：
+
+```text
+cargo test：28 passed / 0 failed / 1 ignored
+run_tests：169/169
+run_presets：370/370
+multiseed：FAIL=0
+H4 ZERO-LOADER / H4-5 / H4-6 / H4-7 / H4-8：PASS
+防御审计：PASS 21 / FAIL 0
+R057：196299B，m=183508，r=1071
+```
+
+H4 主体至此闭环；后续新增保护面必须重新经过“无统一 hook、无新增明文窗口、
+无固定 oracle、纯离线兼容”四项审查。
+
 ---
 
 # 5. 明确排除的加固点
@@ -1193,9 +1231,9 @@ microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解�
 
 H4-5 五类函数方言、H4-6A 缓存上限/淘汰、H4-6B 重掩码/短窗口均已完成。
 
-## 阶段 G：H4-7/H4-8 收口（H4-7 ✅，H4-8 待实施）
+## 阶段 G：H4-7/H4-8 收口 ✅
 
-H4-7 调用/closure/常量去中心化已完成；下一提交边界为 H4-8 分散语义投毒。
+H4-7 调用/closure/常量去中心化与 H4-8 数值完整性分散语义投毒均已完成。
 
 ---
 
@@ -1216,6 +1254,7 @@ python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
 python3 luraph-rs/tests/h5_dialect_audit.py
 python3 luraph-rs/tests/h6_window_audit.py
 python3 luraph-rs/tests/h7_decentralization_audit.py
+python3 luraph-rs/tests/h8_poison_audit.py
 bash luraph-rs/tests/defense_audit.sh
 ```
 
