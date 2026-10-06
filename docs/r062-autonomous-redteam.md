@@ -31,7 +31,9 @@ cipher[i] = plain[i] + state mod 256
 
 当前没有单独的全局 Lua `decode()` 函数或共享明文字符串表；`LoadStr` 走现有随机 opcode/micro dispatch。因此我把它定为 **P1 静态成本不足**，不虚报为直接泄漏明文或整个 VM 的 P0。
 
-## 再确认：KeyEmitter 的纯字面量下标仍可折叠（P1-A）
+## 另外发现的静态分析面
+
+### P1-A：KeyEmitter 查表下标仍可做常量折叠
 
 对已推送的 `handoff/R062_target.luau.lua` 做静态扫描：
 
@@ -41,19 +43,26 @@ cipher[i] = plain[i] + state mod 256
 槽号范围：1..96
 ```
 
-这与 R061 报告的 P1-A 同族：一个普通 AST constant-fold pass 就能还原 KeyEmitter 查表下标，降低了密钥碎片表的静态数据流分析成本。它本身不直接暴露表里的密钥值，但属于容易自动化清除的混淆面，R062 字符串封存并未缓解。
+这与 R061 报告的 P1-A 同族：普通 AST constant-fold pass 可还原 KeyEmitter 查表下标，降低密钥碎片表的数据流分析成本。它本身不直接暴露表里的密钥值，但容易自动化清除，R062 字符串封存并未缓解。
 
-**候选修补方向（需设计审批）：**只改安全关键查表槽的编码下标，使用编码端与读取端严格镜像、实际消费的非零 boot/session 状态；不采用 `state-state` 假依赖，不新增统一 getter/公开索引表，也不把随机死代码计入安全强度。需要先逐类确认状态在 KeyEmitter 各生成阶段的可用时序，避免让密钥索引依赖尚未初始化的 SALT/CHQ/HBD。
+**候选修补方向（需设计审批）：**只改安全关键查表槽的编码下标，使用编码端与读取端严格镜像、实际消费的非零 boot/session 状态；不采用 `state-state` 假依赖，不新增统一 getter/公开索引表。需要逐类确认状态在 KeyEmitter 各生成阶段的可用时序，避免依赖尚未初始化的 SALT/CHQ/HBD。
 
-## 已确认的边界
+### P1-B：编译器合成的名称常量不经过 AST 封存
 
-- 默认 VM 构建中，普通非空 `Str/LongStr` 字面量会封存；空字符串不封存。
-- 全局名、点成员名及编译器合成字符串不属于源码字面量 AST，本阶段不保证封存。
-- 用法执行后，明文必然进入目标寄存器；完整动态跟踪仍可观察。
-- R062 的测试只证明产物没有直接包含测试 canary、运行语义等价；不证明拥有完整 VM 解码器的分析者不能还原。
+源码字面量会变成 `SealedStr`；但 `Expr::Dot.name`、`Expr::Method.name` 与未解析为局部变量的 `Expr::Ident.name` 是 AST 字段，不是 `Expr::Str`。`compiler.rs` 在编译 `Dot`、`Method`、全局读取/赋值时仍直接调用 `kidx(Const::Str(name.as_bytes()))`。因此像 `game:GetService(...)` 中的成员/全局名称不在 R062 第二层封存范围；常量区的原有 at-rest masking 仍保护静态文件，但首次触碰后 CDEC 会把这些普通字符串缓存为明文。
+
+这是**覆盖面限制**，不是新出现的字面量明文泄漏。若要扩展到名称，需要改全局/属性读取协议，可能影响 `__index`、执行顺序和性能，不能只做一个遍历器就宣称修好。
+
+### P2-A：固定 seed 下字符串层跨构建可复现
+
+site 参数由 `Rng::new(seed ^ domain_tag)` 按 AST 遍历顺序抽取。固定 `--seed` 是支持的可复现功能；同 seed、同 AST 会重复相同的 site 参数与密文。默认的 time seed 通常会变化，但客户若长期固定 seed，会降低字符串层的跨构建差异。
+
+## 验收证据补充
+
+`r062_string_seal_experiment.sh` 的 canary grep 单独看只证明最终 Lua 源文本没有直接 canary；外层 VM carrier 本来就加密，不能独立证明 CDEC 之后的常量仍是密文。已新增 `sealed_literal_stays_ciphertext_after_proto_and_constant_unmasking` white-box 单测：解开测试原型 blob 与常量 keystream，确认常量区含 site ciphertext、没有原字节，并且编译器启用了 `LoadStr`。它验证的是 serializer/compiler 路径，不是完整输出的不可逆性，也不覆盖动态运行态。
 
 ## 建议的下一项（R063 候选，尚未实施）
 
 研究 per-build / per-proto 的 codec dialect，并让字节流参数真实消费函数/指令上下文；保留密文 C 池、不加入全局 getter、不加固定失败分支、不缓存全量明文。若可行，限制运算中间值低于 `2^53` 并用独立配对编码/解码测试证明等价。
 
-**风险与预期：**这仍只是增加跨构建工具复用成本；所有 decoder 与参数都在客户端，逆向当前构建仍可恢复。若仅随机替换 257/65521 常数，却留下相同固定结构，收益有限；若把 key 混进错误的中心状态或增加明文缓存，则会新造旁路/观察点。因该方案会改变默认 codec 与性能面，先列为审批候选，不在本阶段擅自启用。
+**风险与预期：**这仍只是增加跨构建工具复用成本；所有 decoder 与参数都在客户端，逆向当前构建仍可恢复。若仅随机替换 257/65521 常数，却留下相同固定结构，收益有限；若把 key 混进错误的中心状态或增加明文缓存，则会新造旁路/观察点。名称常量扩展还涉及全局和 metamethod 语义。因这些方案会改变默认 codec/读取协议与性能面，先列为审批候选，不在本阶段擅自启用。

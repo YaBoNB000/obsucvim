@@ -31,7 +31,7 @@
 
 ## 验收与当前观察
 
-- `cargo test`：31 passed，0 failed，1 ignored。
+- `cargo test`：32 passed，0 failed，1 ignored。新增 white-box proto/const 解码测试，确认已封存字符串在解开外层 blob 与常量流后仍为密文。
 - 完整既有矩阵：`run_tests` 169/169、presets 370/370、multiseed FAIL=0；H2/H3/H4/H5/H6/H7/H8/H5-P0/R061 与防御审计均通过。防御指纹样本使用 seed 772（固定随机结构样本仍须 32/32），以适配默认 LoadStr handler 与短常量清理后的随机输出；测试仍检查既有阈值，没有放宽门槛。
 - 新增 `tests/r062_string_seal_experiment.sh`：legacy 与 v15 均通过 Luau 语法、运行结果等价，唯一 canary 不以明文出现在产物中；非 VM 模式正确拒绝该选项。
 - 粗略性能观察（同 seed、同一段 26 字节字符串在循环中加载 2000 次，7 次进程运行取中位数）：legacy 约 87.16→90.66 ms（+4.0%），v15 约 177.14→218.04 ms（+23.1%）；样本产物 legacy 约 +3.9%，v15 约 +9.4%。这是单机微基准，不代表所有程序。解码不缓存明文，成本随字节长度和访问次数增长；重复热字符串尤其昂贵。

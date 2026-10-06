@@ -2946,6 +2946,162 @@ mod dbg {
 	use crate::parser;
 	use crate::symtab;
 
+	fn varint(src: &[u8], p: &mut usize) -> u32 {
+		let (v, next) = isa::decode_varint(src, *p).expect("valid proto varint");
+		*p = next;
+		v
+	}
+
+	fn unmask_blob(program: &VmProgram, fi: usize) -> Vec<u8> {
+		let cipher = &program.fns[fi];
+		let split = cipher.len().min(64);
+		let base = (program.blob_seed as u64 + fi as u64 * program.blob_step as u64)
+			% 268_435_456;
+		let prefix_fold = cipher[..split]
+			.iter()
+			.fold(0u64, |h, &b| (h * 31 + b as u64) % 268_435_456);
+		let mut out = cipher.clone();
+		let mut state = base;
+		for b in out.iter_mut().take(split) {
+			state = (program.blob_km as u64 * state + program.blob_kc as u64) % 268_435_456;
+			*b = b.wrapping_sub(isa::fold_key(state));
+		}
+		let mut state = (base + prefix_fold) % 268_435_456;
+		for b in out.iter_mut().skip(split) {
+			state = (program.blob_km as u64 * state + program.blob_kc as u64) % 268_435_456;
+			*b = b.wrapping_sub(isa::fold_key(state));
+		}
+		out
+	}
+
+	fn sealed_pool_strings(program: &VmProgram, fi: usize) -> Vec<Vec<u8>> {
+		let blob = unmask_blob(program, fi);
+		let mut p = 0usize;
+		let mut ckseed = None;
+		let mut cinfo = None;
+		while p < blob.len() {
+			let tag = blob[p];
+			p += 1;
+			let id = program
+				.section_tags
+				.iter()
+				.position(|&candidate| candidate == tag)
+				.expect("known section tag");
+			match id {
+				0 => {
+					for _ in 0..3 {
+						varint(&blob, &mut p);
+					}
+				}
+				1 => ckseed = Some(varint(&blob, &mut p)),
+				2 => {
+					let nups = varint(&blob, &mut p) as usize;
+					for _ in 0..nups {
+						varint(&blob, &mut p);
+					}
+				}
+				3 => {
+					let nconst = varint(&blob, &mut p) as usize;
+					let len = varint(&blob, &mut p) as usize;
+					cinfo = Some((nconst, p, len));
+					p += len;
+				}
+				4 => {
+					let nslots = varint(&blob, &mut p) as usize;
+					for _ in 0..nslots {
+						varint(&blob, &mut p);
+					}
+				}
+				5 => {
+					let ncode = varint(&blob, &mut p) as usize;
+					p += ncode;
+					for _ in 0..4 {
+						for _ in 0..ncode {
+							varint(&blob, &mut p);
+						}
+					}
+				}
+				6 => {
+					let len = varint(&blob, &mut p) as usize;
+					p += len;
+				}
+				_ => unreachable!(),
+			}
+		}
+		let (nconst, start, len) = cinfo.expect("constant section");
+		let end = start + len;
+		let bytes = &blob[start..end];
+		let mut q = 0usize;
+		let mut lcg = isa::ConstLcg::new(
+			ckseed.expect("constant seed"),
+			program.ck_km,
+			program.ck_kc,
+		);
+		let mut strings = Vec::new();
+		for _ in 0..nconst {
+			let ty = bytes[q].wrapping_sub(lcg.next_key());
+			q += 1;
+			match ty {
+				0 => {}
+				1 => {
+					q += 1;
+					lcg.next_key();
+				}
+				3 => {
+					let lo = bytes[q].wrapping_sub(lcg.next_key()) as usize;
+					q += 1;
+					let hi = bytes[q].wrapping_sub(lcg.next_key()) as usize;
+					q += 1;
+					let n = lo | (hi << 8);
+					let mut s = Vec::with_capacity(n);
+					for _ in 0..n {
+						s.push(bytes[q].wrapping_sub(lcg.next_key()));
+						q += 1;
+					}
+					strings.push(s);
+				}
+				4 => {
+					for _ in 0..2 {
+						loop {
+							let b = bytes[q].wrapping_sub(lcg.next_key());
+						q += 1;
+						if b < 128 {
+							break;
+						}
+						}
+					}
+				}
+				other => panic!("unexpected constant tag {other}"),
+			}
+		}
+		assert_eq!(q, bytes.len(), "constant section consumed exactly");
+		strings
+	}
+
+	#[test]
+	fn sealed_literal_stays_ciphertext_after_proto_and_constant_unmasking() {
+		let plain = b"r062-pool-canary-opaque";
+		let src = format!(r#"return "{}""#, String::from_utf8_lossy(plain));
+		let mut block = parser::parse(&src, true).unwrap();
+		let table = symtab::resolve(&mut block);
+		let mut seal_rng = crate::rng::Rng::new(0x5230_3632);
+		crate::vmgen::strseal::seal_literals(&mut block, &mut seal_rng);
+		let (seed, step) = match &block.stmts[0] {
+			Stmt::Return(values) => match &values[0] {
+				Expr::SealedStr { seed, step, .. } => (*seed, *step),
+				other => panic!("expected sealed literal, got {other:?}"),
+			},
+			other => panic!("expected return, got {other:?}"),
+		};
+		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
+		let mut rng = crate::rng::Rng::new(77);
+		let program = compile_chunk(&block, &table, &mut rng, false, true);
+		assert!(program.has_loadstr);
+		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
+		assert!(strings.iter().any(|s| s == &expected_cipher));
+		assert!(!strings.iter().any(|s| s == plain));
+	}
+
 	#[test]
 	fn orphaned_mkstr_literals_are_pruned_without_dropping_shared_constants() {
 		let mut consts = vec![
