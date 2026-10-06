@@ -343,10 +343,14 @@ for m2 in re.finditer(r'\b(then|do|end|until)\b', br):
 if cut is None:
     print("NOGUARD"); sys.exit(1)
 guard = br[ist:cut]
-p1 = re.search(r'(\w+) = \1 \+ 7777777 (\w+) = \2 \+ 7777777', guard)
+p1 = re.search(
+    r'(\w+)\.(\w+)\s*=\s*\(\1\.\2\s*\+\s*\(\(\1\.(\w+)\s*%\s*65521\)'
+    r'\s*\*\s*(\w+)\s*\+\s*(\w+)\s*\+\s*\1\.(\w+)\s*\*\s*(\w+)\)'
+    r'\s*%\s*268435456\)\s*%\s*268435456\s+'
+    r'\1\.(\w+)\s*=\s*\1\.\6\s*\+\s*2\s*\+\s*\(\1\.\3\s*%\s*7\)', guard)
 if not p1:
     print("NOPOISON"); sys.exit(1)
-A, B = p1.groups()
+EF, PG, VD, WM, WB, PN, RQ, PD = p1.groups()
 seq_tracer = "0, 0.001, 0.002, 0.003, 0.004, 10.004, 20.004, 20.005, 20.006"
 seq_clean  = "0, 0.001, 0.002, 0.003, 0.004, 0.005, 0.006, 0.007, 0.008"
 harness = '''
@@ -358,16 +362,18 @@ local {ID} = {CLK} and {CLK}() or 0
 local {NF} = 0
 local {PE} = nil
 local {CNT} = 0
-local {A}, {B} = 0, 0
+local {WM}, {WB}, {RQ} = 7, 11, 13
+local {EF} = {{ {PG}=0, {VD}=17, {PN}=5, {PD}=0 }}
 for iter = 1, 128 * 8 do
   {GE} = {GE} + 1
   {guard}
 end
-print({A}, {B})
+print({EF}.{PG}, {EF}.{PD})
 '''
 for name, seq in (("tracer", seq_tracer), ("clean", seq_clean)):
     lua = harness.format(seq=seq, CLK=CLK, GE=GE, ID=ID, NF=NF, PE=PE,
-                         CNT=CNT, A=A, B=B, guard=guard)
+                         CNT=CNT, EF=EF, PG=PG, VD=VD, PN=PN, PD=PD,
+                         WM=WM, WB=WB, RQ=RQ, guard=guard)
     open(f"{W}/wd_{name}.lua", "w").write(lua)
 print("WIRED", a27)
 PYEOF
@@ -377,7 +383,7 @@ if [ "$rc12" != "0" ]; then
 else
 	t1="$(timeout 15 "$LUAU" "$W/wd_tracer.lua" 2>&1)"
 	t2="$(timeout 15 "$LUAU" "$W/wd_clean.lua" 2>&1)"
-	[ "$t1" == "7777777	7777777" ] && ok "触发路径: 模拟 tracer(10000x 两连窗) => SLT/SLTC 各投毒 +7777777" || bad "触发路径失效: 得到 [$t1]"
+	[ "$t1" == "195	10" ] && ok "触发路径: tracer 两连窗 => 帧局部 poison=195、延迟窗=10" || bad "触发路径失效: 得到 [$t1]"
 	[ "$t2" == "0	0" ] && ok "干净时钟: 8 窗口 0 投毒 (阈值不误伤)" || bad "干净时钟误报: [$t2]"
 	# 误报抽查: 长运行用例真实执行必须输出等价
 	"$TOOL" --preset v15 --dialect luau --seed 999 \

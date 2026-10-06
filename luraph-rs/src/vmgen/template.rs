@@ -1996,7 +1996,7 @@ pub fn generate(
 		// 慢机；100 倍 + 连续 2 窗 → 不误伤偶发 GC 停顿。
 		let frame_cleanup = "local ws={E.ww,E.w0,E.w1,E.w2,E.w3} for wl=1,5 do local wt=ws[wl] if wt then for wx=1,#wt do wt[wx]=nil end end end if E.bq then for qi=1,#E.bq do local bc=E.bch[E.bq[qi]] if bc then for wl=1,5 do local wt=bc[wl] if wt then for wx=1,#wt do wt[wx]=nil end bc[wl]=nil end end end end end E.bch={} E.bq={} E.ww,E.w0,E.w1,E.w2,E.w3=nil,nil,nil,nil,nil E.br=nil E.er=nil ";
 		Some(format!(
-			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx ~= nil then\n        local ck = (E.callx - E.vd) % 17\n        local cx = ck == 1 and XE1 or ck == 2 and XE2 or ck == 3 and XE3 or XE4\n        E.callx = nil\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 SLTC = SLTC + 7777777 end end end\n      if E.done ~= nil then local _fo={out_slot} local _fn={total_slot} {cleanup}for _wi=0,3 do E[E.rb+_wi*E.cs]=nil end return U(_fo, 1, _fn) end\n    end",
+			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx ~= nil then\n        local ck = (E.callx - E.vd) % 17\n        local cx = ck == 1 and XE1 or ck == 2 and XE2 or ck == 3 and XE3 or XE4\n        E.callx = nil\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      E.pn = E.pn + 1\n      if E.pn == E.pd then E.md = (E.md + FLOOR((E.pg + 268435455) / 268435456) * (1 + E.pg % (E.mx - 1))) % E.mx end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then E.pg=(E.pg+((E.vd%65521)*WM+WB+E.pn*RQ)%268435456)%268435456 E.pd=E.pn+2+(E.vd%7) _tslow=0 end end end\n      if E.done ~= nil then local _fo={out_slot} local _fn={total_slot} {cleanup}for _wi=0,3 do E[E.rb+_wi*E.cs]=nil end return U(_fo, 1, _fn) end\n    end",
 			budget_e,
 			out_slot = frame_slot(2),
 			total_slot = frame_slot(3),
@@ -2225,8 +2225,8 @@ pub fn generate(
 		"AV", "HW2",
 	];
 	let e_table = format!(
-		"{{{}, pc = 1, b = 0, callx = nil, done = nil, vd = vd, cs = CS, cb = 25 + (vd % 4096) * 2048, rb = 1305 + (vd % 4096) * 2048, tp = TP, md = (fi * {} + {}) % {}}}",
-		env_names.join(", "), micro_route_step, micro_route_base, n_micro_shards
+		"{{{}, pc = 1, b = 0, callx = nil, done = nil, vd = vd, cs = CS, cb = 25 + (vd % 4096) * 2048, rb = 1305 + (vd % 4096) * 2048, tp = TP, pn = 0, pd = 2 + ((QF[fi] * RQ + fi * RI + vd) % 15), pg = pg, mx = {}, md = (fi * {} + {}) % {}}}",
+		env_names.join(", "), n_micro_shards, micro_route_step, micro_route_base, n_micro_shards
 	);
 	let hfrag: String;
 	let handler_defs = if v15 {
@@ -2370,7 +2370,7 @@ pub fn generate(
 		let micro_expected_e = ke.key_expr(micro_chaff_expected, None, rng);
 		micro_fill.push_str("do local _mc=0 local _md for _mj=1,#_mo do _md=_mo[_mj] _mc=(_mc*257+_md[2])%268435456 _mc=(_mc*257+_md[3])%268435456 for _mi=1,#_md[1] do _mc=(_mc*257+_md[1][_mi])%268435456 end end ");
 		micro_fill.push_str(&format!(
-			"_mc=(_mc+CHQ*({chaff}))%268435456 SALT=(SALT+(_mc-({expected})))%268435456 end ",
+			"_mc=(_mc+CHQ*({chaff}))%268435456 MZD=(_mc-({expected}))%268435456 end ",
 			chaff = chaff_micro_e,
 			expected = micro_expected_e,
 		));
@@ -2985,7 +2985,7 @@ pub fn generate(
 		// ——R004 同族；本增量封堵的是「物化函数钩子」这一最廉价向量。
 		// 另边界：帧上下文顺序触碰全索引仍可强制全解（= 完整执行该帧）。
 		let tag_decode_rt = format!(
-			"local td=({}+fi*{})%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLOOR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end ",
+			"local td=({}+fi*{}+(PZ2%720)*(1+NQ%719)+(PZ3%720)*(1+NI%719)+(PZ4%720)*(1+MI%719)+(MZD%720)*(1+MM%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLOOR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end ",
 			tag_base_e, tag_step_e
 		);
 		let cdec_inner = if consts_safe {
@@ -3026,7 +3026,7 @@ pub fn generate(
 			s.push_str(&tag_decode_rt);
 			s.push_str(probe_call);
 			s.push_str(&format!(
-				"local base = (PS + fi * PT + SLTC + QF[fi] * CQC{}) % 268435456 ",
+				"local pzc=((PZ2%65521)*((fi+KQ)%65521)+(PZ3%65521)*((QF[fi]+KI)%65521)+(PZ4%65521)*((fi+NQ)%65521)+(MZD%65521)*((QF[fi]+NI)%65521))%268435456 local base = (PS + fi * PT + SLTC + QF[fi] * CQC + pzc{}) % 268435456 ",
 				base_env_s
 			));
 			s.push_str(
@@ -3086,7 +3086,7 @@ pub fn generate(
 			cache_pack = cache_pack,
 		);
 		let bdec_src = format!(
-			"local function bdec(E, bi) local pf=E.bt local fi=((pf.sx-PM-1)%65521)+1 E.er=E.er+1 local wm=(E.er*WM+bi*WB+fi)%65536 local c = E.bch[bi] if c then local om=c[8] for wx=1,#c[1] do {remask} end c[8]=wm E.ww, E.w0, E.w1, E.w2, E.w3 = {cache_hit} E.bp, E.be = c[6], c[7] E.br=wm return end {wipe} local qi=QF[fi] local fkm=2*((KM+qi*FQ+fi*FI)%16000000)+1 local fkc=(KC+qi*KQ+fi*KI)%268435456 local fpb=(PB+qi*BQ+fi*BI)%268435456 local frp=3+((qi*RQ+fi*RI)%7) local s0 = pf.bs[bi] local l = pf.bl[bi] local st = (PS + fi * PT + s0 * fpb + SLT + QF[fi] * CQB) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do {dec_lanes} if i%frp==0 then st=(st+qi*RS+(s0+i-1)*RP)%268435456 end end {normalize} for wx=1,#u0 do u0[wx]=(u0[wx]+wm)%256 u1[wx]=(u1[wx]+wm)%65536 u2[wx]=(u2[wx]+wm)%65536 u3[wx]=(u3[wx]+wm)%65536 u4[wx]=(u4[wx]+wm)%65536 end {store} E.ww, E.w0, E.w1, E.w2, E.w3 = u0, u1, u2, u3, u4 E.bp, E.be = s0, s0 + l - 1 E.br=wm end",
+			"local function bdec(E, bi) local pf=E.bt local fi=((pf.sx-PM-1)%65521)+1 E.er=E.er+1 local wm=(E.er*WM+bi*WB+fi)%65536 local c = E.bch[bi] if c then local om=c[8] for wx=1,#c[1] do {remask} end c[8]=wm E.ww, E.w0, E.w1, E.w2, E.w3 = {cache_hit} E.bp, E.be = c[6], c[7] E.br=wm return end {wipe} local qi=QF[fi] local fkm=2*((KM+qi*FQ+fi*FI)%16000000)+1 local fkc=(KC+qi*KQ+fi*KI)%268435456 local fpb=(PB+qi*BQ+fi*BI)%268435456 local frp=3+((qi*RQ+fi*RI)%7) local s0 = pf.bs[bi] local l = pf.bl[bi] local pzb=((PZ1%65521)*((fi+FQ)%65521)+(PZ3%65521)*((qi+KI)%65521)+(PZ4%65521)*((bi+RI)%65521)+(MZD%65521)*((s0+RQ)%65521)+(E.pg%65521)*((s0+fi+RP)%65521))%268435456 local st = (PS + fi * PT + s0 * fpb + SLT + QF[fi] * CQB + pzb) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do {dec_lanes} if i%frp==0 then st=(st+qi*RS+(s0+i-1)*RP)%268435456 end end {normalize} for wx=1,#u0 do u0[wx]=(u0[wx]+wm)%256 u1[wx]=(u1[wx]+wm)%65536 u2[wx]=(u2[wx]+wm)%65536 u3[wx]=(u3[wx]+wm)%65536 u4[wx]=(u4[wx]+wm)%65536 end {store} E.ww, E.w0, E.w1, E.w2, E.w3 = u0, u1, u2, u3, u4 E.bp, E.be = s0, s0 + l - 1 E.br=wm end",
 			cache_hit = cache_hit,
 			remask = cache_remask,
 			wipe = wipe_current,
@@ -3098,7 +3098,7 @@ pub fn generate(
 		// 但不再打包为 RT 源码碎片。五个离散 closure 由一次性数值协议
 		// 装配；newE 仍只解入口块，块缓存挂帧（E.bch），帧退即毁。
 		let rt_newe = format!(
-			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    local vd=(QF[fi]*NQ+fi*NI+MM)%65521\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
+			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    local vd=(QF[fi]*NQ+fi*NI+MM)%65521\n    local pg=((PZ1%65521)*((fi+FQ)%65521)+(PZ2%65521)*((QF[fi]+KQ)%65521)+(PZ3%65521)*((fi+NI)%65521)+(PZ4%65521)*((QF[fi]+RI)%65521)+(MZD%65521)*((fi+MM)%65521))%268435456\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
 		);
 		// ㉚ B-2: 链终值 (H1, H2) + 归零常量 (CB*/CC*) 以工厂参数入密。
@@ -3194,7 +3194,7 @@ pub fn generate(
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local CNJ,CSJ={cnj},{csj} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE,MZD{sigtail}) local PZ1=(H1*CB1+H2*CB2+CBC)%268435456 local PZ2=(H1*CC1+H2*CC2+CCC)%268435456 local SLTC=SLT local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local CNJ,CSJ={cnj},{csj} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local PZ3=(_qk-RTQCKX)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local PZ4=(_rc-RTPCX)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
 			qf = qf_expected,
@@ -3446,7 +3446,7 @@ pub fn generate(
 		let hb_factory =
 			"_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string();
 		let hb_execute =
-			"_b1,_b2,_b3=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD)%268435456,CKJ_)".to_string();
+			"_b1,_b2,_b3=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD1)%268435456,CKJ_)".to_string();
 		let hb_seal = "_ready=1".to_string();
 		let mut hb_phase_branches = vec![
 			(hb_phase_codes[0], hb_factory),
@@ -3473,11 +3473,12 @@ pub fn generate(
 			})
 			.collect::<String>()
 			+ &format!(
-				"else HD=(HD+({}))%268435456 end",
-				hb_phase_poison_e
+				"else HD1=(HD1+({p}))%268435456 HD2=(HD2+({p})*({m}+1))%268435456 end",
+				p = hb_phase_poison_e,
+				m = hb_phase_mask,
 			);
 		let hboot_src = format!(
-			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_=GET_(NONCE_) local HD=HBD_ local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end HD=(HD+(_hc-({expected})))%268435456 local _lv1,_b1,_b2,_b3 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD=(HD+({poison}))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD)%{m1} local h2=({iv2}+HD*257)%{m2} local _O1,_O2,_O3,_O4,_O5,_O6{hpret_decl}=HW,_b1,_b2,h1,h2,_b3{hpret} HW,_b1,_b2,h1,h2,_b3{hpret}=nil,nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5,_O6{hpret_ret} end end",
+			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_=GET_(NONCE_) local HD1=HBD_ local HD2=HBD_*257 local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end local _he=(_hc-({expected}))%268435456 HD1=(HD1+_he)%268435456 HD2=(HD2+_he*({mask}+1))%268435456 local _lv1,_b1,_b2,_b3 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD1=(HD1+({poison}))%268435456 HD2=(HD2+({poison})*({step}+1))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD1)%{m1} local h2=({iv2}+HD2)%{m2} local _O1,_O2,_O3,_O4,_O5,_O6{hpret_decl}=HW,_b1,_b2,h1,h2,_b3{hpret} HW,_b1,_b2,h1,h2,_b3{hpret}=nil,nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5,_O6{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
 			shell_sig = shell_sig,
@@ -3831,6 +3832,7 @@ pub fn generate(
   local HBD
   local CHQ
   local SALT
+  local MZD = 0
   local SH1, SH2
   local HPH
   local PD = function() local z0, z1 = 0, 1 while z0 < 4294967296 do z0 = (z0 * 1103515245 + 12345) % 268435456 z1 = (z1 * 80659 + 95050511) % 268435456 if z0 == z1 and z0 == 123456789 then break end end end
@@ -3856,8 +3858,9 @@ pub fn generate(
 -- the guard on an explicit nil binding; symtab block scoping is fixed since,
 -- so the wiring is restored deliberately. Guard semantics (RT fragment):
 -- every 128 dispatch steps sample os.clock; first 4 samples set a MIN
--- baseline; two CONSECUTIVE windows slower than 100x baseline poison SLT
--- (+7777777) => block keys desync => silent corruption, no visible oracle.
+-- baseline; two CONSECUTIVE windows slower than 100x baseline perturb a
+-- frame-local numeric lane. Its per-function delay changes both later block
+-- keys and the selected micro shard; no global flag or fixed poison literal.
     do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
       if ok and TYP(sr) == {strlit} then
@@ -4046,7 +4049,7 @@ pub fn generate(
 		// ㉚ B-2: 链终值 SH1/SH2 + 归零常量 RPK6..11 入密交给 RT 工厂。
 		// 51: executor 绑定态再递启动令牌与周期探针（不透明函数值交接）。
 		format!(
-			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE{}) RTFRAG = nil",
+			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE, MZD{}) RTFRAG = nil",
 			if executor_bind { ", XTOK, XPROBE" } else { "" }
 		)
 	} else {
