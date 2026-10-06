@@ -28,7 +28,7 @@
 
 **12 项状态**（构建种子驱动，纯离线）：
 1. ✅ 段三元组解码顺序：`frags` 的 `order` 每构建洗牌，哈希链与增量字典同序镜像。
-2. ✅ 段语义↔编号：H4-2A/B 已清除 continuation/Call wire，H4-2C1/C2 以一次性数值协议替代 BSS/RT wire；H4-3 静态化 HBOOT/EXG；H4-4 让 Nop chaff 承担四个钥匙面；H4-5 完成五类函数方言；H4-6A/B 限制并重掩码活动 block window；H4-7 去中心化 Closure/调用/常量协议；H4-8 将 BSS/HBOOT/RT 数值完整性差值分散到 block、constant、metadata 与延迟 micro route。
+2. ✅ 段语义↔编号：H4-2A/B 已清除 continuation/Call wire，H4-2C1/C2 以一次性数值协议替代 BSS/RT wire；H4-3 静态化 HBOOT/EXG；H4-4 让 Nop chaff 承担四个钥匙面；H4-5 完成五类函数方言；H4-6A/B 限制并重掩码活动 block window；H4-7 去中心化 Closure/调用/常量协议；H4-8 分散完整性投毒；R057 失守后 H5-P0 已退役静态 47 组 Micro descriptor table，改为 packed carrier 与 SALT/CHQ session reseal。
 3. 🟡 别名面：四套 opcode wire + NOP alias 值已随机；“组数/每组数量可变”仍待做。
 4. ✅ K 常量组：`KeyEmitter` 的 KA/KB/KC/KM 内容、槽位、组装配方每构建重掷。
 5. ✅ LCG：常量、blob、HQ、meta、块钥匙流的乘加子/种子/步数均由构建 seed 生成。
@@ -63,5 +63,6 @@
 - `python3 luraph-rs/tests/h3_noise_audit.py`：噪声确定性/跨 seed 差异、NOP/活噪声记账、真噪声高低域重叠、nil/decoy 随机、双 seed 运行等价。
 - `python3 luraph-rs/tests/h7_decentralization_audit.py`：Closure metadata/child token、Call/Return/Vararg 方言、numeric/string constant 流分离及双 seed 语义等价。
 - `python3 luraph-rs/tests/h8_poison_audit.py`：BSS/RT/HBOOT 多 lane fan-out、帧级延迟、固定 oracle 消失及函数/构建 signature 分离。
+- `python3 luraph-rs/tests/h5_p0_micro_audit.py`：packed micro carrier、SALT/CHQ reseal、旧 descriptor extractor 零命中及双 seed 等价。
 - `bash luraph-rs/tests/run_tests.sh`：全量语言/VM 回归必须全绿。
 - H2 尚未因本页状态表而宣告“12 项全部满规格”；其中 🟡 项仍需后续加深。H3 首轮六项已完成，但仍受完整动态数据流分析这一诚实边界约束。

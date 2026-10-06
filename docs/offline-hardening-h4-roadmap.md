@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4/H4-5/H4-6/H4-7/H4-8 已闭环；数值完整性失败已分散投毒；内部 loader 0 次**
+> 状态：**H4 主体已闭环；H5-P0 Micro Descriptor 静态表已密封退役；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -1147,6 +1147,21 @@ R057：196299B，m=183508，r=1071
 H4 主体至此闭环；后续新增保护面必须重新经过“无统一 hook、无新增明文窗口、
 无固定 oracle、纯离线兼容”四项审查。
 
+### R057 失守后的 H5-P0 修订（2026-10-06）
+
+R057 暴露了 H4 验收未覆盖的静态面：每个 micro shard 将约 47 组
+`{program,mask,step}` 与解释器一起交付。H5-P0 已将其替换为每 shard packed
+carrier、独立 at-rest LCG、启动期 `SALT+CHQ` 重密封与使用点三元组即时解码；
+旧 descriptor extractor 在 TSRC 中命中为 0。详见：
+
+```text
+docs/h5-p0-micro-descriptor-response.md
+python3 luraph-rs/tests/h5_p0_micro_audit.py
+```
+
+这只关闭最廉价的静态映射路径；Superoperator、纯字面量下标折叠和固定 junk
+模板仍是后续 P1/P2，不作“不可恢复”承诺。
+
 ---
 
 # 5. 明确排除的加固点
@@ -1255,6 +1270,7 @@ python3 luraph-rs/tests/h5_dialect_audit.py
 python3 luraph-rs/tests/h6_window_audit.py
 python3 luraph-rs/tests/h7_decentralization_audit.py
 python3 luraph-rs/tests/h8_poison_audit.py
+python3 luraph-rs/tests/h5_p0_micro_audit.py
 bash luraph-rs/tests/defense_audit.sh
 ```
 
