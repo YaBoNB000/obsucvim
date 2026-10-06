@@ -566,16 +566,8 @@ fn main() -> ExitCode {
 					junk::inject(&mut tblock, &mut ttable, &mut rng, 2);
 				}
 				if opts.do_mangle {
-					// scaffold param names used inside the wrapper
-					// functions must never be shadowed by mangled
-					// interpreter locals (they share the def-runner
-					// scope after wrapping)
-					reserved.extend(
-						["b", "C", "p1", "p2", "p3", "E", "V"]
-							.iter()
-							.map(|s| s.to_string()),
-					);
-					mangle::mangle(&mut ttable, &mut rng, true);
+					mangle::mangle_v15_compact(&tblock, &mut ttable, &mut rng)
+						.map_err(|e| format!("v15 compact-name allocation: {e}"))?;
 				}
 				// P3c (measured & reverted): flattening the interpreter
 				// diverges from the sample (its VM core ships loop-based
@@ -690,11 +682,7 @@ fn main() -> ExitCode {
 				// The old empty metatable had no dispatch role; v15 handlers use
 				// the table as their explicit `self` argument. Other setmetatable
 				// uses inside the VM (for example lazy constants) remain intact.
-				let root_reserved = std::collections::HashSet::<String>::new();
-				let root_name = mangle::gen_name(
-					&mut rng,
-					&mangle::reserved_set(&root_reserved),
-				);
+				let root_name = "rt".to_string();
 				let root_ref = || ast::Expr::Ident {
 					name: root_name.clone(),
 					sym: None,
@@ -717,7 +705,11 @@ fn main() -> ExitCode {
 					],
 				};
 				let mut shell_block = shell;
-				let shell_table = symtab::resolve(&mut shell_block);
+				let mut shell_table = symtab::resolve(&mut shell_block);
+				if opts.do_mangle {
+					mangle::mangle_v15_compact(&shell_block, &mut shell_table, &mut rng)
+						.map_err(|e| format!("v15 compact-name allocation: {e}"))?;
+				}
 				(shell_block, shell_table, true)
 			} else {
 				let vm_call = ast::Expr::Call {
@@ -764,7 +756,7 @@ fn main() -> ExitCode {
 				tlog("junk");
 			}
 			if opts.do_mangle {
-				mangle::mangle(&mut table, &mut rng, false);
+				mangle::mangle(&mut table, &mut rng);
 				tlog("mangle");
 			}
 			reserved = mangle::reserved_set(

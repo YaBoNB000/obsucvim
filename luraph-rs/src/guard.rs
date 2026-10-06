@@ -165,7 +165,7 @@ pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
 	let mangled = match parser::parse(&guard_src, true).ok() {
 		Some(mut block) => {
 			let mut table = crate::symtab::resolve(&mut block);
-			mangle::mangle(&mut table, rng, false);
+			mangle::mangle(&mut table, rng);
 			printer::print_chunk_luau(&table, &block)
 		}
 		None => guard_src.clone(),
@@ -190,7 +190,7 @@ pub fn guard_prelude(rng: &mut Rng, luau: bool) -> String {
 	let parsed = parser::parse(&guard_src, luau).ok();
 	if let Some(mut block) = parsed {
 		let mut table = crate::symtab::resolve(&mut block);
-		mangle::mangle(&mut table, rng, false);
+			mangle::mangle(&mut table, rng);
 		let printed = if luau {
 			printer::print_chunk_luau(&table, &block)
 		} else {

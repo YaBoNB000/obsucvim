@@ -14,6 +14,7 @@ trap 'rm -rf "$TMP"' EXIT
 
 "$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/target.lua"
 "$LUAC" "$TMP/target.lua" >/dev/null
+python3 "$REPO/luraph-rs/tests/v15_short_name_audit.py" "$TMP/target.lua"
 
 # White-box static audit: KeyEmitter must have no public lookup tables, and
 # every emitted key reconstruction must depend on actual carrier lengths.

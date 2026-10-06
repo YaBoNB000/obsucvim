@@ -6,6 +6,7 @@
 //! other. Globals themselves are NOT renamed (that would require environment
 //! wrapping — out of scope for v1).
 
+use crate::ast::{Block, Expr, Stmt, SymId, TableField};
 use crate::rng::Rng;
 use crate::symtab::SymTable;
 use std::collections::HashSet;
@@ -64,36 +65,7 @@ pub fn gen_name(rng: &mut Rng, reserved: &HashSet<String>) -> String {
 	}
 }
 
-/// v15 naming scheme (sample style): 1-2 char names from the 53-base
-/// alphabet (A-Z / `_` / a-z). Used for the v15 profile so mangled
-/// locals match the sample's name lengths (fingerprints F14/F21).
-fn gen_name_v15(rng: &mut Rng, reserved: &HashSet<String>) -> String {
-	const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
-	let mut attempts = 0usize;
-	loop {
-		// Sample names are overwhelmingly 1 char; keep 80/20 while the
-		// 1..2-character namespace has room. Large VM templates can exceed
-		// its hard 2862-name capacity, so bounded collision retries spill into
-		// a three-character namespace instead of looping forever.
-		let len = if attempts >= 32 {
-			3
-		} else if rng.int(0, 99) < 80 {
-			1
-		} else {
-			2
-		};
-		let mut s = String::new();
-		for _ in 0..len {
-			s.push(ALPHA[rng.int(0, 52) as usize] as char);
-		}
-		if !reserved.contains(&s) {
-			return s;
-		}
-		attempts += 1;
-	}
-}
-
-pub fn mangle(table: &mut SymTable, rng: &mut Rng, v15: bool) {
+pub fn mangle(table: &mut SymTable, rng: &mut Rng) {
 	let mut reserved =
 		reserved_set(&table.globals.iter().cloned().collect::<HashSet<_>>());
 	let n = table.syms.len();
@@ -101,10 +73,6 @@ pub fn mangle(table: &mut SymTable, rng: &mut Rng, v15: bool) {
 	for sym in table.syms.iter() {
 		if sym.keep_name {
 			names.push(None); // fixed name (implicit self) — do not rename
-		} else if v15 {
-			let name = gen_name_v15(rng, &reserved);
-			reserved.insert(name.clone());
-			names.push(Some(name));
 		} else {
 			let name = gen_name(rng, &reserved);
 			reserved.insert(name.clone());
@@ -118,23 +86,297 @@ pub fn mangle(table: &mut SymTable, rng: &mut Rng, v15: bool) {
 	}
 }
 
+/// A compact namespace for generated v15 locals/parameters. Single-letter
+/// names are kept where available for size; every other generated name is a
+/// two-letter alphabetic identifier. Names are recycled only after their
+/// lexical scope ends, and nested scopes reserve all active ancestor names.
+struct CompactNames {
+	pool: Vec<String>,
+	active: HashSet<String>,
+	scopes: Vec<Vec<String>>,
+}
+
+impl CompactNames {
+	fn new(rng: &mut Rng, reserved: &HashSet<String>) -> Self {
+		const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+		let mut singles = Vec::new();
+		let mut pairs = Vec::new();
+		for &a in ALPHA {
+			let name = (a as char).to_string();
+			if !reserved.contains(&name) {
+				singles.push(name);
+			}
+			for &b in ALPHA {
+				let name = format!("{}{}", a as char, b as char);
+				if !reserved.contains(&name) {
+					pairs.push(name);
+				}
+			}
+		}
+		rng.shuffle(&mut singles);
+		rng.shuffle(&mut pairs);
+		// Pop singles first to minimize emitted identifier bytes.
+		pairs.extend(singles);
+		Self {
+			pool: pairs,
+			active: reserved.clone(),
+			scopes: vec![Vec::new()],
+		}
+	}
+
+	fn enter_scope(&mut self) {
+		self.scopes.push(Vec::new());
+	}
+
+	fn leave_scope(&mut self) {
+		if let Some(names) = self.scopes.pop() {
+			for name in names {
+				self.active.remove(&name);
+				self.pool.push(name);
+			}
+		}
+	}
+
+	fn bind(&mut self, table: &mut SymTable, id: SymId) -> Result<(), String> {
+		let sym = table
+			.syms
+			.get(id as usize)
+			.ok_or_else(|| format!("invalid local symbol id {id}"))?;
+		if sym.keep_name {
+			// Lua's implicit `self` spelling is fixed by colon-declaration
+			// syntax. It is reserved globally, so generated locals can't shadow it.
+			return Ok(());
+		}
+		let name = self.pool.pop().ok_or_else(|| {
+			format!(
+				"two-letter name pool exhausted at lexical depth {}",
+				self.scopes.len()
+			)
+		})?;
+		self.active.insert(name.clone());
+		self.scopes.last_mut().expect("root name scope").push(name.clone());
+		table.syms[id as usize].name = name;
+		Ok(())
+	}
+}
+
+struct CompactMangler<'a> {
+	table: &'a mut SymTable,
+	names: CompactNames,
+}
+
+impl<'a> CompactMangler<'a> {
+	fn walk_function(&mut self, params: &[SymId], body: &Block) -> Result<(), String> {
+		self.names.enter_scope();
+		for &id in params {
+			self.names.bind(self.table, id)?;
+		}
+		self.walk_block(body)?;
+		self.names.leave_scope();
+		Ok(())
+	}
+
+	fn walk_block(&mut self, block: &Block) -> Result<(), String> {
+		for stmt in &block.stmts {
+			self.walk_stmt(stmt)?;
+		}
+		Ok(())
+	}
+
+	fn walk_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
+		match stmt {
+			Stmt::Local { syms, values, .. } => {
+				// Initializers run before the new locals become visible.
+				for value in values.iter().flatten() {
+					self.walk_expr(value)?;
+				}
+				for &id in syms {
+					self.names.bind(self.table, id)?;
+				}
+			}
+			Stmt::LocalFunc { sym, func, .. } => {
+				self.names.bind(self.table, *sym)?;
+				self.walk_function(&func.param_syms, &func.body)?;
+			}
+			Stmt::FuncDecl { obj, func, .. } => {
+				if let Some(obj) = obj {
+					self.walk_expr(obj)?;
+				}
+				self.walk_function(&func.param_syms, &func.body)?;
+			}
+			Stmt::Assign { targets, values } => {
+				for target in targets {
+					self.walk_expr(target)?;
+				}
+				for value in values {
+					self.walk_expr(value)?;
+				}
+			}
+			Stmt::ExprStmt(expr) => self.walk_expr(expr)?,
+			Stmt::If { cond, thenb, elsifs, elseb } => {
+				self.walk_expr(cond)?;
+				self.walk_scoped_block(thenb)?;
+				for (cond, body) in elsifs {
+					self.walk_expr(cond)?;
+					self.walk_scoped_block(body)?;
+				}
+				if let Some(body) = elseb {
+					self.walk_scoped_block(body)?;
+				}
+			}
+			Stmt::While { cond, body } => {
+				self.walk_expr(cond)?;
+				self.walk_scoped_block(body)?;
+			}
+			Stmt::Repeat { body, cond } => {
+				self.names.enter_scope();
+				self.walk_block(body)?;
+				self.walk_expr(cond)?;
+				self.names.leave_scope();
+			}
+			Stmt::ForNum { var_sym, start, limit, step, body, .. } => {
+				self.walk_expr(start)?;
+				self.walk_expr(limit)?;
+				if let Some(step) = step {
+					self.walk_expr(step)?;
+				}
+				self.names.enter_scope();
+				self.names.bind(self.table, *var_sym)?;
+				self.walk_block(body)?;
+				self.names.leave_scope();
+			}
+			Stmt::ForGen { vars: _, syms, iters, body } => {
+				for iter in iters {
+					self.walk_expr(iter)?;
+				}
+				self.names.enter_scope();
+				for &id in syms {
+					self.names.bind(self.table, id)?;
+				}
+				self.walk_block(body)?;
+				self.names.leave_scope();
+			}
+			Stmt::Do(body) => self.walk_scoped_block(body)?,
+			Stmt::Return(values) => {
+				for value in values {
+					self.walk_expr(value)?;
+				}
+			}
+			Stmt::Break | Stmt::Continue => {}
+		}
+		Ok(())
+	}
+
+	fn walk_scoped_block(&mut self, block: &Block) -> Result<(), String> {
+		self.names.enter_scope();
+		self.walk_block(block)?;
+		self.names.leave_scope();
+		Ok(())
+	}
+
+	fn walk_expr(&mut self, expr: &Expr) -> Result<(), String> {
+		match expr {
+			Expr::Dot { obj, .. } => self.walk_expr(obj)?,
+			Expr::Index { obj, idx } => {
+				self.walk_expr(obj)?;
+				self.walk_expr(idx)?;
+			}
+			Expr::Call { func, args } => {
+				self.walk_expr(func)?;
+				for arg in args {
+					self.walk_expr(arg)?;
+				}
+			}
+			Expr::Method { obj, args, .. } => {
+				self.walk_expr(obj)?;
+				for arg in args {
+					self.walk_expr(arg)?;
+				}
+			}
+			Expr::Un { e, .. } => self.walk_expr(e)?,
+			Expr::Bin { l, r, .. } => {
+				self.walk_expr(l)?;
+				self.walk_expr(r)?;
+			}
+			Expr::IfExpr { arms, elseb } => {
+				for (cond, value) in arms {
+					self.walk_expr(cond)?;
+					self.walk_expr(value)?;
+				}
+				self.walk_expr(elseb)?;
+			}
+			Expr::Table { fields } => {
+				for field in fields {
+					match field {
+						TableField::Array(value) => self.walk_expr(value)?,
+						TableField::Key { key, value } => {
+							self.walk_expr(key)?;
+							self.walk_expr(value)?;
+						}
+					}
+				}
+			}
+			Expr::Function { param_syms, body, .. } => {
+				self.walk_function(param_syms, body)?;
+			}
+			_ => {}
+		}
+		Ok(())
+	}
+}
+
+/// v15 compact-name pass. Names are unique only while their lexical scopes
+/// overlap, so large generated templates can reuse the two-character pool in
+/// sibling functions/blocks without capturing an outer variable.
+pub fn mangle_v15_compact(
+	block: &Block,
+	table: &mut SymTable,
+	rng: &mut Rng,
+) -> Result<(), String> {
+	let globals: HashSet<String> = table.globals.iter().cloned().collect();
+	let mut reserved = reserved_set(&globals);
+	// The v15 scaffold splices this AST inside handlers with these lexical
+	// parameters. Keep them out of the inner compact namespace so rebinding
+	// during shell resolution cannot capture the wrapper state.
+	reserved.extend(["b", "C", "p1", "p2", "p3", "E", "V"].map(str::to_string));
+	let names = CompactNames::new(rng, &reserved);
+	let mut mangler = CompactMangler { table, names };
+	mangler.walk_block(block)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::parser;
 
 	#[test]
-	fn v15_name_space_spills_after_short_names_are_full() {
-		const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
-		let mut reserved = HashSet::new();
-		for &a in ALPHA {
-			reserved.insert((a as char).to_string());
-			for &b in ALPHA {
-				reserved.insert(format!("{}{}", a as char, b as char));
+	fn v15_compact_mangler_limits_local_symbols_to_two_letters() {
+		let src = r#"
+			local top = 7
+			local function outer(arg)
+				local x = arg + top
+				do local y = x + 1; x = y end
+				do local z = x + 2; x = z end
+				local function child(q)
+					local r = q + x + top
+					return r
+				end
+				return child
+			end
+			local f = outer(1)
+			return f(2)
+		"#;
+		let mut block = parser::parse(src, true).expect("test chunk parses");
+		let mut table = crate::symtab::resolve(&mut block);
+		let mut rng = Rng::new(0x5230_3634_4e41_4d45);
+		mangle_v15_compact(&block, &mut table, &mut rng).expect("compact names fit");
+		for sym in &table.syms {
+			if sym.keep_name {
+				assert_eq!(sym.name, "self");
+				continue;
 			}
+			assert!((1..=2).contains(&sym.name.len()), "long local name: {}", sym.name);
+			assert!(sym.name.bytes().all(|b| b.is_ascii_alphabetic()), "non-letter local name: {}", sym.name);
 		}
-		let mut rng = Rng::new(0x4834_374e_414d_45);
-		let name = gen_name_v15(&mut rng, &reserved);
-		assert_eq!(name.len(), 3);
-		assert!(!reserved.contains(&name));
 	}
 }
