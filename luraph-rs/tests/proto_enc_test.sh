@@ -109,12 +109,14 @@ sys.exit(0)
 PYCHK
 	then ok=0; gf "enc" "静态 HBOOT 调用实参缺 FN/NOPA"; fi
 	# 平表/解码态/可见运行时残留必须消失（㉗：探针目标清零）。
+	# CT/CX 两字母会与随机局部名合法碰撞，不能作为文本 oracle；其旧表
+	# 行为由 H4 zero-loader 审计与下方 HQ=0 联合约束。
 	# 先剥掉 HQ 长串密文（base-94 随机字节会巧合命中任何模式）。
 	sed -E 's/\[=*\[.*\]=*\]/[[X]]/' "$ts" > "$ts.stripped"
 	for pat in "PF\[#FN\]" "PF\[idx\]" "= ENCF(" "PF = nil" "LS(BSS)" \
 		"LS(HB)" "table.concat(MH)" "_hbf" "RTFRAG = HW" \
 		"newE = function" "makefn(pf, V, upsf, S)" "run = function(pf" \
-		"DDEC = HW" "CT\[" "CX\["; do
+		"DDEC = HW"; do
 		if grep -q "$pat" "$ts.stripped"; then ok=0; gf "enc" "模板残留可见运行时/解码态形态: $pat"; fi
 	done
 	[[ "$ok" == "1" ]] && pass=$((pass+1))

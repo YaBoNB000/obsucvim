@@ -112,14 +112,14 @@ def main():
         template = (ROOT / "src/vmgen/template.rs").read_text()
         mirror = all(x in template for x in [
             "local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1",
-            "local fkm=2*((KM+qi*FQ+pf.sd*FI)%16000000)+1",
+            "local fkm=2*((KM+qi*FQ+fi*FI)%16000000)+1",
             "s0 * fpb", "fkm * st + fkc",
-            "local dp=(LB+i*LS)%24", "local dp=(LB+pf.sd*LS)%24",
+            "local dp=(LB+i*LS)%24", "local dp=(LB+fi*LS)%24",
             "u[pm[ps]+1]=pv[ps]",
-            "md = (pf.sd * {} + {}) % {}", "E.md", "register_micro_variant",
-            "local td=(TB+i*TS)%720", "q.sd*{})%720", "tm[6]",
+            "md = (fi * {} + {}) % {}", "E.md", "register_micro_variant",
+            "local td=(TB+i*TS)%720", "fi*{})%720", "tm[6]",
             "local frp=3+((qf*RQ+i*RI)%7)",
-            "local frp=3+((qi*RQ+pf.sd*RI)%7)",
+            "local frp=3+((qi*RQ+fi*RI)%7)",
             "(p-s0+1)%frp", "i%frp",
         ])
         print("== H4-5 每函数方言审计（A/B/C/D/E） ==")
