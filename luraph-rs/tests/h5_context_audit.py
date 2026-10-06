@@ -51,7 +51,7 @@ def build(seed, src, out, keys):
 
 def shard_values(m):
     ids = sorted(int(k.rsplit("_", 1)[1]) for k in m if k.startswith("MICRO_OP_MUL_"))
-    return [tuple(m[f"MICRO_OP_{kind}_{i}"] for kind in ("MUL", "ADD", "CTX")) for i in ids]
+    return [tuple(m[f"MICRO_OP_{kind}_{i}"] for kind in ("MUL", "ADD", "CTX", "MOD")) for i in ids]
 
 
 def main():
@@ -67,16 +67,18 @@ def main():
         c, mc = build(525251, src, td / "c.lua", td / "c.keys")
         deterministic = a == c and ma == mc
         va, vb = shard_values(ma), shard_values(mb)
-        affine = (3 <= len(va) <= 5 and 3 <= len(vb) <= 5
-                  and len(set(va)) == len(va) and len(set(vb)) == len(vb)
-                  and va != vb and all(1 <= x[0] <= 250 and 1 <= x[2] <= 250 for x in va + vb))
+        affine = (len(va) == len(vb) == 4
+                  and [x[3] for x in va] == [251, 241, 239, 229]
+                  and [x[3] for x in vb] == [251, 241, 239, 229]
+                  and len(set(va)) == 4 and len(set(vb)) == 4 and va != vb
+                  and all(1 <= x[0] < x[3] and 1 <= x[2] < x[3] for x in va + vb))
 
         template = (ROOT / "src/vmgen/template.rs").read_text()
         micro_shape = all(x in template for x in [
             "op_mul: u8", "op_add: u8", "op_ctx: u8",
-            "local ox=((E.vd%251)*{opctx})%251",
-            "op=(op*{opmul}+{opadd}+ox)%251",
-            '"(({}*{}+{}+ox)%251)"',
+            "local ox=((E.vd%{opmod})*{opctx})%{opmod}",
+            "op=(op*{opmul}+{opadd}+ox)%{opmod}",
+            '"(({}*{}+{}+ox)%{})"',
         ])
         mkstr_shape = all(x in template for x in [
             "+E.sk+(E.pc-1)*E.si)%65536",
@@ -94,7 +96,7 @@ def main():
 
         print("== H5-2A/B Context Dialect 审计 ==")
         print(f"[0] 同 seed 确定: {'YES' if deterministic else 'NO'}")
-        print(f"[1] 3..5 shard affine/context 三元组独立: {'YES' if affine else 'NO'}")
+        print(f"[1] 4 shard 互质模环/affine/context 独立: {'YES' if affine else 'NO'}")
         print(f"[2] 全 shard runtime affine compare: {'YES' if micro_shape and not direct_first_shard else 'NO'}")
         print(f"[3] MkStr 绑定 qf/proto/absolute PC: {'YES' if mkstr_shape else 'NO'}")
         print(f"[4] 双 seed 短字符串/闭包/变参等价: {'YES' if runtime else 'NO'} ({expected.stdout!r})")

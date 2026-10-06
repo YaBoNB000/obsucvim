@@ -731,10 +731,14 @@ struct MicroShard {
 	op_mul: u8,
 	op_add: u8,
 	op_ctx: u8,
+	op_mod: u8,
 }
 
 fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
-	let mut pool: Vec<u8> = (7..=250).collect();
+	// R060: exactly four pairwise-coprime prime rings. Restrict each code
+	// pool to its own residue field so the affine projection stays bijective.
+	let op_mod = [251u8, 241u8, 239u8, 229u8][shape as usize % 4];
+	let mut pool: Vec<u8> = (7..op_mod).collect();
 	rng.shuffle(&mut pool);
 	let codes: [u8; M_COUNT] = pool[..M_COUNT].try_into().unwrap();
 	let mut fp = vec![0usize, 1, 2];
@@ -743,9 +747,10 @@ fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
 		codes,
 		field_perm: [fp[0], fp[1], fp[2]],
 		shape,
-		op_mul: rng.int(1, 250) as u8,
-		op_add: rng.int(0, 250) as u8,
-		op_ctx: rng.int(1, 250) as u8,
+		op_mul: rng.int(1, op_mod as i64 - 1) as u8,
+		op_add: rng.int(0, op_mod as i64 - 1) as u8,
+		op_ctx: rng.int(1, op_mod as i64 - 1) as u8,
+		op_mod,
 	}
 }
 
@@ -999,8 +1004,8 @@ fn micro_shard_source(
 		.into_iter()
 		.map(|i| {
 			let expected = format!(
-				"(({}*{}+{}+ox)%251)",
-				shard.codes[i], shard.op_mul, shard.op_add
+				"(({}*{}+{}+ox)%{})",
+				shard.codes[i], shard.op_mul, shard.op_add, shard.op_mod
 			);
 			(expected, micro_op_body(i, lit, nop))
 		})
@@ -1013,7 +1018,7 @@ fn micro_shard_source(
 			let cond = match shard.shape % 3 {
 				0 => format!("op == {}", expected),
 				1 => format!("{} == op", expected),
-				_ => format!("(op-{})%251 == 0", expected),
+				_ => format!("(op-{})%{} == 0", expected, shard.op_mod),
 			};
 			format!(
 				"{} {} then {} ",
@@ -1030,12 +1035,13 @@ fn micro_shard_source(
 		logical_pos[*logical] = physical + 1;
 	}
 	format!(
-		"local function {name}(E,a,b,c,d,o,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE({blob},o)-({sm}+o*{ss})%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE({blob},ip)-({sm}+ip*{ss})%256)%256 local d2=(BYTE({blob},ip+1)-({sm}+(ip+1)*{ss})%256)%256 local d3=(BYTE({blob},ip+2)-({sm}+(ip+2)*{ss})%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} local ox=((E.vd%251)*{opctx})%251 op=(op*{opmul}+{opadd}+ox)%251 {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
+		"local function {name}(E,a,b,c,d,o,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE({blob},o)-({sm}+o*{ss})%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE({blob},ip)-({sm}+ip*{ss})%256)%256 local d2=(BYTE({blob},ip+1)-({sm}+(ip+1)*{ss})%256)%256 local d3=(BYTE({blob},ip+2)-({sm}+(ip+2)*{ss})%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} local ox=((E.vd%{opmod})*{opctx})%{opmod} op=(op*{opmul}+{opadd}+ox)%{opmod} {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
 		name = name,
 		blob = blob,
 		sm = session_mask,
 		ss = session_step,
 		opctx = shard.op_ctx,
+		opmod = shard.op_mod,
 		opmul = shard.op_mul,
 		opadd = shard.op_add,
 		op = logical_pos[0],
@@ -2162,7 +2168,7 @@ pub fn generate(
 			format!("E.w{}", operand_stream[3]),
 		]
 	};
-	let n_micro_shards = if v15 { rng.int(3, 5) as usize } else { 1 };
+	let n_micro_shards = if v15 { 4usize } else { 1 };
 	let mut micro_route_steps: Vec<usize> = (1..n_micro_shards)
 		.filter(|s| {
 			let mut a = *s;
@@ -2224,6 +2230,7 @@ pub fn generate(
 			manifest_key(&format!("MICRO_OP_MUL_{}", i), shard.op_mul as u64);
 			manifest_key(&format!("MICRO_OP_ADD_{}", i), shard.op_add as u64);
 			manifest_key(&format!("MICRO_OP_CTX_{}", i), shard.op_ctx as u64);
+			manifest_key(&format!("MICRO_OP_MOD_{}", i), shard.op_mod as u64);
 			micro_shards.push(shard);
 		}
 		// H5-1: each shard owns one packed descriptor carrier. Individual
