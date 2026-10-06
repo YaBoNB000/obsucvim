@@ -90,7 +90,7 @@ def main():
             "local fi = ((pf.sx - PM - 1) % 65521) + 1",
         ]) and "upsrc = pf.upsrc" not in template and "nparams = pf.nparams" not in template
         graph_shape = all(x in template for x in [
-            "local ct=(ci*CM2+qf*CQ2+i*CI2)%65521",
+            "local ct=(ci*CM2+qf*CQ2+i*CI2",
             "ks[j]=ct", "EP[i][km[j]] = EP[km[j+1]]",
             "makefn(E.bt[O[y]],V,ups,S)",
         ]) and "EP[i].k[" not in template and "E.k[O[y]+1]" not in template
