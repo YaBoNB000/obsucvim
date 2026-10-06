@@ -139,12 +139,12 @@ def main():
 
         chaff_valid = all(1 <= r.get("chaff", 0) <= 65521 for r in rows)
         chaff_diff = [r.get("chaff") for r in sa] != [r.get("chaff") for r in sb]
-        template_coupled = "QF[pf.sd]" in template and "local qf=(i*CF)%65521" in template
+        template_coupled = "QF[fi]" in template and "local qf=(i*CF)%65521" in template
         print(f"[7] NOP chaff 进入真实 lane 钥匙: "
               f"{'YES' if chaff_valid and chaff_diff and template_coupled else 'NO'}")
-        block_coupled = "qf * CQB" in template and "QF[pf.sd] * CQB" in template
+        block_coupled = "qf * CQB" in template and "QF[fi] * CQB" in template
         print(f"[8] NOP chaff 进入 block seed   : {'YES' if block_coupled else 'NO'}")
-        const_coupled = "qf * CQC" in template and "QF[q.sd] * CQC" in template
+        const_coupled = "qf * CQC" in template and "QF[fi] * CQC" in template
         print(f"[9] NOP chaff 进入 constant key : {'YES' if const_coupled else 'NO'}")
         micro_coupled = "CHQ*({chaff})" in template and "MICRO_CHAFF_CK" in template
         print(f"[10] NOP chaff 进入 micro checksum: {'YES' if micro_coupled else 'NO'}")

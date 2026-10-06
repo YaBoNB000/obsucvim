@@ -69,9 +69,19 @@ pub fn gen_name(rng: &mut Rng, reserved: &HashSet<String>) -> String {
 /// locals match the sample's name lengths (fingerprints F14/F21).
 fn gen_name_v15(rng: &mut Rng, reserved: &HashSet<String>) -> String {
 	const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+	let mut attempts = 0usize;
 	loop {
-		// sample names are overwhelmingly 1 char; keep 80/20
-		let len = if rng.int(0, 99) < 80 { 1 } else { 2 };
+		// Sample names are overwhelmingly 1 char; keep 80/20 while the
+		// 1..2-character namespace has room. Large VM templates can exceed
+		// its hard 2862-name capacity, so bounded collision retries spill into
+		// a three-character namespace instead of looping forever.
+		let len = if attempts >= 32 {
+			3
+		} else if rng.int(0, 99) < 80 {
+			1
+		} else {
+			2
+		};
 		let mut s = String::new();
 		for _ in 0..len {
 			s.push(ALPHA[rng.int(0, 52) as usize] as char);
@@ -79,6 +89,7 @@ fn gen_name_v15(rng: &mut Rng, reserved: &HashSet<String>) -> String {
 		if !reserved.contains(&s) {
 			return s;
 		}
+		attempts += 1;
 	}
 }
 
@@ -104,5 +115,26 @@ pub fn mangle(table: &mut SymTable, rng: &mut Rng, v15: bool) {
 		if let Some(name) = name {
 			table.syms[i].name = name;
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn v15_name_space_spills_after_short_names_are_full() {
+		const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+		let mut reserved = HashSet::new();
+		for &a in ALPHA {
+			reserved.insert((a as char).to_string());
+			for &b in ALPHA {
+				reserved.insert(format!("{}{}", a as char, b as char));
+			}
+		}
+		let mut rng = Rng::new(0x4834_374e_414d_45);
+		let name = gen_name_v15(&mut rng, &reserved);
+		assert_eq!(name.len(), 3);
+		assert!(!reserved.contains(&name));
 	}
 }

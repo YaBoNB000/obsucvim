@@ -858,14 +858,14 @@ fn micro_compare_body(native: &str, meta: &str, swapped: bool, lit: &MicroLits) 
 }
 
 fn call_slot(logical: usize, family: usize) -> String {
-	// Each Call family receives a different rotation, while E.vd makes the
-	// physical slots differ per prototype and E.cs differs per build.
-	format!("E[25+((E.vd+{}*E.cs)%17)]", logical + family * 9)
+	// Per-function sparse base + per-build stride + disjoint family pages.
+	// This avoids both a fixed descriptor table and a shared Call layout.
+	format!("E[E.cb+{}+{}*E.cs]", family * 256, logical)
 }
 
 fn frame_slot(logical: usize) -> String {
-	// Return/last-call state lives in a disjoint per-function permutation.
-	format!("E[42+((E.vd+{}*E.cs)%17)]", logical)
+	// Return/last-call state occupies a separate sparse per-function page.
+	format!("E[E.rb+{}*E.cs]", logical)
 }
 
 fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
@@ -1996,7 +1996,7 @@ pub fn generate(
 		// 慢机；100 倍 + 连续 2 窗 → 不误伤偶发 GC 停顿。
 		let frame_cleanup = "local ws={E.ww,E.w0,E.w1,E.w2,E.w3} for wl=1,5 do local wt=ws[wl] if wt then for wx=1,#wt do wt[wx]=nil end end end if E.bq then for qi=1,#E.bq do local bc=E.bch[E.bq[qi]] if bc then for wl=1,5 do local wt=bc[wl] if wt then for wx=1,#wt do wt[wx]=nil end bc[wl]=nil end end end end end E.bch={} E.bq={} E.ww,E.w0,E.w1,E.w2,E.w3=nil,nil,nil,nil,nil E.br=nil E.er=nil ";
 		Some(format!(
-			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx ~= nil then\n        local ck = (E.callx - E.vd) % 17\n        local cx = ck == 1 and XE1 or ck == 2 and XE2 or ck == 3 and XE3 or XE4\n        E.callx = nil\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 SLTC = SLTC + 7777777 end end end\n      if E.done ~= nil then local _fo={out_slot} local _fn={total_slot} {cleanup}for _wi=25,58 do E[_wi]=nil end return U(_fo, 1, _fn) end\n    end",
+			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx ~= nil then\n        local ck = (E.callx - E.vd) % 17\n        local cx = ck == 1 and XE1 or ck == 2 and XE2 or ck == 3 and XE3 or XE4\n        E.callx = nil\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then SLT = SLT + 7777777 SLTC = SLTC + 7777777 end end end\n      if E.done ~= nil then local _fo={out_slot} local _fn={total_slot} {cleanup}for _wi=0,3 do E[E.rb+_wi*E.cs]=nil end return U(_fo, 1, _fn) end\n    end",
 			budget_e,
 			out_slot = frame_slot(2),
 			total_slot = frame_slot(3),
@@ -2225,7 +2225,7 @@ pub fn generate(
 		"AV", "HW2",
 	];
 	let e_table = format!(
-		"{{{}, pc = 1, b = 0, callx = nil, done = nil, vd = vd, cs = CS, tp = TP, md = (fi * {} + {}) % {}}}",
+		"{{{}, pc = 1, b = 0, callx = nil, done = nil, vd = vd, cs = CS, cb = 25 + (vd % 4096) * 2048, rb = 1305 + (vd % 4096) * 2048, tp = TP, md = (fi * {} + {}) % {}}}",
 		env_names.join(", "), micro_route_step, micro_route_base, n_micro_shards
 	);
 	let hfrag: String;
@@ -2315,8 +2315,9 @@ pub fn generate(
 			);
 			let post_tail = chain_epilogue(rng, &wk);
 			micro_fill.push_str(&format!(
-				"CX{executor}=function(E) local _r=E.tp({func}(E[21]({args},1,{nargs}))) {route}; for _ci=25,41 do E[_ci]=nil end {tail} end ",
+				"CX{executor}=function(E) local _r=E.tp({func}(E[21]({args},1,{nargs}))) {route}; for _ci=0,8 do E[E.cb+{page}+_ci*E.cs]=nil end {tail} end ",
 				executor = family,
+				page = family * 256,
 				func = z[0],
 				args = z[1],
 				nargs = z[2],
@@ -2619,7 +2620,15 @@ pub fn generate(
 		manifest_key("WINDOW_RESEED_B", window_block as u64);
 		// H4-7B: prime-17 slot permutation for Call/Return frame protocols.
 		let call_slot_step = ((rekey[0] as u64 + tag_step as u64 + chaff_fn as u64) % 16 + 1) as u8;
-		let call_slot_step_e = obf_num(call_slot_step as u64, rng);
+		// Keep H4-7 presentation randomization off the compiler/template main
+		// RNG. Advancing that stream can select pathological outer flattening
+		// layouts for otherwise established seeds.
+		let h7_seed = qf_checksum as u64
+			^ (chaff_mul as u64).rotate_left(11)
+			^ (tag_base as u64).rotate_left(23)
+			^ (window_mul as u64).rotate_left(37);
+		let mut h7_rng = Rng::new(h7_seed ^ 0x4834_3744_4941_4c45);
+		let call_slot_step_e = obf_num(call_slot_step as u64, &mut h7_rng);
 		manifest_key("CALL_SLOT_STEP", call_slot_step as u64);
 		// H4-7A1: closure metadata uses a separate per-function family.  The
 		// encoded prototype keeps only masked parameter/upvalue descriptors;
@@ -2638,7 +2647,7 @@ pub fn generate(
 		];
 		let metadata_e: Vec<String> = metadata
 			.iter()
-			.map(|v| obf_num(*v as u64, rng))
+			.map(|v| obf_num(*v as u64, &mut h7_rng))
 			.collect();
 		for (name, value) in [
 			"UP_Q", "UP_I", "UP_M", "UP_A", "NP_Q", "NP_I",
@@ -2649,6 +2658,17 @@ pub fn generate(
 		{
 			manifest_key(&format!("METADATA_{}", name), *value as u64);
 		}
+		// H4-7C: tag, numeric payload and string payload no longer advance the
+		// same family. Each constant remains independently seeded by index.
+		let const_num_step = ((ckj * 257 + metadata[4] as i64 * 17 + 1_048_576) % (KEY_MOD - 1)) + 1;
+		let mut const_str_step = ((ckj * 263 + metadata[5] as i64 * 19 + 2_097_152) % (KEY_MOD - 1)) + 1;
+		if const_str_step == const_num_step {
+			const_str_step = const_str_step % (KEY_MOD - 1) + 1;
+		}
+		let const_num_step_e = obf_num(const_num_step as u64, &mut h7_rng);
+		let const_str_step_e = obf_num(const_str_step as u64, &mut h7_rng);
+		manifest_key("CONST_NUM_STEP", const_num_step as u64);
+		manifest_key("CONST_STR_STEP", const_str_step as u64);
 		let c_block_enc = if consts_safe {
 			// ㊼: 每常量独立钥匙流——stj = (基线 + j·CKJ) 再走两步 LCG
 			// 扩散；常量间字节流不再顺序相连（编码侧，BSS 运行期）。
@@ -2662,7 +2682,7 @@ pub fn generate(
 				String::new()
 			};
 			let mut s = String::from(
-				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 for j = 1, m do co[j] = si local stj = (PS + i * PT + SALT + j * CKJ + qf * CQC",
+				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 for j = 1, m do co[j] = si local cbase = (PS + i * PT + SALT + qf * CQC",
 			);
 			s.push_str(&cenv_off);
 			// 53: 常量面独立系数族偏移（xtec = token*xm3+xm4）；块面仍用
@@ -2670,7 +2690,7 @@ pub fn generate(
 			// 期望值, 解码侧每帧探针折叠, 忠实环境逐位对齐）。
 			s.push_str(&xtec_off);
 			s.push_str(
-				") % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local v = Ct[j] local tv = TYP(v) if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + stj else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stj = (KM * stj + KC) % 268435456 csb[si] = (BYTE(ns, cb) + stj % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stj = (KM * stj + KC) % 268435456 csb[si] = (BYTE(v, cb) + stj % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end end",
+				") % 268435456 local v=Ct[j] local tv=TYP(v) local stj=(cbase+j*CKJ)%268435456 stj=(KM*stj+KC)%268435456 stj=(KM*stj+KC)%268435456 local pj=tv==\"string\" and CSJ or CNJ local stp=(cbase+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + stp else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stp = (KM * stp + KC) % 268435456 csb[si] = (BYTE(ns, cb) + stp % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stp = (KM * stp + KC) % 268435456 csb[si] = (BYTE(v, cb) + stp % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end end",
 			);
 			s
 		} else {
@@ -2813,7 +2833,7 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS)%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2)%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA)%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA)%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS)%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2)%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA)%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA)%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2850,6 +2870,8 @@ pub fn generate(
 			cm2 = metadata_e[7],
 			cq2 = metadata_e[8],
 			ci2 = metadata_e[9],
+			cnj = const_num_step_e,
+			csj = const_str_step_e,
 			cw = closure_cond,
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
@@ -3008,7 +3030,7 @@ pub fn generate(
 				base_env_s
 			));
 			s.push_str(
-				"local SCH = (\"\")[\"char\"] local raw = {ct,cn,csb,csl,co} local C = {[0]=raw} local done = {} local MT = {} MT.__index = function(t, j) if j == 0 then return rawget(t, 0) end if done[j] then return rawget(t, j) end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local ty = (ct[j] - stj) % 65536 local v if ty == tm[2] then v = cn[j] - stj elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" for x = 1, l do stj = (KM * stj + KC) % 268435456 s = s .. SCH((csb[si] - stj % 256) % 256) si = si + 1 end if ty == tm[3] then v = s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true rawset(t, j, v) return v end return setmetatable(C, MT) end",
+				"local SCH = (\"\")[\"char\"] local C = {} local done = {} local MT = {} MT.__index = function(t, j) if done[j] then return rawget(t, j) end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local ty = (ct[j] - stj) % 65536 local pj=ty==tm[3] and CSJ or CNJ local stp=(base+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local v if ty == tm[2] then v = cn[j] - stp elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" for x = 1, l do stp = (KM * stp + KC) % 268435456 s = s .. SCH((csb[si] - stp % 256) % 256) si = si + 1 end if ty == tm[3] then return s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true rawset(t, j, v) return v end return setmetatable(C, MT) end",
 			);
 			s
 		} else {
@@ -3172,7 +3194,7 @@ pub fn generate(
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local CNJ,CSJ={cnj},{csj} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
 			qf = qf_expected,
@@ -3182,6 +3204,8 @@ pub fn generate(
 			wm = window_mul_e,
 			wb = window_block_e,
 			cs = call_slot_step_e,
+			cnj = const_num_step_e,
+			csj = const_str_step_e,
 			fq = dialect_e[0],
 			fi = dialect_e[1],
 			kq = dialect_e[2],
@@ -3250,6 +3274,13 @@ pub fn generate(
 			std::collections::HashMap::new();
 		let mut frag_used: std::collections::HashSet<String> =
 			std::collections::HashSet::new();
+		// Preserve the pre-H4-7 sanitizer RNG schedule. These retired call-field
+		// spellings are reserved but no longer carry runtime protocol state.
+		for field in ["cf", "ca", "cn", "oa", "ob", "oc2", "od", "ctt", "cnt"] {
+			let mapped = sanitize_name(rng, &frag_reserved, &frag_used);
+			frag_used.insert(mapped.clone());
+			frag_map.insert(field.to_string(), mapped);
+		}
 		// BSS is static but must participate in the same per-build identifier/
 		// field dialect as RT. Sanitize it first so RT adopts its field map; the
 		// resulting closure is passed once through the vault and then destroyed.

@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 P0/H4-4/H4-5/H4-6 已闭环；块窗口重掩码与主动销毁完成；内部 loader 0 次**
+> 状态：**H4 P0/H4-4/H4-5/H4-6/H4-7 已闭环；Closure/调用/常量去中心化完成；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -1040,6 +1040,49 @@ H4-6 单块窗口、重播种与主动销毁至此闭环。下一阶段进入 H4
 - 不把完整常量池放进 metatable 的 `[0]` 或固定隐藏槽；
 - 不用“加密表 + 单 getter”替换现有分散结构。
 
+### H4-7 已落地（2026-10-06）
+
+H4-7 按四个独立提交边界完成：
+
+- **H4-7A1**：`nparams` 与 upvalue descriptor 不再以 `pf.nparams/pf.upsrc`
+  长期明文保存；BSS 用每函数 `qf + proto index` 方言编码，`makefn` 在创建
+  closure 时逐项恢复 descriptor，使用后立即清除局部解码值；
+- **H4-7A2**：prototype id 改为模 `65521` 的掩码字段；Closure 的 child id
+  在 BSS 一次性窗口内改写为父函数专属 token，child prototype 直接散布在
+  父 prototype 的数字 token 槽，不再存在统一 `pf.k` 子图；临时 link map
+  完成装配后逐项销毁；
+- **H4-7B**：Call/CallE/CallM/CallT 的函数、参数、计数和 operand snapshot
+  按“每函数稀疏基址 × 每构建 stride × Call family 独立页”散布到帧的数字槽；
+  四个 executor 仍保持独立，不新增统一 wrapper；Return/last-call 状态使用
+  另一组不重叠数字页；Vararg table 逐函数循环移位且 count 掩码；
+- **H4-7C**：constant tag、numeric payload、string payload 使用三条独立的
+  每索引钥匙族；字符串在 `LoadK` 使用点物化后直接返回，不写入共享明文
+  constant cache；删除 metatable `[0]` 完整 encrypted-pool 隐藏槽，数字与
+  布尔仍可按帧缓存。
+
+H4-7 增加局部变量后，大原型语料超过 v15 原 `53 + 53² = 2862` 个短名字的
+硬上限；mangler 现以 32 次有界碰撞重试后进入三字符空间，避免构建器永久
+自旋。小型构建仍保持原 1/2 字符分布。
+
+新增 `h7_decentralization_audit.py`，验证 metadata 钥匙跨构建重掷、明文字段
+消失、child token 图、Call/Return/Vararg 方言、常量流分离、字符串无共享
+缓存，以及双 seed 闭包/递归/变参运行等价。
+
+结果：
+
+```text
+cargo test：28 passed / 0 failed / 1 ignored
+run_tests：169/169
+run_presets：370/370
+multiseed：FAIL=0
+H4 ZERO-LOADER / H4-5 / H4-6 / H4-7：PASS
+防御审计：PASS 21 / FAIL 0
+R056：193407B，m=9878，r=5221
+```
+
+H4-7 至此闭环。下一阶段为 H4-8 分散语义投毒；纯离线完整动态跟踪的理论
+边界不变。
+
 ---
 
 ## H4-8：完整性失败只做分散语义投毒（P2）
@@ -1150,9 +1193,9 @@ microcode checksum 四面全部完成；删除 Nop chaff 会在后续真实解�
 
 H4-5 五类函数方言、H4-6A 缓存上限/淘汰、H4-6B 重掩码/短窗口均已完成。
 
-## 阶段 G：H4-7/H4-8 收口
+## 阶段 G：H4-7/H4-8 收口（H4-7 ✅，H4-8 待实施）
 
-调用/closure/常量去中心化与分散语义投毒。
+H4-7 调用/closure/常量去中心化已完成；下一提交边界为 H4-8 分散语义投毒。
 
 ---
 
@@ -1172,6 +1215,7 @@ python3 luraph-rs/tests/h3_noise_audit.py
 python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
 python3 luraph-rs/tests/h5_dialect_audit.py
 python3 luraph-rs/tests/h6_window_audit.py
+python3 luraph-rs/tests/h7_decentralization_audit.py
 bash luraph-rs/tests/defense_audit.sh
 ```
 
