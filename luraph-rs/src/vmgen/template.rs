@@ -726,6 +726,11 @@ struct MicroShard {
 	/// physical field -> logical field (0=op, 1=x, 2=y)
 	field_perm: [usize; 3],
 	shape: u8,
+	/// H5-2A: every shard compares a different affine/context projection
+	/// of its micro opcode. No shard retains a direct `op == literal` map.
+	op_mul: u8,
+	op_add: u8,
+	op_ctx: u8,
 }
 
 fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
@@ -738,6 +743,9 @@ fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
 		codes,
 		field_perm: [fp[0], fp[1], fp[2]],
 		shape,
+		op_mul: rng.int(1, 250) as u8,
+		op_add: rng.int(0, 250) as u8,
+		op_ctx: rng.int(1, 250) as u8,
 	}
 }
 
@@ -933,7 +941,7 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		),
 		M_NOP => nop.to_string(),
 		M_MKSTR => format!(
-			"local ms=({mk1}*O[1]+{mk2})%65536 local q1=(O[2]-ms)%65536 local q2=(O[3]-ms)%65536 local q3=(O[4]-ms)%65536 local n=FLOOR(q3/256) local q={{q1%256,FLOOR(q1/256),q2%256,FLOOR(q2/256),q3%256}} local ch={empty}[{char_}] local s={empty} for j=1,n do s=s..ch(q[j]) end V[O[1]+1]=s",
+			"local ms=({mk1}*O[1]+{mk2}+E.sk+(E.pc-1)*E.si)%65536 local q1=(O[2]-ms)%65536 local q2=(O[3]-ms)%65536 local q3=(O[4]-ms)%65536 local n=FLOOR(q3/256) local q={{q1%256,FLOOR(q1/256),q2%256,FLOOR(q2/256),q3%256}} local ch={empty}[{char_}] local s={empty} for j=1,n do s=s..ch(q[j]) end V[O[1]+1]=s",
 			mk1 = lit.mk1, mk2 = lit.mk2, empty = lit.empty, char_ = lit.char_,
 		),
 		M_RETURN => {
@@ -974,20 +982,6 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	}
 }
 
-fn micro_tree(items: &[(u8, String)]) -> String {
-	if items.len() == 1 {
-		return items[0].1.clone();
-	}
-	let mid = items.len() / 2;
-	let pivot = items[mid].0;
-	format!(
-		"if op < {} then {} else {} end",
-		pivot,
-		micro_tree(&items[..mid]),
-		micro_tree(&items[mid..])
-	)
-}
-
 fn micro_shard_source(
 	name: &str,
 	blob: &str,
@@ -1001,57 +995,49 @@ fn micro_shard_source(
 ) -> String {
 	let mut kinds: Vec<usize> = used.iter().copied().collect();
 	kinds.sort_unstable();
-	let mut items: Vec<(u8, String)> = kinds
+	let mut items: Vec<(String, String)> = kinds
 		.into_iter()
-		.map(|i| (shard.codes[i], micro_op_body(i, lit, nop)))
+		.map(|i| {
+			let expected = format!(
+				"(({}*{}+{}+ox)%251)",
+				shard.codes[i], shard.op_mul, shard.op_add
+			);
+			(expected, micro_op_body(i, lit, nop))
+		})
 		.collect();
 	rng.shuffle(&mut items);
-	let dispatch = if items.is_empty() {
-		String::new()
-	} else {
-		match shard.shape % 3 {
-		0 => items
-			.iter()
-			.enumerate()
-			.map(|(i, (code, body))| {
-				format!(
-					"{} op == {} then {} ",
-					if i == 0 { "if" } else { "elseif" },
-					code,
-					body
-				)
-			})
-			.collect::<String>()
-			+ "end",
-		1 => items
-			.iter()
-			.enumerate()
-			.map(|(i, (code, body))| {
-				format!(
-					"{} {} == op then {} ",
-					if i == 0 { "if" } else { "elseif" },
-					code,
-					body
-				)
-			})
-			.collect::<String>()
-			+ "end",
-		_ => {
-			items.sort_by_key(|x| x.0);
-			micro_tree(&items)
-		}
-		}
-	};
+	let dispatch = items
+		.iter()
+		.enumerate()
+		.map(|(i, (expected, body))| {
+			let cond = match shard.shape % 3 {
+				0 => format!("op == {}", expected),
+				1 => format!("{} == op", expected),
+				_ => format!("(op-{})%251 == 0", expected),
+			};
+			format!(
+				"{} {} then {} ",
+				if i == 0 { "if" } else { "elseif" },
+				cond,
+				body
+			)
+		})
+		.collect::<String>()
+		+ "end";
+
 	let mut logical_pos = [0usize; 3];
 	for (physical, logical) in shard.field_perm.iter().enumerate() {
 		logical_pos[*logical] = physical + 1;
 	}
 	format!(
-		"local function {name}(E,a,b,c,d,o,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE({blob},o)-({sm}+o*{ss})%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE({blob},ip)-({sm}+ip*{ss})%256)%256 local d2=(BYTE({blob},ip+1)-({sm}+(ip+1)*{ss})%256)%256 local d3=(BYTE({blob},ip+2)-({sm}+(ip+2)*{ss})%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
+		"local function {name}(E,a,b,c,d,o,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE({blob},o)-({sm}+o*{ss})%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE({blob},ip)-({sm}+ip*{ss})%256)%256 local d2=(BYTE({blob},ip+1)-({sm}+(ip+1)*{ss})%256)%256 local d3=(BYTE({blob},ip+2)-({sm}+(ip+2)*{ss})%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} local ox=((E.vd%251)*{opctx})%251 op=(op*{opmul}+{opadd}+ox)%251 {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
 		name = name,
 		blob = blob,
 		sm = session_mask,
 		ss = session_step,
+		opctx = shard.op_ctx,
+		opmul = shard.op_mul,
+		opadd = shard.op_add,
 		op = logical_pos[0],
 		x = logical_pos[1],
 		y = logical_pos[2],
@@ -2211,7 +2197,7 @@ pub fn generate(
 		"AV", "HW2",
 	];
 	let e_table = format!(
-		"{{{}, pc = 1, b = 0, callx = nil, done = nil, vd = vd, cs = CS, cb = 25 + (vd % 4096) * 2048, rb = 1305 + (vd % 4096) * 2048, tp = TP, pn = 0, pd = 2 + ((QF[fi] * RQ + fi * RI + vd) % 15), pg = pg, mx = {}, md = (fi * {} + {}) % {}}}",
+		"{{{}, pc = 1, b = 0, callx = nil, done = nil, vd = vd, cs = CS, cb = 25 + (vd % 4096) * 2048, rb = 1305 + (vd % 4096) * 2048, tp = TP, sk = (QF[fi] * MM + fi * MA) % 65536, si = NI, pn = 0, pd = 2 + ((QF[fi] * RQ + fi * RI + vd) % 15), pg = pg, mx = {}, md = (fi * {} + {}) % {}}}",
 		env_names.join(", "), n_micro_shards, micro_route_step, micro_route_base, n_micro_shards
 	);
 	let hfrag: String;
@@ -2234,7 +2220,11 @@ pub fn generate(
 			vec![std::collections::HashSet::new(); n_micro_shards];
 		let mut micro_fill = String::new();
 		for i in 0..n_micro_shards {
-			micro_shards.push(new_micro_shard(rng, i as u8));
+			let shard = new_micro_shard(rng, i as u8);
+			manifest_key(&format!("MICRO_OP_MUL_{}", i), shard.op_mul as u64);
+			manifest_key(&format!("MICRO_OP_ADD_{}", i), shard.op_add as u64);
+			manifest_key(&format!("MICRO_OP_CTX_{}", i), shard.op_ctx as u64);
+			micro_shards.push(shard);
 		}
 		// H5-1: each shard owns one packed descriptor carrier. Individual
 		// `{program, mask, step}` tables no longer exist in emitted Lua.
@@ -2448,6 +2438,15 @@ pub fn generate(
                 .join(" or ")
         } else {
             format!("Wt[j]=={}", map.to_wire[0][closure_idx])
+        };
+        let mkstr_idx = OP_NAMES.iter().position(|n| *n == "MkStr").unwrap();
+        let mkstr_cond = if v15 {
+            (0..4)
+                .map(|tt| format!("Wt[j]=={}", map.to_wire[tt][mkstr_idx]))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        } else {
+            format!("Wt[j]=={}", map.to_wire[0][mkstr_idx])
         };
 		// 常量编码块（类型折叠进掩码类型槽：0=nil 1=整数加性 2=字符串
 		// 3=true 4=false 5=tostring 往返；字节逐个掩码）
@@ -2857,7 +2856,7 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS+(BD%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(BD%65521)*CI2)%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB + ((BD%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(BD%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(BD%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs,pcs,pds=1,2,3 for ps=1,4 do if pm[ps]==1 then pbs=ps elseif pm[ps]==2 then pcs=ps elseif pm[ps]==3 then pds=ps end end local td=(TB+i*TS+(BD%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(BD%65521)*CI2)%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci elseif {mw} then local sm=(qf*MM+i*MA+j*NI)%65536 ST[pbs][j]=(ST[pbs][j]+sm)%65536 ST[pcs][j]=(ST[pcs][j]+sm)%65536 ST[pds][j]=(ST[pds][j]+sm)%65536 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB + ((BD%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(BD%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(BD%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2897,6 +2896,7 @@ pub fn generate(
 			cnj = const_num_step_e,
 			csj = const_str_step_e,
 			cw = closure_cond,
+			mw = mkstr_cond,
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
 			xteoff = xte_off,
