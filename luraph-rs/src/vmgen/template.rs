@@ -184,7 +184,7 @@ use super::manifest_key;
 /// Indexes go through obf_num as before. All arithmetic stays exact in
 /// doubles.
 const KEY_MOD: i64 = 268_435_456; // 2^28
-const KT_ENTRIES: usize = 64;
+const KT_ENTRIES: usize = 96;
 
 struct KeyEmitter {
 	/// table values; None = still free (filled randomly at emission)
@@ -990,6 +990,9 @@ fn micro_tree(items: &[(u8, String)]) -> String {
 
 fn micro_shard_source(
 	name: &str,
+	blob: &str,
+	session_mask: &str,
+	session_step: &str,
 	shard: &MicroShard,
 	used: &std::collections::HashSet<usize>,
 	lit: &MicroLits,
@@ -1044,8 +1047,11 @@ fn micro_shard_source(
 		logical_pos[*logical] = physical + 1;
 	}
 	format!(
-		"local function {name}(E,a,b,c,d,P,m,k,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local ip=1 while ip<=#P do local d1=(P[ip]-(m+ip*k)%256)%256 local d2=(P[ip+1]-(m+(ip+1)*k)%256)%256 local d3=(P[ip+2]-(m+(ip+2)*k)%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
+		"local function {name}(E,a,b,c,d,o,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE({blob},o)-({sm}+o*{ss})%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE({blob},ip)-({sm}+ip*{ss})%256)%256 local d2=(BYTE({blob},ip+1)-({sm}+(ip+1)*{ss})%256)%256 local d3=(BYTE({blob},ip+2)-({sm}+(ip+2)*{ss})%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
 		name = name,
+		blob = blob,
+		sm = session_mask,
+		ss = session_step,
 		op = logical_pos[0],
 		x = logical_pos[1],
 		y = logical_pos[2],
@@ -1056,35 +1062,24 @@ fn micro_shard_source(
 fn encode_micro_program(
 	recipe: &[(usize, u8, u8)],
 	shard: &MicroShard,
-	mask: u8,
-	step: u8,
-) -> (String, Vec<u8>) {
-	let mut stored = Vec::with_capacity(recipe.len() * 3);
+) -> Vec<u8> {
+	let mut plain = Vec::with_capacity(recipe.len() * 3);
 	for &(kind, x, y) in recipe {
 		let logical = [shard.codes[kind], x, y];
 		for &logical_index in &shard.field_perm {
-			let plain = logical[logical_index];
-			let pos = stored.len() + 1;
-			stored.push(
-				((plain as usize + mask as usize + pos * step as usize) % 256) as u8,
-			);
+			plain.push(logical[logical_index]);
 		}
 	}
-	let text = stored
-		.iter()
-		.map(|x| x.to_string())
-		.collect::<Vec<_>>()
-		.join(",");
-	(text, stored)
+	plain
 }
 
 #[derive(Clone)]
 struct MicroProgramRef {
 	shard: usize,
-	index: usize,
-	program: String,
-	mask: u8,
-	step: u8,
+	/// 1-based byte offset of this descriptor's length header inside its
+	/// shard carrier. The Lua runtime sees only this offset, never a
+	/// `{program, mask, step}` descriptor table.
+	offset: usize,
 }
 
 fn register_micro_variant(
@@ -1092,37 +1087,28 @@ fn register_micro_variant(
 	shard_index: usize,
 	micro_shards: &[MicroShard],
 	micro_used: &mut [std::collections::HashSet<usize>],
-	micro_program_counts: &mut [usize],
-	micro_checksum: &mut u64,
+	micro_carriers: &mut [Vec<u8>],
 	rng: &mut Rng,
 ) -> MicroProgramRef {
 	for &(kind, _, _) in recipe {
 		micro_used[shard_index].insert(kind);
 	}
-	let mask = rng.int(1, 255) as u8;
-	let step = (rng.int(1, 255) | 1) as u8;
-	let (program, stored) =
-		encode_micro_program(recipe, &micro_shards[shard_index], mask, step);
-	micro_program_counts[shard_index] += 1;
-	let index = micro_program_counts[shard_index];
-	for value in std::iter::once(mask)
-		.chain(std::iter::once(step))
-		.chain(stored.into_iter())
-	{
-		*micro_checksum = (*micro_checksum * 257 + value as u64) % KEY_MOD as u64;
+	let plain = encode_micro_program(recipe, &micro_shards[shard_index]);
+	assert!(plain.len() <= 255, "micro descriptor too large");
+	let carrier = &mut micro_carriers[shard_index];
+	let offset = carrier.len() + 1;
+	carrier.push(plain.len() as u8);
+	carrier.extend_from_slice(&plain);
+	// Preserve the established RNG schedule while making the draws carry
+	// real layout entropy: each descriptor gets 0..3 authenticated padding
+	// bytes which are skipped by its explicit length header.
+	let pad_seed = rng.int(1, 255) as u8;
+	let pad_step = (rng.int(1, 255) | 1) as u8;
+	let pad_len = (pad_seed % 4) as usize;
+	for i in 0..pad_len {
+		carrier.push(pad_seed.wrapping_add((i as u8).wrapping_mul(pad_step)));
 	}
-	MicroProgramRef { shard: shard_index, index, program, mask, step }
-}
-
-fn micro_variant_assign(v: &MicroProgramRef) -> String {
-	format!(
-		"_md{shard}[{index}]={{{{{program}}},{mask},{step}}} _mo[#_mo+1]=_md{shard}[{index}] ",
-		shard = v.shard,
-		index = v.index,
-		program = v.program,
-		mask = v.mask,
-		step = v.step,
-	)
+	MicroProgramRef { shard: shard_index, offset }
 }
 
 fn micro_variant_dispatch(
@@ -1148,10 +1134,10 @@ fn micro_variant_dispatch(
 			format!("elseif {}==E.md", v.shard)
 		};
 		out.push_str(&format!(
-			"{cond} then local _d=_md{shard}[{index}] _mx{shard}({head},_d[1],_d[2],_d[3]{tail}) ",
+			"{cond} then _mx{shard}({head},{offset}{tail}) ",
 			cond = cond,
 			shard = v.shard,
-			index = v.index,
+			offset = v.offset,
 			head = head_args,
 			tail = tail_args,
 		));
@@ -2250,8 +2236,9 @@ pub fn generate(
 		for i in 0..n_micro_shards {
 			micro_shards.push(new_micro_shard(rng, i as u8));
 		}
-		let mut micro_program_counts = vec![0usize; n_micro_shards];
-		let mut micro_checksum: u64 = 0;
+		// H5-1: each shard owns one packed descriptor carrier. Individual
+		// `{program, mask, step}` tables no longer exist in emitted Lua.
+		let mut micro_carriers: Vec<Vec<u8>> = vec![Vec::new(); n_micro_shards];
 		for (name, wire) in &items {
 			if let Some(recipe) = micro_recipe(name) {
 				let mut variants = Vec::with_capacity(n_micro_shards);
@@ -2261,11 +2248,9 @@ pub fn generate(
 						shard,
 						&micro_shards,
 						&mut micro_used,
-						&mut micro_program_counts,
-						&mut micro_checksum,
+						&mut micro_carriers,
 						rng,
 					);
-					micro_fill.push_str(&micro_variant_assign(&v));
 					variants.push(v);
 				}
 				let micro_tail = if name == "Return" {
@@ -2298,11 +2283,9 @@ pub fn generate(
 					shard,
 					&micro_shards,
 					&mut micro_used,
-					&mut micro_program_counts,
-					&mut micro_checksum,
+					&mut micro_carriers,
 					rng,
 				);
-				micro_fill.push_str(&micro_variant_assign(&v));
 				post_variants.push(v);
 			}
 			let family = ci + 1;
@@ -2333,11 +2316,9 @@ pub fn generate(
 					shard,
 					&micro_shards,
 					&mut micro_used,
-					&mut micro_program_counts,
-					&mut micro_checksum,
+					&mut micro_carriers,
 					rng,
 				);
-				micro_fill.push_str(&micro_variant_assign(&v));
 				variants.push(v);
 			}
 			let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng);
@@ -2347,12 +2328,56 @@ pub fn generate(
 				route = route,
 			));
 		}
-		let micro_assignments = std::mem::take(&mut micro_fill);
-		micro_fill.push_str("local _mo={} ");
+		let micro_wrappers = std::mem::take(&mut micro_fill);
+		let mut micro_checksum: u64 = 0;
+		for carrier in &micro_carriers {
+			for &value in carrier {
+				micro_checksum = (micro_checksum * 257 + value as u64) % KEY_MOD as u64;
+			}
+		}
+		// H5-1 P0: one at-rest encrypted carrier per shard. Boot converts it
+		// scalar-by-scalar into a SALT/CHQ-sealed string; neither a full plain
+		// descriptor nor a `{program,mask,step}` array is materialized. The
+		// static carrier and its temporary build-key state are immediately
+		// discarded after resealing.
+		micro_fill.push_str("local _mc=0 ");
 		for i in 0..n_micro_shards {
-			micro_fill.push_str(&format!("local _md{}={{}} ", i));
+			let at_km = (rng.int(1_048_577, 33_000_001) | 1) as i64;
+			let at_kc = rng.int(1_048_576, 268_000_000) as i64;
+			let at_seed = rng.int(1_048_576, 268_435_455) as i64;
+			let sess_coef = rng.int(1, 255) as i64;
+			let sess_step = (rng.int(1, 255) | 1) as i64;
+			let mut state = at_seed as u64;
+			let mut encrypted = micro_carriers[i].clone();
+			for byte in &mut encrypted {
+				state = (at_km as u64 * state + at_kc as u64) % KEY_MOD as u64;
+				*byte = byte.wrapping_add(fold_key(state));
+			}
+			let km_e = ke.key_expr(at_km, None, rng);
+			let kc_e = ke.key_expr(at_kc, None, rng);
+			let seed_e = ke.key_expr(at_seed, None, rng);
+			let coef_e = obf_num(sess_coef as u64, rng);
+			let step_e = obf_num(sess_step as u64, rng);
+			manifest_key(&format!("MICRO_AT_KM_{}", i), at_km as u64);
+			manifest_key(&format!("MICRO_AT_KC_{}", i), at_kc as u64);
+			manifest_key(&format!("MICRO_AT_SEED_{}", i), at_seed as u64);
+			manifest_key(&format!("MICRO_SESSION_COEF_{}", i), sess_coef as u64);
+			manifest_key(&format!("MICRO_SESSION_STEP_{}", i), sess_step as u64);
+			micro_fill.push_str(&format!(
+				"local _mb{shard} local _ms{shard}=(SALT%256+(CHQ%256)*({coef})+{shard}*17)%256 local _mt{shard}=({sstep}) do local _src={carrier} local _out=\"\" local _ch=(\"\")[\"char\"] local _g=({seed}) local _akm=({km}) local _akc=({kc}) for _mi=1,#_src do _g=(_akm*_g+_akc)%268435456 local _v=(BYTE(_src,_mi)-((_g%256)+(FLR(_g/256)%256)+(FLR(_g/65536)%256)+FLR(_g/16777216))%256)%256 _mc=(_mc*257+_v)%268435456 _out=_out.._ch((_v+(_ms{shard}+_mi*_mt{shard})%256)%256) end _mb{shard}=_out _src=nil _out=nil _g=nil _akm=nil _akc=nil end ",
+				shard = i,
+				coef = coef_e,
+				sstep = step_e,
+				carrier = lua_dstr(&encrypted),
+				seed = seed_e,
+				km = km_e,
+				kc = kc_e,
+			));
 			micro_fill.push_str(&micro_shard_source(
 				&format!("_mx{}", i),
+				&format!("_mb{}", i),
+				&format!("_ms{}", i),
+				&format!("_mt{}", i),
 				&micro_shards[i],
 				&micro_used[i],
 				&micro_lits,
@@ -2360,7 +2385,7 @@ pub fn generate(
 				rng,
 			));
 		}
-		micro_fill.push_str(&micro_assignments);
+		micro_fill.push_str(&micro_wrappers);
 		// H4-4D: bind the actual BSS-side chaff aggregate (CHQ) into the
 		// micro descriptor checksum. Clean builds satisfy both terms; Nop
 		// stripping now poisons SALT through the micro face as well.
@@ -2368,9 +2393,8 @@ pub fn generate(
 		let micro_chaff_expected =
 			(micro_checksum as i64 + qf_checksum * chaff_micro as i64) % KEY_MOD;
 		let micro_expected_e = ke.key_expr(micro_chaff_expected, None, rng);
-		micro_fill.push_str("do local _mc=0 local _md for _mj=1,#_mo do _md=_mo[_mj] _mc=(_mc*257+_md[2])%268435456 _mc=(_mc*257+_md[3])%268435456 for _mi=1,#_md[1] do _mc=(_mc*257+_md[1][_mi])%268435456 end end ");
 		micro_fill.push_str(&format!(
-			"_mc=(_mc+CHQ*({chaff}))%268435456 MZD=(_mc-({expected}))%268435456 end ",
+			"_mc=(_mc+CHQ*({chaff}))%268435456 MZD=(_mc-({expected}))%268435456 ",
 			chaff = chaff_micro_e,
 			expected = micro_expected_e,
 		));
