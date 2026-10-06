@@ -120,10 +120,16 @@ def main():
         template = (ROOT / "src/vmgen/template.rs").read_text()
         bss_fanout = all(x in template for x in [
             "local BD=(_bc-{expected})%268435456", "BD=(BD+BSSKPX)%268435456",
-            "(BD%720)*(1+MQ%719)", "(BD%65521)*CI2",
-            "(BD%65536)*((i+MQ)%65536)",
-            "(BD%65521)*((i*KI+j*NI+qf)%65521)",
-        ]) and "PB=(PB+(_bc-{expected}))" not in template
+            "local d1=(pz.ck-OS[di])%4294967296",
+            "local d2=(pz.ck2-OS2[di])%4294967296",
+            "local bz=(BD+(pf.iz1%65521)",
+            "(bz%720)*(1+MQ%719)", "(bz%65521)*CI2",
+            "(bz%65536)*((i+MQ)%65536)",
+            "(bz%65521)*((i*KI+j*NI+qf)%65521)",
+        ]) and all(x not in template for x in [
+            "PB=(PB+(_bc-{expected}))",
+            "if PF_[di].ck~=OS[di] or PF_[di].ck2~=OS2[di]",
+        ])
         rt_fanout = all(x in template for x in [
             "local PZ1=(H1*CB1+H2*CB2+CBC)%268435456",
             "local PZ2=(H1*CC1+H2*CC2+CCC)%268435456",
