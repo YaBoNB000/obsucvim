@@ -190,17 +190,6 @@ H2/H3/H4/H5/H6/H7/H8/H5-P0/H5-2：PASS
 R059 luau-compile + 运行等价：PASS
 ```
 
-### 4.4 R060 四环与双完整性门禁
-
-R059 的 `osum/osum2 → OS/OS2 → CK/CK2 → BD fan-out` 未被删除；R060 将其
-固化为 `r060_integrity_audit.py`。Micro shard 从随机 3..5 改为精确四套，模数
-固定为 `251/241/239/229`，但 multiplier/addend/context 与 carrier/session key
-继续逐构建重掷。
-
-```text
-R060：138615B，m=251932，r=4227
-```
-
 ## 5. 诚实边界与后续项
 
 本阶段修复的是 R057 最便宜、最致命的“47 组 descriptor 与解码参数并排静态
