@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 主体已闭环；H5-P0 Micro Descriptor 静态表已密封退役；内部 loader 0 次**
+> 状态：**R058 基线保留；R061 已移除 OS/OS2 单条件旁路并加入自主红队门禁；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -1162,6 +1162,21 @@ python3 luraph-rs/tests/h5_p0_micro_audit.py
 这只关闭最廉价的静态映射路径；Superoperator、纯字面量下标折叠和固定 junk
 模板仍是后续 P1/P2，不作“不可恢复”承诺。
 
+### R061 自主红队：易绕过点优先（2026-10-06）
+
+R058 的 Ou/De 双校验最终共用一个显式 `if ck~=OS or ck2~=OS2`，攻击者删除
+该条件即可阻断后续全部 BD fan-out。R061 改为无条件计算两个 32-bit 差值，
+拆分 low/high 16-bit 并以活跃 boot key 生成两个 per-prototype lane；随后按函数
+混入 `bz` 并进入六个既有投毒面，临时 lane 使用后清除。详见：
+
+```text
+docs/r061-autonomous-redteam.md
+python3 luraph-rs/tests/r061_bypass_audit.py
+```
+
+新架构候选按规定等待审批；当前建议优先级为 per-shard checksum lane、关键索引
+boot-state 编码、安全子集 Superoperator，均未擅自并入正式 profile。
+
 ---
 
 # 5. 明确排除的加固点
@@ -1271,6 +1286,7 @@ python3 luraph-rs/tests/h6_window_audit.py
 python3 luraph-rs/tests/h7_decentralization_audit.py
 python3 luraph-rs/tests/h8_poison_audit.py
 python3 luraph-rs/tests/h5_p0_micro_audit.py
+python3 luraph-rs/tests/r061_bypass_audit.py
 bash luraph-rs/tests/defense_audit.sh
 ```
 
