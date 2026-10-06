@@ -658,10 +658,12 @@ impl<'a> Ctx<'a> {
 		// ride the operand streams as masked immediates. Done BEFORE
 		// scattering so operand a scatters as a register and the packed
 		// b/c/d pass through as opaque values.
+		let mut mkstr_candidates = HashSet::new();
 		for ins in self.code.iter_mut() {
 			if ins.op == Op::LoadK {
 				if let Some(Const::Str(bs)) = self.consts.get(ins.b as usize) {
 					if bs.len() <= 5 {
+						mkstr_candidates.insert(ins.b);
 						let mut bytes = [0u16; 5];
 						for (i, &b) in bs.iter().enumerate() {
 							bytes[i] = b as u16;
@@ -675,6 +677,11 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		}
+		prune_dead_short_string_constants(
+			&mut self.code,
+			&mut self.consts,
+			&mkstr_candidates,
+		);
 		// v15 stage A: operand scattering post-pass (rewrites wire
 		// operands; yields the register slot table S serialized below)
 		let (s_tab, scatter_stats) = if self.scatter {
@@ -1371,6 +1378,73 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 // ---------------------------------------------------------------------------
 // code generation
 // ---------------------------------------------------------------------------
+
+/// Remove short-string constants made unreachable by the LoadK -> MkStr
+/// rewrite. The old path rewrote the instruction but serialized the original
+/// Const::Str entry anyway, contradicting the documented invariant. Keep any
+/// candidate still referenced by a non-MkStr operand (e.g. a global-name
+/// constant shared by deduplication), then remap all surviving constant uses.
+fn prune_dead_short_string_constants(
+	code: &mut [Instr],
+	consts: &mut Vec<Const>,
+	candidates: &HashSet<u16>,
+) -> usize {
+	if candidates.is_empty() {
+		return 0;
+	}
+	let mut live = vec![false; consts.len()];
+	for ins in code.iter() {
+		let roles = Ctx::op_roles(ins.op);
+		let ops = ins.operands();
+		for i in 0..4 {
+			if roles[i] == ORole::Const {
+				let idx = ops[i] as usize;
+				if idx < live.len() {
+					live[idx] = true;
+				}
+			}
+		}
+	}
+	let mut remove = vec![false; consts.len()];
+	for &candidate in candidates {
+		let idx = candidate as usize;
+		if idx < consts.len()
+			&& !live[idx]
+			&& matches!(consts[idx], Const::Str(ref bytes) if bytes.len() <= 5)
+		{
+			remove[idx] = true;
+		}
+	}
+	let removed = remove.iter().filter(|&&drop| drop).count();
+	if removed == 0 {
+		return 0;
+	}
+	let mut remap = vec![0u16; consts.len()];
+	let mut compact = Vec::with_capacity(consts.len() - removed);
+	for (old, value) in consts.drain(..).enumerate() {
+		if !remove[old] {
+			remap[old] = compact.len() as u16;
+			compact.push(value);
+		}
+	}
+	for ins in code.iter_mut() {
+		let roles = Ctx::op_roles(ins.op);
+		let mut ops = ins.operands();
+		for i in 0..4 {
+			if roles[i] == ORole::Const {
+				let old = ops[i] as usize;
+				debug_assert!(old < remap.len() && !remove[old]);
+				ops[i] = remap[old];
+			}
+		}
+		ins.a = ops[0];
+		ins.b = ops[1];
+		ins.c = ops[2];
+		ins.d = ops[3];
+	}
+	*consts = compact;
+	removed
+}
 
 fn compile_chunk(
 	block: &Block,
@@ -2847,6 +2921,28 @@ mod dbg {
 	use super::*;
 	use crate::parser;
 	use crate::symtab;
+
+	#[test]
+	fn orphaned_mkstr_literals_are_pruned_without_dropping_shared_constants() {
+		let mut consts = vec![
+			Const::Str(b"suda".to_vec()),
+			Const::Str(b"key".to_vec()),
+			Const::Num(6.0),
+		];
+		let mut code = vec![
+			Instr::abcd(Op::MkStr, 0, 0x7562, 0x6461, 0x0004),
+			Instr::ab(Op::GetGlobal, 1, 1),
+			Instr::ab(Op::LoadK, 2, 2),
+		];
+		let candidates = HashSet::from([0u16, 1u16]);
+		let removed = prune_dead_short_string_constants(&mut code, &mut consts, &candidates);
+		assert_eq!(removed, 1);
+		assert_eq!(consts.len(), 2);
+		assert!(matches!(&consts[0], Const::Str(v) if v == b"key"));
+		assert!(matches!(&consts[1], Const::Num(v) if *v == 6.0));
+		assert_eq!(code[1].b, 0, "shared global-name constant remapped");
+		assert_eq!(code[2].b, 1, "numeric constant remapped");
+	}
 
 	#[test]
 	#[ignore] // dev tool: needs /tmp/nt5.lua
