@@ -43,8 +43,8 @@ struct Options {
 	do_guard: bool,
 	do_vm: bool,
 	/// R062 experiment: pre-VM AST sealing for source string literals.
-	/// Disabled by default until the extraction and performance audits pass.
-	vm_seal_strings: bool,
+	/// Default follows `do_vm`; an explicit CLI option can override it.
+	vm_seal_strings: Option<bool>,
 	/// v15 structural-parity profile (Route A, 2026-08-25): Luau/Roblox-only
 	/// output shaped like a Luraph v15 sample (module table + FC entry).
 	/// P0: flag exists and is Luau-gated; emission still routes through the
@@ -210,7 +210,8 @@ Options:
   --vm                   L6: compile the program to private bytecode and
                          run it through a generated obfuscated interpreter
   --vm-seal-strings       EXPERIMENTAL: seal source string literals before VM
-                         compilation; requires a VM preset/--vm (off by default)
+                         compilation (default on for VM presets)
+  --no-vm-seal-strings    disable experimental VM string sealing
   --no-mangle            disable L1 name mangling (default: enabled)
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
@@ -247,7 +248,7 @@ fn main() -> ExitCode {
 		do_antidbg: true,
 		do_guard: true,
 		do_vm: false,
-		vm_seal_strings: false,
+		vm_seal_strings: None,
 		do_v15: false,
 		do_strings: true,
 	do_flatten: true,
@@ -309,6 +310,7 @@ fn main() -> ExitCode {
 			}
 			"--preset" => {
 				preset_given = true;
+				opts.vm_seal_strings = None;
 				i += 1;
 				if i >= args.len() {
 					eprintln!("error: --preset requires a value (low|medium|high|vm|max|v15)");
@@ -330,7 +332,8 @@ fn main() -> ExitCode {
 			vm_given = true;
 			opts.do_vm = true;
 		}
-			"--vm-seal-strings" => opts.vm_seal_strings = true,
+			"--vm-seal-strings" => opts.vm_seal_strings = Some(true),
+			"--no-vm-seal-strings" => opts.vm_seal_strings = Some(false),
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
@@ -371,7 +374,8 @@ fn main() -> ExitCode {
 			return ExitCode::FAILURE;
 		}
 	}
-	if opts.vm_seal_strings && !opts.do_vm {
+	let vm_seal_strings = opts.vm_seal_strings.unwrap_or(opts.do_vm);
+	if vm_seal_strings && !opts.do_vm {
 		eprintln!("error: --vm-seal-strings requires a VM preset or --vm");
 		return ExitCode::FAILURE;
 	}
@@ -449,7 +453,7 @@ fn main() -> ExitCode {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
 		let mut rng = rng::Rng::new(seed);
-		if opts.vm_seal_strings {
+		if vm_seal_strings {
 			// Use a domain-separated PRNG so enabling this experiment does not
 			// perturb the VM's established opcode/layout/noise RNG schedule.
 			let mut seal_rng = rng::Rng::new(seed ^ 0x5230_3632_5354_5253);

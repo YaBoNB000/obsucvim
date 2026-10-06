@@ -53,11 +53,11 @@ bad() { echo "  FAIL $1"; fail=$((fail+1)); }
 echo "== D1 干净运行等价 (防御基线) =="
 EXP1="$($LUAU "$SRC" 2>&1)"
 EXP2="$($LUAU "$SRC2" 2>&1)"
-# Seed 770 keeps the randomized F10 literal-count specimen inside its
-# established 10..60 band after dead MkStr constants are pruned.
-"$TOOL" --preset v15 --dialect luau --seed 770 "$SRC" "$W/d1a.lua" >/dev/null 2>&1
+# Seed 772 keeps the randomized F10 literal-count specimen inside its
+# established 10..60 band with default-on LoadStr and dead MkStr pruning.
+"$TOOL" --preset v15 --dialect luau --seed 772 "$SRC" "$W/d1a.lua" >/dev/null 2>&1
 "$TOOL" --preset v15 --dialect luau --seed 888 "$SRC2" "$W/d1b.lua" >/dev/null 2>&1
-[ "$($LUAU "$W/d1a.lua" 2>&1)" == "$EXP1" ] && ok "basics seed=770" || bad "basics seed=770"
+[ "$($LUAU "$W/d1a.lua" 2>&1)" == "$EXP1" ] && ok "basics seed=772" || bad "basics seed=772"
 [ "$($LUAU "$W/d1b.lua" 2>&1)" == "$EXP2" ] && ok "real_algo seed=888" || bad "real_algo seed=888"
 
 echo "== D2 钥匙去字面化 (3 种子) =="

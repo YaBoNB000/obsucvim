@@ -26,9 +26,9 @@ expected=$'r062-seal-canary-7f31\t脚本\t42\t3\t0'
 for profile in legacy v15; do
     out="$TMP/$profile.lua"
     if [[ "$profile" == legacy ]]; then
-        "$BIN" --vm --vm-seal-strings --seed 620062 "$TMP/input.lua" "$out"
+        "$BIN" --vm --seed 620062 "$TMP/input.lua" "$out"
     else
-        "$BIN" --preset v15 --vm-seal-strings --seed 620062 "$TMP/input.lua" "$out"
+        "$BIN" --preset v15 --seed 620062 "$TMP/input.lua" "$out"
     fi
     "$LUAC" "$out" >/dev/null
     actual="$("$LUAU" "$out")"
@@ -42,10 +42,15 @@ for profile in legacy v15; do
     fi
 done
 
-# Verify the experimental flag cannot silently fall back to a non-VM pipeline.
+# Explicit opt-out must retain VM semantic parity.
+"$BIN" --preset v15 --no-vm-seal-strings --seed 620062 "$TMP/input.lua" "$TMP/optout.lua"
+"$LUAC" "$TMP/optout.lua" >/dev/null
+[[ "$("$LUAU" "$TMP/optout.lua")" == "$expected" ]]
+
+# Verify an explicit enable cannot silently fall back to a non-VM pipeline.
 if "$BIN" --preset high --vm-seal-strings "$TMP/input.lua" "$TMP/no-vm.lua" >/dev/null 2>&1; then
     echo 'FAIL --vm-seal-strings accepted without VM' >&2
     exit 1
 fi
 
-echo 'R062 string-seal experiment: PASS (legacy/v15 semantic parity, canary absent)'
+echo 'R062 string-seal experiment: PASS (VM default-on, legacy/v15 parity, opt-out)'
