@@ -7,7 +7,7 @@
 # 防御点清单:
 #   D1  干净运行等价        — 防御不得破坏正确性 (基线)
 #   D2  钥匙去字面化        — LURAPH_KEY_MANIFEST + key_literal_check.py
-#   D3  H5 默认精简壳指纹   — h5_shell_audit.py
+#   D3  结构指纹 32 项      — v15_fingerprint.py
 #   D4  安全指纹 S1-S5      — security_fingerprint.py + attack 脚本组
 #   D5  密文完整性(源哈希链) — 长串内字节互换 => 绝不产出正确输出
 #   D6  字节码防篡改(校验和投毒) — 同 D5 多点统计覆盖
@@ -70,11 +70,11 @@ for seed in 7 4242 999999; do
 	fi
 done
 
-echo "== D3 H5 默认精简壳指纹 =="
-if python3 "$ROOT/tests/h5_shell_audit.py" "$W/d1a.lua" >"$W/d3.out" 2>&1; then
-	ok "$(tail -1 "$W/d3.out")"
+echo "== D3 结构指纹 =="
+if python3 "$ROOT/tests/v15_fingerprint.py" "$W/d1a.lua" --quiet >"$W/d3.out" 2>&1; then
+	ok "$(cat "$W/d3.out")"
 else
-	bad "精简壳指纹: $(cat "$W/d3.out" | tr '\n' ' ')"
+	bad "结构指纹: $(cat "$W/d3.out")"
 fi
 
 echo "== D4 安全指纹 S1-S5 =="
@@ -97,13 +97,11 @@ i, n = 0, len(s)
 while i < n:
     c = s[i]
     if c == '"' or c == "'":
-        q = c; a = i + 1; i += 1
+        q = c; i += 1
         while i < n:
             if s[i] == '\\': i += 2; continue
             if s[i] == q: break
             i += 1
-        if i < n and i - a >= 100:
-            spans.append((a, i, "quoted"))
         i += 1; continue
     if c == '[' and i+1 < n:
         m = re.match(r'\[(=*)\[', s[i:])
@@ -112,62 +110,47 @@ while i < n:
             cl = ']' + '='*lvl + ']'
             jj = s.find(cl, i + len(m.group(0)))
             if jj != -1:
-                spans.append((i + len(m.group(0)), jj, "long"))
+                spans.append((i + len(m.group(0)), jj))
                 i = jj + len(cl); continue
     i += 1
-
+carrier = [(a, b) for a, b in spans if 100 <= b - a <= 2000]
+big = [(a, b) for a, b in spans if b - a > 2000]
+base = subprocess.run([LU, art], capture_output=True, text=True, timeout=60)
+live, decoy = list(carrier), []
+for (a, b) in big:
+    p1 = a + (b - a)//2
+    p2 = p1 + 13
+    t = list(s)
+    while t[p1] == t[p2]: p2 += 1
+    t[p1], t[p2] = t[p2], t[p1]
+    tmp = W + "/probe.lua"
+    open(tmp, "w").write("".join(t))
+    try:
+        r = subprocess.run([LU, tmp], capture_output=True, text=True, timeout=12)
+        same = (r.stdout == base.stdout and r.returncode == base.returncode)
+    except subprocess.TimeoutExpired:
+        same = False  # ㊸: 投毒静默循环 = 拒绝（篡改点敏感）
+    if same:
+        decoy.append(b - a)
+    else:
+        live.append((a, b))
+print(f"{len(live)} live carrier/HQ spans, {len(decoy)} decoy spans (camo, sizes {decoy})")
+assert live, "no live spans found"
 seed = 12345
 def rnd(n):
     global seed
     seed = (seed * 1103515245 + 12345) % 2147483648
     return seed % n
-
-def mutate(src, span):
-    a, b, mode = span
-    if mode == "quoted":
-        # Swap whole decimal escapes of equal width; syntax and byte count stay valid.
-        toks = list(re.finditer(r'\\[0-9]{1,3}', src[a:b]))
-        groups = {}
-        for m in toks: groups.setdefault(len(m.group(0)), []).append(m)
-        pools = [v for v in groups.values() if len(v) >= 2]
-        if pools:
-            pool = pools[rnd(len(pools))]
-            for _ in range(40):
-                x, y = pool[rnd(len(pool))], pool[rnd(len(pool))]
-                if x.start() != y.start() and x.group(0) != y.group(0):
-                    if x.start() > y.start(): x, y = y, x
-                    return (src[:a+x.start()] + y.group(0)
-                            + src[a+x.end():a+y.start()] + x.group(0)
-                            + src[a+y.end():])
-    # Long strings/base94 fallback: swap two ordinary payload bytes.
-    for _ in range(200):
-        p1, p2 = a + rnd(b-a), a + rnd(b-a)
-        if p1 != p2 and src[p1] != src[p2] and src[p1] not in '\\"\'' and src[p2] not in '\\"\'':
-            t = list(src); t[p1], t[p2] = t[p2], t[p1]
-            return ''.join(t)
-    raise RuntimeError("no safe mutation point")
-
-carrier = [x for x in spans if 100 <= x[1] - x[0] <= 3000]
-big = [x for x in spans if x[1] - x[0] > 3000]
-base = subprocess.run([LU, art], capture_output=True, text=True, timeout=60)
-live, decoy = list(carrier), []
-for span in big:
-    tmp = W + "/probe.lua"
-    open(tmp, "w").write(mutate(s, span))
-    try:
-        r = subprocess.run([LU, tmp], capture_output=True, text=True, timeout=12)
-        same = (r.stdout == base.stdout and r.returncode == base.returncode)
-    except subprocess.TimeoutExpired:
-        same = False
-    if same:
-        decoy.append(span[1] - span[0])
-    else:
-        live.append(span)
-print(f"{len(live)} live quoted/long carrier spans, {len(decoy)} decoy spans (sizes {decoy})")
-assert live, "no live spans found"
 for k in range(30):
-    span = live[rnd(len(live))]
-    open(f"{W}/tamper_{k}.lua", "w").write(mutate(s, span))
+    a, b = live[rnd(len(live))]
+    while True:
+        p1 = a + rnd(b - a)
+        p2 = a + rnd(b - a)
+        if p1 != p2 and s[p1] != s[p2]:
+            break
+    t = list(s)
+    t[p1], t[p2] = t[p2], t[p1]
+    open(f"{W}/tamper_{k}.lua", "w").write("".join(t))
 print("tampers written")
 PYD56
 python3 "$W/d56_scan.py" "$W/d1a.lua" "$W" "$LUAU" || bad "跨度扫描失败"

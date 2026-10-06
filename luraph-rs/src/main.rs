@@ -570,12 +570,10 @@ fn main() -> ExitCode {
 				// Locate the VM local's post-mangle name (the definition
 				// handler's entry closure must call it by that name).
 				let mut vm_name = String::from("VM");
-				let mut vm_sym = None;
 				for st in tblock.stmts.iter() {
 					if let ast::Stmt::Local { names, syms, .. } = st {
 						if names.first().map(|s| s.as_str()) == Some("VM") {
 							if let Some(id) = syms.first() {
-								vm_sym = Some(*id);
 								vm_name = ttable.syms[*id as usize]
 									.name
 									.clone();
@@ -584,28 +582,6 @@ fn main() -> ExitCode {
 					}
 				}
 				let interp_src = printer::print_chunk(&ttable, &tblock);
-				// H5-2C: the default offline profile no longer emits the ~60KB
-				// C[1..N] staging/CPS module shell. Its fixed b[slot](b) grammar was
-				// mechanically removable and added no secrecy beyond the already
-				// encrypted carriers. Bound profiles retain the compatibility shell
-				// because their environment probes intentionally capture its table.
-				if opts.bind_env.is_none() && !opts.bind_executor {
-					let vm_call = ast::Expr::Call {
-						func: Box::new(ast::Expr::Ident {
-							name: vm_name.clone(),
-							sym: vm_sym,
-						}),
-						args: carrier_bytes
-							.into_iter()
-							.map(|b| ast::Expr::Str {
-								bytes: b,
-								is_binary: true,
-							})
-							.collect(),
-					};
-					tblock.stmts.push(ast::Stmt::ExprStmt(vm_call));
-					(tblock, ttable, true)
-				} else {
 				// P3-B: the interpreter lives in a numeric-slot runner
 				// ([r1], sample [73] shape); the user-facing entry is
 				// routed through a second numeric-slot runner ([r2],
@@ -705,7 +681,6 @@ fn main() -> ExitCode {
 				let mut shell_block = ast::Block { stmts: vec![shell] };
 				let shell_table = symtab::resolve(&mut shell_block);
 				(shell_block, shell_table, true)
-				}
 			} else {
 				let vm_call = ast::Expr::Call {
 					func: Box::new(ast::Expr::Ident {
