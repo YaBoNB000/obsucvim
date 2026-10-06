@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
-> 状态：**H4 主体已闭环；H5-P0/H5-2 已完成 Micro 密封、全 Shard 动态方言、MkStr 上下文绑定与默认外壳精简；内部 loader 0 次**
+> 状态：**H4 主体已闭环；H5-P0/H5-2/R060 已完成 Micro 密封、四素数环、双完整性门禁、MkStr 上下文绑定与默认外壳精简；内部 loader 0 次**
 >
 > 原则：只保留能够提高攻击成本、同时不会主动新增稳定明文窗口、统一钩点、
 > 兼容性灾难或明显防御 oracle 的方案。
@@ -1190,6 +1190,14 @@ python3 luraph-rs/tests/h5_context_audit.py
 python3 luraph-rs/tests/h5_shell_audit.py <artifact>
 ```
 
+### R060 指令纠偏（2026-10-06）
+
+源码复核确认 R059 的四列无权和/位置加权和与 OS/OS2 双消费从未删除；R060
+将其加入独立机器门禁，并把随机 3..5 shard 收紧为精确四套素数环：
+`251/241/239/229`。内存耗尽 trap、错误 OpaqueZero 公式和一次性 Mega-VM
+替换正式 profile 均因稳定 oracle、数学错误或语义/中央 hook 风险被拒绝。
+详见 `docs/r060-directive-review.md`。
+
 ---
 
 # 5. 明确排除的加固点
@@ -1301,6 +1309,7 @@ python3 luraph-rs/tests/h8_poison_audit.py
 python3 luraph-rs/tests/h5_p0_micro_audit.py
 python3 luraph-rs/tests/h5_context_audit.py
 python3 luraph-rs/tests/h5_shell_audit.py <artifact>
+python3 luraph-rs/tests/r060_integrity_audit.py
 bash luraph-rs/tests/defense_audit.sh
 ```
 
