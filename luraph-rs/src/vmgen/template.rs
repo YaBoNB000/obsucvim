@@ -1974,9 +1974,14 @@ pub fn generate(
 	let makefn_decl = if v15 {
 		String::from(
 			"local function makefn(pf, V, upsf, S)
+    local fi = pf.sd
+    local qf = QF[fi]
+    local mst = (qf * MQ + fi * MI + MA) % 65536
+    local mu = pf.us
     local c = {}
-    for i = 1, #pf.upsrc do
-      local src = pf.upsrc[i]
+    for i = 1, #mu do
+      mst = (mst * MM + MA + i) % 65536
+      local src = (mu[i] - mst) % 65536
       if src >= 49152 then
         c[i] = upsf[src - 49152]
       elseif src >= 32768 then
@@ -1984,15 +1989,19 @@ pub fn generate(
       else
         c[i] = { v = V, i = S[src] }
       end
+      src = nil
     end
+    local npa = (pf.np - (qf * NQ + fi * NI + MA) % 65536) % 65536
+    mu = nil
+    mst = nil
     return function(...)
       local all = { ... }
-      local vargc = #all - pf.nparams
+      local vargc = #all - npa
       if vargc < 0 then vargc = 0 end
       local vargs = {}
-      for i = 1, vargc do vargs[i] = all[pf.nparams + i] end
+      for i = 1, vargc do vargs[i] = all[npa + i] end
       local V2 = {}
-      for i = 1, pf.nparams do V2[pf.S[i]] = all[i] end
+      for i = 1, npa do V2[pf.S[i]] = all[i] end
       -- 增量⑲: the trampoline lives INSIDE the closure (one frame per
       -- recursion level instead of closure+run)
       local E = newE(pf, V2, c, vargs, vargc)
@@ -2563,6 +2572,27 @@ pub fn generate(
 		let window_block_e = obf_num(window_block as u64, rng);
 		manifest_key("WINDOW_RESEED_M", window_mul as u64);
 		manifest_key("WINDOW_RESEED_B", window_block as u64);
+		// H4-7A1: closure metadata uses a separate per-function family.  The
+		// encoded prototype keeps only masked parameter/upvalue descriptors;
+		// makefn reconstructs one descriptor at a time when a closure is born.
+		let metadata = [
+			dialect_coeff(11),
+			dialect_coeff(12),
+			dialect_coeff(13),
+			dialect_coeff(14),
+			dialect_coeff(15),
+			dialect_coeff(16),
+		];
+		let metadata_e: Vec<String> = metadata
+			.iter()
+			.map(|v| obf_num(*v as u64, rng))
+			.collect();
+		for (name, value) in ["UP_Q", "UP_I", "UP_M", "UP_A", "NP_Q", "NP_I"]
+			.iter()
+			.zip(metadata.iter())
+		{
+			manifest_key(&format!("METADATA_{}", name), *value as u64);
+		}
 		let c_block_enc = if consts_safe {
 			// ㊼: 每常量独立钥匙流——stj = (基线 + j·CKJ) 再走两步 LCG
 			// 扩散；常量间字节流不再顺序相连（编码侧，BSS 运行期）。
@@ -2727,7 +2757,7 @@ pub fn generate(
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS)%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], upsrc = pf.upsrc, nparams = pf.nparams, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _st = {{}} local _ts = TOSTR(_st) for _i = 1, #_ts do SALT = (SALT * 31 + BYTE(_ts, _i)) % 268435456 end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni} for i = 1, #P do local pf = P[i] local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS)%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then km[#km + 1] = ks[j] + 1 end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA)%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA)%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sd = i, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, k = {{}}, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km do EP[i].k[km[j]] = EP[km[j]] end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2754,6 +2784,12 @@ pub fn generate(
 			ri = rekey_e[1],
 			rs = rekey_e[2],
 			rp = rekey_e[3],
+			mq = metadata_e[0],
+			mi = metadata_e[1],
+			mm = metadata_e[2],
+			ma = metadata_e[3],
+			nq = metadata_e[4],
+			ni = metadata_e[5],
 			cw = closure_cond,
 			cblock = c_block_enc,
 			cfields = c_fields_enc,
@@ -3076,7 +3112,7 @@ pub fn generate(
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE{sigtail}) SLT=(SLT+(H1*CB1+H2*CB2+CBC)%268435456)%268435456 local SLTC=(SLT+(H1*CC1+H2*CC2+CCC)%268435456)%268435456 local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local _qd=(_qk-RTQCKX)%268435456 SLT=(SLT+_qd)%268435456 SLTC=(SLTC+_qd)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local _rd=(_rc-RTPCX)%268435456 SLT=(SLT+_rd)%268435456 SLTC=(SLTC+_rd)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
 			xtfb = xtfb_line,
 			qf = qf_expected,
@@ -3097,6 +3133,12 @@ pub fn generate(
 			ri = rekey_e[1],
 			rs = rekey_e[2],
 			rp = rekey_e[3],
+			mq = metadata_e[0],
+			mi = metadata_e[1],
+			mm = metadata_e[2],
+			ma = metadata_e[3],
+			nq = metadata_e[4],
+			ni = metadata_e[5],
 			program = rt_phase_stored
 				.iter()
 				.map(|v| v.to_string())
