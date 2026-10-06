@@ -6,6 +6,12 @@
 >
 > 结论口径：本层目标是让常量池直接转储不出现原始用户字面量；不是让纯离线客户端获得不可提取的秘密。
 
+## R062 样本静态解混淆结果
+
+已从目标产物完成一次样本级恢复，等价源码存于 `handoff/R062_recovered.lua`，过程记录见 `docs/r062-deobfuscation-attempt.md`。攻击路径是：入口表透明截获 → 调 staging handler 顺序取回 carrier chunks → 常量折叠恢复 key 表取值 → Carrier 解码 → 两阶段原型 blob unmask → 区段/常量/SoA 解析 → 用 LoadStr seed/step 与字符串可打印性确认操作数流置换 → 指令提升。
+
+恢复出三个原型：`(nregs,nparams,nups,nconst,ncode)` 分别为 `(6,1,1,8,4)`、`(37,1,2,19,52)`、`(53,0,0,35,70)`。字符串字面量、闭包、变参、循环、表访问和返回计算均能对上；把 recovered chunk 包成 vararg 函数运行，源与目标均返回 `1713`。这证明的是该 R062 样本的语义源码可被恢复，不等于我们已有通用的一键 decompiler。
+
 ## 发现：固定 `LoadStr` recipe 可跨样本复用（P1）
 
 R062 编译器对每个非空源码字符串生成密文常量，并把 `seed/step` 放入 `LoadStr` 的第三、第四操作数：
@@ -27,7 +33,7 @@ cipher[i] = plain[i] + state mod 256
 - `luraph-rs/src/vmgen/compiler.rs`：cipher 常量与 seed/step 操作数；
 - `luraph-rs/src/vmgen/template.rs`：微码 `M_LOAD_STR`。
 
-**绕过边界：**只 dump 解码后的 C 常量表时，得到的是第二层密文；但若分析者已恢复 VM 的 `LoadStr` 线码及四列操作数，就能一次性读出每个 `const_index/seed/step`，用固定 recipe 离线还原全部封存字符串。工具可以跨构建复用 recipe。这是字符串封存层的静态批量解码面，不等于原始 VM 已被完全反编译。
+**绕过边界：**只 dump 解码后的 C 常量表时，得到的是第二层密文；但若分析者已恢复 VM 的 `LoadStr` 线码及四列操作数，就能一次性读出每个 `const_index/seed/step`，用固定 recipe 离线还原全部封存字符串。工具可以跨构建复用 recipe。单独这条路径不等于完整反编译；结合入口表截获、KeyEmitter 静态恢复和原型/指令解码后，R062 样本的等价源码现已恢复，详见 `docs/r062-deobfuscation-attempt.md`。
 
 当前没有单独的全局 Lua `decode()` 函数或共享明文字符串表；`LoadStr` 走现有随机 opcode/micro dispatch。因此我把它定为 **P1 静态成本不足**，不虚报为直接泄漏明文或整个 VM 的 P0。
 
@@ -47,7 +53,7 @@ table-driven mod expression：52 个
 与本次构建 key manifest 精确匹配：48 个
 ```
 
-这不只是“还原索引后更容易看数据流”：表值本身在输出中是明文数字，组合 recipe 也只是加法/乘法/取模。一个普通常量折叠器加数组读取器就能静态恢复多组 KeyEmitter 值，包括若干常量流/原型流参数。**这是 KeyEmitter 密钥封装层的直接静态旁路（局部 P0）；它仍不等于动态 SALT/HBD 等所有运行期约束都被绕过，也不应夸大成完整源码已自动还原。**取证脚本只在本地临时文件运行，没有把样本密钥值写入仓库。
+这不只是“还原索引后更容易看数据流”：表值本身在输出中是明文数字，组合 recipe 也只是加法/乘法/取模。一个普通常量折叠器加数组读取器就能静态恢复多组 KeyEmitter 值，包括若干常量流/原型流参数。**这是 KeyEmitter 密钥封装层的直接静态旁路（局部 P0）。**单独恢复这些静态 key 仍不意味着动态 SALT/HBD 等所有运行期约束都已被绕过；但与入口表截获和原型解码组合后，足以完成当前 R062 样本的等价源码恢复。取证脚本只在本地临时文件运行，没有把样本密钥值写入仓库。
 
 **候选修补方向（需设计审批）：**必须同时处理明文表值和可折叠下标；只改 `[A+B-C]` 外形不够。研究分阶段密封表项、分散即用，并使用读取/构建两侧真实消费的非零 boot/session 状态；不新建统一 getter、公开索引表或可批量 dump 的明文表。KeyEmitter 在 HBOOT/RT/BSS 等多个初始化阶段都会被使用，必须先逐类核对可用状态时序，避免未初始化 key、共享解码咽喉点或新的固定 oracle。
 
