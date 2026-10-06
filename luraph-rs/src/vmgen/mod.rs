@@ -12,6 +12,7 @@ pub mod exguard;
 pub mod handlers;
 pub mod isa;
 pub mod strpool;
+pub mod strseal;
 pub mod template;
 pub mod v15;
 

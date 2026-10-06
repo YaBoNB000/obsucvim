@@ -122,6 +122,11 @@ pub enum Expr {
 	/// Survives minify verbatim (the lexer captures the raw span). F8
 	/// sample shape: the giant RC blob lives in a long string.
 	LongStr { bytes: Vec<u8> },
+	/// Internal VM-only marker for an original source string literal whose
+	/// plaintext must not enter the serialized constant pool. The VM compiler
+	/// seals `bytes` into a per-site ciphertext constant and emits LoadStr with
+	/// the matching seed/step. This must be lowered before pretty-printing.
+	SealedStr { bytes: Vec<u8>, seed: u16, step: u16 },
 	Bool { value: bool },
 	Nil,
 	Vararg,

@@ -1052,6 +1052,11 @@ fn clone_expr(e: &Expr) -> Expr {
 		},
 		Expr::Str { bytes, is_binary } => Expr::Str { bytes: bytes.clone(), is_binary: *is_binary },
 		Expr::LongStr { bytes } => Expr::LongStr { bytes: bytes.clone() },
+		Expr::SealedStr { bytes, seed, step } => Expr::SealedStr {
+			bytes: bytes.clone(),
+			seed: *seed,
+			step: *step,
+		},
 		Expr::IfExpr { arms, elseb } => Expr::IfExpr {
 			arms: arms
 				.iter()

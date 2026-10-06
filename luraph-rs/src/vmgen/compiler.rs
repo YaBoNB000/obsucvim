@@ -71,6 +71,9 @@ enum ORole {
 }
 
 pub struct VmProgram {
+	/// True only when at least one source literal was lowered to LoadStr.
+	/// The generated interpreter omits that handler in all other builds.
+	pub has_loadstr: bool,
 	pub opmap: OpMap,
 	/// M5 hub randomization: operand stream-slot order.
 	/// slot_perm[i] = which operand (0=a 1=b 2=c 3=d) occupies stream
@@ -315,6 +318,15 @@ impl<'a> Ctx<'a> {
 		i
 	}
 
+	/// Insert a constant without value-based deduplication. A sealed string's
+	/// decrypt parameters are instruction-local, so identical ciphertext bytes
+	/// under different parameter pairs must not alias one pool slot.
+	fn kidx_unique(&mut self, c: Const) -> u16 {
+		let i = self.consts.len() as u16;
+		self.consts.push(c);
+		i
+	}
+
 	fn emit(&mut self, ins: Instr) -> usize {
 		self.code.push(ins);
 		self.code.len() - 1
@@ -404,6 +416,7 @@ impl<'a> Ctx<'a> {
 			Op::Jf | Op::Jt => [Reg, Val, Val, Val],
 			Op::LoadNil => [Base, Val, Val, Val],
 			Op::LoadK => [Reg, Const, Val, Val],
+			Op::LoadStr => [Reg, Const, Val, Val],
 			Op::Move => [Reg, Reg, Val, Val],
 			Op::Add
 			| Op::Sub
@@ -1454,6 +1467,7 @@ fn compile_chunk(
 	scatter: bool,
 ) -> VmProgram {
 	let total = count_fns_count(block);
+	let has_loadstr = crate::vmgen::strseal::contains_sealed_literals(block);
 	// M5: per-build random operand slot permutation (hub randomization)
 	let mut perm: Vec<u8> = vec![0, 1, 2, 3];
 	rng.shuffle(&mut perm);
@@ -1507,7 +1521,11 @@ fn compile_chunk(
 		})
 		.collect();
 	let mut program = VmProgram {
-		opmap: OpMap::new(rng),
+		has_loadstr,
+		opmap: OpMap::new_with_count(
+			rng,
+			if has_loadstr { isa::N_OPS } else { isa::N_OPS - 1 },
+		),
 		slot_perm,
 		slot_perms,
 		lane_base,
@@ -2276,6 +2294,12 @@ impl<'a> Ctx<'a> {
 				let k = self.kidx(Const::Str(bytes.clone()));
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}
+			Expr::SealedStr { bytes, seed, step } => {
+				let cipher = crate::vmgen::strseal::encode(bytes, *seed, *step);
+				let k = self.kidx_unique(Const::Str(cipher));
+				self.program.has_loadstr = true;
+				self.emit(Instr::abcd(Op::LoadStr, dst, k, *seed, *step));
+			}
 			Expr::IfExpr { arms, elseb } => {
 				// per-arm cascade: test cond, fall into the value on
 				// truth, jump over the rest otherwise
@@ -2980,7 +3004,7 @@ mod dbg {
 		let mut rng = crate::rng::Rng::new(42);
 		let prog = compile_chunk(&block, &table, &mut rng, true, false);
 		eprintln!("fns={}", prog.fns.len());
-		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM"];
+		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
 		for (i, nm) in names.iter().enumerate() {
 			wire2name[prog.opmap.to_wire[0][i] as usize] = Some(*nm);

@@ -387,6 +387,9 @@ impl<'a> Printer<'a> {
 					c = String::from_utf8_lossy(bytes)
 				));
 			}
+			Expr::SealedStr { .. } => {
+				panic!("refusing to print an unlowered VM-sealed string literal")
+			}
 			Expr::Bool { value } => {
 				self.out.push_str(if *value { "true" } else { "false" });
 			}

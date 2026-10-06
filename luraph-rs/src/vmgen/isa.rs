@@ -106,9 +106,13 @@ pub enum Op {
 	/// (mk1 * instr_index + mk2) % 65536; the handler unmasks via
 	/// (x - mask) % 65536 and concats CHAR of each byte.
 	MkStr,
+	/// Load and unseal a source string literal. The pool holds ciphertext;
+	/// c/d carry the per-site seed and step, and only the destination register
+	/// receives the plaintext value.
+	LoadStr,
 }
 
-pub const N_OPS: usize = 42;
+pub const N_OPS: usize = 43;
 
 pub fn op_base() -> [u8; N_OPS] {
 	#[allow(clippy::declare_interior_mutable_const)]
@@ -125,7 +129,7 @@ pub fn op_base() -> [u8; N_OPS] {
 		(Op::VarArgTabN, 32), (Op::GetGlobal, 33), (Op::SetGlobal, 34),
 		(Op::GetUp, 35), (Op::SetUp, 36), (Op::Return, 37), (Op::Nop, 38),
 		(Op::CallE, 39), (Op::CallM, 40),
-		(Op::MkStr, 41),
+		(Op::MkStr, 41), (Op::LoadStr, 42),
 	];
 	let mut out = [0u8; N_OPS];
 	for (op, code) in t {
@@ -181,6 +185,7 @@ pub fn op_index(op: Op) -> usize {
 		Op::CallE => 39,
 		Op::CallM => 40,
 		Op::MkStr => 41,
+		Op::LoadStr => 42,
 	}
 }
 
@@ -198,11 +203,19 @@ pub struct OpMap {
 
 impl OpMap {
 	pub fn new(rng: &mut crate::rng::Rng) -> OpMap {
+		Self::new_with_count(rng, N_OPS)
+	}
+
+	/// Build a table for the active opcode prefix. Keeping inactive extension
+	/// opcodes out of the shuffle preserves the established RNG/layout schedule
+	/// when an opt-in VM instruction is not used.
+	pub fn new_with_count(rng: &mut crate::rng::Rng, active_count: usize) -> OpMap {
+		assert!(active_count > 0 && active_count <= N_OPS);
 		let mut to_wire = [[0u8; N_OPS]; 4];
 		let mut nop_alias = [0u8; 4];
 		for t in 0..4 {
 			let base = (t * 64) as u8;
-			let mut perm: Vec<u8> = (0..N_OPS as u8).map(|x| x.wrapping_add(base)).collect();
+			let mut perm: Vec<u8> = (0..active_count as u8).map(|x| x.wrapping_add(base)).collect();
 			for i in (1..perm.len()).rev() {
 				let j = rng.int(0, i as i64) as usize;
 				perm.swap(i, j);
@@ -211,7 +224,7 @@ impl OpMap {
 			for &w in perm.iter() {
 				used[w as usize] = true;
 			}
-			let mut alias = base.wrapping_add(N_OPS as u8);
+			let mut alias = base.wrapping_add(active_count as u8);
 			for w in 0..256u16 {
 				let ww = base.wrapping_add(w as u8);
 				if !used[ww as usize] {
@@ -219,7 +232,14 @@ impl OpMap {
 					break;
 				}
 			}
-			to_wire[t] = perm.try_into().unwrap();
+			for i in 0..active_count {
+				to_wire[t][i] = perm[i];
+			}
+			// A disabled extension aliases the unused Nop wire. It is never
+			// emitted because its opcode is omitted from the active template.
+			for i in active_count..N_OPS {
+				to_wire[t][i] = alias;
+			}
 			nop_alias[t] = alias;
 		}
 		OpMap {
@@ -405,7 +425,7 @@ pub fn unused_operands(op: Op) -> [bool; 4] {
 		| Op::Concat | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq
 		| Op::Ne | Op::Idiv | Op::GetTab | Op::SetTab | Op::TabN => [false, false, false, true],
 		Op::NewTab | Op::VarArgTab | Op::VarArgC => [false, true, true, true],
-		Op::CallT | Op::Call | Op::CallM | Op::Return | Op::MkStr => [false, false, false, false],
+		Op::CallT | Op::Call | Op::CallM | Op::Return | Op::MkStr | Op::LoadStr => [false, false, false, false],
 		Op::CallE => [false, false, true, false],
 		Op::Nop => [true, true, true, true],
 	}

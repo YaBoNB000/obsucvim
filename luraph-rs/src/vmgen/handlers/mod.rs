@@ -39,6 +39,7 @@ pub mod le;
 pub mod len;
 pub mod loadk;
 pub mod loadnil;
+pub mod loadstr;
 pub mod lt;
 pub mod mkstr;
 pub mod mod_;
@@ -92,6 +93,7 @@ pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool, mk: (u16, u16)) -> S
 			}
 		}
 		"LoadK" => loadk::code(fmt),
+		"LoadStr" => loadstr::code(fmt),
 		"Move" => move_::code(fmt),
 		"Add" => add::code(fmt, p),
 		"Sub" => sub::code(fmt, p),

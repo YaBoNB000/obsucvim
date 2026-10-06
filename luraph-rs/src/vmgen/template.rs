@@ -31,7 +31,7 @@ const OP_NAMES: [&str; N_OPS] = [
 	"Mod", "Pow", "Concat", "Unm", "Not", "Len", "Lt", "Le", "Gt", "Ge", "Eq",
 	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
 	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
-	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr",
+	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
 ];
 
 const PRIM_SRC: [&str; 15] = [
@@ -648,7 +648,8 @@ const M_POST_CALL: usize = 44;
 const M_POST_CALLE: usize = 45;
 const M_POST_CALLM: usize = 46;
 const M_POST_CALLT: usize = 47;
-const M_COUNT: usize = 48;
+const M_LOAD_STR: usize = 48;
+const M_COUNT: usize = 49;
 
 struct MicroLits {
 	number: String,
@@ -660,6 +661,7 @@ struct MicroLits {
 	index: String,
 	newindex: String,
 	char_: String,
+	byte_: String,
 	empty: String,
 	add: String,
 	sub: String,
@@ -684,7 +686,7 @@ struct MicroLits {
 }
 
 impl MicroLits {
-	fn new(pool: &mut StrPool, mk: (u16, u16)) -> MicroLits {
+	fn new(pool: &mut StrPool, mk: (u16, u16), include_loadstr: bool) -> MicroLits {
 		MicroLits {
 			number: pool.lit("number"),
 			string: pool.lit("string"),
@@ -695,6 +697,7 @@ impl MicroLits {
 			index: pool.lit("__index"),
 			newindex: pool.lit("__newindex"),
 			char_: pool.lit("char"),
+			byte_: if include_loadstr { pool.lit("byte") } else { String::new() },
 			empty: pool.lit(""),
 			add: pool.lit("__add"),
 			sub: pool.lit("__sub"),
@@ -744,6 +747,7 @@ fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
 fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	let p = match name {
 		"LoadK" => vec![(M_READ_C, 1, 2), (M_WRITE_V, 1, 1)],
+		"LoadStr" => vec![(M_READ_C, 1, 2), (M_LOAD_STR, 1, 1), (M_WRITE_V, 1, 1)],
 		"Move" => vec![(M_READ_V, 1, 2), (M_WRITE_V, 1, 1)],
 		"NewTab" => vec![(M_NEW_TABLE, 1, 0), (M_WRITE_V, 1, 1)],
 		"Not" => vec![(M_READ_V, 1, 2), (M_NOT, 2, 1), (M_WRITE_V, 1, 2)],
@@ -873,6 +877,12 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_READ_V => "T[x] = V[O[y] + 1]".to_string(),
 		M_WRITE_V => "V[O[x] + 1] = T[y]".to_string(),
 		M_READ_C => "T[x] = C[O[y] + 1]".to_string(),
+		M_LOAD_STR => format!(
+			"local q=T[y] local st=O[3] local step=O[4] local by={empty}[{byte_}] local ch={empty}[{char_}] local out={empty} for i=1,#q do st=(st*257+step+i)%65521 out=out..ch((by(q,i)-st%256)%256) end T[x]=out",
+			empty = lit.empty,
+			byte_ = lit.byte_,
+			char_ = lit.char_,
+		),
 		M_NOT => "T[x] = not T[y]".to_string(),
 		M_NEW_TABLE => "T[x] = {}".to_string(),
 		M_GET_GLOBAL => "T[x] = G[T[y]]".to_string(),
@@ -1242,6 +1252,7 @@ pub fn generate(
 	rng: &mut Rng,
 	n_fns: usize,
 	v15: bool,
+	include_loadstr: bool,
 	nop_sites: &[Vec<u16>],
 	operand_sums: &[u64],
 	// 54-B: 位置加权双向校验和（编译器侧 Σ(pos·v) 镜像）
@@ -1274,8 +1285,11 @@ pub fn generate(
 	// H4-3: 守卫进入静态 HBOOT，敏感 API/元方法词以 CHAR 字节构造。
 	guard: bool,
 ) -> String {
+	// Keep the experimental LoadStr handler out of ordinary output; the base
+	// opcode arrays have room for it, but it is emitted only when used.
+	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
 	let mut oc_items = Vec::new();
-	for (i, name) in OP_NAMES.iter().enumerate() {
+	for (i, name) in OP_NAMES.iter().take(active_op_count).enumerate() {
 		oc_items.push(format!("{name} = {}", map.to_wire[0][i]));
 	}
 	let oc_table = format!("local OC = {{{}}}", oc_items.join(", "));
@@ -1304,7 +1318,7 @@ pub fn generate(
 		let ocm = rng.int(1, 65535);
 		let occ = rng.int(1, 65535);
 		let mut pairs: Vec<String> = Vec::new();
-		for i in 0..N_OPS {
+		for i in 0..active_op_count {
 			let mask = (ocm + i as i64 * occ) % 65536;
 			let stored = (map.to_wire[0][i] as i64 + mask) % 256;
 			pairs.push(format!("{}, {}", i, stored));
@@ -1314,9 +1328,9 @@ pub fn generate(
 		let p2 = ((map.nop_alias[0] as i64 - p1) % 256 + 256) % 256;
 		// 增量⑩: the wire-mask keys and the Nop-alias sum are assembled
 		// from KF fragments; #ocp (built right here at boot) is the
-		// runtime anchor (2*N_OPS entries).
-		let ocm_e = ke.key_expr(ocm, Some(("#ocp", 2 * N_OPS as i64)), rng);
-		let occ_e = ke.key_expr(occ, Some(("#ocp", 2 * N_OPS as i64)), rng);
+		// runtime anchor (2*active_op_count entries).
+		let ocm_e = ke.key_expr(ocm, Some(("#ocp", 2 * active_op_count as i64)), rng);
+		let occ_e = ke.key_expr(occ, Some(("#ocp", 2 * active_op_count as i64)), rng);
 		let nopa_e = ke.key_expr((p1 + p2).rem_euclid(KEY_MOD), None, rng);
 		format!(
 			"local OCt = {{}}\n  do\n    local ocp = {{{}}}\n    local oi = 1\n    while oi <= #ocp do\n      local x = ocp[oi]\n      OCt[x] = (ocp[oi + 1] - ({} + x * {}) % 65536) % 256\n      oi = oi + 2\n    end\n  end\n  local NOPA = ({}) % 256",
@@ -1336,7 +1350,7 @@ pub fn generate(
 	// formats at random — the interpreter text of the same opcode is
 	// different across builds, all formats semantics-identical.
 	let mut fmt_of: std::collections::HashMap<String, u8> = std::collections::HashMap::new();
-	for name in OP_NAMES.iter() {
+	for name in OP_NAMES.iter().take(active_op_count) {
 		let n = handlers::n_formats(name, v15);
 		fmt_of.insert((*name).to_string(), rng.int(0, (n - 1) as i64) as u8);
 	}
@@ -1374,7 +1388,7 @@ pub fn generate(
 			core
 		}
 	};
-	let mut items: Vec<(String, u8)> = (0..N_OPS)
+	let mut items: Vec<(String, u8)> = (0..active_op_count)
 		.map(|i| (OP_NAMES[i].to_string(), map.to_wire[0][i]))
 		.collect();
 	if v15 {
@@ -1759,8 +1773,8 @@ pub fn generate(
 		// makes "which loop is real" a dead-end by construction.
 		let n_decoys = rng.int(4, 6);
 		for _ in 0..n_decoys {
-			let i1 = rng.int(0, (N_OPS - 1) as i64);
-			let i2 = rng.int(0, (N_OPS - 1) as i64);
+			let i1 = rng.int(0, (active_op_count - 1) as i64);
+			let i2 = rng.int(0, (active_op_count - 1) as i64);
 			sm.push_str(&format!(
 				"    local oc = DA[DP]\n    if oc then\n      local a = DA[DP]\n      local b = DA[DP]\n      local c = DA[DP]\n      local d = DA[DP]\n      DP = DP + 1\n      if oc == OCt[{}] then DA[DP] = a elseif oc == OCt[{}] then DA[DP] = b else local r = DA[DP](a, b, c, d); if r then DF = r[1] end end\n    end\n",
 				i1, i2
@@ -2228,7 +2242,7 @@ pub fn generate(
 		// as static outer closures (the unavoidable pure-Luau base), while each
 		// migrated handler is only a masked numeric descriptor. No handler source
 		// reaches the runtime loader.
-		let micro_lits = MicroLits::new(&mut pool, mk);
+		let micro_lits = MicroLits::new(&mut pool, mk, include_loadstr);
 		let mut micro_shards = Vec::with_capacity(n_micro_shards);
 		let mut micro_used: Vec<std::collections::HashSet<usize>> =
 			vec![std::collections::HashSet::new(); n_micro_shards];
@@ -3818,7 +3832,7 @@ pub fn generate(
         // S1 四表：运行时 HW2 联合展开——单 HW 表 43 项扩展为 172 项，使 per-function S 随机编码的 wire 均可命中（仅 v15）
         let hw_expand = if v15 {
             let mut hw_expands: Vec<String> = Vec::new();
-            for i in 0..N_OPS {
+            for i in 0..active_op_count {
                 let base = map.to_wire[0][i] as u16;
                 for tt in 1..4 {
                     let w = map.to_wire[tt][i] as u16;

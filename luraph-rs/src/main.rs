@@ -42,6 +42,9 @@ struct Options {
 	/// a future increment).
 	do_guard: bool,
 	do_vm: bool,
+	/// R062 experiment: pre-VM AST sealing for source string literals.
+	/// Disabled by default until the extraction and performance audits pass.
+	vm_seal_strings: bool,
 	/// v15 structural-parity profile (Route A, 2026-08-25): Luau/Roblox-only
 	/// output shaped like a Luraph v15 sample (module table + FC entry).
 	/// P0: flag exists and is Luau-gated; emission still routes through the
@@ -206,6 +209,8 @@ Options:
                          (default: enabled for the standard pipeline)
   --vm                   L6: compile the program to private bytecode and
                          run it through a generated obfuscated interpreter
+  --vm-seal-strings       EXPERIMENTAL: seal source string literals before VM
+                         compilation; requires a VM preset/--vm (off by default)
   --no-mangle            disable L1 name mangling (default: enabled)
   --no-strings           disable L2 string encryption (default: enabled)
   --no-flatten           disable L3 loop desugar + CFG flattening (default: enabled)
@@ -242,6 +247,7 @@ fn main() -> ExitCode {
 		do_antidbg: true,
 		do_guard: true,
 		do_vm: false,
+		vm_seal_strings: false,
 		do_v15: false,
 		do_strings: true,
 	do_flatten: true,
@@ -324,6 +330,7 @@ fn main() -> ExitCode {
 			vm_given = true;
 			opts.do_vm = true;
 		}
+			"--vm-seal-strings" => opts.vm_seal_strings = true,
 			"--no-strings" => opts.do_strings = false,
 			"--no-flatten" => opts.do_flatten = false,
 			"--no-junk" => opts.do_junk = false,
@@ -363,6 +370,10 @@ fn main() -> ExitCode {
 			eprintln!("error: {e}");
 			return ExitCode::FAILURE;
 		}
+	}
+	if opts.vm_seal_strings && !opts.do_vm {
+		eprintln!("error: --vm-seal-strings requires a VM preset or --vm");
+		return ExitCode::FAILURE;
 	}
 
 	// ㉖ (产品线收敛): 用户拍板——5.1 不用管，每次混淆都按 Luau。
@@ -438,6 +449,12 @@ fn main() -> ExitCode {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
 		let mut rng = rng::Rng::new(seed);
+		if opts.vm_seal_strings {
+			// Use a domain-separated PRNG so enabling this experiment does not
+			// perturb the VM's established opcode/layout/noise RNG schedule.
+			let mut seal_rng = rng::Rng::new(seed ^ 0x5230_3632_5354_5253);
+			vmgen::strseal::seal_literals(&mut block, &mut seal_rng);
+		}
 		// ㊸ (环境绑定去中心化): env 捕获槽预抽于高位数段 (5000-6000)——
 		// 与模块表槽域 (1..top) 天然无碰撞，且必须在 generate 之前定型
 		// （boot 文本要引用槽号；模块表稍后按同一批号发射捕获）。
@@ -450,14 +467,11 @@ fn main() -> ExitCode {
 				}
 			}
 			Some([es[0], es[1], es[2], es[3]])
-		} else {
-			None
-		};
-		// L6: compile the program to private bytecode; the executable
-		// program becomes the (to-be-obfuscated) interpreter template +
-		// the bytecode passed as string literals to its entry call
-		let vm_raw = std::env::var("LURAPH_VM_RAW").is_ok();
-		let (mut block, mut table, v15_done) = if opts.do_vm {
+			} else {
+				None
+			};
+			let vm_raw = std::env::var("LURAPH_VM_RAW").is_ok();
+			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program = vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15);
 			let n = program.fns.len();
 			let tsrc = vmgen::template::generate(
@@ -469,6 +483,7 @@ fn main() -> ExitCode {
 				&mut rng,
 				n,
 				opts.do_v15,
+				program.has_loadstr,
 				&program.nop_sites,
 				&program.operand_sums,
 				&program.operand_sums2,
