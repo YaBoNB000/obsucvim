@@ -57,6 +57,12 @@ table-driven mod expression：52 个
 
 这是**覆盖面限制**，不是新出现的字面量明文泄漏。若要扩展到名称，需要改全局/属性读取协议，可能影响 `__index`、执行顺序和性能，不能只做一个遍历器就宣称修好。
 
+### P1-C（条件性动态观察点）：LoadStr 的 native `char` 汇合面
+
+`M_LOAD_STR` 对每个已解码字节调用一次字符串元表的 `char` 函数；因此在提供 native-function hook 的 executor/调试环境里，若 `hookfunction(string.char)` 能拦截元表返回的同一函数对象，单钩子即可逐字节收集所有已经触碰的封存字符串。现有 `charhook_test.sh` 只覆盖 `setfenv` 下替换 `env.string.char`，而 `("")["char"]` 正是为躲这类环境表替换设计；它**没有**验证 executor 的函数对象级 hook。Lua 5.1 探针确认字符串元表索引可走同一个 `string.char` 函数对象；R062 Luau 目标的 executor 级 hook 仍需在真实目标环境实测，因此标成条件性风险，不夸大成所有 Luau 沙箱都能直接 hook。
+
+若要提高成本，可研究按站点分散字节物化原语（而不是一条统一 `char` 路径）；这只能让单 API hook 少收一部分值，不能阻止完整动态跟踪，也可能引入新的固定汇合点。
+
 ### P2-A：固定 seed 下字符串层跨构建可复现
 
 site 参数由 `Rng::new(seed ^ domain_tag)` 按 AST 遍历顺序抽取。固定 `--seed` 是支持的可复现功能；同 seed、同 AST 会重复相同的 site 参数与密文。默认的 time seed 通常会变化，但客户若长期固定 seed，会降低字符串层的跨构建差异。
