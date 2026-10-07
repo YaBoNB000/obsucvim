@@ -21,6 +21,9 @@ handler 的 10 类安全内部短序列融合为单记录 superoperator，回归
 trace 记录数，但不阻止有同进程插桩能力的分析者观察融合后的执行路径；详见
 `docs/r064-vuln-1-2-research.md`。
 
+**R064 第二轮深度自检（2026-10-07）**：新增 `handoff/R064_7kb_target_r2.luau.lua`
+（seed 64075，332,720 字节，SHA-256 `f4e0505ef0506939ee8a6330d64155c355e6ff9b1e7c43eb307f38ad677bc498`）。静态 S1–S5 均抵抗；临时同点 trace A/B 显示该 7KB 样本的解码记录 929,567→701,915（-24.49%），但同进程 `string.byte` hook 仍可看到运行态数据。另发现 32-seed 目标样本差分中 17 个 seed 融合前后均报 `attempt to call a number value`，属于待定位的既存稳定性缺陷，见 `docs/r064-deep-self-audit-r2.md`。
+
 **增量55（2026-09-23，自研防绕过——HBOOT 装配面收窄）**：`HB =
 table.concat(MH)` 收进 HBOOT 调用的 PCAL 闭包（boot 级零具名装配语句），
 调用后 `MH`/`HB` 即焚——R025 式可见层锚点失去 boot 级目标。绑定态守卫与

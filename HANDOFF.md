@@ -264,7 +264,9 @@
 > 历史节点：2026-08-29（v15 阶段 A 操作数散布 + 安全项收官；官方 204
 > + 预设 405 + 多 seed 5×8 全绿）
 
-> **R064 后续（2026-10-07）**：v15/legacy `makefn` 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参计数，protected-meta GET/SET/operator/call 回退回归通过。micro-shard 风险实施了第一轮保守 superoperator fusion：10 种无用户回调的内部序列（LoadK/Move/NewTab/Not/GetUp/SetUp/VarArgC/Jf/Jt/VarArgTab）每 handler 从 2–3 条记录压为 1 条；Call/Return、元方法和顺序敏感操作不融合。新增 `micro_fusion_test.sh` 与 Rust 单测；融合前临时探针的 906,284 条记录是历史基线，未把它冒充成融合后总 trace。自检：cargo test 35 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；H5-P0 与安全指纹 S1–S5 通过。仍须诚实保留同进程插桩可观察融合后的执行路径这一边界；详情 `docs/r064-vuln-1-2-research.md` 和 `docs/r064-deep-self-audit.md`。
+> **R064 后续（2026-10-07）**：v15/legacy `makefn` 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参计数，protected-meta GET/SET/operator/call 回退回归通过。micro-shard 风险实施了第一轮保守 superoperator fusion：10 种无用户回调的内部序列（LoadK/Move/NewTab/Not/GetUp/SetUp/VarArgC/Jf/Jt/VarArgTab）每 handler 从 2–3 条记录压为 1 条；Call/Return、元方法和顺序敏感操作不融合。新增 `micro_fusion_test.sh` 与 Rust 单测；融合前 906,284 条记录是历史基线；第一轮未重测整体 trace。自检：cargo test 35 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；H5-P0 与安全指纹 S1–S5 通过。仍保留同进程观察边界，详情 `docs/r064-vuln-1-2-research.md`。
+>
+> **R064 第二轮深度自检（2026-10-07）**：新交付 `handoff/R064_7kb_target_r2.luau.lua`（seed 64075）。同点临时白盒 A/B（父版 `2edb768` vs 融合版 `1c14321`）记录数 929,567→701,915（-24.49%，均 412,706 次 shard invocation，stdout 等价）；Luau setfenv 下 `string.byte` wrapper 观察 2,673,372 次调用、397 个不同字符串参数（最长 15,442B），说明客户端运行态数据仍可被 hook 观察。另对 R064 7KB 样本的 32 个指定 seed 做融合前后差分，17 个 seed 两版均报 `attempt to call a number value`，是融合前已存在的 seed 稳定性缺陷，官方语料未覆盖该 handoff 样本。本轮未修 VM；详细证据/seed 清单与边界见 `docs/r064-deep-self-audit-r2.md`。
 
 ---
 

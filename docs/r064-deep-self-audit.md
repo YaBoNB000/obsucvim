@@ -56,3 +56,5 @@ Call/Return、LoadStr、全局表访问、算术/比较与表 GET/SET 等边界�
 Fusion 是增加轨迹整理成本的缓解，不是密码学保护。同进程代码插桩者仍可记录融合后的执行顺序/操作，再配合静态 handler 语义理解已执行路径；它不会自动得到未执行分支、原始变量名或完整源代码。客户端不适合保管服务端级密钥、授权或反作弊决策。
 
 真实 Roblox executor 未在本地直接运行；protected-meta 由模拟保护 sentinel 的 Luau 回归验证。R064 变量名压缩仍是体积/形态优化，不是安全边界。
+
+> **第二轮深度自检**：融合后 trace A/B、`string.byte` 环境 hook 与 32-seed R064 差分结果见 `docs/r064-deep-self-audit-r2.md`。第二轮仍确认同进程观察边界，并发现融合前/后的共同 seed 运行失败集合；本文件保留第一轮修复与验收快照。

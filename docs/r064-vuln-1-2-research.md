@@ -46,3 +46,11 @@ H5-P0 已封存静态 `{program,mask,step}` descriptor 表；执行时仍须从 
 - `tests/h5_p0_micro_audit.py`：PASS；`security_fingerprint.py`：S1–S5 5/5；
 - R064 7KB 样本 seed `64066`：源 7,179 字节、目标 338,277 字节，Luau 编译通过且标准输出相同；目标 SHA-256 `6e322c6d405f2e1731149cd7af66eed7dbef0a06d1517044e15349394e98c0d5`；
 - R064 样本结构指纹为 22/32（结构相似度，不是解密成功率）；`defense_audit.sh` 的 D12 合成计时触发/干净时钟检查已恢复通过。该脚本仍将 D3 结构分数 23/32 报为 FAIL；它不是 S1–S5 安全指纹或功能等价失败。
+
+## 5. R064 深度自检第二轮（2026-10-07）
+
+新产物 `handoff/R064_7kb_target_r2.luau.lua` 使用 seed `64075`，7,179 字节源与产物 stdout 一致；静态攻击工具 S1–S5 均退出 2（抵抗）。对相同 source/seed，以融合前 `2edb768` 与融合后 `1c14321` 临时白盒生成器在同一解码点计数：两边都是 412,706 次 shard invocation；记录数从 929,567 降至 701,915（-227,652，-24.49%），两边语义输出仍相同。计数探针只在 `/tmp`，未进入正式代码。
+
+补充的 executor-like `setfenv` string library wrapper 捕获 2,673,372 次 `string.byte` 调用、397 个不同参数、最长 15,442 字节；目标仍输出正确。最大参数为运行态可打印编码字符串（85 种字节值，6.14 bit/byte），不在 artifact 中原样出现；hook 观察到数据不等于已解出源码，但确认该运行面可见。
+
+第二轮对 32 个定向 seed 做 pre/post-fusion R064 样本差分，两个版本同样在 17 个 seed 报 `attempt to call a number value`，失败集合一致。具体 seed 和复现结果见 `docs/r064-deep-self-audit-r2.md`。这是本轮新确认的**既存 seed 稳定性缺陷**，未在本轮修改 VM；官方 multiseed corpus 没有包含该 handoff 7KB 样本。

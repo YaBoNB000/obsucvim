@@ -5,8 +5,8 @@
 > §2 进度表 + §3 里程碑勾选 + 更新日志**（四处一起改，不允许只记日志不改状态），
 > 并同步 `PROGRESS.md` / `HANDOFF.md` / `examples/README.md`，
 > **最后 commit + push 到 GitHub**（用户规矩 2026-08-23）。
-> 初版：2026-08-23 ｜ 最后更新：2026-10-07（R064 protected-meta / vararg 修复与 micro-shard trace 第一层缓解）
-> **当前状态：M0–M6 ✅；R064 后续缓解已回归验证**
+> 初版：2026-08-23 ｜ 最后更新：2026-10-07（R064 micro-shard 第二轮深度自检：动态 trace 实测与既存 seed 稳定性发现）
+> **当前状态：M0–M6 ✅；R064 第一层融合完成，残余观察边界与 seed 正确性发现已记档**
 
 ---
 
@@ -135,13 +135,15 @@
 | **M6 产品化** ✅ 2026-08-25 | CLI `--preset` + README 产品文档 + `docs/performance.md` | 全预设 × 全语料 × 双解释器：`tests/run_presets.sh` **405/405**；默认 ≡ high、`--preset vm` ≡ `--vm`；官方矩阵 204 仍绿 |
 | **R064 兼容与变参修复** ✅ 2026-10-07 | protected-meta GET/SET/operator/call 原生回退；v15/legacy makefn 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参数量；`stress_multival` 加回归 | `cargo test` 32/32 + 1 ignored；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败 |
 | **R064 micro-shard trace 第一层缓解** ✅ 2026-10-07 | 10 种无用户回调边界的内部短序列 fuse 为单记录 superoperator；Call/Return、metamethod 和顺序敏感操作不融合；添加 v15/legacy 等价回归。仍保留同进程 trace 的客户端观察边界 | `cargo test` 35/35 + 1 ignored；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败；H5-P0 PASS；S1–S5 5/5 |
+| **R064 第二轮深度自检** ✅ 2026-10-07 | 新建 seed 64075 7KB 产物；静态 S1–S5 抵抗；同点临时 trace A/B 929,567→701,915（-24.49%）；setfenv `string.byte` hook 观察 2.67M 次调用；32 个指定 seed 中 17 个前/后版本同样运行失败，列为既存正确性问题，未在本轮修改 | 样本编译/输出一致；攻击脚本 S1–S5 exit 2；差分 seed 清单和 hook 细节见 `docs/r064-deep-self-audit-r2.md` |
 
-**M0–M6 全部完成（2026-08-25）；R064 兼容/变参修复与 micro-shard 第一层 trace 缓解通过所列回归（2026-10-07）。**
+**M0–M6 全部完成（2026-08-25）；R064 兼容/变参修复、micro-shard 第一层融合通过原有回归，第二轮深度自检已记录剩余边界（2026-10-07）。**
 
 ---
 
 ## 4. 更新日志
 
+- **2026-10-07（R064 第二轮深度自检）**：新产物 `R064_7kb_target_r2.luau.lua`（seed 64075，332,720B）通过 Luau compile/stdout；security fingerprint S1–S5 与对应静态攻击工具均抵抗。临时同点白盒 A/B 在同 412,706 次 shard invocation 中记录 929,567→701,915 条微码（-24.49%）；setfenv string.byte hook 观察 2,673,372 次调用、397 个不同字符串参数、最长 15,442B，目标仍输出等价。32 个定向 seed 的融合前/后差分失败集合一致（17 个 `attempt to call a number value`），确认是既存 R064 样本正确性问题，不归因于 fusion；根因待定位，本轮未改 VM。无 real executor 结论。报告 `docs/r064-deep-self-audit-r2.md`。
 - **2026-10-07（R064 micro-shard trace 缓解）**：`micro_recipe` 为 LoadK/Move/NewTab/Not/GetUp/SetUp/VarArgC/Jf/Jt/VarArgTab 融合单记录 superoperator：每种内部 handler 2–3 条记录降为 1 条；不跨 Call/Return、元方法、lazy decode 或顺序敏感边界。新增单测 + `micro_fusion_test.sh`（v15/legacy 输出一致）。不宣称阻止有同进程插桩能力的 trace；历史 906,284 条探针日志是融合前数据，本次没有冒充融合后总 trace。同步修正 R063 `KM` 子串误命中（完整 Lua identifier 检查），并重写 D12 时钟审计提取器从 RTFRAG 签名/调用位置匹配 CLK；D12 慢时钟、干净时钟及误报抽查通过。自检：cargo test 35 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；H5-P0 PASS；S1–S5 5/5。`defense_audit.sh` 仍将 D3 结构指纹 23/32 记为 FAIL（结构相似度口径），D12 已 PASS。详见 `docs/r064-vuln-1-2-research.md` 与 `docs/r064-deep-self-audit.md`。
 - **2026-10-07（R064 protected-meta + trailing nil vararg）**：v15 micro GET 对字符串直接走原生 Luau indexing；`mget` 先验元表类型，受保护 table/userdata 的 GET/SET、算术/比较/连接/unary/callable 在 sentinel 不透明时回退到原生语义。新增 `protected_meta_compat_test.sh` 并接入 `run_tests.sh`。`makefn` 两路径改用精确 arity：legacy 捕获外层 `SEL`；v15 RTFRAG 从既有随机 primitive 槽 `P[slots[12]]` 捕获 `SEL("#", ...)`，不再用 `#all` 计数，并在 `stress_multival.lua` 覆盖尾 nil、forward、fixed+vararg 与闭包。验证：cargo test 32/32 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；保护元表回归通过。真实 executor 未在本地验证。详见 `docs/r064-deep-self-audit.md` 与 `docs/r064-vuln-1-2-research.md`。
 - **2026-09-23（增量55：自研防绕过——HBOOT 装配面收窄 + 阶段二可行性定

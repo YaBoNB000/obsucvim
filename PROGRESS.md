@@ -1,6 +1,6 @@
 # 项目进度（PROGRESS）
 
-> 2026-10-07 R064 后续：protected-meta 兼容与尾 nil 变参计数修复保留；micro-shard 对 10 种安全内部短序列实施单记录 superoperator fusion（单 handler 2–3 条降至 1 条）。新增 v15/legacy 回归，cargo test 35 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；H5-P0 与 S1–S5 通过。融合提高轨迹整理成本但不阻止同进程 trace；边界与 D12/D3 审计口径见 `docs/r064-vuln-1-2-research.md`。
+> 2026-10-07 R064 第二轮深度自检：新增 7KB 产物 `handoff/R064_7kb_target_r2.luau.lua`（seed 64075；stdout 与源一致）。静态攻击 S1–S5 均抵抗；同点白盒 A/B trace 929,567→701,915（-24.49%）；Luau `string.byte` hook 捕获 2,673,372 次调用、397 个不同字符串参数（最长 15,442B），确认运行态观察边界。32 个指定 seed 的融合前后对照均有相同 17 个运行失败（`attempt to call a number value`），是既存 R064 样本稳定性问题，待定位；不归因于融合。完整证据见 `docs/r064-deep-self-audit-r2.md`。
 >
 > 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
 > （真实 Luraph v15.0 产物 171.7KB）做全面深度破解。穿透全部旧墙：
