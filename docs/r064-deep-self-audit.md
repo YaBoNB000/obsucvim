@@ -14,13 +14,13 @@
 
 R064-7kb 在 executor 报 `attempt to index a string value` 的根因，是生成解释器手工调用 `getmetatable(o)` 后直接读取 `mt.__index`。当宿主为字符串元表返回非表保护标记（例如字符串）时，旧路径会索引该标记。
 
-生成器通用修复位于 `luraph-rs/src/vmgen/template.rs`：
+通用修复位于 `luraph-rs/src/vmgen/template.rs`：
 
-- `mget` 先确认可见元表确实是表，遇到不透明 sentinel 不再索引它；
-- 字符串 GET 走原生 Luau `o[j]`；受保护 table/userdata 的 GET/SET 在宿主隐藏元表时也回退到原生索引/赋值；
+- `mget` 先确认可见元表确实是表；遇到不透明 sentinel 不再索引它；
+- 字符串 GET 走原生 Luau `o[j]`；受保护 table/userdata 的 GET/SET 在宿主隐藏元表时回退到原生索引/赋值；
 - 算术、比较、连接、unary 和 callable 路径在元表不透明时回退到原生 Luau 运算/调用。
 
-源码保留 `row[2]:sub(...)`，没有再以改写调用点回避问题。新增的 `tests/protected_meta_compat_test.sh` 并接入 `run_tests.sh`；在 executor-like 环境中让 `getmetatable(string)` 返回保护 sentinel，并给表设置保护性 `__metatable`，逐项比较源与产物的返回值。覆盖 `:sub/:upper/:rep` 和受保护的 `__index/__newindex/__add/__concat/__lt/__eq/__unm/__len/__call`，回归通过。
+源码保留 `row[2]:sub(...)`，没有再通过改写源调用绕过问题。新增 `tests/protected_meta_compat_test.sh` 并接入 `run_tests.sh`；在 executor-like 环境中让 `getmetatable(string)` 返回保护 sentinel，并给表设置保护性 `__metatable`，逐项比较源与产物返回值。覆盖 `:sub/:upper/:rep` 和受保护的 `__index/__newindex/__add/__concat/__lt/__eq/__unm/__len/__call`，回归通过。
 
 ## 3. 已跑验证
 
