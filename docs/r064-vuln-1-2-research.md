@@ -9,7 +9,7 @@
 | 编号 | 问题 | 证据 | 状态 |
 |---|---|---|---|
 | 1 | 变参表尾 `nil` 被 `#all` 少计 | 旧 seed `64066`：源 `select("#", ...)` 结果 5，VM 结果 4 | v15 与 legacy 两路径已修复，尾 nil/转发/闭包回归通过 |
-| 2 | micro-shard 解码后的执行路径可被动态跟踪 | 白盒计数：融合前 929,567 条，融合后 701,915 条；`string.byte` setfenv hook 捕获 2,673,402 次调用 | 第一层融合已落地；仍不能对同进程插桩保证保密 |
+| 2 | micro-shard 解码后的执行路径可被动态跟踪 | 白盒计数：融合前 929,567 条，融合后 701,915 条；native primitive capture 后，复制 string 表的 `byte/sub/char` hook 为 0/0/0 | 融合与 string-table-hook 缓解已落地；原生函数/同进程插桩仍可观察，不能保证客户端保密 |
 | 3 | 子 closure `CellKind::Up` 未跟随父函数 upsrc permutation | R064 seed 64067：`fold_text` 被映射为 `MOD=1000003` 并导致数值被调用；32 个指定 seed 中旧版 17 个失败 | 已修复：预计算 parent upvalue permutation 后生成 child descriptor；R064 专项 24-seed regression 与当前 release 的 42-seed sweep 均通过 |
 
 ## 1. 变参尾部 nil：修复与验证
@@ -59,7 +59,7 @@ H5-P0 已封存静态 `{program,mask,step}` descriptor 表；执行时仍须从 
 
 ## 4. 第二轮动态 hook 证据与限制
 
-对新样本 `handoff/R064_7kb_target_r2.luau.lua`（seed `64075`）执行静态 S1–S5 攻击均抵抗。另用 Luau `setfenv` harness 给复制的 `string` 表安装透明 `byte` wrapper：目标仍正常输出，wrapper 观察到 **2,673,402 次**调用、**397 个**不同字符串参数、最长 **15,442** 字节。该最大参数含 85 种字节值、Shannon 熵 6.14 bit/byte，且不以相同子串出现在 artifact 中。hook 证明运行态数据可见，不等于这些内容已被解释成源码或明文。
+对新样本 `handoff/R064_7kb_target_r2.luau.lua`（seed `64075`）执行静态 S1–S5 攻击均抵抗。**native-capture 之前**，Luau `setfenv` harness 给复制的 `string` 表安装透明 `byte` wrapper 曾观察到 2,673,402 次调用、397 个不同字符串参数、最长 15,442 字节；这证明旧版会经可替换表读取大量运行态数据，不等于已解出明文源码。native-capture 后同一 copied-table wrapper 对 byte/sub/char 命中为 0/0/0。
 
 真实 Roblox executor 未在本地直接运行。本轮所有动态观察结论限于本地 Luau `setfenv` harness；客户端混淆仍不能保护服务端密钥、授权或反作弊决策。
 
@@ -69,4 +69,10 @@ H5-P0 已封存静态 `{program,mask,step}` descriptor 表；执行时仍须从 
 - `tests/run_tests.sh`：169/169；`tests/run_presets.sh`：370/370；`tests/multiseed.sh`：`FAIL=0`（含 R064 专项 24-seed sweep）；
 - H2/H3、H4 loader、H4-5/H6/H7/H8、H5-P0、R061 bypass：PASS；`security_fingerprint.py`：S1–S5 5/5；
 - `defense_audit.sh`：D12 慢/干净时钟和误报检查 PASS；总计 PASS 20 / FAIL 1，唯一 FAIL 是 D3 结构指纹 23/32，不是安全指纹或功能等价失败。
-- 新 R064 seed `64075` artifact：332,466 字节；SHA-256 `a04eee0c1aca28444f50988b255d7501268b6d254f98aafe623b02ad298a0450`；源/产物 stdout 一致。
+- 加入 native string primitive capture 后的新 R064 seed `64075` artifact：326,848 字节；SHA-256 `cea2d2eb5e9907ae9e011da33a154f595c5063e6d3f876a338f4b8769669cf5e`；源/产物 stdout 一致。
+
+## 6. 动态 hook 风险第二层缓解（2026-10-07）
+
+在 VM 模板的 `PRIM_SRC` 与 v15 primitive module-table/helper emission 中，`string.byte/sub/char` 改为从原生 string metatable 取得；staging helpers 改用捕获的 numeric slots 或原生 `("")["sub"]` 风格访问。新增 `tests/string_primitive_hook_test.sh`，在 `setfenv` 注入的可替换 string 表下验证 VM 内部不调用 hook 的 byte/sub/char，同时程序 stdout 与源码一致。R064 seed `64075` 样本的相同 probe 命中为 **0/0/0**；加入该层之前的对照记录为 byte 2,673,402 次。
+
+这针对的是“加载器用复制 string 表替换函数”的 hook 路径，不是任意同进程插桩防护。能 patch 函数体、hook 原生 C 函数、读取 VM 局部状态或直接改指令执行者仍可观察运行态；此前 701,915 条融合后 micro trace 的测量也未因本层改动而宣称消失。真实 executor 未测。

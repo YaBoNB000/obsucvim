@@ -6,9 +6,9 @@
 ## 1. 交付样本
 
 - 源码：`handoff/R064_7kb_src.lua`（7,179 字节，纯本地 Luau/Lua 语义测试，无 Roblox、网络或文件 API）
-- 产物：`handoff/R064_7kb_target.luau.lua`（seed `64066`，修复后 338,223 字节）
-- SHA-256：源 `5f3295d245a4e63d229d9da1022b88e1234335bc177a78256a76597de3fd7a99`；产物 `67e416767d16781851943e101a075e65ac731d805628575821ef397a68e09ea7`
-- v15 结构指纹 22/32；仅表示结构相似度，不表示可解密性或运行安全性。
+- 产物：`handoff/R064_7kb_target.luau.lua`（seed `64066`，native string primitive capture 后 333,663 字节）
+- SHA-256：源 `5f3295d245a4e63d229d9da1022b88e1234335bc177a78256a76597de3fd7a99`；产物 `15b9beb3c547912b5d4b32f6e961ec4e6699e5de6b4e853b7a6c115e2898ca16`
+- v15 结构指纹 21/32；仅表示结构相似度，不表示可解密性或运行安全性。
 
 ## 2. 已修复：尾部 nil 变参数量
 
@@ -41,6 +41,8 @@ Call/Return、LoadStr、全局表访问、算术/比较与表 GET/SET 等边界�
 
 融合前历史探针为 906,284 条。第二轮在相同 R064 seed 64075、相同解码点作临时 A/B：融合前 929,567 条、融合后 701,915 条，均 412,706 次 shard invocation，stdout 与源一致（-24.49%）。计数探针未进入正式产物；仍不能证明任意运行中的观察者无法追踪。
 
+R2 后续还将 VM 核心 `byte/sub/char` primitive 改为 string metatable 原生索引或已有数值槽，避免经 loader 可替换的全局 `string` 表取函数；`string_primitive_hook_test.sh` 在复制表 wrapper 下校验输出不变且 hook 命中为 0。对 R064 R2 artifact 的 byte/sub/char 同一 setfenv hook 也为 0/0/0；native C 函数 hook/debugger 与直接插桩仍不在该防护范围。
+
 ## 5. 已修复：嵌套 closure upvalue scatter seed 错位
 
 融合前后的 32-seed 对照发现同一失败集合（17 个 seed：`7, 42, 999, 31337, 4242, 12345, 65535, 123456, 1234567, 222222, 555555, 888888, 10000000, 12345678, 64065, 64076, 64077`），运行报 `attempt to call a number value`。临时 VM 调用探针定位到 `make_accumulator` 的内层 vararg closure：`fold_text` 调用时误取得 `MOD=1000003`。
@@ -53,7 +55,7 @@ Call/Return、LoadStr、全局表访问、算术/比较与表 GET/SET 等边界�
 
 - `cargo test`：36 passed、0 failed、1 ignored。
 - `tests/run_tests.sh`：169/169；`tests/run_presets.sh`：370/370；`tests/multiseed.sh`：`FAIL=0`（含 R064 专项 24-seed 稳定性回归）。
-- 新增 `tests/micro_fusion_test.sh`：v15 和 legacy 输出一致；`tests/h5_p0_micro_audit.py`：PASS。
+- 新增 `tests/micro_fusion_test.sh`：v15 和 legacy 输出一致；`tests/string_primitive_hook_test.sh`：minimal 与 R064 源在复制 string 表 hook 下输出等价，byte/sub/char 命中均为 0；`tests/h5_p0_micro_audit.py`：PASS。
 - R064 样本通过 `luau-compile`，源与产物标准 Luau stdout 逐字一致；短名审计 **5,950** 个局部/参数/循环标识符，均不超过两个字母。
 - `security_fingerprint.py`：S1–S5 **5/5**；KeyEmitter 字面值扫描通过；D5/D6 30 个活动载体跨度篡改点全部拒绝。
 - H2/H3、H4 loader（`--enforce-zero`）、H4-5/H5-P0/H6/H7/H8 和 R061 bypass audits 通过。

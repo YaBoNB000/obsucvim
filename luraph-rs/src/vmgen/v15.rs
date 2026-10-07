@@ -100,6 +100,18 @@ const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
 
 fn dot_value(path: &str) -> Expr {
 	let (lib, name) = path.split_once('.').unwrap();
+	// Capture core string methods through the native string metatable, not
+	// the replaceable global `string` library table. A setfenv copy that
+	// wraps string.byte/sub/char should not become the VM's carrier hook.
+	if lib == "string" && matches!(name, "byte" | "sub" | "char") {
+		return Expr::Index {
+			obj: Box::new(Expr::Str { bytes: Vec::new(), is_binary: false }),
+			idx: Box::new(Expr::Str {
+				bytes: name.as_bytes().to_vec(),
+				is_binary: false,
+			}),
+		};
+	}
 	Expr::Dot {
 		obj: Box::new(Expr::Ident {
 			name: lib.to_string(),
@@ -1152,8 +1164,8 @@ pub fn scaffold(
 				let mut s = String::new();
 				for step in 0..4u16 {
 					s.push_str(&format!(
-						"{t}[{ti}]=string.char(bit32.bxor({wd}%256,({kn}+{ti})%256));",
-						t = nt, ti = nti, wd = nwd, kn = nkn
+						"{t}[{ti}]=b[{sc}](bit32.bxor({wd}%256,({kn}+{ti})%256));",
+						t = nt, ti = nti, wd = nwd, kn = nkn, sc = prim_extra.1
 					));
 					if step < 3 {
 						s.push_str(&format!("{}=({}-{}%256)/256;", nwd, nwd, nwd));
@@ -1165,8 +1177,8 @@ pub fn scaffold(
 				// string.char 多参数返回**一个** 4 字节串 → 整条追加；
 				// 表项粒度 = 词，索引 trim 须按词数（见 final_concat）
 				format!(
-					"{t}[#{t}+1]=string.char(bit32.bxor({wd}%256,({kn}+{ti})%256),bit32.bxor(bit32.extract({wd},8,8),({kn}+{ti}+1)%256),bit32.bxor(bit32.extract({wd},16,8),({kn}+{ti}+2)%256),bit32.bxor(bit32.extract({wd},24,8),({kn}+{ti}+3)%256));{ti}={ti}+4;",
-					t = nt, ti = nti, wd = nwd, kn = nkn
+					"{t}[#{t}+1]=b[{sc}](bit32.bxor({wd}%256,({kn}+{ti})%256),bit32.bxor(bit32.extract({wd},8,8),({kn}+{ti}+1)%256),bit32.bxor(bit32.extract({wd},16,8),({kn}+{ti}+2)%256),bit32.bxor(bit32.extract({wd},24,8),({kn}+{ti}+3)%256));{ti}={ti}+4;",
+					t = nt, ti = nti, wd = nwd, kn = nkn, sc = prim_extra.1
 				)
 			};
 			// word-source variants: multi-return string.byte (㉞) vs
@@ -1178,8 +1190,8 @@ pub fn scaffold(
 					.map(|_| nm.take_avoid(CH_AVOID))
 					.collect();
 				let unpack = format!(
-					"local {co}=({wi}-1)*5+1;local {c}=string.byte({ws},{co},{co}+4);",
-					co = nco, wi = nwi, c = cs.join(","), ws = nws
+					"local {co}=({wi}-1)*5+1;local {c}=b[{sb}]({ws},{co},{co}+4);",
+					co = nco, wi = nwi, c = cs.join(","), ws = nws, sb = prim_extra.0
 				);
 				let horn = format!(
 					"(((({c1}-33)*94+{c2}-33)*94+{c3}-33)*94+{c4}-33)*94+{c5}-33",
@@ -1200,8 +1212,8 @@ pub fn scaffold(
 			} else {
 				let byte_at = |k: i64| {
 					format!(
-						"(string.byte({ws},({wi}-1)*5+{k})-33)",
-						ws = nws, wi = nwi, k = k
+						"(b[{sb}]({ws},({wi}-1)*5+{k})-33)",
+						ws = nws, wi = nwi, k = k, sb = prim_extra.0
 					)
 				};
 				let vhorn = format!(
@@ -1266,12 +1278,12 @@ pub fn scaffold(
 				)
 			} else if trim_style {
 				format!(
-					"string.sub(table.concat({t},nil,1,{nw}),1,{blen})",
+					"(\"\")[\"sub\"](table.concat({t},nil,1,{nw}),1,{blen})",
 					t = nt, nw = nw, blen = blen
 				)
 			} else {
 				format!(
-					"string.sub(table.concat({t}),1,{blen})",
+					"(\"\")[\"sub\"](table.concat({t}),1,{blen})",
 					t = nt, blen = blen
 				)
 			};

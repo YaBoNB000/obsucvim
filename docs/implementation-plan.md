@@ -5,8 +5,8 @@
 > §2 进度表 + §3 里程碑勾选 + 更新日志**（四处一起改，不允许只记日志不改状态），
 > 并同步 `PROGRESS.md` / `HANDOFF.md` / `examples/README.md`，
 > **最后 commit + push 到 GitHub**（用户规矩 2026-08-23）。
-> 初版：2026-08-23 ｜ 最后更新：2026-10-07（R064 seed 稳定性修复：父/子 upvalue scatter permutation 对齐）
-> **当前状态：M0–M6 ✅；R064 nested closure seed bug 已修复并加入多 seed 门禁**
+> 初版：2026-08-23 ｜ 最后更新：2026-10-07（R064 seed 稳定性修复 + replaceable string-table hook 第二层缓解）
+> **当前状态：M0–M6 ✅；R064 seed bug 已修复，动态 hook 风险有针对性缓解但仍非绝对防护**
 
 ---
 
@@ -70,7 +70,7 @@
 | SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | ✅ M5（`[ncode][OC bytes][S0..S3 varint streams]`；pc 按指令步进） |
 | opcode 随机置换（每构建） | 随机置换表 + 死指令填充 | `vmgen/isa.rs` | P0 | ✅（置换表 + Nop 死指令填充，M4 续期） |
 | AST → 字节码编译器 | 原型树/upvalue/常量池/多值协议(nresults 0/-1)/尾调用；R064：child `CellKind::Up` descriptor 随 parent upvalue scatter permutation 对齐 | `vmgen/compiler.rs` | P0 | ✅ M4+续期（upvalue 单 cell 别名模型 + 循环变量 per-iteration 共享 cell + 5.1 构造器存储序 + 全变长展开 + R064 seed stability fix） |
-| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层）；R064：protected-meta 原生回退、SEL 精确变参计数；10 种安全内部 micro 序列融合为单记录 superoperator（不承诺阻断同进程 trace） | `vmgen/template.rs` | P0 | ✅（兼容、变参与 micro trace 第一层缓解，2026-10-07） |
+| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层）；R064：protected-meta 原生回退、SEL 精确变参计数；10 种安全内部 micro 序列融合；VM byte/sub/char primitive 改用原生 string metatable 访问以绕过可替换全局 string 表 hook（不承诺阻断同进程 trace/native hook） | `vmgen/template.rs` | P0 | ✅（兼容、变参与动态 hook 成本缓解，2026-10-07） |
 | 指令拆文件 + 一指令多形态（建议1） | 41 条指令各一个文件（`vmgen/handlers/`），每文件返回固定解释器代码、用哪个取哪个；每指令 2~3 个语义等价形态，每构建随机各选一形 + 分派叶序/H 定义序/内联调用链序每生成打乱 | `vmgen/handlers/*` + `vmgen/strpool.rs` | P0 | ✅ 增量⑧（旧内联 `branch_code` 全量迁出为各指令 f0 形态；调用族按 token 模板改名换形；v15 Return 单形态保 CPS 改写锚点） |
 | continue 扁平分派风格（Luau 档） | 叶 = `状态=handler(); continue`（luraph15 同款，5.1 用嵌套树） | `vmgen/template.rs` | P1 | 📐 |
 | 帧运行器入场原语解包 | 数字槽→局部变量一次性解包，槽号/局部名每构建随机 | `vmgen/template.rs` | P0 | ✅ M5（15 个宿主原语进 `P[1..80]` 随机槽；VM 顶 + `run` 入场各解包一次，顺序独立 shuffle） |
@@ -135,16 +135,18 @@
 | **M6 产品化** ✅ 2026-08-25 | CLI `--preset` + README 产品文档 + `docs/performance.md` | 全预设 × 全语料 × 双解释器：`tests/run_presets.sh` **405/405**；默认 ≡ high、`--preset vm` ≡ `--vm`；官方矩阵 204 仍绿 |
 | **R064 兼容与变参修复** ✅ 2026-10-07 | protected-meta GET/SET/operator/call 原生回退；v15/legacy makefn 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参数量；`stress_multival` 加回归 | `cargo test` 32/32 + 1 ignored；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败 |
 | **R064 micro-shard trace 第一层缓解** ✅ 2026-10-07 | 10 种无用户回调边界的内部短序列 fuse 为单记录 superoperator；Call/Return、metamethod 和顺序敏感操作不融合；添加 v15/legacy 等价回归。仍保留同进程 trace 的客户端观察边界 | `cargo test` 35/35 + 1 ignored；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败；H5-P0 PASS；S1–S5 5/5 |
-| **R064 第二轮深度自检与 seed 修复** ✅ 2026-10-07 | 发现 parent `upsrc` 置换发生在 child `CellKind::Up` descriptor 编码后，导致 17/32 指定 seed 的内层 closure 将 `fold_text` 错映射为 `MOD`；预计算 parent upvalue permutation 并重映射 child descriptor。dynamic A/B trace 929,567→701,915（-24.49%），`string.byte` hook 观察边界仍在 | 新增 `r064_seed_stability_test.sh`（24 历史失败/相邻 seeds PASS，接入 run_tests 与 multiseed）；42-seed、连续 1..128 与另抽 128 高范围 seeds 均 0 fail；cargo test 36/36 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0 |
+| **R064 第二轮深度自检与 seed 修复** ✅ 2026-10-07 | 发现 parent `upsrc` 置换发生在 child `CellKind::Up` descriptor 编码后，导致内层 closure 将 `fold_text` 错映射为 `MOD`；预计算 parent upvalue permutation 并重映射 child descriptor。dynamic A/B trace 929,567→701,915（-24.49%） | 新增 `r064_seed_stability_test.sh`（24 历史失败/相邻 seeds PASS，接入 run_tests 与 multiseed）；42-seed、连续 1..128 与另抽 128 高范围 seeds 均 0 fail；cargo test 36/36 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0 |
+| **R064 replaceable string-table hook 缓解** ✅ 2026-10-07 | VM/v15 staging 的 `byte/sub/char` primitive 改由原生 string metatable 或 numeric slots 获取；复制 string 表 setfenv hook 不再截获 VM 内部 byte/sub/char，R064 stdout 不变。仅封闭 replaceable-library hook，不防 native C hook、debugger 或 decoded micro trace | 新增 `string_primitive_hook_test.sh` 接入 run_tests；minimal/R064 seed64075 copied-library hook hits 0/0/0；S1–S5 5/5 |
 
-**M0–M6 全部完成（2026-08-25）；R064 兼容/变参、micro-shard 第一层融合及 nested-upvalue seed 稳定性修复通过回归（2026-10-07）。**
+**M0–M6 全部完成（2026-08-25）；R064 兼容/变参、micro-shard fusion、seed 对齐与 replaceable string hook 缓解通过所列回归（2026-10-07）。**
 
 ---
 
 ## 4. 更新日志
 
+- **2026-10-07（R064 动态 string-table hook 缓解）**：VM `PRIM_SRC` 的 byte/sub/char 从 native string metatable 获取；v15 module primitive fields 同样使用 native string indexing，CPS staging helper 改用已有 byte/char numeric slots 与 native sub。原因：R064 seed64075 在复制的全局 `string` 表 hook 下融合前后的 `byte` wrapper 曾看到 2,673,402 次调用。新增 `tests/string_primitive_hook_test.sh` 覆盖 minimal + 7KB R064 canary：复制表 wrapper 下 byte/sub/char hits 0/0/0，Luau stdout 不变。此举只绕过可替换库表 hook，native C hook / debugger / decoded micro trace 仍可观察；不宣称阻断动态 trace。自检：cargo test 36 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0；H2/H3/H4/H5/H6/H7/H8/R061 PASS；S1–S5 5/5。
 - **2026-10-07（R064 seed 稳定性修复）**：定位 R064 的 nested-upvalue scatter 错位——`CellKind::Up` child descriptor 在父 `upsrc` 置换前以旧索引编码；部分 seed 将 `fold_text` cell 读成 `MOD`。`Ctx` 预计算旧索引→runtime permutation，child descriptor 按父 permutation 映射；scatter 使用同一映射并保留主 RNG draw schedule。单测覆盖双射/确定性，新增 `r064_seed_stability_test.sh` 接入 run_tests/multiseed；24-seed regression PASS，当前 release 的 42-seed、连续 1..128 与另抽 128 高范围 R064 sweep 均 0 fail。完整矩阵：cargo test 36 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0。
-- **2026-10-07（R064 第二轮深度自检）**：新产物 `R064_7kb_target_r2.luau.lua`（修复后 seed 64075，332,466B）通过 Luau compile/stdout；security fingerprint S1–S5 与静态攻击工具均抵抗。固定 upvalue 修复后的临时同点白盒 A/B 在同 412,706 次 shard invocation 中记录 929,567→701,915 条微码（-24.49%）；setfenv `string.byte` hook 观察 2,673,402 次调用、397 个不同字符串参数、最长 15,442B，目标仍输出等价。此前发现的 17 个 seed 运行错误由上一条修复关闭。`defense_audit.sh` D12 PASS；D3 结构指纹 23/32 仍是唯一非安全 FAIL。无 real executor 结论。报告 `docs/r064-deep-self-audit-r2.md`。
+- **2026-10-07（R064 第二轮深度自检）**：当前 `R064_7kb_target_r2.luau.lua`（seed 64075，native primitive capture 后 326,848B）通过 Luau compile/stdout；S1–S5 与静态攻击工具抵抗。临时同点 A/B 记录 929,567→701,915 条微码（-24.49%）；primitive capture 前 copied-string `byte` hook 曾观察 2,673,402 次调用，随后按 §4 专项绕过该环境表 hook。upvalue seed 错误由上一条修复关闭。`defense_audit.sh` D12 PASS；D3 结构分数 23/32 仍是唯一非安全 FAIL；未测试真实 executor。报告 `docs/r064-deep-self-audit-r2.md`。
 - **2026-10-07（R064 micro-shard trace 缓解）**：`micro_recipe` 为 LoadK/Move/NewTab/Not/GetUp/SetUp/VarArgC/Jf/Jt/VarArgTab 融合单记录 superoperator：每种内部 handler 2–3 条记录降为 1 条；不跨 Call/Return、元方法、lazy decode 或顺序敏感边界。新增单测 + `micro_fusion_test.sh`（v15/legacy 输出一致）。不宣称阻止有同进程插桩能力的 trace；历史 906,284 条探针日志是融合前数据，本次没有冒充融合后总 trace。同步修正 R063 `KM` 子串误命中（完整 Lua identifier 检查），并重写 D12 时钟审计提取器从 RTFRAG 签名/调用位置匹配 CLK；D12 慢时钟、干净时钟及误报抽查通过。自检：cargo test 35 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；H5-P0 PASS；S1–S5 5/5。`defense_audit.sh` 仍将 D3 结构指纹 23/32 记为 FAIL（结构相似度口径），D12 已 PASS。详见 `docs/r064-vuln-1-2-research.md` 与 `docs/r064-deep-self-audit.md`。
 - **2026-10-07（R064 protected-meta + trailing nil vararg）**：v15 micro GET 对字符串直接走原生 Luau indexing；`mget` 先验元表类型，受保护 table/userdata 的 GET/SET、算术/比较/连接/unary/callable 在 sentinel 不透明时回退到原生语义。新增 `protected_meta_compat_test.sh` 并接入 `run_tests.sh`。`makefn` 两路径改用精确 arity：legacy 捕获外层 `SEL`；v15 RTFRAG 从既有随机 primitive 槽 `P[slots[12]]` 捕获 `SEL("#", ...)`，不再用 `#all` 计数，并在 `stress_multival.lua` 覆盖尾 nil、forward、fixed+vararg 与闭包。验证：cargo test 32/32 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；保护元表回归通过。真实 executor 未在本地验证。详见 `docs/r064-deep-self-audit.md` 与 `docs/r064-vuln-1-2-research.md`。
 - **2026-09-23（增量55：自研防绕过——HBOOT 装配面收窄 + 阶段二可行性定

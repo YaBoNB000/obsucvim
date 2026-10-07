@@ -11,10 +11,10 @@
 复用本地 7KB 语义 canary，生成新的 R064 v15 产物：
 
 - 源：`handoff/R064_7kb_src.lua`，7,179 字节。
-- 修复后产物：`handoff/R064_7kb_target_r2.luau.lua`，`--preset v15 --dialect luau --seed 64075`，332,466 字节。
-- SHA-256：`a04eee0c1aca28444f50988b255d7501268b6d254f98aafe623b02ad298a0450`。
+- 修复后并加固 string primitive capture 的产物：`handoff/R064_7kb_target_r2.luau.lua`，`--preset v15 --dialect luau --seed 64075`，326,848 字节。
+- SHA-256：`cea2d2eb5e9907ae9e011da33a154f595c5063e6d3f876a338f4b8769669cf5e`。
 - 源与产物都通过 `luau-compile`；stdout 逐字一致。
-- 短名审计 5,940 个局部/参数/循环标识符，均不超过两字母；v15 结构指纹 24/32（结构相似度，不是解密率）。
+- 短名审计 5,940 个局部/参数/循环标识符，均不超过两字母；v15 结构指纹 23/32（结构相似度，不是解密率）。
 
 ## 2. 静态攻击检查
 
@@ -39,15 +39,15 @@
 
 本样本的实测差值为 **-227,652 条（-24.49%）**；这比单看 10 类配方的 56.5% 静态减少率更接近整体效果。剩下约 70 万条已解码记录仍足以提供大量路径信息。此计数衡量 trace 长度，不等于语义恢复率；本轮没有声称由 trace 自动还原完整源码。
 
-## 4. 条件性动态 hook：`string.byte`
+## 4. 条件性动态 hook：replaceable `string` 表
 
-用 Luau CLI 的 `setfenv` harness 给目标加载一份复制的 `string` 表，只把 `byte` 换成透明记录 wrapper，再运行修复后 seed `64075` 产物：
+**第一轮 hook 结果（native-capture 修复前）**：Luau `setfenv` harness 用一份复制的 `string` 表替换 `byte/sub/char` 并运行 seed `64075` 产物。程序输出仍与源码一致；`byte` wrapper 观察到 **2,673,402 次**调用、**397 个**不同字符串参数、最大参数 **15,442 字节**。最大字符串可打印（85 种字节值，Shannon 熵 6.14 bit/byte），且不以相同子串直接出现在产物文本中。该结果不表示它是明文或已还原源码，但证明 VM 内部当时经可替换 string table 读取了大量数据。
 
-- 程序仍正常输出，过滤 hook 统计行后与源码 stdout 完全一致；
-- wrapper 观察到 **2,673,402 次**调用、**397 个**不同字符串参数；最大字符串参数 **15,442 字节**；
-- 最大参数为可打印字符串（85 种字节值，Shannon 熵 6.14 bit/byte），且不作为相同子串直接出现于产物文本中。
+**本轮缓解**：`PRIM_SRC` 中的 `byte/sub/char` 改为从原生字符串元表取得（`("")["byte"]` 等）；v15 模块表对应 primitive 也改走该路径，staging helper 使用这些捕获槽/原生 `sub`，不再直接调用可替换的 `string` 表。
 
-这是一个真实的运行态观察面：控制加载环境的分析者可以记录目标实际交给 `string.byte` 的数据。证据**不等于**这些字符串都是明文源码，也不证明一个 string hook 就能还原所有语义；但它确认了静态封存之外仍有高带宽的运行态数据入口。实验使用本地 Luau `setfenv` 模拟，不等价于真实 Roblox executor 的能力结论。
+新增 `tests/string_primitive_hook_test.sh`：在复制 `string` 表并包装 `byte/sub/char` 的环境中，v15 canary 输出逐字一致且三项 hook 命中均为 0。对更新后的 R064 seed `64075` 产物重复同样 harness，亦得到 `byte/sub/char = 0/0/0` 且 stdout 一致。该改动关闭的是这类**环境表替换 hook**；有能力 hook 原生 C 函数、直接 patch 产物/VM 或访问局部运行态的 executor 仍能观察数据。micro-op A/B 记录数是上一轮在同一解码点的测量，本次没有重做融合后的整段 trace 测量。
+
+所有实验仍是本地 Luau `setfenv` harness，不等同于真实 Roblox executor；不以此声称动态 trace 已被彻底阻止。
 
 ## 5. 已修复：seed 相关嵌套闭包 upvalue 错位
 
@@ -64,7 +64,7 @@
 ### 5.3 修复验证
 
 - 修复后当前 release 对 42 个定向 seed（含此前失败 seed）扫描：全部生成成功、Luau 编译通过、stdout 与源码逐字一致（FAIL=0）。
-- 用户要求继续扩测后，另跑连续 seeds `1..128`：全部生成成功、编译通过、stdout 相同；另以 Python `Random(20261007)` 抽取 128 个高范围 seed 再扫一轮：全部通过（该 128-seed sweep 为人工验证，未加入每次 CI 门禁）。
+- 用户要求继续扩测后，另跑连续 seeds `1..128`：全部生成成功、编译通过、stdout 相同；另以 Python `Random(20261007)` 抽取 128 个高范围 seed 再扫一轮：全部通过（该 128-seed sweep 为人工验证，未加入每次 CI 门禁）。这两组扩展 sweep 在后续 native string primitive capture 改动前完成；该改动后重新运行的集成 24-seed 回归及完整 `multiseed.sh` 也通过。
 - 集成回归 `r064_seed_stability_test.sh` 固定覆盖 24 个历史失败 seed 与相邻/官方 seed：PASS。
 - 修复前记录的 17 个失败 seed 均在修复后的集成 sweep 中通过；失败集合不再重现。
 - 相同 seed 的 v15 产物仍确定；legacy 路径和其他 VM 用例由官方矩阵覆盖。

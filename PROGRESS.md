@@ -1,6 +1,6 @@
 # 项目进度（PROGRESS）
 
-> 2026-10-07 R064 第二轮审计与修复：确认同进程 trace 残余（R064 seed64075 临时同点 A/B 929,567→701,915，-24.49%；string.byte hook 2,673,402 次调用），并定位 nested closure upvalue scatter 错位：child `CellKind::Up` 沿用 parent 置换前索引，曾将 `fold_text` 映为 MOD。compiler 现先计算每函数 upvalue permutation，再映射 child descriptors；新增 `r064_seed_stability_test.sh`，24 个失败/相邻 seed PASS；42-seed、连续 1..128 和另抽 128 个高范围 seed 的 R064 sweep 均 0 失败。静态 S1–S5 通过；D3 仍为结构分数 23/32。详情 `docs/r064-deep-self-audit-r2.md`。
+> 2026-10-07 R064 第二轮审计与修复：同点 trace A/B 929,567→701,915（-24.49%），同进程 micro trace 仍是剩余观察面；另对 VM/v15 staging 的 string.byte/sub/char primitive 改用原生 string metatable/numeric slot，复制 string 表 setfenv hook 在 R064 样本上由历史 byte 2,673,402 次降为 byte/sub/char 0/0/0。新增 `string_primitive_hook_test.sh`。同时修复 nested closure upvalue scatter 错位：预计算每函数 upvalue permutation，再映射 child descriptors；R064 24-seed regression、42 个定向 seed、连续 1..128 和另抽 128 个高范围 seeds 全通过。静态 S1–S5 通过；D3 仍为结构分数 23/32。native hook/同进程插桩边界仍在，详见 `docs/r064-deep-self-audit-r2.md`。
 >
 > 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
 > （真实 Luraph v15.0 产物 171.7KB）做全面深度破解。穿透全部旧墙：

@@ -193,6 +193,10 @@ bash "$ROOT/tests/protected_meta_compat_test.sh"
 # one per-shard record, while both v15 and legacy VM semantics remain equal.
 bash "$ROOT/tests/micro_fusion_test.sh"
 
+# Core VM byte/sub/char primitives must not be fetched through a loader's
+# replaceable global string table. Verify copied-library hooks miss the VM.
+bash "$ROOT/tests/string_primitive_hook_test.sh"
+
 # R064 nested upvalues crossed parent/child scatter permutations used to map
 # a child capture to the wrong parent upvalue. Recheck the full handoff canary
 # on historical failure seeds (plus passing neighbors).

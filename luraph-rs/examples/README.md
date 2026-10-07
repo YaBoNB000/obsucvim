@@ -11,17 +11,9 @@
 开，示例文件为单行紧凑形态）。生成命令：`bash tests/gen_examples.sh`
 （固定 `--seed 42 --preset v15`，同构建字节级确定）。
 
-**R064 示例与 micro-shard trace 缓解（2026-10-07）**：`handoff/R064_7kb_src.lua`
-（7,179 字节）与 `handoff/R064_7kb_target.luau.lua`（seed 64066，338,223
-字节；SHA-256 `67e416767d16781851943e101a075e65ac731d805628575821ef397a68e09ea7`）构成单独的 v15 示例对。源码保留字符串方法语法 `row[2]:sub(...)`，并通过
-`tests/protected_meta_compat_test.sh` 在字符串/表元表被保护的环境模拟下验证
-native fallback；`stress_multival.lua` 覆盖 vararg 尾 nil、转发与闭包计数。micro
-handler 的 10 类安全内部短序列融合为单记录 superoperator，回归为
-`tests/micro_fusion_test.sh`（v15/legacy 均与 Luau 源输出一致）。融合降低中间
-trace 记录数，但不阻止有同进程插桩能力的分析者观察融合后的执行路径；详见
-`docs/r064-vuln-1-2-research.md`。
+**R064 示例与动态 trace 缓解（2026-10-07）**：`handoff/R064_7kb_src.lua`（7,179 字节）对应 seed `64066` 产物 `handoff/R064_7kb_target.luau.lua`（333,663 字节，SHA-256 `15b9beb3c547912b5d4b32f6e961ec4e6699e5de6b4e853b7a6c115e2898ca16`）。源码保留字符串方法语法 `row[2]:sub(...)`；`tests/protected_meta_compat_test.sh` 覆盖受保护元表，`stress_multival.lua` 覆盖 vararg 尾 nil/转发/闭包计数。10 类安全 micro 序列已融合为单记录 superoperator，`tests/micro_fusion_test.sh` 验证 v15/legacy 等价；它抬高整理成本，不阻止同进程 trace。
 
-**R064 第二轮深度自检与 seed 修复（2026-10-07）**：`handoff/R064_7kb_target_r2.luau.lua`（seed 64075，332,466 字节，SHA-256 `a04eee0c1aca28444f50988b255d7501268b6d254f98aafe623b02ad298a0450`）静态 S1–S5 均抵抗。临时同点 trace A/B 为 929,567→701,915（-24.49%），但 `string.byte` 同进程 hook 仍可看到运行态数据。审计定位到 `CellKind::Up` descriptor 未跟随父函数的 upvalue scatter permutation，导致若干 seed 把 `fold_text` 读成 `MOD`；`compiler.rs` 已预先映射父 permutation，新增 `r064_seed_stability_test.sh`，24 个历史失败/相邻 seed 全通过。详见 `docs/r064-deep-self-audit-r2.md`。
+**R064 第二轮审计与动态 hook 缓解（2026-10-07）**：`handoff/R064_7kb_target_r2.luau.lua`（seed 64075，326,848 字节，SHA-256 `cea2d2eb5e9907ae9e011da33a154f595c5063e6d3f876a338f4b8769669cf5e`）静态 S1–S5 均抵抗。`compiler.rs` 已修复 nested-upvalue scatter seed 错位；历史失败 seeds 回归通过。新增 `string_primitive_hook_test.sh`：核心 `byte/sub/char` 通过原生字符串元表/数值槽获取；复制的 global `string` 表 hook 下 R064 输出不变，三项 hook 命中 0。该缓解只挡可替换库表路径，不挡 native C hook、debugger 或直接 VM 插桩；micro trace 仍可观察。详见 `docs/r064-deep-self-audit-r2.md`。
 
 **增量55（2026-09-23，自研防绕过——HBOOT 装配面收窄）**：`HB =
 table.concat(MH)` 收进 HBOOT 调用的 PCAL 闭包（boot 级零具名装配语句），

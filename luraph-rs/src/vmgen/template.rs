@@ -35,9 +35,14 @@ const OP_NAMES: [&str; N_OPS] = [
 ];
 
 const PRIM_SRC: [&str; 15] = [
-	"string.byte",
-	"string.sub",
-	"string.char",
+	// Resolve core string primitives through Luau/Lua's native string
+	// metatable, not the replaceable global `string` library table. This
+	// blocks transparent setfenv copies that wrap byte/sub/char during VM
+	// carrier and descriptor processing; it is not a barrier to same-process
+	// bytecode/native-function instrumentation.
+	"(\"\")[\"byte\"]",
+	"(\"\")[\"sub\"]",
+	"(\"\")[\"char\"]",
 	"getfenv",
 	"unpack",
 	"math.floor",
@@ -974,6 +979,13 @@ mod micro_fusion_tests {
 				"{name} crosses an observable/error boundary"
 			);
 		}
+	}
+
+	#[test]
+	fn core_string_primitives_bypass_replaceable_library_table() {
+		assert_eq!(PRIM_SRC[0], "(\"\")[\"byte\"]");
+		assert_eq!(PRIM_SRC[1], "(\"\")[\"sub\"]");
+		assert_eq!(PRIM_SRC[2], "(\"\")[\"char\"]");
 	}
 
 	#[test]
