@@ -11,10 +11,10 @@
 复用本地 7KB 语义 canary，生成新的 R064 v15 产物：
 
 - 源：`handoff/R064_7kb_src.lua`，7,179 字节。
-- 修复后并加固 string primitive capture 的产物：`handoff/R064_7kb_target_r2.luau.lua`，`--preset v15 --dialect luau --seed 64075`，326,848 字节。
-- SHA-256：`cea2d2eb5e9907ae9e011da33a154f595c5063e6d3f876a338f4b8769669cf5e`。
+- 修复后并应用完整 handler-recipe fusion 的产物：`handoff/R064_7kb_target_r2.luau.lua`，`--preset v15 --dialect luau --seed 64075`，340,895 字节（较 native-primitive-hook 基线 326,848 字节增加约 4.3%）。
+- SHA-256：`ba07f782d3579568c9ebf444b5800a9d7922053edc9aff105c0c10d30b288dcb`。
 - 源与产物都通过 `luau-compile`；stdout 逐字一致。
-- 短名审计 5,940 个局部/参数/循环标识符，均不超过两字母；v15 结构指纹 23/32（结构相似度，不是解密率）。
+- 短名审计 6,326 个局部/参数/循环标识符，均不超过两字母；v15 结构指纹 23/32（结构相似度，不是解密率）。
 
 ## 2. 静态攻击检查
 
@@ -30,14 +30,15 @@
 
 ## 3. 融合效果：临时白盒计数 A/B
 
-在 `/tmp` 的两份临时生成器中，对**同一解码点**在 `op,x,y` 解码后计数；两边都带本轮 upvalue 修复，一份使用融合前模板，一份使用融合后模板。源文件、seed (`64075`) 和 Luau 环境相同；探针没有进入仓库或正式产物。
+在 `/tmp` 的临时生成器中，对同一 R064 源码、seed `64075`、Luau 环境，在 `op,x,y` 解码后逐条计数；所有版本的临时探针均不进入仓库/正式产物，程序 stdout 都与源码一致。
 
-| 版本 | shard 函数调用数 | 解码微码记录数 | 结果 |
-|---|---:|---:|---|
-| 融合前模板 | 412,706 | 929,567 | 样本 stdout 与源一致 |
-| 融合后模板 | 412,706 | 701,915 | 样本 stdout 与源一致 |
+| 版本 | shard 函数调用数 | 解码微码记录数 | 变化 |
+|---|---:|---:|---:|
+| 原始多微步 recipe | 412,706 | 929,567 | 基线 |
+| 第一层：融合 10 类 safe recipe | 412,706 | 701,915 | 较基线 -24.49% |
+| 第二层：所有多步 handler recipe 收进一个 ordered superoperator | 412,706 | 412,706 | 较第一层 -41.20%；较基线 -55.60% |
 
-本样本的实测差值为 **-227,652 条（-24.49%）**；这比单看 10 类配方的 56.5% 静态减少率更接近整体效果。剩下约 70 万条已解码记录仍足以提供大量路径信息。此计数衡量 trace 长度，不等于语义恢复率；本轮没有声称由 trace 自动还原完整源码。
+第二层仍只在**同一个 bytecode handler recipe 内**合并步骤：superoperator 的 body 在一个 decode/dispatch 分支中，按原次序运行该 recipe 的 primitive body，并为每步保留独立 Lua lexical scope。没有跨相邻 VM 指令、用户调用、Call/Return trampoline 或 metamethod callback 合并；错误与回调次序由原 body 保持。对本样本，每次 shard 函数调用现在解出一条记录。此计数衡量 trace 长度，不等于语义恢复率；具备同进程插桩能力者仍可追踪融合后的 handler/参数。
 
 ## 4. 条件性动态 hook：replaceable `string` 表
 
@@ -71,10 +72,10 @@
 
 ## 6. 回归总览与剩余边界
 
-- `cargo test`：36 passed、0 failed、1 ignored；`run_tests.sh`：169/169；`run_presets.sh`：370/370；`multiseed.sh`：`FAIL=0`，并包含 R064 专项 24-seed sweep。
+- `cargo test`：39 passed、0 failed、1 ignored；`run_tests.sh`：169/169；`run_presets.sh`：370/370；`multiseed.sh`：`FAIL=0`，并包含 R064 专项 24-seed sweep。
 - H2/H3、H4 loader、H4-5/H6/H7/H8、H5-P0、R061 bypass audits：PASS。
 - `defense_audit.sh`：PASS 20 / FAIL 1；唯一 D3 是结构指纹 23/32（结构相似度口径）；D12 计时守卫接线、触发、干净时钟与误报抽查通过。
-- 同进程 `string.byte` hook 与已解码微码 trace 仍可观察运行态数据/路径；fusion 提高成本，不提供客户端密码学保密。
+- copied-string 表 byte/sub/char hook 已由 native primitive capture 缓解；native C hook、debugger 与同进程局部插桩仍能观察运行态。全 recipe fusion 将本样本 generic decoded trace 降到每次 shard invocation 一条，但不提供客户端密码学保密。
 - 高价值密钥、授权、经济与反作弊决策仍应由服务端持有。
 
 真实 Roblox executor 未在本地运行。所有 hook 结论限于这次本地 Luau harness；本轮没有发现远程执行或服务器权限漏洞。

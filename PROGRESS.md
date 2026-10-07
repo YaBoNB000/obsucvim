@@ -1,6 +1,6 @@
 # 项目进度（PROGRESS）
 
-> 2026-10-07 R064 第二轮审计与修复：同点 trace A/B 929,567→701,915（-24.49%），同进程 micro trace 仍是剩余观察面；另对 VM/v15 staging 的 string.byte/sub/char primitive 改用原生 string metatable/numeric slot，复制 string 表 setfenv hook 在 R064 样本上由历史 byte 2,673,402 次降为 byte/sub/char 0/0/0。新增 `string_primitive_hook_test.sh`。同时修复 nested closure upvalue scatter 错位：预计算每函数 upvalue permutation，再映射 child descriptors；R064 24-seed regression、42 个定向 seed、连续 1..128 和另抽 128 个高范围 seeds 全通过。静态 S1–S5 通过；D3 仍为结构分数 23/32。native hook/同进程插桩边界仍在，详见 `docs/r064-deep-self-audit-r2.md`。
+> 2026-10-07 R064 动态 trace 继续缓解：在第一层 10 类 safe fused ops 上，现将 23 种多 primitive handler recipe 按原序内联为单条 per-shard superoperator。R064 seed64075 同点 A/B 解码记录 929,567→701,915→412,706（最终 -55.60%，每次 shard invocation 一条）；R2 artifact 更新为 340,895B。复制 string 表 setfenv hook 的 byte/sub/char=0/0/0。另已修复 nested closure upvalue scatter seed 错位；R064 24-seed regression、42 个定向 seed、连续 1..128、另抽 128 高范围 seeds 全通过。回归 cargo test 39 passed/1 ignored、run_tests169、presets370、multiseed0；S1–S5通过，D3仍23/32结构分。绝对同进程 trace 不可由客户端纯Lua保证阻止；详情 `docs/r064-deep-self-audit-r2.md`。新增 R065 最小 canary：源 `local a = "bysuda"`，seed65065 产物见 `handoff/`（说明 `handoff/README-R065.md`）。
 >
 > 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
 > （真实 Luraph v15.0 产物 171.7KB）做全面深度破解。穿透全部旧墙：

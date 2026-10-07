@@ -1,78 +1,60 @@
-# R064 漏洞 1/2 与 seed 稳定性：修复与自检
+# R064 动态追踪与 seed 稳定性：修复与自检
 
 > 日期：2026-10-07
 > 分支：`arena/01a038eb-luraph`
-> 状态：尾 nil 变参计数与 R064 嵌套闭包 upvalue scatter seed 错位已修复；micro-shard 已做第一层融合，但客户端运行态观察边界仍存在。
+> 状态：尾 nil 变参数量、嵌套闭包 upvalue scatter 错位已修；micro-shard 做了两层 handler-recipe fusion，并绕过可替换 string 表 hook。**同进程/native hook 仍是客户端观察边界，不宣称 trace 已被彻底阻止。**
 
 ## 摘要
 
 | 编号 | 问题 | 证据 | 状态 |
 |---|---|---|---|
 | 1 | 变参表尾 `nil` 被 `#all` 少计 | 旧 seed `64066`：源 `select("#", ...)` 结果 5，VM 结果 4 | v15 与 legacy 两路径已修复，尾 nil/转发/闭包回归通过 |
-| 2 | micro-shard 解码后的执行路径可被动态跟踪 | 白盒计数：融合前 929,567 条，融合后 701,915 条；native primitive capture 后，复制 string 表的 `byte/sub/char` hook 为 0/0/0 | 融合与 string-table-hook 缓解已落地；原生函数/同进程插桩仍可观察，不能保证客户端保密 |
-| 3 | 子 closure `CellKind::Up` 未跟随父函数 upsrc permutation | R064 seed 64067：`fold_text` 被映射为 `MOD=1000003` 并导致数值被调用；32 个指定 seed 中旧版 17 个失败 | 已修复：预计算 parent upvalue permutation 后生成 child descriptor；R064 专项 24-seed regression 与当前 release 的 42-seed sweep 均通过 |
+| 2 | micro-shard 解码后的执行路径可被动态跟踪 | seed `64075` 同点白盒 A/B：929,567→701,915→412,706 条；复制 string 表 hook 已测为 0/0/0 | 两层 handler 内 fusion + native primitive capture 已实施；原生函数/同进程插桩仍可观察 |
+| 3 | 子 closure `CellKind::Up` 未跟随父函数 upsrc permutation | R064 seed 64067 曾把 `fold_text` 映射为 `MOD=1000003`，造成“call number” | 父 upvalue permutation 预计算并映射 child descriptor；24/42/128+128 seed 验证通过 |
 
-## 1. 变参尾部 nil：修复与验证
+## 1. 尾部 nil 变参数量
 
-旧 `makefn_decl` 先做 `local all={...}`，再用 `#all - npa`（legacy 为 `#all - pf.nparams`）算变参数量。表尾 nil/表洞下 `#` 不保证等于实参数量，导致转发及 `select("#", ...)` 少计。
+旧 `makefn_decl` 先将 `...` 放入 `all`，再用 `#all - npa`（legacy 为 `#all - pf.nparams`）推算变参数量。Lua/Luau 对有 nil 洞或末尾 nil 的表，其 `#` 不保证等于实参数量。
 
-**已实施**：v15 与 legacy 路径都在构造 `all` 前，以捕获的 `SEL("#", ...)` 取精确实参数量，再减去固定参数数量；`vargc` 作为独立计数沿调用与 vararg 表传递，不从含 nil 的表推断。v15 的 `makefn` 位于单独 RTFRAG 闭包，故从已有随机槽 `P[slots[12]]` 捕获 `SEL`；legacy 使用外层已捕获的 `SEL`。
+已修复：v15 和 legacy 都在构造 `all` 前，以捕获的 `SEL("#", ...)` 获取精确 arity；`vargc` 独立传递，不再从表长度推断。`stress_multival.lua` 覆盖末尾 nil、forward、固定参数+变参、`return ...` 尾展开及嵌套闭包；seed `64066` 的最小复现由 4 修正为 5。
 
-`stress_multival.lua` 覆盖直接尾 nil、固定参数+变参、转发、`return ...` 尾展开和嵌套闭包。seed `64066` 下 v15 与 legacy VM 最小复现均返回 5。
+## 2. Micro-shard 动态追踪：两层融合与边界
 
-## 2. Micro-shard 动态追踪：发现与缓解
+H5-P0 继续封存 at-rest `{program,mask,step}` descriptor；session reseal 和 checksum lane 不变。运行时仍需要解码并执行，但微码内部记录已进一步压缩：
 
-H5-P0 已封存静态 `{program,mask,step}` descriptor 表；执行时仍须从 packed/session carrier 解出微码记录，再按 shard 分派。融合前临时白盒探针曾记录 7KB 样本 906,284 条实际执行记录、覆盖 4 个 shard；该证据不代表未修改产物可自动脱壳。
+1. **第一层**：10 类安全内部短序列（LoadK/Move/NewTab/Not/GetUp/SetUp/VarArgC/Jf/Jt/VarArgTab）各自从 2–3 条记录降为 1 条。
+2. **第二层（本次）**：`micro_recipe` 把其余 23 种多 primitive handler recipe 也编码为一个 per-shard、per-build 随机 superoperator。运行时在单个 decode/dispatch 分支中按原次序内联 primitive body；每步保留自己的 `do` scope，不重排 lazy decode、元方法、用户回调或错误顺序。没有跨相邻 VM 指令 fusion；Call/PostCall trampoline 和 Return 仍是独立 phase。
 
-`micro_recipe` 把 10 类不跨用户回调边界的短序列融合成单条、每构建随机编号的 fused micro-op，减少 shard-local `T` 中间读写：
+对 7KB R064 seed `64075` 样本，临时同点白盒探针（均为 `/tmp` 构建，未提交）计数：
 
-- `LoadK`、`Move`、`NewTab`、`VarArgC`、`Jf`、`Jt`、`VarArgTab`：2 条→1 条；
-- `Not`、`GetUp`、`SetUp`：3 条→1 条。
+| 配置 | shard invocation | decoded micro record | stdout |
+|---|---:|---:|---|
+| 原始多微步 recipe | 412,706 | 929,567 | 与源一致 |
+| 第一层 safe fusion | 412,706 | 701,915 | 与源一致 |
+| 全部多步 handler recipe fusion | 412,706 | 412,706 | 与源一致 |
 
-对 10 类各执行一次时静态配方由 23 条降至 10 条（56.5%），不代表整体 trace 降幅。第一轮 R064 artifact 增加了 fused handler 代码；具体当时的体积数据见 `docs/r064-deep-self-audit.md`。
+完整 recipe fusion 相对第一层再减少 289,209 条（-41.20%），相对原始 trace 减少 516,861 条（-55.60%）。这是**trace 长度**的测量，不是“反编译率”或语义恢复率；记录仍约等于实际 handler invocation，具备同进程插桩能力者仍可记录 opcode、VM 参数/状态并做路径分析。
 
-**最新同点 A/B（seed 64075）**：融合前/后的临时生成器都在同一 `op,x,y` 解码点计数，均为 412,706 次 shard invocation；记录数从 **929,567** 降到 **701,915**（-227,652，-24.49%），stdout 一致。探针只存在于 `/tmp`。融合后仍有约 70 万条记录；同进程插桩者仍可观察融合后的路径。
+### 可替换 string 表 hook
 
-暂不融合 `LoadStr`、全局表访问、算术/比较、表 GET/SET、Call/Return 等涉及字符串解密、元方法、用户回调或求值/错误顺序的操作。`LoadK` 可能触发 VM 私有常量池的 lazy `CDEC`，但 fused body 先取常量到局部再写寄存器；不移动用户回调。H5-P0 packed carrier、每 shard key、session reseal 和 checksum lane 保持不变，未加入正式产物 trace hook。
+融合前的 Luau `setfenv` harness 曾用复制的 `string` 表包装 `byte`，观察到 2,673,402 次调用、397 个不同字符串参数、最长 15,442 字节。8db 的 `native primitive capture` 把 VM/v15 staging 的 `byte/sub/char` 获取改为原生字符串元表/数值槽；`tests/string_primitive_hook_test.sh` 在复制表 wrapper 下验证命中 `0/0/0` 且 stdout 不变。
 
-## 3. 已修复：嵌套 closure 的 upvalue scatter 映射
+这只绕过**可替换库表** hook；native C function hook、debugger、运行时 patch 和局部状态插桩仍在威胁边界内。R064 新 target r2（seed64075）静态 S1–S5 均抵抗；不以此宣称客户端逻辑无法动态观察。
 
-### 3.1 复现与根因
+## 3. Seed 稳定性：嵌套 upvalue scatter 已修复
 
-对 7KB R064 样本比较融合前模板与融合后版本，32 个指定 seed 的失败集合一致；旧版 17 个 seed 报 `attempt to call a number value`。这证明该错误不是 micro-op fusion 新引入的。
+根因是父函数的 `upsrc` 在 `scatter_operands` 阶段随机置换，但子闭包的 `CellKind::Up(u)` descriptor 先按旧索引编码。特定 seed 下，内层 `make_accumulator` closure 的 `fold_text` descriptor 指向 `MOD=1000003`，后续把数字当函数调用。
 
-动态探针在 seed `64067` 捕获到内层 vararg closure 的 `Call` 指令试图调用数值 `1000003`。对应源码位置应调用捕获的 `fold_text`。编译器 upvalue 调试信息表明该 closure 捕获 `MOD`、`fold_text`、`state`、`calls`。
+`compiler.rs` 现在在编译函数体/子闭包前预计算父函数 `old index -> runtime index` permutation；子 descriptor 经该映射编码，父 `upsrc` 和 GetUp/SetUp operand scatter 使用同一个 mapping。置换由 build/function key 派生独立 PRNG；仍消耗原主 RNG 相同数量的 shuffle draws，避免扰动其他随机布局。
 
-根因：编译器先按父函数**原始** upvalue 序号写入子 closure 的 `CellKind::Up(u)` descriptor；之后父函数的 `scatter_operands` 才置换 `upsrc`。descriptor 仍指向旧序号，某些 seed 的 permutation 会让子闭包把 `fold_text` cell 读成 `MOD`。
+验证：24 个历史失败/相邻 seed 集成回归通过；另测 42 个定向 seed、连续 `1..128` seed，以及 `Random(20261007)` 抽取的 128 个高范围 seed，均生成成功、Luau compile 通过、stdout 与源码一致。扩展 sweeps 属手工验证，未全部加入每次 CI 门禁。
 
-### 3.2 修复
+## 4. 当前验收与剩余风险
 
-`compiler.rs` 现在在递归编译函数体之前，为每个函数预计算 `old upvalue index → runtime index` permutation。生成子 closure descriptor 时，若其 cell 来源为父帧 upvalue，则按父帧 permutation 重映射；`scatter_operands` 再应用同一预计算映射。per-function permutation 使用基于构建键和函数索引的独立 PRNG；scatter 阶段仍消耗原主 PRNG 的等量 shuffle draws，避免扰动其他布局随机流。
+- `cargo test`：39 passed、0 failed、1 ignored；`run_tests.sh`：169/169；`run_presets.sh`：370/370；`multiseed.sh`：`FAIL=0`，含 R064 专项 24-seed sweep。
+- H2/H3、H4 loader、H4-5/H6/H7/H8、H5-P0、R061 bypass：PASS；安全指纹 S1–S5：5/5。
+- `defense_audit.sh`：PASS 20 / FAIL 1；唯一 D3 为结构指纹 23/32（结构相似度口径）；D12 计时守卫接线/触发/干净时钟/误报检查通过。
+- 最新 R064 seed64075 target r2：340,895 字节，SHA-256 `ba07f782d3579568c9ebf444b5800a9d7922053edc9aff105c0c10d30b288dcb`；Luau compile 与源 stdout 一致；短名审计 6,326 个标识符，≤2 字母；结构指纹 23/32。
+- 真实 Roblox executor 未在本地运行。客户端混淆不应承载服务端密钥、授权、经济或反作弊信任决策。
 
-新增 `upvalue_permutation_is_bijective_and_seed_stable` 单测，以及 `tests/r064_seed_stability_test.sh`。脚本检查 24 个历史失败/相邻 seed，已接入 `run_tests.sh` 和 `multiseed.sh`。
-
-### 3.3 修复验证
-
-- 修复后当前 release 的 42-seed R064 扫描：失败 0；用户要求继续扩测后，连续 seeds `1..128` 与 Python `Random(20261007)` 另抽 128 个高范围 seed 均失败 0；
-- 集成的 24-seed R064 回归：PASS；此前记录的 17 个失败 seed 均通过；
-- `--vm` legacy 不使用 v15 scatter 的同源 seed 样本原本通过；修复保留其 identity upvalue order。
-
-## 4. 第二轮动态 hook 证据与限制
-
-对新样本 `handoff/R064_7kb_target_r2.luau.lua`（seed `64075`）执行静态 S1–S5 攻击均抵抗。**native-capture 之前**，Luau `setfenv` harness 给复制的 `string` 表安装透明 `byte` wrapper 曾观察到 2,673,402 次调用、397 个不同字符串参数、最长 15,442 字节；这证明旧版会经可替换表读取大量运行态数据，不等于已解出明文源码。native-capture 后同一 copied-table wrapper 对 byte/sub/char 命中为 0/0/0。
-
-真实 Roblox executor 未在本地直接运行。本轮所有动态观察结论限于本地 Luau `setfenv` harness；客户端混淆仍不能保护服务端密钥、授权或反作弊决策。
-
-## 5. 验证结果
-
-- `cargo test`：36 passed、0 failed、1 ignored；
-- `tests/run_tests.sh`：169/169；`tests/run_presets.sh`：370/370；`tests/multiseed.sh`：`FAIL=0`（含 R064 专项 24-seed sweep）；
-- H2/H3、H4 loader、H4-5/H6/H7/H8、H5-P0、R061 bypass：PASS；`security_fingerprint.py`：S1–S5 5/5；
-- `defense_audit.sh`：D12 慢/干净时钟和误报检查 PASS；总计 PASS 20 / FAIL 1，唯一 FAIL 是 D3 结构指纹 23/32，不是安全指纹或功能等价失败。
-- 加入 native string primitive capture 后的新 R064 seed `64075` artifact：326,848 字节；SHA-256 `cea2d2eb5e9907ae9e011da33a154f595c5063e6d3f876a338f4b8769669cf5e`；源/产物 stdout 一致。
-
-## 6. 动态 hook 风险第二层缓解（2026-10-07）
-
-在 VM 模板的 `PRIM_SRC` 与 v15 primitive module-table/helper emission 中，`string.byte/sub/char` 改为从原生 string metatable 取得；staging helpers 改用捕获的 numeric slots 或原生 `("")["sub"]` 风格访问。新增 `tests/string_primitive_hook_test.sh`，在 `setfenv` 注入的可替换 string 表下验证 VM 内部不调用 hook 的 byte/sub/char，同时程序 stdout 与源码一致。R064 seed `64075` 样本的相同 probe 命中为 **0/0/0**；加入该层之前的对照记录为 byte 2,673,402 次。
-
-这针对的是“加载器用复制 string 表替换函数”的 hook 路径，不是任意同进程插桩防护。能 patch 函数体、hook 原生 C 函数、读取 VM 局部状态或直接改指令执行者仍可观察运行态；此前 701,915 条融合后 micro trace 的测量也未因本层改动而宣称消失。真实 executor 未测。
+详细 probe、attack 口径与 seed 错位分析见 `docs/r064-deep-self-audit-r2.md`。

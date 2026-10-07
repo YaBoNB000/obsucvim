@@ -11,9 +11,11 @@
 开，示例文件为单行紧凑形态）。生成命令：`bash tests/gen_examples.sh`
 （固定 `--seed 42 --preset v15`，同构建字节级确定）。
 
-**R064 示例与动态 trace 缓解（2026-10-07）**：`handoff/R064_7kb_src.lua`（7,179 字节）对应 seed `64066` 产物 `handoff/R064_7kb_target.luau.lua`（333,663 字节，SHA-256 `15b9beb3c547912b5d4b32f6e961ec4e6699e5de6b4e853b7a6c115e2898ca16`）。源码保留字符串方法语法 `row[2]:sub(...)`；`tests/protected_meta_compat_test.sh` 覆盖受保护元表，`stress_multival.lua` 覆盖 vararg 尾 nil/转发/闭包计数。10 类安全 micro 序列已融合为单记录 superoperator，`tests/micro_fusion_test.sh` 验证 v15/legacy 等价；它抬高整理成本，不阻止同进程 trace。
+**R064 示例与动态 trace 缓解（2026-10-07）**：`handoff/R064_7kb_src.lua`（7,179 字节）对应 seed `64066` 产物 `handoff/R064_7kb_target.luau.lua`（335,900 字节，SHA-256 `bc6cbff8f9fa33328d974dece6be3c143d30f8a3613a35ce51388204369c8dac`）。源码保留字符串方法语法 `row[2]:sub(...)`；`tests/protected_meta_compat_test.sh` 覆盖受保护元表，`stress_multival.lua` 覆盖 vararg 尾 nil/转发/闭包计数。
 
-**R064 第二轮审计与动态 hook 缓解（2026-10-07）**：`handoff/R064_7kb_target_r2.luau.lua`（seed 64075，326,848 字节，SHA-256 `cea2d2eb5e9907ae9e011da33a154f595c5063e6d3f876a338f4b8769669cf5e`）静态 S1–S5 均抵抗。`compiler.rs` 已修复 nested-upvalue scatter seed 错位；历史失败 seeds 回归通过。新增 `string_primitive_hook_test.sh`：核心 `byte/sub/char` 通过原生字符串元表/数值槽获取；复制的 global `string` 表 hook 下 R064 输出不变，三项 hook 命中 0。该缓解只挡可替换库表路径，不挡 native C hook、debugger 或直接 VM 插桩；micro trace 仍可观察。详见 `docs/r064-deep-self-audit-r2.md`。
+**R064 第二轮审计与动态 hook 缓解（2026-10-07）**：`handoff/R064_7kb_target_r2.luau.lua`（seed 64075，340,895 字节，SHA-256 `ba07f782d3579568c9ebf444b5800a9d7922053edc9aff105c0c10d30b288dcb`）静态 S1–S5 均抵抗。10 类 safe micro 先融合后，当前又把 23 种多 primitive recipe 按原序合成单记录 per-shard superoperator；相同探针下解码记录由 929,567 减至 412,706（-55.60%）。`tests/micro_fusion_test.sh` 与全矩阵验证语义。`compiler.rs` 修复 nested-upvalue scatter seed 错位；`string_primitive_hook_test.sh` 显示 copied-library `byte/sub/char` hook 命中 0/0/0。仍不防 native C hook、debugger、直接 VM/同进程插桩；见 `docs/r064-deep-self-audit-r2.md`。
+
+**R065 最小字符串 canary（2026-10-07）**：`handoff/R065_src.lua` 的源码严格为 `local a = "bysuda"`；`handoff/R065_target.luau.lua` 使用 seed 65065，168,788 字节，Luau compile/run 通过，stdout 为空且产物中没有明文 `bysuda`。这是最小管线/常量封存样本，不是代表性业务逻辑或 anti-trace benchmark；细节见 `handoff/README-R065.md`。
 
 **增量55（2026-09-23，自研防绕过——HBOOT 装配面收窄）**：`HB =
 table.concat(MH)` 收进 HBOOT 调用的 PCAL 闭包（boot 级零具名装配语句），

@@ -564,7 +564,15 @@ const M_FUSE_VARGC: usize = 55;
 const M_FUSE_BRANCH_FALSE: usize = 56;
 const M_FUSE_BRANCH_TRUE: usize = 57;
 const M_FUSE_VARARG_TABLE: usize = 58;
-const M_COUNT: usize = 59;
+// A superoperator executes a complete multi-primitive handler recipe under
+// one decoded record. The inner bodies stay in their original order.
+const M_SUPER_BASE: usize = 59;
+const MICRO_SUPER_NAMES: [&str; 23] = [
+	"LoadStr", "GetGlobal", "SetGlobal", "Add", "Sub", "Mul", "Div", "Mod", "Pow", "Idiv",
+	"Unm", "Len", "Concat", "Lt", "Le", "Gt", "Ge", "Eq", "Ne", "TabN", "VarArgTabN",
+	"GetTab", "SetTab",
+];
+const M_COUNT: usize = M_SUPER_BASE + MICRO_SUPER_NAMES.len();
 
 struct MicroLits {
 	number: String,
@@ -659,13 +667,11 @@ fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
 	}
 }
 
-fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
+/// Original ordered primitive expansion for a macro handler. The generic
+/// superoperator embeds these bodies in order; some steps intentionally call
+/// metamethods or user code, so this sequence must not be reordered.
+fn micro_primitive_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	let p = match name {
-		// Safe superoperators: these sequences touch only VM-owned registers,
-		// constants, upvalue cells, or a fresh local table. They do not cross a
-		// metamethod, user-call, error-order, or externally visible callback
-		// boundary, so the temporaries can be eliminated without changing Lua
-		// evaluation semantics.
 		"LoadK" => vec![(M_FUSE_LOAD_K, 0, 0)],
 		"LoadStr" => vec![(M_READ_C, 1, 2), (M_LOAD_STR, 1, 1), (M_WRITE_V, 1, 1)],
 		"Move" => vec![(M_FUSE_MOVE, 0, 0)],
@@ -735,6 +741,22 @@ fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	Some(p)
 }
 
+/// Encode a multi-primitive recipe as one per-shard superoperator record. The
+/// generated body replays its primitive steps in order inside one `op,x,y`
+/// dispatch, preserving metamethod/callback/error boundaries while hiding the
+/// intermediate decode/dispatch records from a generic trace.
+fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
+	let primitive = micro_primitive_recipe(name)?;
+	if primitive.len() <= 1 {
+		return Some(primitive);
+	}
+	let slot = MICRO_SUPER_NAMES
+		.iter()
+		.position(|candidate| *candidate == name)
+		.unwrap_or_else(|| panic!("multi-record micro recipe missing superoperator: {name}"));
+	Some(vec![(M_SUPER_BASE + slot, 0, 0)])
+}
+
 fn micro_call_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	match name {
 		"Call" => Some(vec![(M_CALL, 0, 0)]),
@@ -789,6 +811,9 @@ fn frame_slot(logical: usize) -> String {
 }
 
 fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
+	if index >= M_SUPER_BASE {
+		return micro_super_body(index, lit, nop);
+	}
 	match index {
 		// Intra-handler superoperators. Each replaces a sequence whose only
 		// intermediate state was the shard-local T scratch table. The semantic
@@ -926,24 +951,41 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	}
 }
 
+fn micro_super_body(index: usize, lit: &MicroLits, nop: &str) -> String {
+	let slot = index
+		.checked_sub(M_SUPER_BASE)
+		.expect("superoperator index below base");
+	let name = *MICRO_SUPER_NAMES
+		.get(slot)
+		.expect("superoperator index out of range");
+	let primitive = micro_primitive_recipe(name).expect("superoperator recipe missing");
+	let mut body = String::new();
+	for (kind, x, y) in primitive {
+		let step = micro_op_body(kind, lit, nop);
+		body.push_str(&format!("do local x={x} local y={y} {step} end "));
+	}
+	body
+}
+
 #[cfg(test)]
 mod micro_fusion_tests {
 	use super::*;
 
 	fn is_fused(kind: usize) -> bool {
-		matches!(
-			kind,
-			M_FUSE_LOAD_K
-				| M_FUSE_MOVE
-				| M_FUSE_NEW_TABLE
-				| M_FUSE_NOT
-				| M_FUSE_GET_UP
-				| M_FUSE_SET_UP
-				| M_FUSE_VARGC
-				| M_FUSE_BRANCH_FALSE
-				| M_FUSE_BRANCH_TRUE
-				| M_FUSE_VARARG_TABLE
-		)
+		(kind >= M_SUPER_BASE && kind < M_COUNT)
+			|| matches!(
+				kind,
+				M_FUSE_LOAD_K
+					| M_FUSE_MOVE
+					| M_FUSE_NEW_TABLE
+					| M_FUSE_NOT
+					| M_FUSE_GET_UP
+					| M_FUSE_SET_UP
+					| M_FUSE_VARGC
+					| M_FUSE_BRANCH_FALSE
+					| M_FUSE_BRANCH_TRUE
+					| M_FUSE_VARARG_TABLE
+			)
 	}
 
 	#[test]
@@ -970,15 +1012,47 @@ mod micro_fusion_tests {
 	}
 
 	#[test]
-	fn metamethod_and_user_visible_boundaries_stay_unfused() {
-		for name in ["LoadStr", "GetGlobal", "SetGlobal", "Add", "GetTab", "SetTab"] {
+	fn multi_primitive_superoperators_expand_in_original_order() {
+		let mut pool = StrPool::new(false);
+		let lit = MicroLits::new(&mut pool, (17, 31), false);
+		for (slot, name) in MICRO_SUPER_NAMES.iter().enumerate() {
 			let recipe = micro_recipe(name).unwrap();
-			assert!(recipe.len() > 1, "{name} must retain its ordered micro-steps");
-			assert!(
-				recipe.iter().all(|(kind, _, _)| !is_fused(*kind)),
-				"{name} crosses an observable/error boundary"
-			);
+			assert_eq!(recipe, vec![(M_SUPER_BASE + slot, 0, 0)], "{name}");
+			assert!(is_fused(recipe[0].0));
+			let primitive = micro_primitive_recipe(name).unwrap();
+			assert!(primitive.len() > 1, "{name} should represent a multi-step recipe");
+			let body = micro_op_body(recipe[0].0, &lit, "");
+			let mut after = 0;
+			for (kind, x, y) in primitive {
+				let inner = micro_op_body(kind, &lit, "");
+				let needle = format!("do local x={x} local y={y} {inner} end ");
+				let offset = body[after..]
+					.find(&needle)
+					.unwrap_or_else(|| panic!("{name} superoperator lost/reordered {inner}"));
+				after += offset + needle.len();
+			}
 		}
+	}
+
+	#[test]
+	fn every_multi_step_isa_recipe_has_one_superoperator() {
+		for name in OP_NAMES {
+			if let Some(primitive) = micro_primitive_recipe(name) {
+				if primitive.len() > 1 {
+					assert!(MICRO_SUPER_NAMES.contains(&name), "{name} lacks a superoperator");
+					assert_eq!(micro_recipe(name).unwrap().len(), 1, "{name}");
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn call_and_return_boundaries_remain_separate_phases() {
+		for name in ["Call", "CallE", "CallM", "CallT"] {
+			assert_eq!(micro_call_recipe(name).unwrap().len(), 1, "{name}");
+			assert_eq!(micro_post_call_recipe(name).unwrap().len(), 1, "{name} post-call");
+		}
+		assert_eq!(micro_recipe("Return").unwrap(), vec![(M_RETURN, 0, 0)]);
 	}
 
 	#[test]
