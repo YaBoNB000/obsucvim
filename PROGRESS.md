@@ -1,6 +1,6 @@
 # 项目进度（PROGRESS）
 
-> 2026-10-06 R064 后续：修复 v15 interpreter 在 executor 保护字符串/表元表时的索引兼容性；新增 protected-meta 回归，`run_tests` 169/169、`run_presets` 370/370、多种子 0 失败。深审记录 `docs/r064-deep-self-audit.md`；显式尾部 nil 的变参计数仍待修。
+> 2026-10-07 R064 后续：通用 protected-meta 索引兼容已修；`makefn` 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参计数，并在 `stress_multival.lua` 增回归。cargo test 32 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0。动态 micro-shard trace 仍属客户端观察边界，方案见 `docs/r064-vuln-1-2-research.md`。
 >
 > 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
 > （真实 Luraph v15.0 产物 171.7KB）做全面深度破解。穿透全部旧墙：

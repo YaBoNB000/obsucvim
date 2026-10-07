@@ -264,7 +264,7 @@
 > 历史节点：2026-08-29（v15 阶段 A 操作数散布 + 安全项收官；官方 204
 > + 预设 405 + 多 seed 5×8 全绿）
 
-> **R064 后续（2026-10-06）**：`template.rs` 的 `mget`/`M_GET_TABLE`/`M_SET_TABLE` 与相关 operator/call 路径现会处理 `getmetatable` 返回的非表保护标记；新增 `tests/protected_meta_compat_test.sh` 覆盖字符串方法和受保护的 `__index/__newindex/__call` 等语义。`run_tests` 169/169、`run_presets` 370/370、多种子 0 失败。样本与边界见 `docs/r064-deep-self-audit.md`。仍待修复：显式尾部 nil 的 vararg 数量不能用 `#all` 计算。
+> **R064 后续（2026-10-07）**：v15/legacy `makefn` 改用捕获的 `SEL("#", ...)` 计数，不再以 `#all` 推测变参长度；`stress_multival.lua` 新增末尾 nil/转发/闭包回归。protected-meta GET/SET/operator/call 兼容回归继续通过。验收：cargo test 32/32 + 1 ignored、run_tests 169/169、run_presets 370/370、多种子 0 失败。剩余边界是客户端 micro-shard 执行路径可被有插桩能力的分析者追踪；研究与方案见 `docs/r064-vuln-1-2-research.md`。
 
 ---
 

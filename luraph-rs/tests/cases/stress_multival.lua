@@ -80,3 +80,26 @@ end
 for k, v in genpairs() do
 	print("forin:", k, v)
 end
+
+-- Exact vararg arity must survive interior and trailing nil values.
+local function exact_n(...)
+	return select("#", ...)
+end
+local function forward_n(...)
+	return exact_n(...)
+end
+local function forward_all(...)
+	return ...
+end
+local function fixed_n(head, ...)
+	return head, exact_n(...)
+end
+local function closure_n(...)
+	local function inner(...) return select("#", ...) end
+	return inner(...)
+end
+print("tailnil:", exact_n(nil, "tail", false, 7, nil),
+	forward_n(1, nil, 2, nil),
+	exact_n(forward_all(nil, "x", nil)),
+	fixed_n("fixed", nil, "x", nil),
+	closure_n(nil, 9, nil))

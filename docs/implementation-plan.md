@@ -70,7 +70,7 @@
 | SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | ✅ M5（`[ncode][OC bytes][S0..S3 varint streams]`；pc 按指令步进） |
 | opcode 随机置换（每构建） | 随机置换表 + 死指令填充 | `vmgen/isa.rs` | P0 | ✅（置换表 + Nop 死指令填充，M4 续期） |
 | AST → 字节码编译器 | 原型树/upvalue/常量池/多值协议(nresults 0/-1)/尾调用 | `vmgen/compiler.rs` | P0 | ✅ M4+续期（upvalue 单 cell 别名模型 + 循环变量 per-iteration 共享 cell + 5.1 构造器存储序 + 全变长展开） |
-| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层）；R064 后续：受保护元表不可见时回退到原生 Luau string/table indexing，避免把 sentinel 当元表索引 | `vmgen/template.rs` | P0 | ✅（随机决策树 2~4 层 + 分支序每次生成打乱；2026-10-06 protected-meta 兼容修复） |
+| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层）；R064：受保护元表回退原生 Luau 语义，makefn 变参用捕获 SEL 精确计数 | `vmgen/template.rs` | P0 | ✅（protected-meta + trailing-nil vararg 修复，2026-10-07） |
 | 指令拆文件 + 一指令多形态（建议1） | 41 条指令各一个文件（`vmgen/handlers/`），每文件返回固定解释器代码、用哪个取哪个；每指令 2~3 个语义等价形态，每构建随机各选一形 + 分派叶序/H 定义序/内联调用链序每生成打乱 | `vmgen/handlers/*` + `vmgen/strpool.rs` | P0 | ✅ 增量⑧（旧内联 `branch_code` 全量迁出为各指令 f0 形态；调用族按 token 模板改名换形；v15 Return 单形态保 CPS 改写锚点） |
 | continue 扁平分派风格（Luau 档） | 叶 = `状态=handler(); continue`（luraph15 同款，5.1 用嵌套树） | `vmgen/template.rs` | P1 | 📐 |
 | 帧运行器入场原语解包 | 数字槽→局部变量一次性解包，槽号/局部名每构建随机 | `vmgen/template.rs` | P0 | ✅ M5（15 个宿主原语进 `P[1..80]` 随机槽；VM 顶 + `run` 入场各解包一次，顺序独立 shuffle） |
@@ -113,7 +113,7 @@
 | 调研 + 双方言语义实测 | ✅ 100% | `docs/obfuscation-research.md` |
 | Luraph v15 分析（含动态分析共三轮） | ✅ 100% | `docs/luraph15-analysis.md`（§11 25 项功能对比：采纳 20 / 延后 2 / 拒绝 2 / 我方独有 1） |
 | 全部混淆方法设计（L1–L7 + VM） | ✅ 100% | 本文件 §1 + research §2.6 + v15 报告 §8/§10 |
-| **Rust 混淆器代码** | ✅ **M0–M6 完成** | M6：`--preset low\|medium\|high\|vm\|max` + 产品 README + `docs/performance.md`；官方矩阵 204 + 预设矩阵 405 全绿；R064 protected-meta 兼容修补记录在 §4（2026-10-06） |
+| **Rust 混淆器代码** | ✅ **M0–M6 完成** | M6：`--preset low\|medium\|high\|vm\|max` + 产品 README + `docs/performance.md`；官方矩阵 204 + 预设矩阵 405 全绿；R064 protected-meta / trailing-nil vararg 修补与自检记录在 §4（2026-10-07） |
 | 测试语料 + 矩阵 | ✅ 100% | **29 个语料文件**（20 共享 + 9 Luau 专属；M4 续期新增 8 个 stress_*：upvalues/coroutines/metamethods/multival/errors/bigtable/control/luau_vm）；非 VM 102 项 + VM 102 项 = **204 项全绿**（含 VM 双解释器交叉）；**多种子回归**（seeds 1/7/4242/31337/999999 × 全语料 × 双方言 × 双阶段）0 失败 |
 | 混淆示例 | ✅ M1+M2 产出 | `luraph-rs/examples/`（`tests/gen_examples.sh` 再生成） |
 
@@ -133,15 +133,15 @@
 | **M4 续期（VM 语义加固）** ✅ 2026-08-25 | 应力语料（8 个 stress_*）暴露并修复 9 类 VM/管线语义 bug：upvalue 单 cell 别名模型（消灭中间副本）/ 循环变量 per-iteration 共享 cell / CallT 表存储 off-by-one / GetTab 索引错误 / 尾部多值展开（return .../a,b=.../a,b=f()）/ 5.1 构造器存储序 / 打印机后缀括号 / 多目标赋值解析 / Luau for-in 隐式 next；语料 21→29，矩阵 136→**204 全绿** + 多种子回归（5 seeds）0 失败 | 见 §4 更新日志 2026-08-25 条目 |
 | **M5 VM 完整** ✅ 2026-08-25 | SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + 反编译抽查 | 同 seed 逐字节一致；异 seed 前 2KB 重合 9.5%；`luac51 -l` 仅见 L5 容器、无用户字符串；矩阵 204/204 + 5 种子回归 0 失败 |
 | **M6 产品化** ✅ 2026-08-25 | CLI `--preset` + README 产品文档 + `docs/performance.md` | 全预设 × 全语料 × 双解释器：`tests/run_presets.sh` **405/405**；默认 ≡ high、`--preset vm` ≡ `--vm`；官方矩阵 204 仍绿 |
-| **R064 受保护元表兼容修复** ✅ 2026-10-06 | v15 micro GET/SET、metamethod 与 callable 路径在 `getmetatable` 返回非表 sentinel 时回退到原生 Luau 语义；新增 protected-meta 回归 | `cargo test` 32/32；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败 |
+| **R064 兼容与变参修复** ✅ 2026-10-07 | protected-meta GET/SET/operator/call 原生回退；v15/legacy makefn 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参数量；`stress_multival` 加回归 | `cargo test` 32/32 + 1 ignored；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败 |
 
-**M0–M6 全部完成（2026-08-25）；R064 protected-meta 修补通过回归（2026-10-06）。**
+**M0–M6 全部完成（2026-08-25）；R064 protected-meta 与尾 nil 变参修补通过回归（2026-10-07）。**
 
 ---
 
 ## 4. 更新日志
 
-- **2026-10-06（R064 executor protected-meta 兼容修复）**：v15 micro `M_GET_TABLE` 对字符串直接走原生 Luau indexing；`mget` 在 `getmetatable` 返回非表 sentinel 时不再把 sentinel 当表访问；受保护 table/userdata 的 GET/SET、算术/比较/连接、unary 和 callable 语义在元表不可见时回退到原生运算。新增 `tests/protected_meta_compat_test.sh` 并接入 `run_tests.sh`，覆盖 string methods、受保护 `__index/__newindex/__add/__concat/__lt/__eq/__unm/__len/__call`。验证：32 cargo tests、169 run_tests、370 run_presets、多种子 0 失败；真实 executor 未在本地可用环境验证。详见 `docs/r064-deep-self-audit.md`。
+- **2026-10-07（R064 protected-meta + trailing nil vararg）**：v15 micro GET 对字符串直接走原生 Luau indexing；`mget` 先验元表类型，受保护 table/userdata 的 GET/SET、算术/比较/连接/unary/callable 在 sentinel 不透明时回退到原生语义。新增 `protected_meta_compat_test.sh` 并接入 `run_tests.sh`。`makefn` 两路径改用精确 arity：legacy 捕获外层 `SEL`；v15 RTFRAG 从既有随机 primitive 槽 `P[slots[12]]` 捕获 `SEL("#", ...)`，不再用 `#all` 计数，并在 `stress_multival.lua` 覆盖尾 nil、forward、fixed+vararg 与闭包。验证：cargo test 32/32 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；保护元表回归通过。真实 executor 未在本地验证。详见 `docs/r064-deep-self-audit.md` 与 `docs/r064-vuln-1-2-research.md`。
 - **2026-09-23（增量55：自研防绕过——HBOOT 装配面收窄 + 阶段二可行性定
   论）**。R025 突破点（可见层锚点注入读走 HBOOT 容器）的自研封堵。**可行
   性探针结论**：可见层自覆盖哈希不可行——`debug.info(fn,"s")` 只返回块名
