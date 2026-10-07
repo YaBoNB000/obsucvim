@@ -30,8 +30,12 @@ import sys
 src = Path('/tmp/vm_tsrc.lua').read_text()
 Path(sys.argv[1]).write_text(src)
 for name in ('KA', 'KB', 'KC', 'KM'):
-    assert f'{name}[' not in src, f'old key-table lookup remains: {name}'
-    assert f'local {name} = {{' not in src, f'old key table remains: {name}'
+    # Match a complete Lua identifier. A raw substring check for `KM[` also
+    # matched the suffix of the unrelated, live `CKM[` carrier-key array.
+    assert not re.search(rf'(?<![A-Za-z0-9_]){name}\s*\[', src), \
+        f'old key-table lookup remains: {name}'
+    assert not re.search(rf'\blocal\s+{name}\s*=\s*\{{', src), \
+        f'old key table remains: {name}'
 assert 'for i=1,#d do s=(s*' in src and '#d[i]' in src, 'carrier-length digest loop missing'
 assert 'local by=string.byte for i=1,#d do' not in src, 'key derivation added a byte-hook sink'
 contexts = re.findall(r'end\)\(([^)]*)\)', src)

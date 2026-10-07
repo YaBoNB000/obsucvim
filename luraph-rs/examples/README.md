@@ -11,11 +11,15 @@
 开，示例文件为单行紧凑形态）。生成命令：`bash tests/gen_examples.sh`
 （固定 `--seed 42 --preset v15`，同构建字节级确定）。
 
-**R064 示例/兼容性回归（2026-10-07）**：`handoff/R064_7kb_src.lua`
-（约 7KB）与 `handoff/R064_7kb_target.luau.lua`（seed 64066）构成单独的
-v15 示例对。源码保留字符串方法语法 `row[2]:sub(...)`，并通过
-`tests/protected_meta_compat_test.sh` 在字符串/表元表被保护的环境模拟下
-验证 native fallback。`stress_multival.lua` 另覆盖 vararg 尾 nil、转发与闭包计数回归。
+**R064 示例与 micro-shard trace 缓解（2026-10-07）**：`handoff/R064_7kb_src.lua`
+（7,179 字节）与 `handoff/R064_7kb_target.luau.lua`（seed 64066，338,277
+字节）构成单独的 v15 示例对。源码保留字符串方法语法 `row[2]:sub(...)`，并通过
+`tests/protected_meta_compat_test.sh` 在字符串/表元表被保护的环境模拟下验证
+native fallback；`stress_multival.lua` 覆盖 vararg 尾 nil、转发与闭包计数。micro
+handler 的 10 类安全内部短序列融合为单记录 superoperator，回归为
+`tests/micro_fusion_test.sh`（v15/legacy 均与 Luau 源输出一致）。融合降低中间
+trace 记录数，但不阻止有同进程插桩能力的分析者观察融合后的执行路径；详见
+`docs/r064-vuln-1-2-research.md`。
 
 **增量55（2026-09-23，自研防绕过——HBOOT 装配面收窄）**：`HB =
 table.concat(MH)` 收进 HBOOT 调用的 PCAL 闭包（boot 级零具名装配语句），

@@ -264,7 +264,7 @@
 > 历史节点：2026-08-29（v15 阶段 A 操作数散布 + 安全项收官；官方 204
 > + 预设 405 + 多 seed 5×8 全绿）
 
-> **R064 后续（2026-10-07）**：v15/legacy `makefn` 改用捕获的 `SEL("#", ...)` 计数，不再以 `#all` 推测变参长度；`stress_multival.lua` 新增末尾 nil/转发/闭包回归。protected-meta GET/SET/operator/call 兼容回归继续通过。验收：cargo test 32/32 + 1 ignored、run_tests 169/169、run_presets 370/370、多种子 0 失败。剩余边界是客户端 micro-shard 执行路径可被有插桩能力的分析者追踪；研究与方案见 `docs/r064-vuln-1-2-research.md`。
+> **R064 后续（2026-10-07）**：v15/legacy `makefn` 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参计数，protected-meta GET/SET/operator/call 回退回归通过。micro-shard 风险实施了第一轮保守 superoperator fusion：10 种无用户回调的内部序列（LoadK/Move/NewTab/Not/GetUp/SetUp/VarArgC/Jf/Jt/VarArgTab）每 handler 从 2–3 条记录压为 1 条；Call/Return、元方法和顺序敏感操作不融合。新增 `micro_fusion_test.sh` 与 Rust 单测；融合前临时探针的 906,284 条记录是历史基线，未把它冒充成融合后总 trace。自检：cargo test 35 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；H5-P0 与安全指纹 S1–S5 通过。仍须诚实保留同进程插桩可观察融合后的执行路径这一边界；详情 `docs/r064-vuln-1-2-research.md` 和 `docs/r064-deep-self-audit.md`。
 
 ---
 

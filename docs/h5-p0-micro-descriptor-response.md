@@ -4,7 +4,7 @@
 >
 > 适用范围：`luraph-rs --preset v15` 纯离线 Luau
 >
-> 状态：**P0 已闭环；静态 47 组 descriptor table 已退役**
+> 状态：**P0 已闭环；静态 47 组 descriptor table 已退役；R064 已加入保守的 handler 内 superoperator 第一层缓解**
 
 ## 1. R057 失守结论
 
@@ -130,11 +130,24 @@ R058：187607B，m=134034，r=9827
 交付”路径，不宣称纯离线 Micro-ISA 永远无法恢复。
 
 攻击者仍可通过完整模拟启动过程、动态记录 session blob，或跟踪 micro
-interpreter 恢复语义。下一阶段按优先级处理：
+interpreter 恢复语义。后续项按优先级处理：
 
-1. **P1：函数级 Superoperator**，打破宏 opcode 与标准 Lua 操作的一对一映射；
+1. **P1：函数级/跨-handler superoperator**，继续研究打破宏 opcode 与标准 Lua
+   操作的一对一映射；R064 先落地了保守的 handler 内融合，不等价于此项全部完成；
 2. **P1：运行期绑定的下标/钥匙配方**，减少纯 `A+B-C` constant folding；
 3. **P2：退役固定 junk/opaque predicate 模板**，不再把可一键清除的死代码
    计入安全强度。
 
 在上述阶段完成前，不使用“不可破解”或“95 分满血”等不可验证表述。
+
+## 5. R064 动态追踪缓解跟进（2026-10-07）
+
+`template.rs` 为 `LoadK`、`Move`、`NewTab`、`Not`、`GetUp`、`SetUp`、
+`VarArgC`、`Jf`、`Jt`、`VarArgTab` 增加每构建随机编号的单记录 fused micro-op，
+只消除无用户回调边界的 shard-local `T` 中间读写。每种操作本身从 2–3 条记录降到
+1 条；`micro_fusion_test.sh` 与 Rust 单测覆盖 v15/legacy 等价和敏感操作不融合。
+
+这不是任意代码动态 trace 的阻断：有同进程插桩能力者仍可看见融合后的 handler
+执行顺序。融合前 906,284 条探针记录仅作历史 baseline，本次未声称整个 7KB 样本
+trace 总量已重测。相关详细口径与当前回归结果见
+`docs/r064-vuln-1-2-research.md`。

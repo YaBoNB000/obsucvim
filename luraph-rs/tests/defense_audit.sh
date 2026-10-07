@@ -266,14 +266,30 @@ LURAPH_VM_TSRC=1 LURAPH_KEY_MANIFEST="$W/d12_keys.txt" \
 # H4-2C2 后 RT 不再是可导出的 HQ 碎片；从构建期 TSRC 中抽取已经字段
 # 随机化的静态 RT 守卫。正式产物没有运行时 dump/fallback 接口。
 rt_static="/tmp/vm_tsrc.lua"
-python3 - "$W/d1a.lua" "$W" "$rt_static" <<'PYEOF'
+python3 - "$W" "$rt_static" <<'PYEOF'
 import re, sys
-art = sys.argv[1]; W = sys.argv[2]; rt_path = sys.argv[3]
-s = open(art).read()
+W = sys.argv[1]; rt_path = sys.argv[2]
 def blank(src):
     out = list(src); i = 0; n = len(src)
     while i < n:
         c = src[i]
+        # Skip comments before quoted-string handling; RTFRAG source carries
+        # prose with quotes, which otherwise causes this scanner to blank code
+        # across a comment boundary.
+        if src.startswith('--', i):
+            lm = re.match(r'--\[(=*)\[', src[i:])
+            if lm:
+                closer = ']' + lm.group(1) + ']'
+                j = src.find(closer, i + len(lm.group(0)))
+                if j != -1:
+                    end = j + len(closer)
+                    for k in range(i, end):
+                        if src[k] != '\n': out[k] = ' '
+                    i = end; continue
+            j = src.find('\n', i)
+            end = n if j == -1 else j
+            for k in range(i, end): out[k] = ' '
+            i = end; continue
         if c == '[':
             lm = re.match(r'\[(=*)\[', src[i:])
             if lm:
@@ -293,39 +309,33 @@ def blank(src):
             i = j+1; continue
         i += 1
     return ''.join(out)
-code = blank(s)
-m = re.search(r'return (\w+)\(\w+, ?\w+, ?\{\}, ?\w+, ?0\)', code)
-if not m:
-    print("NORUN"); sys.exit(1)
-fn = m.group(1)
-mm = re.search(r'local '+fn+r'=(\w+)\(', code[:m.start()])
-st = code.find('(', mm.end()-1)
-depth=0; args=[]; cur=""; j=st
-while j < len(code):
-    c = code[j]
-    if c=='(':
-        depth+=1
-        if depth==1: j+=1; continue
-    elif c==')':
-        depth-=1
-        if depth==0: args.append(cur.strip()); break
-    elif c==',' and depth==1:
-        args.append(cur.strip()); cur=""; j+=1; continue
-    cur+=c; j+=1
-a27 = args[26]
-# 接线: 外层局部 + do 块内从 os 表取 clock 的赋值 (非 nil 悬挂)
-asg = re.search(r'\b'+re.escape(a27)+r'=(\w+) and (\w+)\[', code[:mm.start()+10])
-decl = re.search(r'local\s+[^=;]*\b'+re.escape(a27)+r'\b', code[:mm.start()+10])
-if not (asg and decl):
-    print("NOWIRE"); sys.exit(1)
-# 触发路径: 从静态 RT TSRC 抽出守卫前导 + 守卫块本体，合成 tracer 时钟驱动
-rt = blank(open(rt_path).read())
+# Parse the emitted RT factory rather than assuming its clock is argument 27
+# of an unrelated entry closure (that positional assumption went stale when
+# RTFRAG became the one-shot factory).
+rt_source = open(rt_path).read()
+rt = blank(rt_source)
+sig = re.search(r'RTFRAG\s*=\s*function\(([^)]*)\)', rt)
+call = re.search(r'local RUN\s*=\s*RTFRAG\(([^)]*)\)', rt)
 pm = re.search(
     r'local (\w+) = 0 local (\w+) = (\w+) and \3\(\) or 0 '
     r'local (\w+) = 0 local (\w+) = nil local (\w+) = 0 while true do', rt)
-if not pm:
+if not (sig and call and pm):
     print("NOPRE"); sys.exit(1)
 GE, ID, CLK, NF, PE, CNT = pm.groups()
+formals = [x.strip() for x in sig.group(1).split(',')]
+actuals = [x.strip() for x in call.group(1).split(',')]
+if CLK not in formals or len(formals) != len(actuals):
+    print("NOWIRE"); sys.exit(1)
+clock_slot = formals.index(CLK)
+# The outer captured clock must be handed to the exact RT formal used by the
+# timing guard; also ensure the capture is sourced from the host os table.
+if actuals[clock_slot] != "CLK" or not re.search(r'\blocal\s+CLK\b', rt):
+    print("NOWIRE"); sys.exit(1)
+if not re.search(
+    r'local\s+(\w+)\s*=\s*GFE\(0\)\s*\[\s*\w+\s*\]\s+'
+    r'CLK\s*=\s*\1\s+and\s+\1\s*\[\s*\w+\s*\]', rt_source):
+    print("NOWIRE"); sys.exit(1)
+# Trigger path: synthesize a tracer clock around the extracted RT guard body.
 gi = rt.find('% 128 == 0')
 # 回溯到该 if 的起点
 ist = rt.rfind('if ', 0, gi)
@@ -377,7 +387,7 @@ for name, seq in (("tracer", seq_tracer), ("clean", seq_clean)):
                          CNT=CNT, EF=EF, PG=PG, VD=VD, PN=PN, PD=PD,
                          WM=WM, WB=WB, RQ=RQ, guard=guard)
     open(f"{W}/wd_{name}.lua", "w").write(lua)
-print("WIRED", a27)
+print("WIRED", CLK, "argument", clock_slot + 1)
 PYEOF
 rc12=$?
 if [ "$rc12" != "0" ]; then

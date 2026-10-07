@@ -189,6 +189,10 @@ bash "$ROOT/tests/r063_entry_table_hook_regression.sh"
 # Luau indexing semantics instead of indexing the protection sentinel.
 bash "$ROOT/tests/protected_meta_compat_test.sh"
 
+# R064 dynamic micro-trace mitigation: safe internal sequences are fused into
+# one per-shard record, while both v15 and legacy VM semantics remain equal.
+bash "$ROOT/tests/micro_fusion_test.sh"
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

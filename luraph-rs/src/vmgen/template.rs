@@ -547,7 +547,19 @@ const M_POST_CALLE: usize = 45;
 const M_POST_CALLM: usize = 46;
 const M_POST_CALLT: usize = 47;
 const M_LOAD_STR: usize = 48;
-const M_COUNT: usize = 49;
+// Fused superoperators collapse safe, VM-internal sequences into one decoded
+// record. Keep user-visible/metamethod/call boundaries in the primitive recipes.
+const M_FUSE_LOAD_K: usize = 49;
+const M_FUSE_MOVE: usize = 50;
+const M_FUSE_NEW_TABLE: usize = 51;
+const M_FUSE_NOT: usize = 52;
+const M_FUSE_GET_UP: usize = 53;
+const M_FUSE_SET_UP: usize = 54;
+const M_FUSE_VARGC: usize = 55;
+const M_FUSE_BRANCH_FALSE: usize = 56;
+const M_FUSE_BRANCH_TRUE: usize = 57;
+const M_FUSE_VARARG_TABLE: usize = 58;
+const M_COUNT: usize = 59;
 
 struct MicroLits {
 	number: String,
@@ -644,27 +656,28 @@ fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
 
 fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	let p = match name {
-		"LoadK" => vec![(M_READ_C, 1, 2), (M_WRITE_V, 1, 1)],
+		// Safe superoperators: these sequences touch only VM-owned registers,
+		// constants, upvalue cells, or a fresh local table. They do not cross a
+		// metamethod, user-call, error-order, or externally visible callback
+		// boundary, so the temporaries can be eliminated without changing Lua
+		// evaluation semantics.
+		"LoadK" => vec![(M_FUSE_LOAD_K, 0, 0)],
 		"LoadStr" => vec![(M_READ_C, 1, 2), (M_LOAD_STR, 1, 1), (M_WRITE_V, 1, 1)],
-		"Move" => vec![(M_READ_V, 1, 2), (M_WRITE_V, 1, 1)],
-		"NewTab" => vec![(M_NEW_TABLE, 1, 0), (M_WRITE_V, 1, 1)],
-		"Not" => vec![(M_READ_V, 1, 2), (M_NOT, 2, 1), (M_WRITE_V, 1, 2)],
+		"Move" => vec![(M_FUSE_MOVE, 0, 0)],
+		"NewTab" => vec![(M_FUSE_NEW_TABLE, 0, 0)],
+		"Not" => vec![(M_FUSE_NOT, 0, 0)],
 		"GetGlobal" => vec![
 			(M_READ_C, 1, 2),
 			(M_GET_GLOBAL, 2, 1),
 			(M_WRITE_V, 1, 2),
 		],
 		"SetGlobal" => vec![(M_READ_C, 1, 2), (M_READ_V, 2, 1), (M_SET_GLOBAL, 1, 2)],
-		"GetUp" => vec![
-			(M_READ_UP, 1, 2),
-			(M_CELL_GET, 2, 1),
-			(M_WRITE_V, 1, 2),
-		],
-		"SetUp" => vec![(M_READ_UP, 1, 1), (M_READ_V, 2, 2), (M_CELL_SET, 1, 2)],
-		"VarArgC" => vec![(M_VARGC, 1, 0), (M_WRITE_V, 1, 1)],
+		"GetUp" => vec![(M_FUSE_GET_UP, 0, 0)],
+		"SetUp" => vec![(M_FUSE_SET_UP, 0, 0)],
+		"VarArgC" => vec![(M_FUSE_VARGC, 0, 0)],
 		"Jmp" => vec![(M_SET_PC, 2, 0)],
-		"Jf" => vec![(M_READ_V, 1, 1), (M_BRANCH_FALSE, 1, 2)],
-		"Jt" => vec![(M_READ_V, 1, 1), (M_BRANCH_TRUE, 1, 2)],
+		"Jf" => vec![(M_FUSE_BRANCH_FALSE, 0, 0)],
+		"Jt" => vec![(M_FUSE_BRANCH_TRUE, 0, 0)],
 		"Add" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_ADD, 3, 0), (M_WRITE_V, 1, 3)],
 		"Sub" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_SUB, 3, 0), (M_WRITE_V, 1, 3)],
 		"Mul" => vec![(M_READ_V, 1, 2), (M_READ_V, 2, 3), (M_MUL, 3, 0), (M_WRITE_V, 1, 3)],
@@ -689,7 +702,7 @@ fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 			(M_TABN, 0, 0),
 			(M_WRITE_V, 2, 2),
 		],
-		"VarArgTab" => vec![(M_VARG_TABLE, 1, 0), (M_WRITE_V, 1, 1)],
+		"VarArgTab" => vec![(M_FUSE_VARARG_TABLE, 0, 0)],
 		"VarArgTabN" => vec![
 			(M_READ_V, 1, 1),
 			(M_READ_V, 2, 2),
@@ -772,6 +785,32 @@ fn frame_slot(logical: usize) -> String {
 
 fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	match index {
+		// Intra-handler superoperators. Each replaces a sequence whose only
+		// intermediate state was the shard-local T scratch table. The semantic
+		// operation remains inside its randomized shard dispatch, but the
+		// decoded trace no longer exposes each temporary read/write separately.
+		M_FUSE_LOAD_K => {
+			"local q = C[O[2] + 1] V[O[1] + 1] = q".to_string()
+		}
+		M_FUSE_MOVE => {
+			"local q = V[O[2] + 1] V[O[1] + 1] = q".to_string()
+		}
+		M_FUSE_NEW_TABLE => "local q = {} V[O[1] + 1] = q".to_string(),
+		M_FUSE_NOT => "local q = not V[O[2] + 1] V[O[1] + 1] = q".to_string(),
+		M_FUSE_GET_UP => {
+			"local q = ups[O[2] + 1] local w = q.v[q.i] V[O[1] + 1] = w".to_string()
+		}
+		M_FUSE_SET_UP => {
+			"local q = ups[O[1] + 1] local w = V[O[2] + 1] q.v[q.i] = w".to_string()
+		}
+		M_FUSE_VARGC => "V[O[1] + 1] = vargc".to_string(),
+		M_FUSE_BRANCH_FALSE => {
+			"if not V[O[1] + 1] then E.pc = O[2] end".to_string()
+		}
+		M_FUSE_BRANCH_TRUE => "if V[O[1] + 1] then E.pc = O[2] end".to_string(),
+		M_FUSE_VARARG_TABLE => {
+			"local q = {} for j = 1, vargc do q[j] = vargs[1 + ((j + E.vd - 1) % vargc)] end V[O[1] + 1] = q".to_string()
+		}
 		M_READ_V => "T[x] = V[O[y] + 1]".to_string(),
 		M_WRITE_V => "V[O[x] + 1] = T[y]".to_string(),
 		M_READ_C => "T[x] = C[O[y] + 1]".to_string(),
@@ -879,6 +918,84 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 			format!("local q={q} local n={n} for j=1,N do q[n+j]=R[j] end V[O[3]+1]=n+N", q=q, n=n)
 		}
 		_ => unreachable!(),
+	}
+}
+
+#[cfg(test)]
+mod micro_fusion_tests {
+	use super::*;
+
+	fn is_fused(kind: usize) -> bool {
+		matches!(
+			kind,
+			M_FUSE_LOAD_K
+				| M_FUSE_MOVE
+				| M_FUSE_NEW_TABLE
+				| M_FUSE_NOT
+				| M_FUSE_GET_UP
+				| M_FUSE_SET_UP
+				| M_FUSE_VARGC
+				| M_FUSE_BRANCH_FALSE
+				| M_FUSE_BRANCH_TRUE
+				| M_FUSE_VARARG_TABLE
+		)
+	}
+
+	#[test]
+	fn safe_internal_sequences_emit_one_superoperator() {
+		let cases = [
+			("LoadK", M_FUSE_LOAD_K),
+			("Move", M_FUSE_MOVE),
+			("NewTab", M_FUSE_NEW_TABLE),
+			("Not", M_FUSE_NOT),
+			("GetUp", M_FUSE_GET_UP),
+			("SetUp", M_FUSE_SET_UP),
+			("VarArgC", M_FUSE_VARGC),
+			("Jf", M_FUSE_BRANCH_FALSE),
+			("Jt", M_FUSE_BRANCH_TRUE),
+			("VarArgTab", M_FUSE_VARARG_TABLE),
+		];
+		for (name, expected_kind) in cases {
+			assert_eq!(
+				micro_recipe(name).unwrap(),
+				vec![(expected_kind, 0, 0)],
+				"{name} should decode as one fused record"
+			);
+		}
+	}
+
+	#[test]
+	fn metamethod_and_user_visible_boundaries_stay_unfused() {
+		for name in ["LoadStr", "GetGlobal", "SetGlobal", "Add", "GetTab", "SetTab"] {
+			let recipe = micro_recipe(name).unwrap();
+			assert!(recipe.len() > 1, "{name} must retain its ordered micro-steps");
+			assert!(
+				recipe.iter().all(|(kind, _, _)| !is_fused(*kind)),
+				"{name} crosses an observable/error boundary"
+			);
+		}
+	}
+
+	#[test]
+	fn fused_bodies_do_not_use_shard_scratch_temporaries() {
+		let mut pool = StrPool::new(false);
+		let lit = MicroLits::new(&mut pool, (17, 31), false);
+		for kind in [
+			M_FUSE_LOAD_K,
+			M_FUSE_MOVE,
+			M_FUSE_NEW_TABLE,
+			M_FUSE_NOT,
+			M_FUSE_GET_UP,
+			M_FUSE_SET_UP,
+			M_FUSE_VARGC,
+			M_FUSE_BRANCH_FALSE,
+			M_FUSE_BRANCH_TRUE,
+			M_FUSE_VARARG_TABLE,
+		] {
+			let body = micro_op_body(kind, &lit, "");
+			assert!(body.contains("V["), "fused body {kind} lost its destination");
+			assert!(!body.contains("T["), "fused body {kind} uses shard scratch state");
+		}
 	}
 }
 
