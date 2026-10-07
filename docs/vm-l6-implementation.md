@@ -277,3 +277,26 @@ else c[i] = { v = V, i = src } end
 - 重建 Luau 工具链时**必须**在自写 main 里复刻：luaL_openlibs +
   loadstring/collectgarbage 自定义全局 + require 文件 rehook +
   luaL_sandbox（漏掉 sandbox 会让语料出现假通过/假失败）。
+
+### 8.4 R064：父/子 upvalue scatter descriptor 必须同序（2026-10-07）
+
+R064 7KB canary 在 seed `64067` 等构建下曾出现 `attempt to call a number value`：
+内层 `make_accumulator` closure 本应通过 upvalue 调用 `fold_text`，却取得了数值
+`MOD=1000003`。调用探针与编译器 proto dump 将其定位到 v15 的 per-function
+upvalue scatter，而非 legacy VM 或 micro-op fusion。
+
+根因：编译器先按父帧**原始** upvalue index 编码子 `CellKind::Up(u)` descriptor，
+之后才在父帧 `scatter_operands` 中置换 `upsrc`。运行时父 `ups` 已是置换后的顺序，
+所以某些 seed 的 child descriptor 会指向错误 cell。
+
+修复规则：
+- `Ctx` 在递归编译函数体/子 closure **之前**计算 `up_perm[old] = runtime`；
+- 生成 child descriptor 时，`CellKind::Up(u)` 先通过父 `up_perm`，再编码；
+- `scatter_operands` 用同一预计算置换重排 `upsrc` 并改写本函数 GetUp/SetUp operand；
+- permutation 由 build key + function index 的独立 PRNG 导出；scatter 阶段仍消耗旧 main-RNG shuffle draw 数，避免扰动其它布局序列。
+
+回归：`compiler::dbg::upvalue_permutation_is_bijective_and_seed_stable` 检查置换双射与
+确定性；`tests/r064_seed_stability_test.sh` 对 24 个历史失败/相邻 seed 执行完整
+Luau compile/stdout 等价，并接入 `run_tests.sh` 与 `multiseed.sh`。修复后另有 42 个
+定向 seed 的临时 sweep 0 失败。改 nested upvalue/scatter 时要保留这层父帧→子 descriptor
+映射约束，不可只验证同函数 GetUp/SetUp 的 permutation。

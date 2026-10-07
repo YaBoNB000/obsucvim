@@ -12,8 +12,8 @@
 （固定 `--seed 42 --preset v15`，同构建字节级确定）。
 
 **R064 示例与 micro-shard trace 缓解（2026-10-07）**：`handoff/R064_7kb_src.lua`
-（7,179 字节）与 `handoff/R064_7kb_target.luau.lua`（seed 64066，338,277
-字节）构成单独的 v15 示例对。源码保留字符串方法语法 `row[2]:sub(...)`，并通过
+（7,179 字节）与 `handoff/R064_7kb_target.luau.lua`（seed 64066，338,223
+字节；SHA-256 `67e416767d16781851943e101a075e65ac731d805628575821ef397a68e09ea7`）构成单独的 v15 示例对。源码保留字符串方法语法 `row[2]:sub(...)`，并通过
 `tests/protected_meta_compat_test.sh` 在字符串/表元表被保护的环境模拟下验证
 native fallback；`stress_multival.lua` 覆盖 vararg 尾 nil、转发与闭包计数。micro
 handler 的 10 类安全内部短序列融合为单记录 superoperator，回归为
@@ -21,8 +21,7 @@ handler 的 10 类安全内部短序列融合为单记录 superoperator，回归
 trace 记录数，但不阻止有同进程插桩能力的分析者观察融合后的执行路径；详见
 `docs/r064-vuln-1-2-research.md`。
 
-**R064 第二轮深度自检（2026-10-07）**：新增 `handoff/R064_7kb_target_r2.luau.lua`
-（seed 64075，332,720 字节，SHA-256 `f4e0505ef0506939ee8a6330d64155c355e6ff9b1e7c43eb307f38ad677bc498`）。静态 S1–S5 均抵抗；临时同点 trace A/B 显示该 7KB 样本的解码记录 929,567→701,915（-24.49%），但同进程 `string.byte` hook 仍可看到运行态数据。另发现 32-seed 目标样本差分中 17 个 seed 融合前后均报 `attempt to call a number value`，属于待定位的既存稳定性缺陷，见 `docs/r064-deep-self-audit-r2.md`。
+**R064 第二轮深度自检与 seed 修复（2026-10-07）**：`handoff/R064_7kb_target_r2.luau.lua`（seed 64075，332,466 字节，SHA-256 `a04eee0c1aca28444f50988b255d7501268b6d254f98aafe623b02ad298a0450`）静态 S1–S5 均抵抗。临时同点 trace A/B 为 929,567→701,915（-24.49%），但 `string.byte` 同进程 hook 仍可看到运行态数据。审计定位到 `CellKind::Up` descriptor 未跟随父函数的 upvalue scatter permutation，导致若干 seed 把 `fold_text` 读成 `MOD`；`compiler.rs` 已预先映射父 permutation，新增 `r064_seed_stability_test.sh`，24 个历史失败/相邻 seed 全通过。详见 `docs/r064-deep-self-audit-r2.md`。
 
 **增量55（2026-09-23，自研防绕过——HBOOT 装配面收窄）**：`HB =
 table.concat(MH)` 收进 HBOOT 调用的 PCAL 闭包（boot 级零具名装配语句），

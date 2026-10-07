@@ -168,8 +168,12 @@ struct Ctx<'a> {
 	scopes: Vec<HashMap<SymId, CellKind>>,
 	/// upvalues of the current function: sym -> up idx
 	upvals: HashMap<SymId, u16>,
-	/// upvalue descriptors (creating frame's V slot, 1-based), up-idx order
+	/// upvalue descriptors (creating frame's V slot, 1-based), runtime order
 	upsrc: Vec<u16>,
+	/// Original upvalue index -> the current function's permuted runtime index.
+	/// Computed before compiling nested closures so their descriptors target
+	/// this function's final upvalue array layout.
+	up_perm: Vec<usize>,
 	next_reg: u16,
 	nparams: u16,
 	vararg: bool,
@@ -188,6 +192,23 @@ struct Ctx<'a> {
 	/// in that set; otherwise a plain fixed register (reused each
 	/// iteration — no per-iteration growth).
 	cell_loops: Vec<HashSet<SymId>>,
+}
+
+/// Derive a per-function upvalue permutation independently from the main
+/// compiler RNG. The mapping is old-index -> runtime index; child closure
+/// descriptors use it when they alias one of the creating frame's upvalues.
+fn derive_upvalue_permutation(seed: u64, fn_index: usize, count: usize, scatter: bool) -> Vec<usize> {
+	let mut order: Vec<usize> = (0..count).collect();
+	if scatter && count > 1 {
+		let fn_salt = (fn_index as u64 + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+		let mut rng = Rng::new(seed ^ fn_salt ^ (count as u64).rotate_left(7));
+		rng.shuffle(&mut order);
+	}
+	let mut old_to_new = vec![0usize; count];
+	for (new_idx, &old_idx) in order.iter().enumerate() {
+		old_to_new[old_idx] = new_idx;
+	}
+	old_to_new
 }
 
 /// Collision-free constant key: (tag, payload).
@@ -276,6 +297,7 @@ impl<'a> Ctx<'a> {
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
 			upsrc: Vec::new(),
+			up_perm: Vec::new(),
 			next_reg: 0,
 			nparams: 0,
 			vararg: false,
@@ -529,16 +551,19 @@ impl<'a> Ctx<'a> {
 		}
 		self.consts = consts2;
 
-		// 3. upvalue permutation (upsrc reordered; operands map through
-		// the inverse)
+		// 3. Apply the upvalue permutation computed before compiling nested
+		// closures. They need the creating frame's final order when encoding
+		// CellKind::Up descriptors. Consume the former shuffle's main-RNG draws
+		// here to leave unrelated operand/noise layouts stable.
 		let nu = self.upsrc.len();
-		let mut perm: Vec<usize> = (0..nu).collect();
-		self.rng.shuffle(&mut perm);
+		let mut consumed: Vec<usize> = (0..nu).collect();
+		self.rng.shuffle(&mut consumed);
+		let tau = self.up_perm.clone();
+		assert_eq!(tau.len(), nu, "upvalue permutation length mismatch");
 		let old_upsrc = std::mem::take(&mut self.upsrc);
-		let mut tau = vec![0usize; nu];
-		for (ni, &oi) in perm.iter().enumerate() {
-			self.upsrc.push(old_upsrc[oi]);
-			tau[oi] = ni;
+		self.upsrc.resize(nu, 0);
+		for (old_idx, &new_idx) in tau.iter().enumerate() {
+			self.upsrc[new_idx] = old_upsrc[old_idx];
 		}
 
 		// 4. wire operand rewrite
@@ -2741,12 +2766,27 @@ impl<'a> Ctx<'a> {
 			eprintln!("[fn] scopes={:?}", scopes_dbg);
 		}
 
+		let child_index = self.next_fn_slot;
+		self.next_fn_slot += 1;
+		// Precompute this function's own upvalue permutation before compiling
+		// its body. Nested closures must encode CellKind::Up against the
+		// creating frame's eventual runtime upvalue order, not its temporary
+		// compiler order. A separate per-function PRNG preserves the main RNG
+		// schedule used by instruction layouts.
+		let up_seed = (self.program.blob_seed as u64)
+			^ (self.program.blob_km as u64).rotate_left(11)
+			^ (self.program.blob_kc as u64).rotate_left(23)
+			^ (self.program.ck_km as u64).rotate_left(37)
+			^ (self.program.ck_kc as u64).rotate_left(49);
+		let child_up_perm =
+			derive_upvalue_permutation(up_seed, child_index, ups.len(), self.scatter);
+
 		// descriptors = the innermost enclosing scope holding the sym:
 		// Plain -> slot number; Slot (per-iteration cell) -> 0x8000 +
 		// slot — the interpreter binds it to the CURRENT iteration's
 		// cell table at closure creation; Up (materialized upvalue) ->
-		// 0xC000 + upvalue index — the interpreter aliases the CREATING
-		// frame's own cell object (one canonical cell at all levels)
+		// 0xC000 + the creating frame's permuted upvalue index — the
+		// interpreter aliases its canonical cell at closure creation.
 		let mut descriptors: Vec<u16> = Vec::new();
 		for s in &ups {
 			let mut found = None;
@@ -2759,7 +2799,11 @@ impl<'a> Ctx<'a> {
 			match found {
 				Some(CellKind::Plain(r)) => descriptors.push(r + 1),
 				Some(CellKind::Slot(sr)) => descriptors.push(sr + 1 | 0x8000),
-				Some(CellKind::Up(u)) => descriptors.push(u + 1 | 0xC000),
+				Some(CellKind::Up(u)) => {
+					let parent_idx = *self.up_perm.get(u as usize)
+						.expect("parent upvalue permutation missing");
+					descriptors.push(parent_idx as u16 + 1 | 0xC000);
+				}
 				None => panic!(
 					"upvalue descriptor miss: sym {} not in any enclosing scope (ups mis-analyzed?)",
 					s
@@ -2767,10 +2811,8 @@ impl<'a> Ctx<'a> {
 			}
 		}
 
-		let child_index = self.next_fn_slot;
-            self.next_fn_slot += 1;
-            self.program.s_indices[child_index] = if self.scatter { self.rng.int(0, 3) as u8 } else { 0 };
-            let nparams = param_syms.len() as u16;
+		self.program.s_indices[child_index] = if self.scatter { self.rng.int(0, 3) as u8 } else { 0 };
+		let nparams = param_syms.len() as u16;
 		let mut child = Ctx {
 			program: self.program,
 			rng: self.rng,
@@ -2781,6 +2823,7 @@ impl<'a> Ctx<'a> {
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
 			upsrc: descriptors,
+			up_perm: child_up_perm,
 			// temporaries start AFTER the parameter registers
 			next_reg: nparams,
 			nparams,
@@ -3355,5 +3398,18 @@ mod dbg {
 			}
 		}
 		assert!(saw_scattered_operand, "some wire operand must be scattered");
+	}
+
+	#[test]
+	fn upvalue_permutation_is_bijective_and_seed_stable() {
+		for count in 0..64 {
+			let p = derive_upvalue_permutation(0x1234_5678_9abc_def0, 17, count, true);
+			assert_eq!(p.len(), count);
+			let mut sorted = p.clone();
+			sorted.sort_unstable();
+			assert_eq!(sorted, (0..count).collect::<Vec<_>>());
+			assert_eq!(p, derive_upvalue_permutation(0x1234_5678_9abc_def0, 17, count, true));
+			assert_eq!(derive_upvalue_permutation(0, 2, count, false), (0..count).collect::<Vec<_>>());
+		}
 	}
 }

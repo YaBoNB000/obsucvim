@@ -193,6 +193,14 @@ bash "$ROOT/tests/protected_meta_compat_test.sh"
 # one per-shard record, while both v15 and legacy VM semantics remain equal.
 bash "$ROOT/tests/micro_fusion_test.sh"
 
+# R064 nested upvalues crossed parent/child scatter permutations used to map
+# a child capture to the wrong parent upvalue. Recheck the full handoff canary
+# on historical failure seeds (plus passing neighbors).
+if ! bash "$ROOT/tests/r064_seed_stability_test.sh"; then
+	echo "FAIL [r064-seed-stability] nested upvalue scatter regression"
+	fail=$((fail + 1)); failed+=("r064/seed-stability")
+fi
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

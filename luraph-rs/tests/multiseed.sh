@@ -50,6 +50,12 @@ for seed in $SEEDS; do
 		done
 	done
 done
+# R064 handoff canary is intentionally separate from tests/cases: it is a
+# 7KB nested-upvalue/vararg specimen and now sweeps the historical failure
+# seeds that the general corpus did not cover.
+if ! bash "$ROOT/tests/r064_seed_stability_test.sh"; then
+	fail=$((fail + 1))
+fi
 # ㊴: 激活门 (--bind-key) 已退役——绑定态种子扫描随之移除。
 
 echo "multiseed done: FAIL=$fail"

@@ -2,16 +2,17 @@
 
 > 日期：2026-10-07
 > 分支：`arena/01a038eb-luraph`
-> 基线提交：`1c14321`（superoperator 第一层融合）
-> 范围：对 7KB 本地语义样本做静态攻击、运行态插桩、API hook 与 seed 差分；不代表真实 Roblox executor 测试。
+> 起始基线：`1c14321`（superoperator 第一层融合）
+> 修复提交：本文对应的 `compiler.rs` nested-upvalue scatter descriptor remap
+> 范围：7KB 本地语义样本的静态攻击、运行态插桩、API hook 与 seed 差分；不代表真实 Roblox executor 测试。
 
 ## 1. 新鲜样本
 
 复用本地 7KB 语义 canary，生成新的 R064 v15 产物：
 
 - 源：`handoff/R064_7kb_src.lua`，7,179 字节。
-- 产物：`handoff/R064_7kb_target_r2.luau.lua`，`--preset v15 --dialect luau --seed 64075`，332,720 字节。
-- SHA-256：`f4e0505ef0506939ee8a6330d64155c355e6ff9b1e7c43eb307f38ad677bc498`。
+- 修复后产物：`handoff/R064_7kb_target_r2.luau.lua`，`--preset v15 --dialect luau --seed 64075`，332,466 字节。
+- SHA-256：`a04eee0c1aca28444f50988b255d7501268b6d254f98aafe623b02ad298a0450`。
 - 源与产物都通过 `luau-compile`；stdout 逐字一致。
 - 短名审计 5,940 个局部/参数/循环标识符，均不超过两字母；v15 结构指纹 24/32（结构相似度，不是解密率）。
 
@@ -29,46 +30,50 @@
 
 ## 3. 融合效果：临时白盒计数 A/B
 
-在 `/tmp` 的两份临时生成器中，对**同一解码点**在 `op,x,y` 解码后计数；一份取融合前父版本 `2edb768`，一份取融合后 `1c14321`。探针、源文件、seed (`64075`) 和 Luau 运行环境相同；探针没有进入仓库或正式产物。
+在 `/tmp` 的两份临时生成器中，对**同一解码点**在 `op,x,y` 解码后计数；两边都带本轮 upvalue 修复，一份使用融合前模板，一份使用融合后模板。源文件、seed (`64075`) 和 Luau 环境相同；探针没有进入仓库或正式产物。
 
 | 版本 | shard 函数调用数 | 解码微码记录数 | 结果 |
 |---|---:|---:|---|
-| 融合前 | 412,706 | 929,567 | 样本 stdout 与源一致 |
-| 融合后 | 412,706 | 701,915 | 样本 stdout 与源一致 |
+| 融合前模板 | 412,706 | 929,567 | 样本 stdout 与源一致 |
+| 融合后模板 | 412,706 | 701,915 | 样本 stdout 与源一致 |
 
-本样本的实测差值为 **-227,652 条（-24.49%）**；这比单看 10 类配方的 56.5% 静态减少率更接近整体效果。剩下约 70 万条已解码记录仍足以提供大量路径信息。此计数衡量的是 trace 长度，不等于语义恢复率；本轮没有声称由 trace 自动还原完整源码。
+本样本的实测差值为 **-227,652 条（-24.49%）**；这比单看 10 类配方的 56.5% 静态减少率更接近整体效果。剩下约 70 万条已解码记录仍足以提供大量路径信息。此计数衡量 trace 长度，不等于语义恢复率；本轮没有声称由 trace 自动还原完整源码。
 
 ## 4. 条件性动态 hook：`string.byte`
 
-用 Luau CLI 的 `setfenv` harness 给目标加载一份复制的 `string` 表，只把 `byte` 换成透明记录 wrapper，再运行 seed `64075` 产物：
+用 Luau CLI 的 `setfenv` harness 给目标加载一份复制的 `string` 表，只把 `byte` 换成透明记录 wrapper，再运行修复后 seed `64075` 产物：
 
 - 程序仍正常输出，过滤 hook 统计行后与源码 stdout 完全一致；
-- wrapper 观察到 **2,673,372 次**调用、**397 个**不同字符串参数；最大字符串参数 **15,442 字节**；
-- 该最大参数为 15,442 字节的可打印字符串（85 种字节值，Shannon 熵 6.14 bit/byte），且不作为相同子串直接出现于产物文本中。
+- wrapper 观察到 **2,673,402 次**调用、**397 个**不同字符串参数；最大字符串参数 **15,442 字节**；
+- 最大参数为可打印字符串（85 种字节值，Shannon 熵 6.14 bit/byte），且不作为相同子串直接出现于产物文本中。
 
 这是一个真实的运行态观察面：控制加载环境的分析者可以记录目标实际交给 `string.byte` 的数据。证据**不等于**这些字符串都是明文源码，也不证明一个 string hook 就能还原所有语义；但它确认了静态封存之外仍有高带宽的运行态数据入口。实验使用本地 Luau `setfenv` 模拟，不等价于真实 Roblox executor 的能力结论。
 
-## 5. seed 稳定性：发现未修复的功能风险
+## 5. 已修复：seed 相关嵌套闭包 upvalue 错位
 
-为检查随机化构建的可运行性，用同一份 7KB 样本比较了融合前基线（从 `2edb768` 提取的 `template.rs`）与融合后版本，在 32 个指定 seed 下生成并运行目标。两版的失败集合**完全相同**，说明这不是本次 fusion 引入的回归，但当前产品仍有可复现的 seed 相关正确性风险。
+### 5.1 发现与根因
 
-失败 seed（两版均为）：
+第二轮最初在融合前后版本的 32 个指定 seed 上都观察到 17 个 seed 报 `attempt to call a number value`，失败集合一致。动态探针在 seed `64067` 捕获到：R064 的 `make_accumulator` 内层 vararg closure 在 VM `Call`（proto 4、pc 49）试图把数值 `1000003`（源常量 `MOD`）当成函数调用；该位置按源码应调用捕获的 `fold_text`。legacy `--vm`（不做 scatter）相同 seed 正常，指向 v15 per-function upvalue scatter，而非融合逻辑。
 
-```text
-7, 42, 999, 31337, 4242, 12345, 65535, 123456, 1234567,
-222222, 555555, 888888, 10000000, 12345678, 64065, 64076, 64077
-```
+根因是时序错位：父函数的子闭包 descriptor 在父 `scatter_operands` 完成之前，按父 upvalue 的编译期原序写入 `CellKind::Up(u)`；之后父函数又随机重排 `upsrc`。部分 seed 下，子闭包持有的旧索引指向另一个父 upvalue（本样本中表现为 `fold_text` 被错映射到 `MOD`）。
 
-这些生成物可通过生成步骤，但在 Luau 运行时报 `attempt to call a number value`；本轮矩阵中其余 15 个 seed 正常输出。**32 个是定向样本，不可用来估算全 seed 失败率。**官方 `multiseed.sh` 的语料没有包含这份 handoff 7KB 样本，所以其 `FAIL=0` 不覆盖这个发现。
+### 5.2 修复
 
-该问题属于功能/seed 稳定性，而非静态脱壳攻击；根因尚未定位。本轮没有直接改 VM 逻辑，以免在缺少根因前扩大回归面。建议下一步先用失败 seed 的 VM 调用点与 proto/operand trace 定位错误，再把至少一个已失败 seed 加入专门回归，修复后复跑融合前/后种子差分和全矩阵。
+`compiler.rs` 现在在开始编译函数体、递归编译子闭包之前，先派生该函数的 `old index -> runtime index` upvalue permutation。子 closure 的 `CellKind::Up` descriptor 经父 permutation 映射；`scatter_operands` 应用同一预计算映射。permutation 使用按 build/function 派生的独立 PRNG；scatter 阶段仍消耗原主 PRNG 的等量 shuffle draws，以避免改变无关布局随机流。新增单测验证 permutation 双射、determinism，并新增 `r064_seed_stability_test.sh` 接入 `run_tests.sh` 与 `multiseed.sh`。
 
-## 6. 结论与当前风险级别
+### 5.3 修复验证
 
-1. **静态面**：本轮攻击脚本 S1–S5 均抵抗；H5-P0 描述符封存仍有效。
-2. **动态面**：superoperator 在该样本上将记录数降低 24.49%，但 trace 与 `string.byte` hook 仍能观察运行态路径/数据。纯客户端代码无法对拥有同进程插桩权的攻击者保证保密。
-3. **正确性面**：存在融合前已出现的 seed 相关运行错误，不能把上一轮官方矩阵全绿解释为任意 seed 都可靠。
-4. **信任边界**：服务端密钥、授权及经济/反作弊决策必须留在服务端；客户端混淆只提高逆向成本。
-5. **回归状态**：`cargo test` 35 passed / 0 failed / 1 ignored；`run_tests.sh` 169/169；`run_presets.sh` 370/370；`multiseed.sh` `FAIL=0`；H5-P0 audit PASS；D12 合成计时触发/干净时钟检查 PASS。`defense_audit.sh` 为 PASS 20 / FAIL 1，唯一 D3 是结构指纹 23/32（结构相似度口径），不是安全指纹/运行等价失败。
+- 修复后当前 release 对 42 个定向 seed（含此前失败 seed）扫描：全部生成成功、Luau 编译通过、stdout 与源码逐字一致（FAIL=0）。
+- 集成回归 `r064_seed_stability_test.sh` 固定覆盖 24 个历史失败 seed 与相邻/官方 seed：PASS。
+- 修复前记录的 17 个失败 seed 均在修复后的集成 sweep 中通过；失败集合不再重现。
+- 相同 seed 的 v15 产物仍确定；legacy 路径和其他 VM 用例由官方矩阵覆盖。
 
-真实 Roblox executor 未在本地运行。所有 hook 结论限于这次本地 Luau harness；未发现远程执行或服务器权限漏洞。
+## 6. 回归总览与剩余边界
+
+- `cargo test`：36 passed、0 failed、1 ignored；`run_tests.sh`：169/169；`run_presets.sh`：370/370；`multiseed.sh`：`FAIL=0`，并包含 R064 专项 24-seed sweep。
+- H2/H3、H4 loader、H4-5/H6/H7/H8、H5-P0、R061 bypass audits：PASS。
+- `defense_audit.sh`：PASS 20 / FAIL 1；唯一 D3 是结构指纹 23/32（结构相似度口径）；D12 计时守卫接线、触发、干净时钟与误报抽查通过。
+- 同进程 `string.byte` hook 与已解码微码 trace 仍可观察运行态数据/路径；fusion 提高成本，不提供客户端密码学保密。
+- 高价值密钥、授权、经济与反作弊决策仍应由服务端持有。
+
+真实 Roblox executor 未在本地运行。所有 hook 结论限于这次本地 Luau harness；本轮没有发现远程执行或服务器权限漏洞。

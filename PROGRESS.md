@@ -1,6 +1,6 @@
 # 项目进度（PROGRESS）
 
-> 2026-10-07 R064 第二轮深度自检：新增 7KB 产物 `handoff/R064_7kb_target_r2.luau.lua`（seed 64075；stdout 与源一致）。静态攻击 S1–S5 均抵抗；同点白盒 A/B trace 929,567→701,915（-24.49%）；Luau `string.byte` hook 捕获 2,673,372 次调用、397 个不同字符串参数（最长 15,442B），确认运行态观察边界。32 个指定 seed 的融合前后对照均有相同 17 个运行失败（`attempt to call a number value`），是既存 R064 样本稳定性问题，待定位；不归因于融合。完整证据见 `docs/r064-deep-self-audit-r2.md`。
+> 2026-10-07 R064 第二轮审计与修复：确认同进程 trace 残余（R064 seed64075 临时同点 A/B 929,567→701,915，-24.49%；string.byte hook 2,673,402 次调用），并定位 nested closure upvalue scatter 错位：child `CellKind::Up` 沿用 parent 置换前索引，曾将 `fold_text` 映为 MOD。compiler 现先计算每函数 upvalue permutation，再映射 child descriptors；新增 `r064_seed_stability_test.sh`，24 个失败/相邻 seed PASS；42-seed R064 sweep 0 失败。静态 S1–S5 通过；D3 仍为结构分数 23/32。详情 `docs/r064-deep-self-audit-r2.md`。
 >
 > 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
 > （真实 Luraph v15.0 产物 171.7KB）做全面深度破解。穿透全部旧墙：
