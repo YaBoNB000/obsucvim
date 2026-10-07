@@ -170,11 +170,11 @@ VM 模板的分派是巨型 `if/elseif` 链，**每个分支声明同名局部**
 
 ## 6. 调试工具箱（本次实战沉淀）
 
-- `LURAPH_VM_RAW=1`：输出未混淆的 VM 容器（隔离"VM 语义 bug" vs
+- `OBSUCVIM_VM_RAW=1`：输出未混淆的 VM 容器（隔离"VM 语义 bug" vs
   "混淆管线 bug"的第一手段）。
-- `LURAPH_VM_TSRC=1`：dump 生成的解释器模板源码到 /tmp/vm_tsrc.lua
+- `OBSUCVIM_VM_TSRC=1`：dump 生成的解释器模板源码到 /tmp/vm_tsrc.lua
   （查 format!/花括号转义问题）。
-- `LURAPH_VM_DBG=1`：compile_function 时打印 direct_up/nested_up/
+- `OBSUCVIM_VM_DBG=1`：compile_function 时打印 direct_up/nested_up/
   作用域快照（upvalue 描述符问题）。
 - **Lua 反汇编器**（/tmp/disasm.lua，按 VM 文件 OC 表反查）：
   `lua51 disasm.lua out.lua [函数序号]` 打印 nregs/nups/upsrc/常量池/

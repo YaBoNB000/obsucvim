@@ -2,7 +2,7 @@
 
 > 日期：2026-10-06
 >
-> 适用范围：`luraph-rs --preset v15` 纯离线 Luau
+> 适用范围：`obsucvim --preset v15` 纯离线 Luau
 >
 > 状态：**P0 已闭环；静态 47 组 descriptor table 已退役；R064 已将所有多步 handler recipe 收为 ordered superoperator；同进程 trace 仍可观察**
 
@@ -93,7 +93,7 @@ lane。修改 carrier 不会只影响一个无关密文表。
 新增：
 
 ```bash
-python3 luraph-rs/tests/h5_p0_micro_audit.py
+python3 obsucvim/tests/h5_p0_micro_audit.py
 ```
 
 固定检查：

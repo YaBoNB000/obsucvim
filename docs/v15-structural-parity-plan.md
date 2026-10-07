@@ -8,7 +8,7 @@
 >
 > 样本：`origin/main:luraph15.txt` ≡ `samples/luraph15.txt`（171 753 字节，已逐字节核对）
 > 头部：`-- This file was protected using Luraph Obfuscator v15.0 [https://lura.ph/]`
-> 对照输出：本仓库 `--preset vm`（`luraph-rs/examples/basics.vm.5.1.lua`）
+> 对照输出：本仓库 `--preset vm`（`obsucvim/examples/basics.vm.5.1.lua`）
 > 日期：2026-08-25（**同日二轮详读**：全文深度脚本复测，§0.1 数字全部订正、
 > 新增 §0.2 十二条指纹与 §1.1 架构修正，P 阶段相应更新）
 > 目的：让**我们发出的脚本在结构指纹上与该 v15 样本同族**，而不是逐字节复制这一份（v15 每构建都换槽号/常数/树形，逐字节克隆既不可能也没有产品意义）。
@@ -179,7 +179,7 @@ return setmetatable({
 
 ### P0 — 结构契约与对照脚手架 ✅ 完成（2026-08-25）
 
-1. 把 §0.1 + §0.2 做成 `luraph-rs/tests/v15_fingerprint.py`（或 shell）：
+1. 把 §0.1 + §0.2 做成 `obsucvim/tests/v15_fingerprint.py`（或 shell）：
    对一份输出数 `=function(`、`continue`、`setmetatable(`、`return setmetatable`、
    `RC=`/`pC=`/`XC=`、`buffer.`、`return %d,`、while 个数、字面量个数、行数、
    结尾分号、`=if `、`and %d+ or %d+`、`-128`、复合赋值、同名参数遮蔽、
@@ -195,7 +195,7 @@ return setmetatable({
 4. 新增方言/预设：`--preset v15` + `--dialect luau`（硬性）；5.1 直接报错说明该档需要 buffer。
 
 **验收**：脚本对样本全绿、对现 `vm` 全红；CLI 开关存在。
-**✅ 实测（2026-08-25）**：`luraph-rs/tests/v15_fingerprint.py` 落地——
+**✅ 实测（2026-08-25）**：`obsucvim/tests/v15_fingerprint.py` 落地——
 样本 **32/32 PASS**；现 `--preset vm` 产物 **1/32**（仅 F10 字面量数误入区间，
 无结构对齐）；`--preset v15` CLI 落地（P0 = `vm` 管线 stub，发射逻辑待
 P1 换代；5.1 目标报错退出）。官方矩阵 204/204 + 预设矩阵 405/405 仍全绿。
@@ -460,13 +460,13 @@ LCG 槽存在且静态无调用方。
 
 | 文件 | 角色 |
 |---|---|
-| `luraph-rs/src/vmgen/template.rs` | **重写发射形态**（模块表 / 引导管线 handler + 执行循环内联 / 帧运行器） |
-| `luraph-rs/src/vmgen/isa.rs` | 状态 ID 分配、SoA 仍用；加 LCG 常数、枢纽 ID |
-| `luraph-rs/src/vmgen/compiler.rs` | 跳转改为「状态 ID」而非 pc；闭包改为「造帧描述符」 |
-| `luraph-rs/src/main.rs` | `--preset v15`：关 body/antidbg 时钟、强制 luau、走新模板 |
-| `luraph-rs/src/body.rs` / `antidbg.rs` | v15 档跳过或改内嵌 |
-| `luraph-rs/tests/v15_fingerprint.py` | 结构指纹 |
-| `luraph-rs/tests/run_presets.sh` | 加入 v15（luau only） |
+| `obsucvim/src/vmgen/template.rs` | **重写发射形态**（模块表 / 引导管线 handler + 执行循环内联 / 帧运行器） |
+| `obsucvim/src/vmgen/isa.rs` | 状态 ID 分配、SoA 仍用；加 LCG 常数、枢纽 ID |
+| `obsucvim/src/vmgen/compiler.rs` | 跳转改为「状态 ID」而非 pc；闭包改为「造帧描述符」 |
+| `obsucvim/src/main.rs` | `--preset v15`：关 body/antidbg 时钟、强制 luau、走新模板 |
+| `obsucvim/src/body.rs` / `antidbg.rs` | v15 档跳过或改内嵌 |
+| `obsucvim/tests/v15_fingerprint.py` | 结构指纹 |
+| `obsucvim/tests/run_presets.sh` | 加入 v15（luau only） |
 | `docs/luraph15-analysis.md` | 每阶段把「我方状态」从设计改成 ✅ 实现 |
 
 旧 `vm` 模板不要删，用 `generate_legacy` / `generate_v15` 分叉，避免 5.1 矩阵陪葬。

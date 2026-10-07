@@ -58,12 +58,12 @@
 
 ## 验证闸
 
-- `python3 luraph-rs/tests/h2_diff_audit.py`：确定性、跨 seed 差异、五字段排列、参数名/序、wire/链系数、双构建运行等价。
-- `python3 luraph-rs/tests/redteam_probe_regression.py`：`Sd/return/Tsn/pQ` 四钩抓不到 `proto`/密钥。
-- `python3 luraph-rs/tests/h3_noise_audit.py`：噪声确定性/跨 seed 差异、NOP/活噪声记账、真噪声高低域重叠、nil/decoy 随机、双 seed 运行等价。
-- `python3 luraph-rs/tests/h7_decentralization_audit.py`：Closure metadata/child token、Call/Return/Vararg 方言、numeric/string constant 流分离及双 seed 语义等价。
-- `python3 luraph-rs/tests/h8_poison_audit.py`：BSS/RT/HBOOT 多 lane fan-out、帧级延迟、固定 oracle 消失及函数/构建 signature 分离。
-- `python3 luraph-rs/tests/h5_p0_micro_audit.py`：packed micro carrier、SALT/CHQ reseal、旧 descriptor extractor 零命中及双 seed 等价。
-- `python3 luraph-rs/tests/r061_bypass_audit.py`：OS/OS2 条件旁路退役、双 per-prototype lane、六面 fan-out 与双 seed 等价。
-- `bash luraph-rs/tests/run_tests.sh`：全量语言/VM 回归必须全绿。
+- `python3 obsucvim/tests/h2_diff_audit.py`：确定性、跨 seed 差异、五字段排列、参数名/序、wire/链系数、双构建运行等价。
+- `python3 obsucvim/tests/redteam_probe_regression.py`：`Sd/return/Tsn/pQ` 四钩抓不到 `proto`/密钥。
+- `python3 obsucvim/tests/h3_noise_audit.py`：噪声确定性/跨 seed 差异、NOP/活噪声记账、真噪声高低域重叠、nil/decoy 随机、双 seed 运行等价。
+- `python3 obsucvim/tests/h7_decentralization_audit.py`：Closure metadata/child token、Call/Return/Vararg 方言、numeric/string constant 流分离及双 seed 语义等价。
+- `python3 obsucvim/tests/h8_poison_audit.py`：BSS/RT/HBOOT 多 lane fan-out、帧级延迟、固定 oracle 消失及函数/构建 signature 分离。
+- `python3 obsucvim/tests/h5_p0_micro_audit.py`：packed micro carrier、SALT/CHQ reseal、旧 descriptor extractor 零命中及双 seed 等价。
+- `python3 obsucvim/tests/r061_bypass_audit.py`：OS/OS2 条件旁路退役、双 per-prototype lane、六面 fan-out 与双 seed 等价。
+- `bash obsucvim/tests/run_tests.sh`：全量语言/VM 回归必须全绿。
 - H2 尚未因本页状态表而宣告“12 项全部满规格”；其中 🟡 项仍需后续加深。H3 首轮六项已完成，但仍受完整动态数据流分析这一诚实边界约束。

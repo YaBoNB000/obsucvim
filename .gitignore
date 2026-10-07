@@ -3,9 +3,9 @@
 tools/
 .tools/
 # build artifacts
-luraph-rs/target/
+obsucvim/target/
 # ...but keep the luau CLI main sources used by the rebuild
-!luraph-rs/tools/
+!obsucvim/tools/
 __pycache__/
 
 # 红队战役工件: 生成副本/日志/样本副本不入库(脚本与提取证据入库)

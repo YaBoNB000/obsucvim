@@ -1,6 +1,6 @@
 # 项目进度（PROGRESS）
 
-> 2026-10-07 R064 动态 trace 继续缓解：在第一层 10 类 safe fused ops 上，现将 23 种多 primitive handler recipe 按原序内联为单条 per-shard superoperator。R064 seed64075 同点 A/B 解码记录 929,567→701,915→412,706（最终 -55.60%，每次 shard invocation 一条）；R2 artifact 更新为 340,895B。复制 string 表 setfenv hook 的 byte/sub/char=0/0/0。另已修复 nested closure upvalue scatter seed 错位；R064 24-seed regression、42 个定向 seed、连续 1..128、另抽 128 高范围 seeds 全通过。回归 cargo test 39 passed/1 ignored、run_tests169、presets370、multiseed0；S1–S5通过，D3仍23/32结构分。绝对同进程 trace 不可由客户端纯Lua保证阻止；详情 `docs/r064-deep-self-audit-r2.md`。新增 R065 最小 canary：源 `local a = "bysuda"`，seed65065 产物见 `handoff/`（说明 `handoff/README-R065.md`）。
+> 2026-10-07 产品改名 obsucvim：crate/二进制/工程目录（`luraph-rs/`→`obsucvim/`）与 `LURAPH_*`→`OBSUCVIM_*` 全切换，全仓库脚本/文档引用同步；原 Luraph v15 指代与仓库名不动。改名零行为变化（R065 seed65065 重生成逐字节一致）；回归 cargo test 39/1 ignored、run_tests169、presets370、multiseed0、defense_audit 20/1（唯一 D3 结构分）、S1–S5通过。另修复 implementation-plan.md 一个历史 ㉙ 行在上轮中断时损坏的字节（已按原文恢复）。
 >
 > 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`
 > （真实 Luraph v15.0 产物 171.7KB）做全面深度破解。穿透全部旧墙：
@@ -381,7 +381,7 @@
      随模块增长持续补充），任何一步不通过 = 该模块改动未完成
   4. **同步更新所有相关 md**（用户 2026-08-23 强调）：
      `docs/implementation-plan.md`（§1 状态列 + §2 进度表 + §3 里程碑 + 更新日志）+
-     `PROGRESS.md` + `HANDOFF.md`（如有变化）+ `luraph-rs/examples/README.md`
+     `PROGRESS.md` + `HANDOFF.md`（如有变化）+ `obsucvim/examples/README.md`
   5. **commit + push 到 GitHub**（历史分叉时先 merge 远端，勿 force push）
      —— 不更新 md / 不推 GitHub = 该模块改动未完成
 - 用户提供的 **Luraph 15 混淆脚本**（`samples/luraph15.txt`，从 origin/main 拉取）：
@@ -459,15 +459,15 @@
 
 | 模块 | 文件 | 说明 |
 |---|---|---|
-| AST | `luraph-rs/src/ast.rs` | Expr/Stmt/Block/FuncDef；BinOp 含 Idiv（`//`） |
-| 词法 | `luraph-rs/src/lexer.rs` | 双方言；全部转义 + 方言差异（`\x`/未知转义）；11 单测 |
-| 语法 | `luraph-rs/src/parser.rs` | Pratt 优先级（与 lparser.c 一致）；注解剥离；插值/复合/`//` 去糖 |
-| 作用域 | `luraph-rs/src/symtab.rs` | 可见性规则 / local function 自引用 / for 变量作用域 |
-| 打印 | `luraph-rs/src/printer.rs` | 优先级括号（含 Ctx::Base 规则）/ 字节精确字符串 / 浮点保真 |
-| PRNG | `luraph-rs/src/rng.rs` | Park-Miller（pass 阶段用） |
-| CLI | `luraph-rs/src/main.rs` | `--dialect 5.1\|luau`、`-o` |
-| 语料 | `luraph-rs/tests/cases/*.lua` | 17 个文件（12 类常用语法 + luau_* 专属 5 个） |
-| 矩阵 | `luraph-rs/tests/run_tests.sh` | **62 项检查全绿**（语料 × 方言 × 运行对比/跨跑/luac） |
+| AST | `obsucvim/src/ast.rs` | Expr/Stmt/Block/FuncDef；BinOp 含 Idiv（`//`） |
+| 词法 | `obsucvim/src/lexer.rs` | 双方言；全部转义 + 方言差异（`\x`/未知转义）；11 单测 |
+| 语法 | `obsucvim/src/parser.rs` | Pratt 优先级（与 lparser.c 一致）；注解剥离；插值/复合/`//` 去糖 |
+| 作用域 | `obsucvim/src/symtab.rs` | 可见性规则 / local function 自引用 / for 变量作用域 |
+| 打印 | `obsucvim/src/printer.rs` | 优先级括号（含 Ctx::Base 规则）/ 字节精确字符串 / 浮点保真 |
+| PRNG | `obsucvim/src/rng.rs` | Park-Miller（pass 阶段用） |
+| CLI | `obsucvim/src/main.rs` | `--dialect 5.1\|luau`、`-o` |
+| 语料 | `obsucvim/tests/cases/*.lua` | 17 个文件（12 类常用语法 + luau_* 专属 5 个） |
+| 矩阵 | `obsucvim/tests/run_tests.sh` | **62 项检查全绿**（语料 × 方言 × 运行对比/跨跑/luac） |
 
 **M0 验收**：`cargo test` 11/11 + 矩阵 62/62 —— round-trip（输入→AST→输出）
 在双解释器上语义等价。
@@ -482,9 +482,9 @@
 
 | 模块 | 文件 | 说明 |
 |---|---|---|
-| L1 名称混淆 | `luraph-rs/src/mangle.rs` | 局部/参数/循环变量/local function 名 → 随机名（短/中/长混合；避开关键字+程序全局名+互相碰撞）；**隐式 `self` 保持固定名**（`:m()` 语法绑定固定名 `self`） |
-| L2 字符串加密 | `luraph-rs/src/strings.rs` | 全部字符串 → `dec(chunk1,chunk2,chunk3)` 运行时解密；加性密钥流 `enc=(b+key[i%24]+i)%256`（5.1 无位运算安全，双方言 `%` 均 floor——实测）；密钥 3 段拆分嵌入+运行时展开；解密器/密钥表名随机化 |
-| 混淆示例 | `luraph-rs/examples/*.lua` | **17 个语料 × 对应方言的混淆输出**（`tests/gen_examples.sh` 重新生成） |
+| L1 名称混淆 | `obsucvim/src/mangle.rs` | 局部/参数/循环变量/local function 名 → 随机名（短/中/长混合；避开关键字+程序全局名+互相碰撞）；**隐式 `self` 保持固定名**（`:m()` 语法绑定固定名 `self`） |
+| L2 字符串加密 | `obsucvim/src/strings.rs` | 全部字符串 → `dec(chunk1,chunk2,chunk3)` 运行时解密；加性密钥流 `enc=(b+key[i%24]+i)%256`（5.1 无位运算安全，双方言 `%` 均 floor——实测）；密钥 3 段拆分嵌入+运行时展开；解密器/密钥表名随机化 |
+| 混淆示例 | `obsucvim/examples/*.lua` | **17 个语料 × 对应方言的混淆输出**（`tests/gen_examples.sh` 重新生成） |
 
 **M1 验收**：矩阵 62/62 全绿（混淆后输出在双解释器上与原代码输出一致）。
 
@@ -501,7 +501,7 @@
 
 | 模块 | 文件 | 说明 |
 |---|---|---|
-| L1 minify | `luraph-rs/src/minify.rs` | 输出层 **token 感知单行压缩**：用目标方言词法器重 lex 打印器输出，再按最小空白规则重发射（默认开，`--no-minify` 保留缩进形态）。只在真正的危险边界插空格：① 标识符/关键字/数字相邻（`localx`/`elseif`/`1end`）② `-`+`-`（`a - -b` 会黏成 `--` 注释吞掉整行）③ `..` 与数字或 `.` 相邻（`1..2` 会被当坏浮点，Luau 直接拒绝）。字符串按 `print_string_bytes` 字节精确重编码。全语料输出现为单行 Luraph 式紧凑形态 |
+| L1 minify | `obsucvim/src/minify.rs` | 输出层 **token 感知单行压缩**：用目标方言词法器重 lex 打印器输出，再按最小空白规则重发射（默认开，`--no-minify` 保留缩进形态）。只在真正的危险边界插空格：① 标识符/关键字/数字相邻（`localx`/`elseif`/`1end`）② `-`+`-`（`a - -b` 会黏成 `--` 注释吞掉整行）③ `..` 与数字或 `.` 相邻（`1..2` 会被当坏浮点，Luau 直接拒绝）。字符串按 `print_string_bytes` 字节精确重编码。全语料输出现为单行 Luraph 式紧凑形态 |
 
 **minify 验收**：单测 19/19（token 序列不变、`--`/`..` 边界、幂等性、
 转义回环）+ 矩阵 68/68（minify 默认开）+ `--no-flatten` 全语料 +
@@ -512,9 +512,9 @@
 
 | 模块 | 文件 | 说明 |
 |---|---|---|
-| L3 扁平化 | `luraph-rs/src/flatten.rs` | 函数级 CFG 状态机：块图（Join/Cond/Stmt/Return/循环节点）→ 随机状态 ID + 乱序 if/elseif 分派。**循环=嵌套子状态机**：循环体是独立分派，循环体局部变量（含 for 循环变量）声明在 per-pass 作用域（每轮重新 `local`）→ 闭包捕获循环变量每轮 fresh，与原生 for 语义一致。break/continue 为纯图边（continue→体尾：for/while=增量+重判条件=Luau 语义；repeat 的 until 检查块在内部分派内）。for-numeric 原生顺序：区间检查在体前（空区间 0 次迭代）、变量每轮 fresh、增量在体后。作用域安全：被跨分支/跨闭包/循环体引用的 local 提升到机器顶部（名字与全局名不相撞 → 无遮蔽） |
-| L3 junk | `luraph-rs/src/junk.rs` | 无副作用算术垃圾块（只碰新局部变量）+ 恒真透明谓词 if；修复两个既有 bug：跨作用域引用 c、return 后注入 |
-| desugar | `luraph-rs/src/desugar.rs` | **已退出流水线**（存档）：flatten 原生处理所有循环，无需 for→while 去糖（旧去糖还有 continue 语义缺陷：for 的 continue 会重跑循环变量赋值） |
+| L3 扁平化 | `obsucvim/src/flatten.rs` | 函数级 CFG 状态机：块图（Join/Cond/Stmt/Return/循环节点）→ 随机状态 ID + 乱序 if/elseif 分派。**循环=嵌套子状态机**：循环体是独立分派，循环体局部变量（含 for 循环变量）声明在 per-pass 作用域（每轮重新 `local`）→ 闭包捕获循环变量每轮 fresh，与原生 for 语义一致。break/continue 为纯图边（continue→体尾：for/while=增量+重判条件=Luau 语义；repeat 的 until 检查块在内部分派内）。for-numeric 原生顺序：区间检查在体前（空区间 0 次迭代）、变量每轮 fresh、增量在体后。作用域安全：被跨分支/跨闭包/循环体引用的 local 提升到机器顶部（名字与全局名不相撞 → 无遮蔽） |
+| L3 junk | `obsucvim/src/junk.rs` | 无副作用算术垃圾块（只碰新局部变量）+ 恒真透明谓词 if；修复两个既有 bug：跨作用域引用 c、return 后注入 |
+| desugar | `obsucvim/src/desugar.rs` | **已退出流水线**（存档）：flatten 原生处理所有循环，无需 for→while 去糖（旧去糖还有 continue 语义缺陷：for 的 continue 会重跑循环变量赋值） |
 
 **M2 验收**：矩阵 68/68 全绿（原 62 项 + `loops.lua` 共享语料 3 项 +
 `luau_loops.lua` Luau 语料 2 项）；`--no-flatten` 路径全语料通过；
@@ -534,7 +534,7 @@ for、nested break、repeat+until 局部变量、全局同名遮蔽均有语料�
 
 | 模块 | 文件 | 说明 |
 |---|---|---|
-| L4 数值 | `luraph-rs/src/numbers.rs` | 数字字面量重写：整数 → 2~4 个带符号随机项之和/差（小值）或 `a*b+c` 积式（大值，c 小残差）；0/±1 保留；浮点仅恒等包裹（`0+x`/`x+0`/`x*1`/`x/1`，禁止拆分——改 IEEE 值）。状态机 ID、索引、运算常量全部覆盖。CLI：`--no-numbers` |
+| L4 数值 | `obsucvim/src/numbers.rs` | 数字字面量重写：整数 → 2~4 个带符号随机项之和/差（小值）或 `a*b+c` 积式（大值，c 小残差）；0/±1 保留；浮点仅恒等包裹（`0+x`/`x+0`/`x*1`/`x/1`，禁止拆分——改 IEEE 值）。状态机 ID、索引、运算常量全部覆盖。CLI：`--no-numbers` |
 
 **numbers 验收**：单测 23/23（值精确、项非平凡、原值不可见、2000 种子
 小值压力）+ 矩阵 68/68 全绿。顺带修复打印机 Idiv 去糖缺括号既有 bug
@@ -544,7 +544,7 @@ for、nested break、repeat+until 局部变量、全局同名遮蔽均有语料�
 
 | 模块 | 文件 | 说明 |
 |---|---|---|
-| L5 整体加密 | `luraph-rs/src/body.rs` | 流水线最外层：打印当前程序（minify 紧凑形态）→ 全新 24B 密钥加性加密（复用 L2 密钥流，新密钥）→ 密文切 3~5 块 Str 字面量 → 复用 L2 加载器（密钥 3 段+字节表+DEC 解密函数）→ 最终 `loadstring(DEC(C1..CN))()`。输出只剩容器：无任何程序结构/明文，只有密文字符串 |
+| L5 整体加密 | `obsucvim/src/body.rs` | 流水线最外层：打印当前程序（minify 紧凑形态）→ 全新 24B 密钥加性加密（复用 L2 密钥流，新密钥）→ 密文切 3~5 块 Str 字面量 → 复用 L2 加载器（密钥 3 段+字节表+DEC 解密函数）→ 最终 `loadstring(DEC(C1..CN))()`。输出只剩容器：无任何程序结构/明文，只有密文字符串 |
 
 **body 验收**：矩阵 68/68 全绿（默认开，双解释器）；容器形态人工
 确认（仅密钥+解密器+密文+一个 loadstring 调用）；loadstring 进保留名
@@ -554,7 +554,7 @@ for、nested break、repeat+until 局部变量、全局同名遮蔽均有语料�
 
 | 模块 | 文件 | 说明 |
 |---|---|---|
-| L7 反篡改 | `luraph-rs/src/antidbg.rs` | 容器层四重防御：① 金丝雀自检（纯函数 `((a*M)+C)%P`，执行前校验）② 容器校验和（密文字节和 mod 随机质数 vs 构建期期望值，解密前拦截）③ 错误重写（pcall 拦截 + 行号解析双方言格式 + 随机偏移重映射 + level 0 重抛）④ 时间陷阱（全程 os.clock，5~15s 随机阈值）。陷阱全部静默死循环（无消息/无退出码提示） |
+| L7 反篡改 | `obsucvim/src/antidbg.rs` | 容器层四重防御：① 金丝雀自检（纯函数 `((a*M)+C)%P`，执行前校验）② 容器校验和（密文字节和 mod 随机质数 vs 构建期期望值，解密前拦截）③ 错误重写（pcall 拦截 + 行号解析双方言格式 + 随机偏移重映射 + level 0 重抛）④ 时间陷阱（全程 os.clock，5~15s 随机阈值）。陷阱全部静默死循环（无消息/无退出码提示） |
 
 **antidbg 验收**：矩阵 68/68 全绿（L1+L2+L3+L4+L5+L7 全开默认）；
 专项：篡改密文字节→挂起 ✓、篡改金丝雀→挂起 ✓、未捕获错误行号
@@ -658,7 +658,7 @@ multival/errors/bigtable/control/luau_vm），直接暴露并修复 **9 类真 b
 | 二轮详读样本 | 自研块级解析器全文复测；`docs/v15-structural-parity-plan.md` 订正 5 处架构误判（iL=mul32 非分发器 / 执行内联在 [18]/[73] / LCG 静态零调用=诱饵 / 真实密钥一次式 / cell `{[4]=bank,[7]=slot}`）+ 黄金数订正（227 字段 / 73 槽 / 28 字面量 / 3 行文件） |
 | 新增指纹 | F21–F32：命名族、if 表达式、融合条件返回、复合赋值、参数遮蔽、模块表自变异、字节码自修改、诱饵代码、不透明算术、cell 布局、元组槽 makefn、初始化器族 |
 | **路线拍板** | **✅ 路线 A**（Roblox/Luau 克隆档 `--preset v15`，弃 5.1；现有 `vm` 预设不动） |
-| P0 脚手架 | `luraph-rs/tests/v15_fingerprint.py`：样本 **32/32 PASS**，现 `--preset vm` 产物 **1/32**（防假通过 ✓）；`--preset v15` CLI（Luau 门控、5.1 报错；P0 stub ≡ vm 管线） |
+| P0 脚手架 | `obsucvim/tests/v15_fingerprint.py`：样本 **32/32 PASS**，现 `--preset vm` 产物 **1/32**（防假通过 ✓）；`--preset v15` CLI（Luau 门控、5.1 报错；P0 stub ≡ vm 管线） |
 
 **P0 验收**：指纹脚本样本全绿 + 现产物全红 + CLI 开关存在；官方矩阵 204/204 + 预设矩阵 405/405 仍全绿。
 
@@ -1080,7 +1080,7 @@ OCt 掩码、NOPA 和，从加性/仿射/锚定三配方随机抽取，锚定式
 **⑩-2 脚手架侧**（`v15.rs`）——ks 种子拆两半存随机模块槽、生成器
 首次调用装配并抹标记（R001 的 `[22]=…` 形态消失）；LCG m/c 改两项
 和（`(m*x+c)` 定形三连消失）；bm0/bc0 拆 4 槽、分块 handler 入口装配。
-**⑩-3 门禁**——`LURAPH_KEY_MANIFEST` 落盘钥匙 + `tests/
+**⑩-3 门禁**——`OBSUCVIM_KEY_MANIFEST` 落盘钥匙 + `tests/
 key_literal_check.py` 扫描裸字面量残留（6 案例×5 种子 0 泄漏）。
 附带修复：LCG 乘数上限 2²⁵（double 精度，越限致 4/5 种子静默错码）；
 #hqi 锚长×3（三元组展平，曾致 2/5 种子启动崩溃）；coded_name 派生名
@@ -1789,7 +1789,7 @@ luraph/
 │   ├── make_trace.py           # 探针注入生成器
 │   ├── run_trace.lua / run1.lua# 动态运行包装器
 │   └── polyfill.lua            # buffer/Vector3 polyfill（buffer 部分因 CLI 内建而未用上）
-├── luraph-rs/                  # ★ Rust 混淆器（M5 收官，矩阵 204/204 全绿）
+├── obsucvim/                  # ★ Rust 混淆器（M5 收官，矩阵 204/204 全绿）
 │   ├── Cargo.toml              #   std-only 零依赖
 │   ├── src/
 │   │   ├── main.rs             #   CLI（--dialect/-o/--seed/--vm +
@@ -1819,7 +1819,7 @@ luraph/
 │   │   └── gen_examples.sh     #   生成混淆示例
 │   └── tools/
 │       └── luau-cli-mains/     #   重建 .tools 的 luau/luau-compile 自写 main（权威副本）
-├── examples/（在 luraph-rs/examples/）
+├── examples/（在 obsucvim/examples/）
 │   └── *.5.1.lua / *.luau.lua / *.vm.5.1.lua
 │                             # ★ 所有常用语法的混淆示例（对照 tests/cases/）
 └── lph/                        # 早期 Lua 参考实现（已被 Rust 取代，仅存档）

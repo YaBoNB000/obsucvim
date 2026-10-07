@@ -2,7 +2,7 @@
 
 > 日期：2026-10-05
 >
-> 适用范围：`luraph-rs --preset v15` 纯离线、纯 Luau、无服务器依赖方案
+> 适用范围：`obsucvim --preset v15` 纯离线、纯 Luau、无服务器依赖方案
 >
 > 状态：**R058 基线保留；R061 已移除 OS/OS2 单条件旁路并加入自主红队门禁；内部 loader 0 次**
 >
@@ -151,8 +151,8 @@ loader 参数中出现 handler/BSS/RT 特征 = 0
 脚本：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open
-python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
+python3 obsucvim/tests/h4_loader_audit.py --expect-open
+python3 obsucvim/tests/h4_loader_audit.py --enforce-zero
 ```
 
 固定 seed `440041` 的当前架构实测：
@@ -216,7 +216,7 @@ Loader 审计从：
 固定增量门：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 42
+python3 obsucvim/tests/h4_loader_audit.py --expect-open --max-calls 42
 ```
 
 此项是 H4-1 的第一批，不代表 Handler Microcode 已全部完成。
@@ -268,7 +268,7 @@ MkStr
 固定增量门更新为：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 21
+python3 obsucvim/tests/h4_loader_audit.py --expect-open --max-calls 21
 ```
 
 ### H4-1C 已落地（2026-10-05）
@@ -317,7 +317,7 @@ RT 1
 H4-1 最终增量门：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 11
+python3 obsucvim/tests/h4_loader_audit.py --expect-open --max-calls 11
 ```
 
 ### 新结构
@@ -433,7 +433,7 @@ HBOOT 1 + Call executor 4 + BSS 1 + RT 1 = 7
 H4-2A 增量门：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 7
+python3 obsucvim/tests/h4_loader_audit.py --expect-open --max-calls 7
 ```
 
 ### H4-2B 已落地（2026-10-05）
@@ -476,7 +476,7 @@ HBOOT 1 + BSS 1 + RT 1 = 3
 H4-2B 增量门：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 3
+python3 obsucvim/tests/h4_loader_audit.py --expect-open --max-calls 3
 ```
 
 ### 已验证并回退的候选
@@ -518,7 +518,7 @@ HQ 源码碎片：53 → 41 → 20 → 10 → 6 → 2 → 1
 固定增量门：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 2
+python3 obsucvim/tests/h4_loader_audit.py --expect-open --max-calls 2
 ```
 
 R041 同一最小输入/同 seed 的体积由 `158568B` 降至 `152138B`，没有用体积
@@ -542,7 +542,7 @@ CDEC → bdec → makefn → newE → run/trampoline
 - RT 与 BSS 共享构建随机字段方言，但不共享 phase dispatcher；
 - 初始化 dispatcher 只在工厂装配期存在，返回 `run` 后 descriptor 置 nil；
 - `RTFRAG` 工厂调用完成立即置 nil，运行期不保留万能 RT 构造入口；
-- `W_RT` 与 RT HQ wire 退役；默认构建 `LURAPH_FRAG_SAN` 零源码碎片；
+- `W_RT` 与 RT HQ wire 退役；默认构建 `OBSUCVIM_FRAG_SAN` 零源码碎片；
 - HQ 数为零时禁用 `#hqi == 0` 锚定配方，避免锚点退化导致钥匙表裸值；
 - 防御审计 D5/D6 改为篡改活跃 FN carrier，D12 从静态 TSRC 抽取计时守卫，
   不保留仅为旧碎片架构服务的测试后门。
@@ -558,7 +558,7 @@ HQ 源码碎片：53 → 41 → 20 → 10 → 6 → 2 → 1 → 0
 固定增量门：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --expect-open --max-calls 1
+python3 obsucvim/tests/h4_loader_audit.py --expect-open --max-calls 1
 ```
 
 R041 同输入/同 seed 从 H4-2C1 的 `152138B` 变为 `152712B`（`+0.38%`），
@@ -622,7 +622,7 @@ payload result survived：YES
 正式门禁：
 
 ```bash
-python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
+python3 obsucvim/tests/h4_loader_audit.py --enforce-zero
 ```
 
 该门禁完全在本地构建/测试环境执行，不引入服务器、联网密钥或运行期授权。
@@ -1156,7 +1156,7 @@ carrier、独立 at-rest LCG、启动期 `SALT+CHQ` 重密封与使用点三元�
 
 ```text
 docs/h5-p0-micro-descriptor-response.md
-python3 luraph-rs/tests/h5_p0_micro_audit.py
+python3 obsucvim/tests/h5_p0_micro_audit.py
 ```
 
 这只关闭最廉价的静态映射路径；Superoperator、纯字面量下标折叠和固定 junk
@@ -1171,7 +1171,7 @@ R058 的 Ou/De 双校验最终共用一个显式 `if ck~=OS or ck2~=OS2`，攻�
 
 ```text
 docs/r061-autonomous-redteam.md
-python3 luraph-rs/tests/r061_bypass_audit.py
+python3 obsucvim/tests/r061_bypass_audit.py
 ```
 
 新架构候选按规定等待审批；当前建议优先级为 per-shard checksum lane、关键索引
@@ -1272,22 +1272,22 @@ H4-7 调用/closure/常量去中心化与 H4-8 数值完整性分散语义投毒
 每个阶段至少运行：
 
 ```bash
-cargo build --release --manifest-path luraph-rs/Cargo.toml
-cargo test --manifest-path luraph-rs/Cargo.toml
-bash luraph-rs/tests/run_tests.sh
-bash luraph-rs/tests/run_presets.sh
-bash luraph-rs/tests/multiseed.sh
-python3 luraph-rs/tests/redteam_probe_regression.py
-python3 luraph-rs/tests/h2_diff_audit.py
-python3 luraph-rs/tests/h3_noise_audit.py
-python3 luraph-rs/tests/h4_loader_audit.py --enforce-zero
-python3 luraph-rs/tests/h5_dialect_audit.py
-python3 luraph-rs/tests/h6_window_audit.py
-python3 luraph-rs/tests/h7_decentralization_audit.py
-python3 luraph-rs/tests/h8_poison_audit.py
-python3 luraph-rs/tests/h5_p0_micro_audit.py
-python3 luraph-rs/tests/r061_bypass_audit.py
-bash luraph-rs/tests/defense_audit.sh
+cargo build --release --manifest-path obsucvim/Cargo.toml
+cargo test --manifest-path obsucvim/Cargo.toml
+bash obsucvim/tests/run_tests.sh
+bash obsucvim/tests/run_presets.sh
+bash obsucvim/tests/multiseed.sh
+python3 obsucvim/tests/redteam_probe_regression.py
+python3 obsucvim/tests/h2_diff_audit.py
+python3 obsucvim/tests/h3_noise_audit.py
+python3 obsucvim/tests/h4_loader_audit.py --enforce-zero
+python3 obsucvim/tests/h5_dialect_audit.py
+python3 obsucvim/tests/h6_window_audit.py
+python3 obsucvim/tests/h7_decentralization_audit.py
+python3 obsucvim/tests/h8_poison_audit.py
+python3 obsucvim/tests/h5_p0_micro_audit.py
+python3 obsucvim/tests/r061_bypass_audit.py
+bash obsucvim/tests/defense_audit.sh
 ```
 
 H4 新增指标：

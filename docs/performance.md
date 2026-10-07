@@ -2,7 +2,7 @@
 
 > 环境：仓库内 Rust 1.88 release（`opt-level=3, lto=true`）+ Lua 5.1.5。
 > 机器：沙箱单核级。数字是**一次** wall-clock，用来定数量级，不是正式基准。
-> 命令：`luraph-rs/tests/bench_presets.sh`（`--seed 42`，5.1 目标）。
+> 命令：`obsucvim/tests/bench_presets.sh`（`--seed 42`，5.1 目标）。
 
 ## 预设对照
 
@@ -42,6 +42,6 @@
 
 ```bash
 export PATH=/home/user/luraph/.tools/bin:$PATH
-cd luraph-rs && CARGO_NET_OFFLINE=true cargo build --release
+cd obsucvim && CARGO_NET_OFFLINE=true cargo build --release
 bash tests/bench_presets.sh
 ```

@@ -35,7 +35,7 @@ block/constant/metadata 六面 fan-out 再强，也收不到非零差值。
 新增门禁：
 
 ```bash
-python3 luraph-rs/tests/r061_bypass_audit.py
+python3 obsucvim/tests/r061_bypass_audit.py
 ```
 
 ## 2. 仍存在的静态/旁路面

@@ -20,7 +20,7 @@ v15 外层现在把模块表保存在随机命名的词法局部变量中，再�
 - 不新增 KeyEmitter 数值表、统一 getter 或解密后的 key 缓存。
 - digest 使用实际传给 VM 的 carrier 长度，改变 carrier 会改变解码结果；不是 `state-state` 形式的假依赖。
 - KeyEmitter 新路径不调用 `string.byte`，避免额外创建逐字节 API 汇合点。
-- 已删除 `LURAPH_KEY_DBG` 构建环境变量直接输出 key 字面量的分支。
+- 已删除 `OBSUCVIM_KEY_DBG` 构建环境变量直接输出 key 字面量的分支。
 - HBoot 原本传递的四个 KeyEmitter 表形参改为四个未使用的 FN 引用，以维持其 25 个随机化形参/实参槽；未增加 key 数据或共享 getter。
 
 **边界：**这是针对“读四张明文表并常量折叠”的加固，不是密码学保密。若攻击者能重建所有 carrier 长度或直接执行/跟踪客户端，仍可复算 key；R063 新格式尚未接受完整通用静态解码攻击。
@@ -48,6 +48,6 @@ v15 外层现在把模块表保存在随机命名的词法局部变量中，再�
 - `multiseed.sh`：`FAIL=0`。
 - H2、H3、H4 loader/dialect/window/decentralization/poison、H5-P0 micro 和 R061 bypass audits：通过。
 - `defense_audit.sh`：D2、D4–D18 通过；D13 debug 构建通过；**D3 结构指纹为 24/32**。旧指纹要求入口表由 `setmetatable` 返回，且若干 v15 形态随 KeyEmitter 改变；未降低或改写其阈值，故整个防御审计仍报告 1 项失败。
-- `r063_entry_table_hook_regression.sh`：语法校验和运行通过；`setmetatable` hook 未捕获模块总表；目标返回 `1713`；同 seed 下 `LURAPH_KEY_DBG` 不改变产物；KeyEmitter 数组/索引静态形态检查通过。
+- `r063_entry_table_hook_regression.sh`：语法校验和运行通过；`setmetatable` hook 未捕获模块总表；目标返回 `1713`；同 seed 下 `OBSUCVIM_KEY_DBG` 不改变产物；KeyEmitter 数组/索引静态形态检查通过。
 
 D3 是结构相似度/指纹回归，不是已发现的解密漏洞，但会让产物更容易与旧 v15 形态区分。本轮在此停止，不继续改 LoadStr、名称封存或指纹阈值。

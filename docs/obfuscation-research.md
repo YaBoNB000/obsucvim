@@ -376,7 +376,7 @@ or(1) and(2) 比较(3) ..(5,右) +- (6) * / % //(7→乘法级) 一元(8) ^(10,�
 ## 5. Rust 实现规划（M0–M6 已落地，2026-08-25 现状）
 
 ```
-luraph-rs/
+obsucvim/
 ├── Cargo.toml              # 零依赖（std-only，沙箱网络约束）
 └── src/
     ├── main.rs             # CLI：参数解析（preset 命名待 M6）+ 管线装配
@@ -428,7 +428,7 @@ tools/luau-cli-mains/       # 重建 .tools 的 luau/luau-compile 自写 main（
 
 > 每次混淆模块改动后，以下语料必须全部通过 `lua51` + `luau` 双方言
 > 语法校验（`loadstring`/`luau-compile`）+ 运行对比（stdout/退出码一致）。
-> 语料文件：`luraph-rs/tests/cases/*.lua`（**已建立，29 个**：20 共享
+> 语料文件：`obsucvim/tests/cases/*.lua`（**已建立，29 个**：20 共享
 > 5.1+Luau 双跑 + 9 个 `luau_*` 前缀专属用例；其中 8 个 `stress_*` 是
 > M4 续期新增的应力用例——upvalues/coroutines/metamethods/multival/
 > errors/bigtable/control 共享 + luau_vm 专属），Luau 专属用例单独标记。

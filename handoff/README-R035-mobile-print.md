@@ -211,7 +211,7 @@ loader-hook：
 重新生成同类移动探针：
 
 ```bash
-python3 luraph-rs/tools/mobile_print_probe_gen.py \
+python3 obsucvim/tools/mobile_print_probe_gen.py \
   handoff/R035_target.luau.lua \
   handoff/R035_mobile_print_probe.luau.lua
 ```

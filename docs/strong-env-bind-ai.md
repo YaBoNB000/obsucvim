@@ -1,6 +1,6 @@
 # 强环境绑定实现（AI 详版）
 
-> 面向 AI 代理/自动化审计：本文件为 `luraph --bind-env` / `--bind-executor` 的**可执行规格**，含威胁模型、设计不变量、数学形态、代码锚点、构建/运行时双侧镜像、验证矩阵与排障清单。改动前必读 `docs/vm-l6-implementation.md` §8（9 类坑）与 `HANDOFF.md` §8（规矩与坑）。
+> 面向 AI 代理/自动化审计：本文件为 `obsucvim --bind-env` / `--bind-executor` 的**可执行规格**，含威胁模型、设计不变量、数学形态、代码锚点、构建/运行时双侧镜像、验证矩阵与排障清单。改动前必读 `docs/vm-l6-implementation.md` §8（9 类坑）与 `HANDOFF.md` §8（规矩与坑）。
 
 ## 0. 术语与目标
 
@@ -46,12 +46,12 @@
 
 | 层 | 文件 | 锚点 |
 |---|---|---|
-| `CLI` | `luraph-rs/src/main.rs:774/779` | `--bind-env`→`env_slots`/`--bind-executor`→`executor_bind`，`VmProgram::new` 传参 |
-| `BSS` | `luraph-rs/src/vmgen/template.rs:2280` | `cenv_probe`/`cenv_exp` 生成，`exguard::build` 调用，`XTE`/`XTEC` 烘焙 |
-| `RT` | `luraph-rs/src/vmgen/template.rs:2443` | `cdec_inner` 按 `cenv_active`/`exg_active` 四分支拼 `probe_call` 与 `base_env_s` |
-| `EXG` | `luraph-rs/src/vmgen/exguard.rs:1` | `build(rng)` 产 `XGUARD` 源码，`KEYS` 掩码 `char` 自举 `f(65)=="A"` 行为发现 |
-| `HBOOT` | `luraph-rs/src/vmgen/template.rs:2664` | `HW[209]` 工厂调用 `probe(0,true)`，`HW2` 高位槽持久化 |
-| `净化` | `luraph-rs/src/vmgen/template.rs:2544` | `frag_reserved` 保留 `__index` 等元方法名，`sanitize_frag` 跨碎片一致改名 |
+| `CLI` | `obsucvim/src/main.rs:774/779` | `--bind-env`→`env_slots`/`--bind-executor`→`executor_bind`，`VmProgram::new` 传参 |
+| `BSS` | `obsucvim/src/vmgen/template.rs:2280` | `cenv_probe`/`cenv_exp` 生成，`exguard::build` 调用，`XTE`/`XTEC` 烘焙 |
+| `RT` | `obsucvim/src/vmgen/template.rs:2443` | `cdec_inner` 按 `cenv_active`/`exg_active` 四分支拼 `probe_call` 与 `base_env_s` |
+| `EXG` | `obsucvim/src/vmgen/exguard.rs:1` | `build(rng)` 产 `XGUARD` 源码，`KEYS` 掩码 `char` 自举 `f(65)=="A"` 行为发现 |
+| `HBOOT` | `obsucvim/src/vmgen/template.rs:2664` | `HW[209]` 工厂调用 `probe(0,true)`，`HW2` 高位槽持久化 |
+| `净化` | `obsucvim/src/vmgen/template.rs:2544` | `frag_reserved` 保留 `__index` 等元方法名，`sanitize_frag` 跨碎片一致改名 |
 
 ## 5. 构建/运行时双侧镜像（逐字对齐）
 

@@ -29,9 +29,9 @@ cipher[i] = plain[i] + state mod 256
 
 模板侧执行完全镜像的减法。对应实现位于：
 
-- `luraph-rs/src/vmgen/strseal.rs`：编译期编码；
-- `luraph-rs/src/vmgen/compiler.rs`：cipher 常量与 seed/step 操作数；
-- `luraph-rs/src/vmgen/template.rs`：微码 `M_LOAD_STR`。
+- `obsucvim/src/vmgen/strseal.rs`：编译期编码；
+- `obsucvim/src/vmgen/compiler.rs`：cipher 常量与 seed/step 操作数；
+- `obsucvim/src/vmgen/template.rs`：微码 `M_LOAD_STR`。
 
 **绕过边界：**只 dump 解码后的 C 常量表时，得到的是第二层密文；但若分析者已恢复 VM 的 `LoadStr` 线码及四列操作数，就能一次性读出每个 `const_index/seed/step`，用固定 recipe 离线还原全部封存字符串。工具可以跨构建复用 recipe。单独这条路径不等于完整反编译；结合入口表截获、KeyEmitter 静态恢复和原型/指令解码后，R062 样本的等价源码现已恢复，详见 `docs/r062-deobfuscation-attempt.md`。
 
@@ -71,7 +71,7 @@ table-driven mod expression：52 个
 
 ### P1-D：入口 `setmetatable` 可透明截获整个模块表
 
-R062 产物从 `setmetatable({...}, {}):<entry>(...)` 开始。用 loader 控制的环境把 `setmetatable` 换成“先浅拷贝参数表、再调用原函数”的透明 wrapper，样本仍正确运行（返回 `1713`），guard 未报错；wrapper 在首次入口时已捕获 **216 个字段**，其中 93 个数字键、187 个函数值和 16 个字符串值。复现脚本：`luraph-rs/tests/r062_root_table_hook_probe.sh`。它不直接解出全部用户字节码，但让攻击者在启动前一次性拿到整个模块入口表及其中的闭包/载体字段，是比逐点插桩便宜得多的动态观察点。
+R062 产物从 `setmetatable({...}, {}):<entry>(...)` 开始。用 loader 控制的环境把 `setmetatable` 换成“先浅拷贝参数表、再调用原函数”的透明 wrapper，样本仍正确运行（返回 `1713`），guard 未报错；wrapper 在首次入口时已捕获 **216 个字段**，其中 93 个数字键、187 个函数值和 16 个字符串值。复现脚本：`obsucvim/tests/r062_root_table_hook_probe.sh`。它不直接解出全部用户字节码，但让攻击者在启动前一次性拿到整个模块入口表及其中的闭包/载体字段，是比逐点插桩便宜得多的动态观察点。
 
 这依赖攻击者能控制 chunk 的加载环境（如自建 loader/executor）；普通 Luau 全局表只读不等于加载环境不可控。R063 已把入口模块表保存在随机命名的词法局部变量中，并保留方法调用、chunk return 和其他必需的 `setmetatable` 行为；live-reference hook 回归未捕获到模块总表。它不阻止对其他运行时对象或局部状态的调试观察，且旧 R062 目标文件不变。
 

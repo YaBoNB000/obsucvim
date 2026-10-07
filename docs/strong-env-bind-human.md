@@ -4,18 +4,18 @@
 
 ## 它是干嘛的
 
-- 你用 `luraph` 加了 `--bind-env roblox` 或 `--bind-executor` 后，打出来的包就跟目标环境“焊死”了。
+- 你用 `obsucvim` 加了 `--bind-env roblox` 或 `--bind-executor` 后，打出来的包就跟目标环境“焊死”了。
 - 拿到文件的人如果不在真机里跑（比如丢到分析沙箱、改了 `string.char` 想偷常量、文本手术动 visible 层），**看不到源码，也拿不到常量**。
 
 ## 两档怎么选
 
 - **`--bind-env roblox`**：轻量，**错钥**。通用沙箱里程序照跑但解出来全是垃圾，难定位是环境问题。
   ```bash
-  luraph --preset v15 --bind-env roblox --seed 42 in.lua out.lua
+  obsucvim --preset v15 --bind-env roblox --seed 42 in.lua out.lua
   ```
 - **`--bind-executor`**：重量，**毒杀**。非完整 Executor 里直接静默死亡（`IronBrew2` 全套体检：`identifyexecutor`/`getgenv`/`getconstants` 等 6 折 transcript 全过才给真钥匙）。
   ```bash
-  luraph --preset v15 --bind-executor --seed 42 in.lua out.lua
+  obsucvim --preset v15 --bind-executor --seed 42 in.lua out.lua
   ```
   两档可叠加：`--bind-env roblox --bind-executor`。
 

@@ -1483,7 +1483,7 @@ HQ handler 加密 seed/step/m/c、OCt wire 掩码、NOPA 别名和）从三种
   三连消失（`vmstatic.extract_lcg` 返回 None）。
 - bm0/bc0 字表掩码键拆 4 槽，分块 handler 入口 `km/kc` 装配。
 
-**⑩-3 回归门禁**：`LURAPH_KEY_MANIFEST` 构建期把全部 25 把钥匙
+**⑩-3 回归门禁**：`OBSUCVIM_KEY_MANIFEST` 构建期把全部 25 把钥匙
 （≥2²⁰）落盘；`tests/key_literal_check.py` 逐一确认输出里没有裸
 字面量残留。6 案例 × 5 种子 = 30 组全过 0 泄漏。
 
@@ -2014,7 +2014,7 @@ ct/cn/csb/csl；帧期 CDEC 以 SLTC（= SALT + 链终值归零约束，篡改�
   （RTFRAG 参数链 → rt_src → CDEC）双侧穿线，镜像严格同形（干净运行
   SLTC≡SALT，㊺ 教训执行：逐字对齐 + 忠实桩背书）。
 - 类型槽/整数值/字节串共用每常量种子段，字节内仍按 LCG 推进。
-- 碎片级实证：`LURAPH_FRAG_SAN` 转储中 BSS(200) 与 RT(208) 均可见
+- 碎片级实证：`OBSUCVIM_FRAG_SAN` 转储中 BSS(200) 与 RT(208) 均可见
   `(基线 + i·PT + SALT/SLTC + j·CKJ) % M` 种子项，CKJ 同名。
 
 **效果**：① 各常量钥匙流相互独立——单常量已知明文不再给出整池可
@@ -2217,7 +2217,7 @@ getconstants 恒空——行为探针拒绝）、可见层 13 词零痕迹普查
 七轮修复打通全部门。方法论与修复链存档：
 
 **诊断基建**（本战役副产品，后续守卫类增量复用）：
-- 诊断靶（`LURAPH_EXG_TRACE` 构建）：失败闸门抛 `XGUARD<字母>MARK-<标记>`
+- 诊断靶（`OBSUCVIM_EXG_TRACE` 构建）：失败闸门抛 `XGUARD<字母>MARK-<标记>`
   错误，字母 = 闸门编号（A=char 自举、B=API 存在、C/D=环境分离/金丝雀、
   E=identify、F=checkcaller、G=宿主形态、H=宿主语义、I..Q=内省探针族、
   R=身份门/transcript、T=令牌、U=seal）；

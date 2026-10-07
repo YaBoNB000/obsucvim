@@ -113,9 +113,9 @@
 | 调研 + 双方言语义实测 | ✅ 100% | `docs/obfuscation-research.md` |
 | Luraph v15 分析（含动态分析共三轮） | ✅ 100% | `docs/luraph15-analysis.md`（§11 25 项功能对比：采纳 20 / 延后 2 / 拒绝 2 / 我方独有 1） |
 | 全部混淆方法设计（L1–L7 + VM） | ✅ 100% | 本文件 §1 + research §2.6 + v15 报告 §8/§10 |
-| **Rust 混淆器代码** | ✅ **M0–M6 完成** | M6：`--preset low\|medium\|high\|vm\|max` + 产品 README + `docs/performance.md`；官方矩阵 204 + 预设矩阵 405 全绿；R064 protected-meta / trailing-nil vararg、nested-upvalue seed fix、string-table hook bypass 与 full recipe micro superoperator fusion 记录在 §4（2026-10-07） |
+| **Rust 混淆器代码** | ✅ **M0–M6 完成** | M6：`--preset low\|medium\|high\|vm\|max` + 产品 README + `docs/performance.md`；官方矩阵 204 + 预设矩阵 405 全绿；R064 protected-meta / trailing-nil vararg、nested-upvalue seed fix、string-table hook bypass、full recipe micro superoperator fusion、R065 canary 及产品改名 obsucvim 记录在 §4（2026-10-07） |
 | 测试语料 + 矩阵 | ✅ 100% | **29 个语料文件**（20 共享 + 9 Luau 专属；M4 续期新增 8 个 stress_*：upvalues/coroutines/metamethods/multival/errors/bigtable/control/luau_vm）；非 VM 102 项 + VM 102 项 = **204 项全绿**（含 VM 双解释器交叉）；**多种子回归**（seeds 1/7/4242/31337/999999 × 全语料 × 双方言 × 双阶段）0 失败 |
-| 混淆示例 | ✅ M1+M2 产出 | `luraph-rs/examples/`（`tests/gen_examples.sh` 再生成） |
+| 混淆示例 | ✅ M1+M2 产出 | `obsucvim/examples/`（`tests/gen_examples.sh` 再生成） |
 
 **一句话：设计 100%，代码 M0–M6 完成（官方矩阵 204/204 + 预设 405/405 + 多种子 0 失败）。**
 
@@ -139,6 +139,7 @@
 | **R064 全 recipe 动态 trace 缓解** ✅ 2026-10-07 | 所有 23 个多 primitive handler recipe 打包为一个 per-shard superoperator；原始序列按序 inline，保留 metamethod/callback/error semantics，不跨 VM instruction/call/return phase。R064 seed64075 trace 929,567→701,915→412,706（最终记录≈每次 shard invocation 一条）。 | cargo test 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；H2–H8/R061/H5-P0 PASS；S1–S5 5/5；D3 结构指纹仍 23/32（非安全 FAIL） |
 | **R064 replaceable string-table hook 缓解** ✅ 2026-10-07 | VM/v15 staging 的 `byte/sub/char` primitive 改由原生 string metatable 或 numeric slots 获取；复制 string 表 setfenv hook 不再截获 VM 内部 byte/sub/char，R064 stdout 不变。仅封闭 replaceable-library hook，不防 native C hook、debugger 或 decoded micro trace | 新增 `string_primitive_hook_test.sh` 接入 run_tests；minimal/R064 seed64075 copied-library hook hits 0/0/0；S1–S5 5/5 |
 | **R065 最小字符串 canary** ✅ 2026-10-07 | 源严格为 `local a = "bysuda"`（`handoff/R065_src.lua`）；v15 seed65065 产物 `handoff/R065_target.luau.lua`（168,788B）。仅为管线/常量封存 canary，非业务逻辑或 anti-trace 充分测试 | luau-compile 双过；源/产物 stdout 等价（均空）；明文 `bysuda` 不在产物中；S1–S5 5/5；短名审计全 ≤2 字母 |
+| **产品改名 obsucvim** ✅ 2026-10-07 | 混淆引擎定名 obsucvim：crate/二进制 `luraph-rs`→`obsucvim`，工程目录 `luraph-rs/`→`obsucvim/`，环境变量 `LURAPH_*`→`OBSUCVIM_*`，全仓库脚本/文档引用同步；仓库目录与远端名保持 luraph。原 Luraph v15 指代（样本/分析文档/对标描述）不动 | `obsucvim --version` → `obsucvim 0.2.0`；R065 seed65065 重生成逐字节一致；cargo test 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；defense_audit 20/1（唯一 D3 非安全 FAIL）；S1–S5 5/5 |
 
 **M0–M6 全部完成（2026-08-25）；R064 兼容/变参、seed 对齐、replaceable string-table hook bypass 与全 recipe micro superoperator fusion 均通过所列回归（2026-10-07）；同进程 trace 仍是客户端边界。**
 
@@ -146,6 +147,7 @@
 
 ## 4. 更新日志
 
+- **2026-10-07（产品改名 obsucvim）**：`Cargo.toml`/`Cargo.lock` 包名、release 二进制、工程目录（`git mv luraph-rs obsucvim`）、全部测试/工具脚本与文档中的 `luraph-rs` 路径/调用、`LURAPH_*` 环境变量前缀全部切换为 obsucvim/`OBSUCVIM_*`；README 标题、HANDOFF 产品名、strong-env-bind 文档中的命令示例同步。原商业 Luraph（v14/v15 样本/逆向分析文档/对标描述/第三方工具名）与仓库目录名 `luraph` 保持不动。改名零行为变化：R065 seed65065 产物重生成逐字节一致；全矩阵重跑通过（cargo test 39 + 1 ignored、run_tests 169/169、run_presets 370/370、multiseed 0、defense_audit 20/1 唯一 D3 非安全 FAIL、S1–S5 5/5）。
 - **2026-10-07（R064 全 recipe micro superoperator fusion）**：保留第一层 10 类 safe-handler fused ops，并将其余 23 种多 primitive `micro_recipe` 自动打包成一个 per-shard superoperator record；body 逐步执行原 primitive 片段，step lexical scopes 和原顺序不变，不跨 VM instruction/callback/call phase。R064 seed64075 临时同点 A/B：原始 929,567 → 第一层 701,915 → 全 recipe fusion 412,706 条记录（每阶段 412,706 shard calls，stdout一致；完整融合相对第一层 -41.20%、相对原始 -55.60%）。样本 r2 现 340,895B（较 native-capture-only 版本 326,848B +4.3%）。`cargo test` 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；H5-P0、静态攻击 S1–S5 PASS。诚实边界：one-record-per-handler 仍泄露已执行 handler 序列，不能阻止同进程 instrumentation；详见 R2 audit。
 - **2026-10-07（R064 动态 string-table hook 缓解）**：VM `PRIM_SRC` 的 byte/sub/char 从 native string metatable 获取；v15 module primitive fields 同样使用 native string indexing，CPS staging helper 改用已有 byte/char numeric slots 与 native sub。原因：R064 seed64075 在复制的全局 `string` 表 hook 下融合前后的 `byte` wrapper 曾看到 2,673,402 次调用。新增 `tests/string_primitive_hook_test.sh` 覆盖 minimal + 7KB R064 canary：复制表 wrapper 下 byte/sub/char hits 0/0/0，Luau stdout 不变。此举只绕过可替换库表 hook，native C hook / debugger / decoded micro trace 仍可观察；不宣称阻断动态 trace。自检：cargo test 36 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0；H2/H3/H4/H5/H6/H7/H8/R061 PASS；S1–S5 5/5。
 - **2026-10-07（R064 seed 稳定性修复）**：定位 R064 的 nested-upvalue scatter 错位——`CellKind::Up` child descriptor 在父 `upsrc` 置换前以旧索引编码；部分 seed 将 `fold_text` cell 读成 `MOD`。`Ctx` 预计算旧索引→runtime permutation，child descriptor 按父 permutation 映射；scatter 使用同一映射并保留主 RNG draw schedule。单测覆盖双射/确定性，新增 `r064_seed_stability_test.sh` 接入 run_tests/multiseed；24-seed regression PASS，当前 release 的 42-seed、连续 1..128 与另抽 128 高范围 R064 sweep 均 0 fail。完整矩阵：cargo test 36 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0。
@@ -311,7 +313,7 @@
   钥匙流相互独立；CKJ 为每构建钥匙（KT 装配、清单收录），经 BSS
   `_lv1` 参数链（HBOOT 外参 → 内参）与 RTFRAG 参数链双侧穿线；干净
   运行 SLTC≡SALT（链归零），编解码镜像严格同形。碎片级实证：
-  `LURAPH_FRAG_SAN` 转储中 BSS(200)/RT(208) 双侧可见 `j·CKJ` 种子项
+  `OBSUCVIM_FRAG_SAN` 转储中 BSS(200)/RT(208) 双侧可见 `j·CKJ` 种子项
   且 CKJ 同名。战略意义：钥匙流随机访问化是「按需解码/延迟物化」的
   前置（下一增量候选——把全池一次物化改为触碰即解、缩小内存明文
   窗口）。诚实边界：R004 上界不变（动态执行仍见解码值）；帧物化形态
@@ -463,7 +465,7 @@
   + 字节级确定。
 - **2026-09-19（增量㊴：激活门退役——`--bind-key` 整体移除）**
   增量⑱/⑳ 的输入绑定/激活门整体退役：功能代码（template.rs 门控
-  发射 `ak_gate`/激活哈希/`LURAPH_BIND_DBG`、main.rs 选项与校验、
+  发射 `ak_gate`/激活哈希/`OBSUCVIM_BIND_DBG`、main.rs 选项与校验、
   v15.rs `bind_passthrough` 变长参透传）、测试（`bind_gate_test.sh`、
   multiseed 绑定扫描、审计 D7）、绑定态示例全部移除。原因：要求运行时
   递送激活值与「混淆后直接可运行」冲突，长期仅演示存在、无实战参考
@@ -1062,7 +1064,7 @@
   ks 种子拆两半存随机模块槽，kg 生成器**首次调用**时装配真实种子
   并抹掉标记槽（R001 的 `[22]=124835273` 形态消失）；LCG 常数改两项
   和发射；bm0/bc0 字表掩码键同样拆槽，分块 handler 入口装配。
-  **⑩-3 回归门禁**：`LURAPH_KEY_MANIFEST` 构建期落盘全部 25 把钥匙，
+  **⑩-3 回归门禁**：`OBSUCVIM_KEY_MANIFEST` 构建期落盘全部 25 把钥匙，
   `tests/key_literal_check.py` 逐一确认输出无裸字面量残留（6 案例×5
   种子 0 泄漏）。**附带修复**：LCG 乘数上限 2²⁵（double 精度：
   M·2²⁸ 须 <2⁵³，原抬升范围曾致 5 种子中 4 个静默错码）；`#hqi`
@@ -1546,7 +1548,7 @@
   指纹 **10/32**（F9 69 槽/66 原语槽 + F15/17/19/25/28/29 + F1/2/18）；
   F3 = 80 字段，量级差由 P3 handler 群补齐。验证：29 语料 × v15 一致；
   多种子 5×4 零失败；官方矩阵 204/204 + 预设矩阵 405/405 全绿。
-  附带：`luraph-rs/tools/rebuild_tools.sh` 工具链一键重建脚本（沙箱
+  附带：`obsucvim/tools/rebuild_tools.sh` 工具链一键重建脚本（沙箱
   重置两次后的应对）。
 - **2026-08-25（v15 结构同族：P1 外壳换代）**
   `main.rs` v15 分支：解释器块先过 junk/mangle/strings/numbers 再包壳，
@@ -1566,7 +1568,7 @@
   cell 布局/元组槽 makefn/初始化器族）、§1.1 五处架构修正（iL=mul32、
   执行内联在 [18]/[73]、LCG 是诱饵、真实密钥一次式、cell 布局）、
   P 阶段重写（3–4.5 周）。**用户拍板路线 A**（Roblox 克隆档，弃 5.1）。
-  P0 落地：`luraph-rs/tests/v15_fingerprint.py`（32 条，样本 32/32 PASS /
+  P0 落地：`obsucvim/tests/v15_fingerprint.py`（32 条，样本 32/32 PASS /
   现 `vm` 产物 1/32）+ `--preset v15` CLI（Luau 门控，5.1 报错；P0 stub
   走 vm 管线，发射逻辑待 P1 换代）。官方矩阵 204/204 + 预设矩阵 405/405
   仍全绿。工具链沙箱重置后按 HANDOFF §4 重建进仓库 `.tools`。
@@ -1724,7 +1726,7 @@
   下一步：M3 = numbers(L4) + body(L5 整体加密) + antidbg(L7)。
 - **2026-08-23（M1 完成）** mangle(L1) + strings(L2) 完成：名称混淆（含
   self keep_name 规则）、加性密钥流字符串加密（密钥 3 段拆分）、17 个语料的
-  混淆示例生成到 `luraph-rs/examples/`。矩阵 62/62 全绿。新发现：local function
+  混淆示例生成到 `obsucvim/examples/`。矩阵 62/62 全绿。新发现：local function
   自引用双方言可见；转义数字合并陷阱；FuncDecl 点链对象需走 symtab。
   下一步：M2 = L3 控制流（desugar + CFG 扁平化 + junk）。
 - **2026-08-23（M0 完成）** Rust 骨架 + lexer/parser/symtab/printer 完成；
@@ -1739,4 +1741,6 @@
   进度 = 设计 100% / 代码 0%。
 字节级格式重实现判定为非必需（v3 可选）。
 - **2026-08-23** 初版：实施清单定稿（吸收 luraph15 两轮分析的全部采纳项）；
+  进度 = 设计 100% / 代码 0%。
+；
   进度 = 设计 100% / 代码 0%。

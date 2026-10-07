@@ -1,4 +1,4 @@
-# luraph
+# obsucvim
 
 商业级 Lua 混淆器（对标 [Luraph](https://lura.ph/)）。把用户脚本编译成**私有字节码**，
 由随文件分发的「Lua 写的混淆解释器」执行——标准反编译器拿不到原生 5.1/Luau
@@ -16,7 +16,7 @@
 需要 `rustc`/`cargo` ≥ 1.88。本仓库沙箱把工具链放在 `.tools/bin`（`gitignored`）：
 
 ```bash
-cd luraph-rs
+cd obsucvim
 export PATH=/home/user/luraph/.tools/bin:$PATH   # 使用仓库内置工具链时
 CARGO_NET_OFFLINE=true cargo build --release
 ```
@@ -28,16 +28,16 @@ CARGO_NET_OFFLINE=true cargo build --release
 ```bash
 # 默认 = v15 管线（产品形态，Luau/Roblox）——零参数、直接可运行
 # ㉖ 起产品线 Luau-only：Lua 5.1 目标不再支持
-./target/release/luraph-rs --seed 42 in.lua out.lua
+./target/release/obsucvim --seed 42 in.lua out.lua
 # 显式写法等价：
-./target/release/luraph-rs --preset v15 --seed 42 in.lua out.lua
+./target/release/obsucvim --preset v15 --seed 42 in.lua out.lua
 
 # 旧版轻量/VM 预设（Luau 目标显式选择，后面的 --no-* / --vm 会覆盖）
-./target/release/luraph-rs --preset low    --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset medium --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset high   --seed 42 in.lua out.lua
-./target/release/luraph-rs --preset vm     --seed 42 in.lua out.vm.lua
-./target/release/luraph-rs --preset max    --seed 42 in.lua out.vm.lua
+./target/release/obsucvim --preset low    --seed 42 in.lua out.lua
+./target/release/obsucvim --preset medium --seed 42 in.lua out.lua
+./target/release/obsucvim --preset high   --seed 42 in.lua out.lua
+./target/release/obsucvim --preset vm     --seed 42 in.lua out.vm.lua
+./target/release/obsucvim --preset max    --seed 42 in.lua out.vm.lua
 
 # 增量⑱ 输入绑定/激活门 (--bind-key) 已于 ㊴ 整体退役移除
 ```
@@ -87,7 +87,7 @@ Roblox 执行器即可直接运行，输出与源码逐字节一致。防护来�
 天然「混淆后直接可运行」；只有非目标沙箱跑不了。
 
 ```bash
-./target/release/luraph-rs --preset v15 --dialect luau --bind-env roblox in.lua out.lua
+./target/release/obsucvim --preset v15 --dialect luau --bind-env roblox in.lua out.lua
 ```
 
 绑定态产物不进通用运行等价矩阵（CLI 跑不动是设计目的），只做语法校验 +
@@ -105,7 +105,7 @@ Luau 输入支持 `//`、`continue`、复合赋值、反引号插值、类型注
 ## 验证
 
 ```bash
-cd luraph-rs
+cd obsucvim
 bash tests/run_tests.sh      # 官方矩阵：全语料 × 双方言 ×（high + vm + v15）
                              #   + ⑱ 绑定门控 10 项 + ㉑ 环境绑定 4 项 = 250 项
 bash tests/run_presets.sh    # 预设 × 全语料（465 项）
@@ -113,7 +113,7 @@ bash tests/multiseed.sh      # VM/编码改动必跑（含绑定 5 种子扫描�
 bash tests/bind_gate_test.sh # 增量⑱ 激活门独立跑法（已内嵌 run_tests.sh）
 bash tests/env_bind_test.sh  # 增量㉑ 环境绑定独立跑法（已内嵌 run_tests.sh）
 bash tests/bench_presets.sh  # 性能快照（见 docs/performance.md）
-bash tests/gen_examples.sh   # 重生成 luraph-rs/examples/
+bash tests/gen_examples.sh   # 重生成 obsucvim/examples/
 ```
 
 当前（2026-09-08）：官方矩阵 **250/250**（含 ⑱ 绑定门控 10 项 + ㉑ 环境
@@ -150,8 +150,8 @@ bash tests/gen_examples.sh   # 重生成 luraph-rs/examples/
 | `docs/obfuscation-research.md` | 混淆调研 + 双方言实测 |
 | `docs/luraph15-analysis.md` | Luraph v15 样本分析 |
 | `docs/luraph15-defense-analysis.md` | Luraph v15 防御手段全解析（安全导向） |
-| `luraph-rs/` | Rust 本体（`src/vmgen/` = L6） |
-| `luraph-rs/tests/` | 矩阵 / 预设 / 多种子 / 语料 |
-| `luraph-rs/examples/` | 全语料混淆示例 |
+| `obsucvim/` | Rust 本体（`src/vmgen/` = L6） |
+| `obsucvim/tests/` | 矩阵 / 预设 / 多种子 / 语料 |
+| `obsucvim/examples/` | 全语料混淆示例 |
 
 当前里程碑：M0–M6 完成。
