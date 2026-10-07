@@ -298,5 +298,6 @@ upvalue scatter，而非 legacy VM 或 micro-op fusion。
 回归：`compiler::dbg::upvalue_permutation_is_bijective_and_seed_stable` 检查置换双射与
 确定性；`tests/r064_seed_stability_test.sh` 对 24 个历史失败/相邻 seed 执行完整
 Luau compile/stdout 等价，并接入 `run_tests.sh` 与 `multiseed.sh`。修复后另有 42 个
-定向 seed 的临时 sweep 0 失败。改 nested upvalue/scatter 时要保留这层父帧→子 descriptor
-映射约束，不可只验证同函数 GetUp/SetUp 的 permutation。
+定向 seed、连续 seeds `1..128` 与 `Random(20261007)` 抽取的 128 个高范围 seed 临时
+sweep，均 0 失败。改 nested upvalue/scatter 时要保留这层父帧→子 descriptor 映射约束，
+不可只验证同函数 GetUp/SetUp 的 permutation。

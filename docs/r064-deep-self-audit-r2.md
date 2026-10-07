@@ -64,6 +64,7 @@
 ### 5.3 修复验证
 
 - 修复后当前 release 对 42 个定向 seed（含此前失败 seed）扫描：全部生成成功、Luau 编译通过、stdout 与源码逐字一致（FAIL=0）。
+- 用户要求继续扩测后，另跑连续 seeds `1..128`：全部生成成功、编译通过、stdout 相同；另以 Python `Random(20261007)` 抽取 128 个高范围 seed 再扫一轮：全部通过（该 128-seed sweep 为人工验证，未加入每次 CI 门禁）。
 - 集成回归 `r064_seed_stability_test.sh` 固定覆盖 24 个历史失败 seed 与相邻/官方 seed：PASS。
 - 修复前记录的 17 个失败 seed 均在修复后的集成 sweep 中通过；失败集合不再重现。
 - 相同 seed 的 v15 产物仍确定；legacy 路径和其他 VM 用例由官方矩阵覆盖。

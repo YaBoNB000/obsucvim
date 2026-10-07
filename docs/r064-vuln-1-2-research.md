@@ -53,7 +53,7 @@ H5-P0 已封存静态 `{program,mask,step}` descriptor 表；执行时仍须从 
 
 ### 3.3 修复验证
 
-- 修复后当前 release 的 42-seed R064 扫描：失败 0；
+- 修复后当前 release 的 42-seed R064 扫描：失败 0；用户要求继续扩测后，连续 seeds `1..128` 与 Python `Random(20261007)` 另抽 128 个高范围 seed 均失败 0；
 - 集成的 24-seed R064 回归：PASS；此前记录的 17 个失败 seed 均通过；
 - `--vm` legacy 不使用 v15 scatter 的同源 seed 样本原本通过；修复保留其 identity upvalue order。
 
