@@ -122,6 +122,9 @@ const CODE_MAX_FAILS = 5;
 const LOGIN_MAX_FAILS = 5;
 const LOGIN_LOCK_MS = 60_000;
 const AUTH_BODY_LIMIT = 32 * 1024;
+const MAX_ACCOUNTS = 1000;      // 演示环境账户上限
+const EMAIL_MAX = 100;          // 邮箱长度上限（防长邮箱膨胀状态文件）
+const MAX_PENDING_REG = 200;    // 同时待验证的注册草稿上限
 
 let state = {
   users: {},      // email -> { email, nickname, salt, hash, created }
@@ -319,6 +322,26 @@ function clientIp(req) {
   return req.socket?.remoteAddress ?? "unknown";
 }
 
+/* auth 专用限流（独立桶，比引擎更严格：防垃圾注册同时不影响混淆使用） */
+const AUTH_RATE_LIMIT = 15;       // 15 次/分钟
+const AUTH_RATE_WINDOW_MS = 60_000;
+const authRateHits = new Map();
+setInterval(() => {
+  const n = Date.now();
+  for (const [ip, h] of authRateHits) if (n > h.reset) authRateHits.delete(ip);
+}, AUTH_RATE_WINDOW_MS).unref?.();
+
+function authRateLimited(ip) {
+  const n = Date.now();
+  const h = authRateHits.get(ip);
+  if (!h || n > h.reset) {
+    authRateHits.set(ip, { n: 1, reset: n + AUTH_RATE_WINDOW_MS });
+    return false;
+  }
+  h.n += 1;
+  return h.n > AUTH_RATE_LIMIT;
+}
+
 let cachedVersion; // obsucvim --version，启动后首次 health 探测并缓存
 
 function rateLimited(ip) {
@@ -395,6 +418,9 @@ const server = createServer(async (req, res) => {
 
   /* ================= 认证端点 ================= */
   const handleAuth = async () => {
+    if (authRateLimited(clientIp(req))) {
+      return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+    }
     let body;
     try {
       body = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
@@ -409,18 +435,22 @@ const server = createServer(async (req, res) => {
     if (!body || typeof body !== "object") return json(res, 400, { ok: false, error: "BAD_REQUEST" });
 
     if (req.method === "POST" && req.url === "/api/auth/captcha") {
-      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
       return json(res, 200, { ok: true, ...issueCaptcha() });
     }
 
     if (req.method === "POST" && req.url === "/api/auth/register") {
-      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
       const { email, nickname, password, captchaId, captchaAnswer } = body;
       if (
-        typeof email !== "string" || !EMAIL_RE.test(email) ||
+        typeof email !== "string" || email.length > EMAIL_MAX || !EMAIL_RE.test(email) ||
         typeof password !== "string" || password.length < 8 || password.length > 128 ||
         (nickname !== undefined && (typeof nickname !== "string" || nickname.length > 24))
       ) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      if (Object.keys(state.users).length >= MAX_ACCOUNTS) {
+        return json(res, 503, { ok: false, error: "SERVICE_FULL" });
+      }
+      if (Object.keys(pendingRegistrations).length >= MAX_PENDING_REG) {
+        return json(res, 503, { ok: false, error: "SERVICE_FULL" });
+      }
       if (!consumeCaptcha(captchaId, captchaAnswer)) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
       const key = email.trim().toLowerCase();
       if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
@@ -439,7 +469,6 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && req.url === "/api/auth/register/confirm") {
-      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
       const { email, code } = body;
       if (typeof email !== "string" || !EMAIL_RE.test(email) || typeof code !== "string") {
         return json(res, 400, { ok: false, error: "BAD_INPUT" });
@@ -464,7 +493,6 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && req.url === "/api/auth/resend") {
-      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
       const { email } = body;
       if (typeof email !== "string" || !EMAIL_RE.test(email)) return json(res, 400, { ok: false, error: "BAD_INPUT" });
       const key = email.trim().toLowerCase();
@@ -475,7 +503,6 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "POST" && req.url === "/api/auth/login") {
-      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
       const { email, password, captchaId, captchaAnswer } = body;
       if (typeof email !== "string" || typeof password !== "string") {
         return json(res, 400, { ok: false, error: "BAD_INPUT" });
