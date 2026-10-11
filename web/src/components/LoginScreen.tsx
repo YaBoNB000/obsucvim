@@ -1,9 +1,16 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BlackHoleSVG, Logo, LangSwitch } from "./Brand";
 import { Button, Icon } from "./ui";
 import { Captcha, type CaptchaHandle } from "./Captcha";
 import { useI18n, type TKey } from "../lib/i18n";
-import { useAuth } from "../lib/store";
+import { emailRegistered, useAuth } from "../lib/store";
+import { getMailProvider, sendVerificationEmail } from "../lib/mail";
+import {
+  RESEND_COOLDOWN_S,
+  clearPending,
+  requestCode,
+  verifyCode,
+} from "../lib/verify";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -11,21 +18,52 @@ export function LoginScreen() {
   const { t } = useI18n();
   const { login, register, lockRemaining } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
+  const [regStep, setRegStep] = useState<"form" | "code">("form");
   const [email, setEmail] = useState("");
   const [nickname, setNickname] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPwd, setConfirmPwd] = useState("");
   const [captchaInput, setCaptchaInput] = useState("");
+  const [codeInput, setCodeInput] = useState("");
+  const [demoCode, setDemoCode] = useState<string | null>(null);
+  const [cooldown, setCooldown] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const captchaRef = useRef<CaptchaHandle>(null);
 
   const locked = lockRemaining > 0;
 
+  // 重发冷却倒计时
+  useEffect(() => {
+    if (cooldown <= 0) return;
+    const timer = setTimeout(() => setCooldown((c) => c - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [cooldown]);
+
   const fail = (key: TKey) => {
     setErr(t(key));
     captchaRef.current?.refresh();
     setCaptchaInput("");
+  };
+
+  const startVerification = async () => {
+    // 校验通过（含人机验证）→ 发送验证码，进入第二步
+    if (emailRegistered(email)) {
+      fail("login.emailTaken");
+      return;
+    }
+    setErr(null);
+    setBusy(true);
+    try {
+      const code = requestCode(email);
+      await sendVerificationEmail(email, code);
+      setDemoCode(getMailProvider().name === "demo" ? code : null);
+      setCooldown(RESEND_COOLDOWN_S);
+      setCodeInput("");
+      setRegStep("code");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -36,6 +74,50 @@ export function LoginScreen() {
       return;
     }
     if (mode === "register") {
+      if (regStep === "code") {
+        // 第二步：验证码 → 注册
+        if (codeInput.trim().length !== 6) {
+          setErr(t("verify.wrong"));
+          return;
+        }
+        setErr(null);
+        setBusy(true);
+        try {
+          const v = verifyCode(email, codeInput);
+          if (!v.ok) {
+            const key: TKey =
+              v.reason === "expired"
+                ? "verify.expired"
+                : v.reason === "exhausted"
+                  ? "verify.exhausted"
+                  : "verify.wrong";
+            setErr(t(key));
+            setCodeInput("");
+            if (v.reason === "expired" || v.reason === "exhausted") {
+              setRegStep("form");
+              captchaRef.current?.refresh();
+              setCaptchaInput("");
+            }
+            return;
+          }
+          const res = await register(email.trim(), nickname.trim(), password);
+          if (!res.ok) {
+            const key: TKey =
+              res.error === "email_taken"
+                ? "login.emailTaken"
+                : res.error === "locked"
+                  ? "login.locked"
+                  : "login.badPassword";
+            fail(key);
+            setRegStep("form");
+          }
+          // 成功则 AuthProvider 切换 user，本组件自动卸载
+        } finally {
+          setBusy(false);
+        }
+        return;
+      }
+      // 第一步：表单校验 → 发验证码
       if (password.length < 8) {
         fail("login.pwdShort");
         return;
@@ -44,7 +126,15 @@ export function LoginScreen() {
         fail("login.pwdMismatch");
         return;
       }
-    } else if (password.length < 1) {
+      if (!captchaRef.current?.check(captchaInput)) {
+        fail("login.captchaFail");
+        return;
+      }
+      await startVerification();
+      return;
+    }
+    // 登录
+    if (password.length < 1) {
       fail("login.invalid");
       return;
     }
@@ -55,29 +145,59 @@ export function LoginScreen() {
     setErr(null);
     setBusy(true);
     try {
-      const res =
-        mode === "register"
-          ? await register(email.trim(), nickname.trim(), password)
-          : await login(email.trim(), password);
+      const res = await login(email.trim(), password);
       if (!res.ok) {
         const key: TKey =
-          res.error === "email_taken"
-            ? "login.emailTaken"
-            : res.error === "no_user"
-              ? "login.noUser"
-              : res.error === "locked"
-                ? "login.locked"
-                : "login.badPassword";
+          res.error === "no_user"
+            ? "login.noUser"
+            : res.error === "locked"
+              ? "login.locked"
+              : "login.badPassword";
         fail(key);
       }
-      // 成功则 AuthProvider 切换 user，本组件自动卸载
     } finally {
       setBusy(false);
     }
   };
 
+  const resend = async () => {
+    if (cooldown > 0 || busy) return;
+    setBusy(true);
+    try {
+      const code = requestCode(email);
+      await sendVerificationEmail(email, code);
+      setDemoCode(getMailProvider().name === "demo" ? code : null);
+      setCooldown(RESEND_COOLDOWN_S);
+      setErr(null);
+      setCodeInput("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const backToForm = () => {
+    clearPending();
+    setRegStep("form");
+    setDemoCode(null);
+    setCodeInput("");
+    setErr(null);
+    captchaRef.current?.refresh();
+    setCaptchaInput("");
+  };
+
+  const switchMode = (m: "login" | "register") => {
+    setMode(m);
+    setRegStep("form");
+    setDemoCode(null);
+    setErr(null);
+    captchaRef.current?.refresh();
+    setCaptchaInput("");
+  };
+
   const field =
     "w-full rounded-xl border border-white/[0.09] bg-black/30 px-3 py-2.5 text-[13px] text-aqua-100 placeholder:text-slate-600 focus:border-aqua-300/45 focus:outline-none";
+
+  const inCodeStep = mode === "register" && regStep === "code";
 
   return (
     <div className="relative flex min-h-screen items-center justify-center px-5 py-10">
@@ -107,129 +227,181 @@ export function LoginScreen() {
             <Logo />
           </div>
 
-          <div className="mb-5 flex items-center gap-1 rounded-xl border border-white/[0.08] bg-black/25 p-1">
-            {(["login", "register"] as const).map((m) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => {
-                  setMode(m);
-                  setErr(null);
-                  captchaRef.current?.refresh();
-                  setCaptchaInput("");
-                }}
-                className={
-                  "flex-1 cursor-pointer rounded-lg px-3 py-2 text-[13px] font-medium transition " +
-                  (mode === m
-                    ? "bg-aqua-400/20 text-aqua-100 shadow-[0_0_24px_-10px_rgba(34,226,213,0.95)_inset]"
-                    : "text-slate-400 hover:text-aqua-100")
-                }
-              >
-                {m === "login" ? t("common.login") : t("common.register")}
-              </button>
-            ))}
-          </div>
+          {!inCodeStep && (
+            <div className="mb-5 flex items-center gap-1 rounded-xl border border-white/[0.08] bg-black/25 p-1">
+              {(["login", "register"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => switchMode(m)}
+                  className={
+                    "flex-1 cursor-pointer rounded-lg px-3 py-2 text-[13px] font-medium transition " +
+                    (mode === m
+                      ? "bg-aqua-400/20 text-aqua-100 shadow-[0_0_24px_-10px_rgba(34,226,213,0.95)_inset]"
+                      : "text-slate-400 hover:text-aqua-100")
+                  }
+                >
+                  {m === "login" ? t("common.login") : t("common.register")}
+                </button>
+              ))}
+            </div>
+          )}
 
           <form onSubmit={submit} className="grid gap-3.5">
-            <label className="block">
-              <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.email")}</span>
-              <input
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                className={field}
-                disabled={locked}
-              />
-            </label>
+            {inCodeStep ? (
+              <>
+                <div className="flex items-center gap-2.5">
+                  <Icon name="shield" className="h-4 w-4 text-aqua-300" />
+                  <h2 className="text-[14px] font-semibold text-slate-100">{t("verify.title")}</h2>
+                </div>
+                <p className="text-[12px] leading-relaxed text-slate-400/85">{t("verify.sent", { email })}</p>
+                {demoCode && (
+                  <div className="rounded-xl border border-amber-300/25 bg-amber-400/[0.07] px-3 py-2.5 font-mono text-[12.5px] tracking-[0.3em] text-amber-200">
+                    {t("verify.demo", { code: demoCode })}
+                  </div>
+                )}
+                <label className="block">
+                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("verify.code")}</span>
+                  <input
+                    value={codeInput}
+                    onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                    placeholder={t("verify.codePh")}
+                    inputMode="numeric"
+                    autoFocus
+                    className={field + " text-center font-mono text-[18px] tracking-[0.5em]"}
+                    disabled={busy}
+                    autoComplete="one-time-code"
+                  />
+                </label>
+                {err && (
+                  <div className="flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-500/[0.08] px-3 py-2.5 text-[12px] text-rose-200">
+                    <Icon name="sparkle" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {err}
+                  </div>
+                )}
+                <Button type="submit" disabled={busy || codeInput.length !== 6} className="mt-1 w-full py-2.5">
+                  {busy ? t("login.working") : t("verify.verify")}
+                </Button>
+                <div className="flex items-center justify-between text-[11px]">
+                  <button type="button" onClick={backToForm} className="cursor-pointer text-slate-500 transition hover:text-aqua-200">
+                    ← {t("verify.back")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={resend}
+                    disabled={cooldown > 0 || busy}
+                    className={
+                      "cursor-pointer transition " +
+                      (cooldown > 0 ? "text-slate-600" : "text-slate-500 hover:text-aqua-200")
+                    }
+                  >
+                    {cooldown > 0 ? t("verify.resendIn", { s: cooldown }) : t("verify.resend")}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <label className="block">
+                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.email")}</span>
+                  <input
+                    type="email"
+                    autoComplete="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="you@example.com"
+                    className={field}
+                    disabled={locked}
+                  />
+                </label>
 
-            {mode === "register" && (
-              <label className="block">
-                <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.nickname")}</span>
-                <input
-                  value={nickname}
-                  onChange={(e) => setNickname(e.target.value)}
-                  placeholder={t("login.nicknamePh")}
-                  className={field}
-                  disabled={locked}
-                  maxLength={24}
-                />
-              </label>
+                {mode === "register" && (
+                  <label className="block">
+                    <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.nickname")}</span>
+                    <input
+                      value={nickname}
+                      onChange={(e) => setNickname(e.target.value)}
+                      placeholder={t("login.nicknamePh")}
+                      className={field}
+                      disabled={locked}
+                      maxLength={24}
+                    />
+                  </label>
+                )}
+
+                <label className="block">
+                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.password")}</span>
+                  <input
+                    type="password"
+                    autoComplete={mode === "login" ? "current-password" : "new-password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={mode === "register" ? t("login.pwdRule") : "••••••••"}
+                    className={field}
+                    disabled={locked}
+                  />
+                </label>
+
+                {mode === "register" && (
+                  <label className="block">
+                    <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.confirmPwd")}</span>
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      value={confirmPwd}
+                      onChange={(e) => setConfirmPwd(e.target.value)}
+                      placeholder="••••••••"
+                      className={field}
+                      disabled={locked}
+                    />
+                  </label>
+                )}
+
+                <div>
+                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.captcha")}</span>
+                  <div className="flex items-center gap-2.5">
+                    <input
+                      value={captchaInput}
+                      onChange={(e) => setCaptchaInput(e.target.value)}
+                      placeholder={t("login.captchaPh")}
+                      maxLength={8}
+                      className={field + " font-mono tracking-[0.25em] uppercase"}
+                      disabled={locked}
+                      autoComplete="off"
+                    />
+                    <Captcha ref={captchaRef} />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => captchaRef.current?.refresh()}
+                    className="mt-1.5 cursor-pointer text-[10.5px] text-slate-500 transition hover:text-aqua-200"
+                  >
+                    {t("login.refresh")}
+                  </button>
+                </div>
+
+                {err && (
+                  <div className="flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-500/[0.08] px-3 py-2.5 text-[12px] text-rose-200">
+                    <Icon name="sparkle" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    {locked ? t("login.locked", { s: lockRemaining }) : err}
+                  </div>
+                )}
+
+                <Button type="submit" disabled={busy || locked} className="mt-1 w-full py-2.5">
+                  {busy ? (
+                    <span className="animate-pulse">{t("login.working")}</span>
+                  ) : locked ? (
+                    t("login.locked", { s: lockRemaining })
+                  ) : mode === "login" ? (
+                    t("common.login")
+                  ) : (
+                    t("verify.send")
+                  )}
+                </Button>
+              </>
             )}
-
-            <label className="block">
-              <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.password")}</span>
-              <input
-                type="password"
-                autoComplete={mode === "login" ? "current-password" : "new-password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder={mode === "register" ? t("login.pwdRule") : "••••••••"}
-                className={field}
-                disabled={locked}
-              />
-            </label>
-
-            {mode === "register" && (
-              <label className="block">
-                <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.confirmPwd")}</span>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={confirmPwd}
-                  onChange={(e) => setConfirmPwd(e.target.value)}
-                  placeholder="••••••••"
-                  className={field}
-                  disabled={locked}
-                />
-              </label>
-            )}
-
-            <div>
-              <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.captcha")}</span>
-              <div className="flex items-center gap-2.5">
-                <input
-                  value={captchaInput}
-                  onChange={(e) => setCaptchaInput(e.target.value)}
-                  placeholder={t("login.captchaPh")}
-                  maxLength={8}
-                  className={field + " font-mono tracking-[0.25em] uppercase"}
-                  disabled={locked}
-                  autoComplete="off"
-                />
-                <Captcha ref={captchaRef} />
-              </div>
-              <button
-                type="button"
-                onClick={() => captchaRef.current?.refresh()}
-                className="mt-1.5 cursor-pointer text-[10.5px] text-slate-500 transition hover:text-aqua-200"
-              >
-                {t("login.refresh")}
-              </button>
-            </div>
-
-            {err && (
-              <div className="flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-500/[0.08] px-3 py-2.5 text-[12px] text-rose-200">
-                <Icon name="sparkle" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                {locked ? t("login.locked", { s: lockRemaining }) : err}
-              </div>
-            )}
-
-            <Button type="submit" disabled={busy || locked} className="mt-1 w-full py-2.5">
-              {busy ? (
-                <span className="animate-pulse">{t("login.working")}</span>
-              ) : locked ? (
-                t("login.locked", { s: lockRemaining })
-              ) : mode === "login" ? (
-                t("common.login")
-              ) : (
-                t("common.register")
-              )}
-            </Button>
           </form>
 
-          <p className="mt-5 text-[10.5px] leading-relaxed text-slate-500">{t("login.secureNote")}</p>
+          {!inCodeStep && <p className="mt-5 text-[10.5px] leading-relaxed text-slate-500">{t("login.secureNote")}</p>}
         </div>
       </div>
     </div>

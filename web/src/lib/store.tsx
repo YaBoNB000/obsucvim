@@ -85,6 +85,11 @@ async function hashPassword(password: string, salt: string): Promise<string> {
   return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0") + (h1 ^ h2).toString(16).padStart(8, "0");
 }
 
+/** 邮箱是否已注册（注册流程发送验证码前检查） */
+export function emailRegistered(email: string): boolean {
+  return !!loadUsers()[email.trim().toLowerCase()];
+}
+
 function loadUsers(): Record<string, StoredUser> {
   try {
     const raw = localStorage.getItem(USERS_KEY);
