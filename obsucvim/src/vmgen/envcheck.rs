@@ -18,6 +18,16 @@
 //! All arithmetic stays double-exact: d < 2^28, multiplier < 2^16, deltas
 //! bounded by 2^32 ⇒ products < 2^44.
 //!
+//! Tier 2 (bound executor builds, --env-check + --bind-executor) adds the
+//! Roblox/executor surface: Enum identity interning, Random determinism
+//! (fixed seed + clone fork), task semantics, member-call error forms,
+//! Instance/signal lifecycle, and a conditional clonefunction probe.
+//! External-object members are accessed EXCLUSIVELY via ["string"] keys:
+//! sanitize_frag renames identifier members after non-global receivers,
+//! so z:Method() / z.field would break (the Phase-1 lesson, inverted:
+//! string keys are the SAFE form for foreign objects, identifier fields
+//! for our own tables).
+//!
 //! Scope (honest): every challenge here is a CONSTANT challenge — it
 //! defeats wrong-semantics mock environments, not record/replay tooling
 //! that captured a real run (L1 stays uncovered after the CORE-ATTEST
@@ -217,9 +227,143 @@ d=(d*{p}+(okl and 0 or 1))%{m}",
 	)
 }
 
+// ---------------------------------------------------------------------------
+// Tier 2: Roblox/executor surface (bound builds only)
+// ---------------------------------------------------------------------------
+
+/// Enum identity interning: FromName/FromValue/property must all return
+/// the SAME EnumItem userdata; typeof tags; locked metatables.
+fn g_enum(rng: &mut Rng) -> String {
+	format!(
+		"local z1=Enum.HumanoidRigType
+local z2=z1[\"FromName\"](z1,\"R6\") local z3=z1[\"FromName\"](z1,\"R6\") local z4=z1[\"FromValue\"](z1,0) local z5=z1[\"R6\"]
+local k4=(z2==z3 and z2==z4 and z2==z5 and z2[\"Name\"]==\"R6\" and z2[\"Value\"]==0 and z2[\"EnumType\"]==z1)
+d=(d*{p1}+(k4 and 0 or 1))%{m}
+local k5=(typeof(Enum)==\"Enums\" and typeof(z1)==\"Enum\" and typeof(z2)==\"EnumItem\" and getmetatable(Enum)==\"The metatable is locked\" and getmetatable(z1)==\"The metatable is locked\" and getmetatable(z2)==\"The metatable is locked\")
+d=(d*{p2}+(k5 and 0 or 1))%{m}",
+		p1 = mul(rng),
+		p2 = mul(rng),
+		m = MOD,
+	)
+}
+
+/// Random determinism: the fixed-seed exact sequence is a Roblox runtime
+/// FACT (constant challenge); the self-consistency parts (same seed =>
+/// same stream, Clone forks state) are randomized per build and need no
+/// build-time mirror.
+fn g_random(rng: &mut Rng) -> String {
+	let s1 = rng.int(1, 2_147_483_646);
+	let s2 = rng.int(1, 2_147_483_646);
+	format!(
+		"local z6=Random.new(51018400)
+local k6=(z6[\"NextNumber\"](z6)==0.9598971928030796)
+d=(d*{p1}+(k6 and 0 or 1))%{m}
+local k7=(z6[\"NextInteger\"](z6,189,1164)==889)
+d=(d*{p2}+(k7 and 0 or 1))%{m}
+local k8=(z6[\"NextNumber\"](z6)==0.027539190730015265)
+d=(d*{p3}+(k8 and 0 or 1))%{m}
+local z7=Random.new({s1}) local z8=Random.new({s1})
+local k9=(z7[\"NextNumber\"](z7)==z8[\"NextNumber\"](z8))
+d=(d*{p4}+(k9 and 0 or 1))%{m}
+local z9=Random.new({s2}) z9[\"NextNumber\"](z9)
+local za=z9[\"Clone\"](z9) local zb=za[\"NextNumber\"](za)
+local zc=za[\"Clone\"](za) local zd=zc[\"NextNumber\"](zc) local ze=za[\"NextNumber\"](za)
+local k10=(zd==ze)
+d=(d*{p5}+(k10 and 0 or 1))%{m}",
+		p1 = mul(rng),
+		p2 = mul(rng),
+		p3 = mul(rng),
+		p4 = mul(rng),
+		p5 = mul(rng),
+		s1 = s1,
+		s2 = s2,
+		m = MOD,
+	)
+}
+
+/// task semantics: spawn runs immediately and returns a thread; delay
+/// returns a NOT-yet-run thread that cancel() stops; wait type-errors.
+fn g_task(rng: &mut Rng) -> String {
+	format!(
+		"local zf=false
+local zg=task.spawn(function() zf=true end)
+local k11=(zf and type(zg)==\"thread\")
+d=(d*{p1}+(k11 and 0 or 1))%{m}
+local zh=false
+local zi=task.delay(86400, function() zh=true end)
+local zj,zl=pcall(task.cancel, zi)
+local k12=(type(zi)==\"thread\" and not zh and zj)
+d=(d*{p2}+(k12 and 0 or 1))%{m}
+local k13=(not pcall(task.wait, {{}}))
+d=(d*{p3}+(k13 and 0 or 1))%{m}",
+		p1 = mul(rng),
+		p2 = mul(rng),
+		p3 = mul(rng),
+		m = MOD,
+	)
+}
+
+/// Member-call error form: dot-calling a member function must produce the
+/// "Expected ':' not '.'" error (prefix match, no format dependency).
+fn g_member(rng: &mut Rng) -> String {
+	format!(
+		"local zm=game:GetService(\"RunService\")
+local zn,zo=pcall(zm[\"IsStudio\"], nil)
+local k14=(not zn and type(zo)==\"string\" and string.find(zo, \"Expected ':' not '.'\", 1, true)~=nil)
+d=(d*{p1}+(k14 and 0 or 1))%{m}
+local zp,zq=pcall(game.GetChildren, nil)
+local k15=(not zp and type(zq)==\"string\" and string.find(zq, \"Expected ':' not '.'\", 1, true)~=nil)
+d=(d*{p2}+(k15 and 0 or 1))%{m}",
+		p1 = mul(rng),
+		p2 = mul(rng),
+		m = MOD,
+	)
+}
+
+/// Instance surface: typeof/ClassName/parent-child, signal Connect/
+/// Disconnect lifecycle, destroyed-parent lock.
+fn g_instance(rng: &mut Rng) -> String {
+	format!(
+		"local zr=Instance.new(\"Folder\") local zs=Instance.new(\"Folder\")
+zs[\"Parent\"]=zr
+local k16=(typeof(zr)==\"Instance\" and zr[\"ClassName\"]==\"Folder\" and type(zr[\"Name\"])==\"string\" and #zr[\"GetChildren\"](zr)==1)
+d=(d*{p1}+(k16 and 0 or 1))%{m}
+local zu=zr[\"ChildRemoved\"]
+local zv=zu[\"Connect\"](zu, function() end)
+local k17=(zv[\"Connected\"]==true)
+zv[\"Disconnect\"](zv)
+k17=k17 and zv[\"Connected\"]==false
+d=(d*{p2}+(k17 and 0 or 1))%{m}
+zr[\"Destroy\"](zr)
+local zx,zy=pcall(function() zs[\"Parent\"]=zr end)
+local k18=(not zx and type(zy)==\"string\" and string.find(zy, \"locked\", 1, true)~=nil)
+d=(d*{p3}+(k18 and 0 or 1))%{m}",
+		p1 = mul(rng),
+		p2 = mul(rng),
+		p3 = mul(rng),
+		m = MOD,
+	)
+}
+
+/// Executor surface (conditional, mirrors the blueprint: absent global
+/// folds 0): clonefunction must return a working callable.
+fn g_exec(rng: &mut Rng) -> String {
+	format!(
+		"local k19=true
+if type(_G[\"clonefunction\"])==\"function\" then
+local zz=_G[\"clonefunction\"](pcall)
+local z10,z11=zz(function() return 37 end)
+k19=(type(zz)==\"function\" and z10 and z11==37)
+end
+d=(d*{p}+(k19 and 0 or 1))%{m}",
+		p = mul(rng),
+		m = MOD,
+	)
+}
+
 /// Build the one-shot check factory. Returns `return function() ... end`
 /// whose body computes the rolling difference (0 on a clean environment).
-pub fn build(rng: &mut Rng) -> String {
+pub fn build(rng: &mut Rng, tier2: bool) -> String {
 	let mut groups = vec![
 		g_arith(rng),
 		g_string(rng),
@@ -229,6 +373,18 @@ pub fn build(rng: &mut Rng) -> String {
 		g_coroutine(rng),
 		g_compile(rng),
 	];
+	// Tier-2 draws stay inside this branch so tier2=false keeps the exact
+	// Phase-1 RNG schedule (byte-identical --env-check-only artifacts).
+	if tier2 {
+		groups.extend([
+			g_enum(rng),
+			g_random(rng),
+			g_task(rng),
+			g_member(rng),
+			g_instance(rng),
+			g_exec(rng),
+		]);
+	}
 	rng.shuffle(&mut groups);
 	let mut out = String::from("return function()\n");
 	// Identity refs captured at entry; the trailing group re-compares them
@@ -241,6 +397,13 @@ local r13=tostring local r14=bit32.bxor local r15=buffer.create
 local r16=string.byte local r17=coroutine.resume\n",
 	);
 	out.push_str("local d=0\n");
+	if tier2 {
+		out.push_str(
+			"local r18=game local r19=Enum local r20=Instance local r21=Random \
+local r22=task local r23=game.GetService local r24=Enum.HumanoidRigType \
+local r25=Instance.new local r26=Random.new local r27=task.spawn\n",
+		);
+	}
 	for g in &groups {
 		out.push_str(g);
 		out.push('\n');
@@ -250,11 +413,21 @@ local r16=string.byte local r17=coroutine.resume\n",
 and coroutine==r6 and loadstring==r7 and select==r8 and pcall==r9 and setmetatable==r10 
 and rawequal==r11 and rawget==r12 and tostring==r13 and bit32.bxor==r14 
 and buffer.create==r15 and string.byte==r16 and coroutine.resume==r17)\n
-d=(d*{p}+(q1 and 0 or 1))%{m}\n
-return d\nend",
+d=(d*{p}+(q1 and 0 or 1))%{m}\n",
 		p = mul(rng),
 		m = MOD,
 	));
+	if tier2 {
+		out.push_str(&format!(
+			"local q2=(game==r18 and Enum==r19 and Instance==r20 and Random==r21 \
+and task==r22 and game.GetService==r23 and Enum.HumanoidRigType==r24 \
+and Instance.new==r25 and Random.new==r26 and task.spawn==r27)\n\
+d=(d*{p}+(q2 and 0 or 1))%{m}\n",
+			p = mul(rng),
+			m = MOD,
+		));
+	}
+	out.push_str("return d\nend");
 	out
 }
 
@@ -265,7 +438,7 @@ mod tests {
 	#[test]
 	fn factory_shape_is_stable() {
 		let mut rng = Rng::new(20261011);
-		let src = build(&mut rng);
+		let src = build(&mut rng, false);
 		assert!(src.starts_with("return function()\n"));
 		assert!(src.ends_with("return d\nend"));
 		// every group present regardless of shuffle order
@@ -299,13 +472,53 @@ mod tests {
 		}
 		// determinism: same seed, same source
 		let mut rng2 = Rng::new(20261011);
-		assert_eq!(src, build(&mut rng2));
+		assert_eq!(src, build(&mut rng2, false));
+	}
+
+		#[test]
+	fn tier2_flag_changes_source_and_keeps_tier1_shape() {
+		let src = build(&mut Rng::new(20261011), true);
+		for needle in [
+			"Enum.HumanoidRigType",
+			"Random.new(51018400)",
+			"0.9598971928030796",
+			"task.spawn(function()",
+			"\"Expected ':' not '.'\"",
+			"Instance.new(\"Folder\")",
+			"_G[\"clonefunction\"]",
+			"local q2=(game==r18",
+		] {
+			assert!(src.contains(needle), "tier2 missing {needle}");
+		}
+		// 17 tier-1 + 10 tier-2 identity captures, nothing else rN-prefixed
+		assert_eq!(
+			src.match_indices("local r")
+				.filter(|(i, _)| src[*i + 7..].chars().next().is_some_and(|c| c.is_ascii_digit()))
+				.count(),
+			27
+		);
+		let mut rng2 = Rng::new(20261011);
+		assert_eq!(src, build(&mut rng2, true));
+	}
+
+	#[test]
+	fn tier2_false_contains_no_roblox_surface() {
+		let src = build(&mut Rng::new(20261011), false);
+		for banned in [
+			"Enum.",
+			"Random.new",
+			"task.spawn",
+			"Instance.new",
+			"clonefunction",
+		] {
+			assert!(!src.contains(banned), "tier2=false leaked {banned}");
+		}
 	}
 
 	#[test]
 	fn randomization_varies_across_seeds() {
-		let a = build(&mut Rng::new(1));
-		let b = build(&mut Rng::new(2));
+		let a = build(&mut Rng::new(1), false);
+		let b = build(&mut Rng::new(2), false);
 		assert_ne!(a, b);
 	}
 }

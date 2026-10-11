@@ -394,7 +394,7 @@ fn sanitize_frag(
 	static GLOBALS: &[&str] = &[
 		"table", "string", "math", "bit32", "os", "debug", "buffer",
 		"task", "coroutine", "utf8", "_G", "game", "workspace", "Instance",
-		"Vector3", "Vector2", "Enum",
+		"Vector3", "Vector2", "Enum", "Random",
 	];
 	let is_global = |w: &str| GLOBALS.contains(&w);
 	// ㉘-A 关键: 运行时 C 函数创建的字段名禁改（table.pack 的 .n）
@@ -2637,7 +2637,9 @@ pub fn generate(
 		// path stay inside this conditional so flag-off builds keep the
 		// exact historical RNG schedule (byte-identical output).
 		let env_src = if env_check {
-			Some(super::envcheck::build(rng))
+			// WTF-PORT tier 2 rides the bound executor build only; all
+			// other flag combinations keep the exact Phase-1 schedule.
+			Some(super::envcheck::build(rng, env_check && executor_bind))
 		} else {
 			None
 		};
@@ -3431,7 +3433,7 @@ pub fn generate(
 			"string", "table", "math", "bit32", "os", "debug", "buffer",
 			"task", "coroutine", "loadstring", "load", "getfenv", "setfenv",
 			"newproxy", "collectgarbage", "warn", "utf8", "typeof", "_G",
-			"_VERSION", "Vector3", "Vector2", "Instance", "Enum", "game",
+			"_VERSION", "Vector3", "Vector2", "Instance", "Enum", "Random", "game",
 			"workspace", "tick", "wait",
 		] {
 			frag_reserved.insert(g.to_string());

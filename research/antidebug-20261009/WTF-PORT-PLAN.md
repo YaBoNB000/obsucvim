@@ -1,7 +1,7 @@
 # 环境认证方案 WTF-PORT v1（取代 C6-IMPL）
 
 **日期：2026-10-11。决策：用户拍板废弃 CORE-ATTEST（nonce/本地镜像路线），改用 WTF 式检查组路线。**
-**状态更新（同日）：Phase 1 已实施并通过全矩阵（`--env-check`，见 docs/implementation-plan.md 更新日志）；实施中发现的两条误报账目见 §5。**
+**状态更新（同日）：Phase 1（`--env-check`）与 Phase 2（`--env-check --bind-executor` 双开 tier-2）均已实施并通过全矩阵，见 docs/implementation-plan.md 更新日志；误报账目见 §5。**
 **C6-IMPL 已归档（文末注明 superseded），其 L1（反录制重放）能力随换轨放弃，如实记录。**
 **蓝本：`research/luraph-envcheck-analysis/luraph-envcheck.lua`（真 Luraph 环境校验载荷，1,131 行）。**
 

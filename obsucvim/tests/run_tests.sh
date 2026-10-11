@@ -218,6 +218,12 @@ if ! bash "$ROOT/tests/wtf_port_test.sh"; then
 	fail=$((fail + 1)); failed+=("wtf-port/env-check")
 fi
 
+# WTF-PORT Phase 2: tier-2 Roblox/executor battery (fragment mock matrix).
+if ! bash "$ROOT/tests/wtf_port_tier2_test.sh"; then
+	echo "FAIL [wtf-port-tier2] tier-2 environment check regression"
+	fail=$((fail + 1)); failed+=("wtf-port/tier2")
+fi
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then
