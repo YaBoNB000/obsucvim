@@ -22,7 +22,7 @@ print("suda")
 1. **英文水印**：首行品牌注释（所有输出路径统一）。
 2. **WTF-PORT tier-1**：buffer/bit32/string/元表/协程/freeze/loadstring 常量挑战 + 17 身份引用。
 3. **WTF-PORT tier-2**（双开才发射）：六组 executor/Roblox 语义检查 + 27 身份引用。
-4. **executor 认证绑定**（`--bind-executor`，IronBrew2 守卫移植）：产物只在完整 Roblox executor 环境内正确运行。
+4. **executor 认证绑定**（`--bind-executor`，IronBrew2 守卫移植）：裸 Luau 与 API 面齐全但内省不保真的半吊子桩均被拒（E2/E3 口径）；**但探针感知的环境层伪造可绕过**——见下"诚实边界"与 `research/env-recorder-20261011/REPORT-R067.md`（2026-10-11 实测）。
 
 ## 验证矩阵（本产物实测，2026-10-11）
 
@@ -45,8 +45,9 @@ print("suda")
 
 ## 诚实边界
 
-- **正面运行等价未验证**：产物在真 executor 里打印 `suda` 这一点未实证——闭包内省（getconstants/getupvalues/getproto/setupvalue）在裸 Luau 无法保真构造（E3 桩已实证被拒），只能真执行器验证（Phase 0 真机清单未执行）。
-- **L1 反录制重放空缺不变**：tier-2 全常量挑战杀的是语义不忠实的 mock 环境；真环境录制重放照常通过（见 `research/env-recorder-20261011/REPORT.md`——tier-1 电池已实证可录放；tier-2 未测）。
+- **执行器绑定已被探针感知桩攻破（2026-10-11 实测，产物级）**：攻击者在影子环境重定向 `getfenv(0)` + `debug.info` 分类 + getconstants 靠调用探针闭包 + setupvalue no-op，即可在裸 Luau CLI 让本产物打印 `suda`（17 闸门全过，74 条 API 调用序列完整）；D 级录放（buffer×30 + unpack×3 录制）同样两阶段成功、leftover=0，且桩 seed 无关（seed 42 同样沦陷）。E2/E3 只覆盖朴素桩。详见 `research/env-recorder-20261011/REPORT-R067.md`（含加固提案）。
+- **正面运行等价未验证**：产物在真 executor 里打印 `suda` 这一点仍未实证（Phase 0 真机清单未执行）。
+- **L1 反录制重放空缺不变**：tier-2 全常量挑战杀的是语义不忠实的 mock 环境；真环境录制重放照常通过（见 `research/env-recorder-20261011/REPORT.md`——tier-1 电池已实证可录放；tier-2 本次随整产物一并实证可录放）。
 - 片段级 EVD=0 证明的是**本构建的电池在忠实 mock 下差值为零**（接线正确），不等于整产物在 executor 内正向运行。
 
 ## 生成与验证

@@ -156,6 +156,8 @@
 
 ## 4. 更新日志
 
+- **2026-10-11（R067 记录器实测：exguard 被探针感知桩绕过）**：对 R067 绑定态产物跑记录器/智能桩战役（`research/env-recorder-20261011/REPORT-R067.md`）：①探针感知环境桩（getfenv(0) 影子重定向 + debug.info 分类 + getconstants 靠调用 + setupvalue no-op）在裸 Luau CLI 直接跑通产物（`suda`，17 闸门全过）；②D 级录放两阶段成功（buffer×30 + unpack×3，leftover=0）；③桩 seed 无关（seed 42 同沦陷）——一次逆向全部产物通杀。半吊子桩对照死于 gate 10。E2/E3 的 fail-closed 结论限定为朴素桩类；README-R067 的"只在完整 executor 内正确运行"声明已按实测修正。顺带发现 `OBSUCVIM_EXG_TRACE=1` 诊断构建生成期 parse error（未修，待独立增量）。加固提案（gate13 反 no-op / 探针去可调用化 / 调用计数 / identifyexecutor 折令牌 / getfenv 入 prims）见报告，未实施。研究零产线改动。
+
 - **2026-10-11（R067 绑定态 canary）**：源码 `print("suda")`（同 R066）以 `--env-check --bind-executor --seed 67067` 混淆为 `handoff/R067_target.luau.lua`：229,422 字节，SHA-256 `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6`（对比 R066 tier-1 +38,553B = tier-2 六组 + 27 身份引用 + exguard）。验证：语法过、同 seed 逐字节确定、无明文 `suda`、E4 13 词零痕迹；裸 CLI 报错死亡（E2 口径内）、E3 半吊子桩被拒（STUBDEAD）；**本构建** ENVFRAG 工厂 × 忠实 Roblox mock 正向 EVD=0 + 9 破坏钩子全非零；executor_guard 6/6、tier2 18/18 复跑绿（无引擎改动）。R066 保留为 tier-1 canary 与记录器研究样本。诚实边界：真 executor 正向运行未实证（闭包内省裸 Luau 无法保真构造）；L1 反录制重放空缺不变（tier-2 未测录放）。详见 `handoff/README-R067.md`。
 
 - **2026-10-11（R066 源码更新）**：canary 源码改为 `print("suda")`（14 字节），同命令重混淆：190,869 字节，SHA-256 `e80ce06364dde17c449d86953a9d9f731eef4252345c11662372a297e6e3c892`；语法过、stdout 同源码、确定、无明文 `suda`、bit32 mock 静默死亡。
