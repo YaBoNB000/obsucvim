@@ -156,6 +156,8 @@
 
 ## 4. 更新日志
 
+- **2026-10-11（R067 绑定态 canary）**：源码 `print("suda")`（同 R066）以 `--env-check --bind-executor --seed 67067` 混淆为 `handoff/R067_target.luau.lua`：229,422 字节，SHA-256 `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6`（对比 R066 tier-1 +38,553B = tier-2 六组 + 27 身份引用 + exguard）。验证：语法过、同 seed 逐字节确定、无明文 `suda`、E4 13 词零痕迹；裸 CLI 报错死亡（E2 口径内）、E3 半吊子桩被拒（STUBDEAD）；**本构建** ENVFRAG 工厂 × 忠实 Roblox mock 正向 EVD=0 + 9 破坏钩子全非零；executor_guard 6/6、tier2 18/18 复跑绿（无引擎改动）。R066 保留为 tier-1 canary 与记录器研究样本。诚实边界：真 executor 正向运行未实证（闭包内省裸 Luau 无法保真构造）；L1 反录制重放空缺不变（tier-2 未测录放）。详见 `handoff/README-R067.md`。
+
 - **2026-10-11（R066 源码更新）**：canary 源码改为 `print("suda")`（14 字节），同命令重混淆：190,869 字节，SHA-256 `e80ce06364dde17c449d86953a9d9f731eef4252345c11662372a297e6e3c892`；语法过、stdout 同源码、确定、无明文 `suda`、bit32 mock 静默死亡。
 
 - **2026-10-11（R066 canary 更新为当前产品形态）**：`handoff/R066_target.luau.lua` 以 `--env-check --seed 66066` 重生成（190,974 字节，SHA-256 `e2cb9423d1e02ba702bdc3489540b48a95b71b9b27f229f6e07998aab7c65e13`）——水印 + tier-1 环境检查组的完整产品形态展示。验证：语法过、stdout 同源码、同 seed 确定、干净克隆环境照常输出、bit32 错值 mock 静默死亡。上一版（H3-6 修复后水印 canary）由本版取代，历史哈希见 `handoff/README-R066.md`。
