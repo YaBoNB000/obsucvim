@@ -44,7 +44,7 @@ bad() { fail=$((fail + 1)); echo "FAIL $1"; }
 # --- 1. clean equivalence across seeds --------------------------------------
 for seed in 42 4242 999999 20261011; do
 	out="$TMP/clean_$seed.lua"
-	if ! "$TOOL" --env-check --seed "$seed" "$CANARY_SRC" "$out" 2>"$TMP/err"; then
+	if ! "$TOOL" --env-check --no-bind-executor --seed "$seed" "$CANARY_SRC" "$out" 2>"$TMP/err"; then
 		bad "clean-build seed=$seed: $(head -1 "$TMP/err")"
 		continue
 	fi
@@ -53,13 +53,13 @@ for seed in 42 4242 999999 20261011; do
 done
 
 # --- 2. determinism ----------------------------------------------------------
-"$TOOL" --env-check --seed 42 "$CANARY_SRC" "$TMP/d1.lua"
-"$TOOL" --env-check --seed 42 "$CANARY_SRC" "$TMP/d2.lua"
+"$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY_SRC" "$TMP/d1.lua"
+"$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY_SRC" "$TMP/d2.lua"
 if cmp -s "$TMP/d1.lua" "$TMP/d2.lua"; then ok; else bad "determinism"; fi
 
 # --- 3. flag-off byte identity vs committed examples ------------------------
 for name in basics multival; do
-	"$TOOL" --seed 42 "$ROOT/tests/cases/$name.lua" "$TMP/off_$name.lua" 2>/dev/null
+	"$TOOL" --no-bind-executor --seed 42 "$ROOT/tests/cases/$name.lua" "$TMP/off_$name.lua" 2>/dev/null
 	if cmp -s "$TMP/off_$name.lua" "$ROOT/examples/$name.v15.luau.lua"; then
 		ok
 	else
@@ -72,7 +72,7 @@ done
 # environment with exactly one check group broken. A NO-OP mock must
 # reproduce the canary output first (harness sanity gate) -- only then do
 # the kill-mocks count.
-"$TOOL" --env-check --seed 42 "$CANARY_SRC" "$TMP/canary_artifact.lua" 2>/dev/null
+"$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY_SRC" "$TMP/canary_artifact.lua" 2>/dev/null
 
 mk_mock() {
 	# $1 name, $2 mock-fragment path, $3 output harness path

@@ -63,7 +63,7 @@ check_case() {
   local out="$TMP/$label.lua" wrapper="$TMP/$label-hook.lua"
   local expected="$TMP/$label.expected" actual="$TMP/$label.actual"
   timeout 120 "$LUAU" "$src" > "$expected"
-  "$TOOL" --preset v15 --dialect luau --seed "$seed" "$src" "$out"
+  "$TOOL" --preset v15 --dialect luau --no-bind-executor --seed "$seed" "$src" "$out"
   timeout 60 "$LUAUC" "$out" >/dev/null
   python3 "$TMP/make_hook.py" "$out" "$wrapper"
   timeout 120 "$LUAU" "$wrapper" > "$actual"

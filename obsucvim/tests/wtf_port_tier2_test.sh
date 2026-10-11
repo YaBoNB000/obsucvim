@@ -56,12 +56,20 @@ if [[ "$out" == *"T2"* ]]; then bad "tier2 CLI must die silently"; else ok; fi
 # snapshots (SHA-256 pinned from the Phase-1 binary, canary = print("T2", 6*7))
 EC_SHA=8e919865f41c29c82ca01601442401c777b3a9eccf79d764a8175226c19e3c5f
 BIND_SHA=0ca2ce87fc7d12047d7b20f8cb8712b0f0fd0f480cb1a85d4e1f6dec88099258
-"$TOOL" --env-check --seed 42 "$CANARY" "$TMP/ec_only.lua"
-[ "$(sha256sum "$TMP/ec_only.lua" | cut -d' ' -f1)" == "$EC_SHA" ] && ok || bad "env-only parity vs Phase-1 snapshot"
+# 2026-10-11 起绑定默认开启：tier-1-only / 关闭态的对照锚均需显式退绑；
+# tier-2 双开(现在的 --env-check 默认形态)与显式绑定保持 Phase-1/2 快照。
+"$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY" "$TMP/ec_only.lua"
+[ "$(sha256sum "$TMP/ec_only.lua" | cut -d' ' -f1)" == "$EC_SHA" ] && ok || bad "env-only(tier-1) parity vs Phase-1 snapshot"
 "$TOOL" --bind-executor --seed 42 "$CANARY" "$TMP/bind_only.lua"
 [ "$(sha256sum "$TMP/bind_only.lua" | cut -d' ' -f1)" == "$BIND_SHA" ] && ok || bad "bind-only parity vs Phase-1 snapshot"
-"$TOOL" --seed 42 "$ROOT/tests/cases/basics.lua" "$TMP/off.lua" 2>/dev/null
+"$TOOL" --no-bind-executor --seed 42 "$ROOT/tests/cases/basics.lua" "$TMP/off.lua" 2>/dev/null
 if cmp -s "$TMP/off.lua" "$ROOT/examples/basics.v15.luau.lua"; then ok; else bad "flag-off parity"; fi
+# 默认构建现在即绑定态：== 显式 --bind-executor，且 --env-check 默认形态
+# (tier-1+tier-2+守卫) == 双开显式形态
+"$TOOL" --seed 42 "$CANARY" "$TMP/def_only.lua"
+cmp -s "$TMP/def_only.lua" "$TMP/bind_only.lua" && ok || bad "default build == explicit bind (new base layer)"
+"$TOOL" --env-check --seed 42 "$CANARY" "$TMP/ec_default.lua"
+cmp -s "$TMP/ec_default.lua" "$TMP/t2a.lua" && ok || bad "env-check default form == both-flags form"
 
 # --- 2. fragment level (mock matrix) ----------------------------------------
 # Extract the ENVFRAG factory from the tier-2 build's template dump.

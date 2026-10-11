@@ -130,14 +130,54 @@ else
 	exbad "E5 同种子两次构建不一致"
 fi
 
-# E6: 开关关闭 ⇒ 管线不受守卫代码影响（回退保障）
-"$TOOL" --preset v15 --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_a.lua" 2>/dev/null
-"$TOOL" --preset v15 --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_b.lua" 2>/dev/null
+# E6: 开关关闭(--no-bind-executor) ⇒ 与 2026-10-11 前的默认管线逐字节一致
+# （回退保障；SHA 锚取自翻转默认前的二进制输出）
+OFF_SHA=fcbba5a9918a0ef25a82d2d3b170fec41f049fd807e830010919453021eb666c
+"$TOOL" --preset v15 --no-bind-executor --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_a.lua" 2>/dev/null
+"$TOOL" --preset v15 --no-bind-executor --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_b.lua" 2>/dev/null
 if cmp -s "$EXDIR/off_a.lua" "$EXDIR/off_b.lua"; then
-	exok "E6 开关关闭字节级确定(管线不受守卫代码影响)"
+	exok "E6 开关关闭字节级确定"
 else
 	exbad "E6 开关关闭两次构建不一致"
 fi
+if [ "$(sha256sum "$EXDIR/off_a.lua" | cut -d' ' -f1)" == "$OFF_SHA" ]; then
+	exok "E6b --no-bind-executor 与翻转前默认逐字节一致(SHA 锚)"
+else
+	exbad "E6b --no-bind-executor 字节偏离翻转前默认"
+fi
 
-echo "EXECUTOR GUARD: PASS $((6-EXFAIL))/6   FAIL $EXFAIL"
+# E7: 底层保护默认开启（2026-10-11）——默认构建即绑定态：
+# (a) 与显式 --bind-executor 逐字节一致 (b) 与 --no-bind 构建不同
+# (c) 裸 Luau 运行不得产出正确载荷（同 E2 口径）
+"$TOOL" --preset v15 --seed 4242 "$EXDIR/src.lua" "$EXDIR/def.lua" 2>/dev/null
+if cmp -s "$EXDIR/def.lua" "$EXDIR/bound.lua"; then
+	exok "E7a 默认构建 == 显式绑定构建(逐字节)"
+else
+	exbad "E7a 默认构建与显式绑定不一致"
+fi
+if cmp -s "$EXDIR/def.lua" "$EXDIR/off_a.lua"; then
+	exbad "E7b 默认构建竟等价于关闭态"
+else
+	exok "E7b 默认构建携带守卫(≠关闭态)"
+fi
+out7="$(timeout 30 "$LUAU" "$EXDIR/def.lua" 2>&1)"; rc7=$?
+if [[ "$out7" != *"$EXPECT"* ]]; then
+	exok "E7c 默认构建裸 Luau 无正确输出 (rc=$rc7)"
+else
+	exbad "E7c 默认构建竟在裸 Luau 输出正确载荷"
+fi
+
+# E8: 非 v15 管线——隐式默认静默降级、显式请求仍报错
+if "$TOOL" --preset low --seed 4242 "$EXDIR/src.lua" "$EXDIR/low_i.lua" 2>/dev/null; then
+	exok "E8a 非 v15 隐式默认降级为关闭(构建成功)"
+else
+	exbad "E8a 非 v15 隐式默认应静默降级却失败"
+fi
+if "$TOOL" --preset low --bind-executor --seed 4242 "$EXDIR/src.lua" "$EXDIR/low_x.lua" 2>/dev/null; then
+	exbad "E8b 非 v15 显式 --bind-executor 应报错"
+else
+	exok "E8b 非 v15 显式 --bind-executor 报错"
+fi
+
+echo "EXECUTOR GUARD: PASS $((11-EXFAIL))/11   FAIL $EXFAIL"
 [ "$EXFAIL" -eq 0 ]

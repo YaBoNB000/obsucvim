@@ -27,7 +27,7 @@ ACTUAL="$TMP/actual.txt"
 "$LUAU" "$SRC" > "$EXPECTED"
 count=0
 for seed in $SEEDS; do
-  if ! "$TOOL" --preset v15 --dialect luau --seed "$seed" "$SRC" "$OUT" 2>"$TMP/build.err"; then
+  if ! "$TOOL" --preset v15 --dialect luau --no-bind-executor --seed "$seed" "$SRC" "$OUT" 2>"$TMP/build.err"; then
     echo "FAIL [build] R064 seed=$seed: $(head -1 "$TMP/build.err")" >&2
     exit 1
   fi

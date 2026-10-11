@@ -49,7 +49,7 @@ return raw:sub(2, 5), raw:upper(), raw:rep(2), left.answer,
        left .. right, -right, #left, callable(4)
 LUA
 
-"$TOOL" --preset v15 --dialect luau --seed 845064 \
+"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 845064 \
     "$TMP/source.lua" "$TMP/target.lua"
 "$LUAC" "$TMP/target.lua" >/dev/null
 

@@ -20,7 +20,7 @@ rm -f "$OUT"/*.lua
 # so full coverage keeps the repo light.
 for case in "$ROOT"/tests/cases/*.lua; do
 	base="$(basename "$case" .lua)"
-	"$TOOL" --preset v15 --dialect luau --seed $SEED "$case" "$OUT/$base.v15.luau.lua"
+	"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed $SEED "$case" "$OUT/$base.v15.luau.lua"
 done
 # ㊴: 激活门 (--bind-key) 已退役——绑定态示例不再生成。
 echo "generated $(ls "$OUT" | wc -l) examples in $OUT"

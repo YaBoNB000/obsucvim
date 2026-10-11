@@ -90,7 +90,9 @@ Roblox 执行器即可直接运行，输出与源码逐字节一致。防护来�
 因要求运行时传参、产物无法直接运行，与产品核心需求冲突，**㊴ 起整体退役：
 功能代码、`tests/bind_gate_test.sh`、绑定态示例均已移除**（移除经字节级
 验证对未绑定产物零影响）。现役防线 = 结构层（⑲⑳㉚-㉟）+ 环境绑定
-（㉑）+ 计时守卫（㉙/㊳）。详见 `docs/plan-resemblance-and-security.md`。
+（㉑）+ 计时守卫（㉙/㊳）+ executor 认证绑定（增量51，2026-10-11 起
+v15 默认开启，`--no-bind-executor` 退出）。详见
+`docs/plan-resemblance-and-security.md`。
 
 ### 增量㉑：环境绑定（`--bind-env roblox`，仅 v15）
 

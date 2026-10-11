@@ -48,7 +48,7 @@ EXP="$(timeout 30 "$LUAU" "$SRC" 2>&1)"
 
 # ---- 生成绑定态产物（调试转储 TSRC 供顺序守卫使用）----
 rm -f /tmp/vm_tsrc.lua
-if ! OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --bind-env roblox \
+if ! OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --no-bind-executor --bind-env roblox \
 		--seed 42 "$SRC" "$FS_TMP/bound.lua" 2>"$FS_TMP/err"; then
 	gf "build" "绑定态构建失败: $(head -1 "$FS_TMP/err")"
 else

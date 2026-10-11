@@ -36,7 +36,7 @@ gf() { echo "FAIL [charhook:$1] $2"; fail=$((fail+1)); failed+=("charhook/$1"); 
 mk_hook() {
 	local pay="$1" out="$2" art="$3"
 	printf 'local x = "%s"\nprint(x)\n' "$pay" > "$CH_TMP/src_$pay.lua"
-	"$TOOL" --preset v15 --dialect luau --seed 41207963 "$CH_TMP/src_$pay.lua" "$art" 2>/dev/null || return 1
+	"$TOOL" --preset v15 --no-bind-executor --dialect luau --seed 41207963 "$CH_TMP/src_$pay.lua" "$art" 2>/dev/null || return 1
 	python3 - "$pay" "$art" "$out" <<'PYEOF'
 import sys
 pay, art, out = sys.argv[1], sys.argv[2], sys.argv[3]

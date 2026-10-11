@@ -31,7 +31,7 @@ for preset in $PRESETS; do
 		dialects="luau"
 		for d in $dialects; do
 			out="$TMP/${preset}__${base}__${d}.lua"
-			if ! timeout 90 "$TOOL" --preset "$preset" --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/err.txt"; then
+			if ! timeout 90 "$TOOL" --preset "$preset" --dialect "$d" --no-bind-executor --seed 42 "$case" "$out" 2>"$TMP/err.txt"; then
 				echo "FAIL [tool] $preset $base ($d): $(head -1 "$TMP/err.txt")"
 				fail=$((fail + 1)); failed+=("$preset/$base/$d/tool")
 				continue

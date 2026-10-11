@@ -55,7 +55,7 @@ expected="$(timeout 120 "$LUAU" "$SRC" 2>&1)"
 for profile in v15 legacy; do
   OUT="$TMP/$profile.lua"
   if [ "$profile" = v15 ]; then
-    "$TOOL" --preset v15 --dialect luau --seed 64067 "$SRC" "$OUT"
+    "$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 64067 "$SRC" "$OUT"
   else
     "$TOOL" --vm --dialect luau --seed 64067 "$SRC" "$OUT"
   fi

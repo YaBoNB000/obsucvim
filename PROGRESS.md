@@ -1,5 +1,8 @@
 # 项目进度（PROGRESS）
 
+> 2026-10-11 executor 认证绑定默认开启（底层保护层）：`--bind-executor` 翻转为 v15 默认，`--no-bind-executor` 退出；非 v15 隐式降级（legacy 五预设字节不变）、显式报错。`--env-check` 默认形态=tier-1+tier-2+守卫（==旧双开字节；`--env-check --seed 67067`==R067）。全矩阵绿：cargo 47+1+4、169/169、370/370、multiseed 0、D 20/1 持平、executor_guard 11/11（E6b SHA 锚）、tier2 20/20、37 示例 --no-bind 字节不变。诚实边界：防裸环境/半吊子桩，不防探针感知桩（REPORT-R067.md 实测）。
+
+
 > 2026-10-11 WTF-PORT Phase 2 上线：`--env-check --bind-executor` 双开时发射 Roblox/executor 档检查（Enum 身份缓存/Random 确定性/task 语义/成员调用形态/Instance 面/clonefunction，身份全等扩至 27 引用）；既有 flag 组合字节不变（SHA 对照）。tier-2 测试 18/18：忠实 mock 正向 EVD=0，9 个破坏钩子全杀。全矩阵绿（cargo 47+1+4、169/169、370/370、guard 6/6、faithful 5/5、multiseed 0、D 20/1）。工程教训：sanitize_frag 有两个保留列表（标识符/字段），`Random` 类新全局要同时加两处；外部对象成员只能 `["字符串键"]` 访问。真机验证未做；L1 反录制重放空缺不变。
 
 > 2026-10-11 WTF-PORT Phase 1 上线：`--env-check`（v15）纯 Luau 环境检查组——7 组随机化常量挑战 + 首尾身份全等，差值经 SLT/MZD 双 lane 无分支静默投毒（WTF.txt 检查类别的重实现，CORE-ATTEST 已废弃归档）。全矩阵绿：cargo 45+1+4、run_tests 169/169（含 wtf-port 16/16：noop 自证 + 7 mock 全击杀）、presets 370/370、multiseed 0、防御审计 20/1 持平、S1–S5 5/5；开关关闭逐字节一致。实施中修掉两个自身缺陷（净化改名不安全的字符串键模式、coroutine.running 跨变体不恒定——后者按 52 类误报记入账本并移除）。诚实边界：常量挑战杀错误语义 mock，不防真环境录制重放（L1 空缺仍在）。

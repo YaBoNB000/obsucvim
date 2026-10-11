@@ -64,12 +64,22 @@ struct Options {
 	/// target runtime (real-Luraph mechanism). v15-only. Output then
 	/// only loads in the target runtime (not the CLI test matrix).
 	bind_env: Option<String>,
-	/// 增量51 (IronBrew2 executor 认证守卫移植): emit the EXG attestation
-	/// fragment — output only RUNS inside a full Roblox-script-executor
-	/// environment (identifyexecutor/getgenv/getconstants/... semantics);
-	/// anywhere else dies by wrong key. v15-only. Bound output is syntax-
-	/// checked only (not part of the run-equivalence matrix).
+	/// 增量51 (IronBrew2 executor 认证守卫移植) — **默认开启（2026-10-11 起，
+	/// 底层保护层）**: emit the EXG attestation fragment — output only RUNS
+	/// inside a full Roblox-script-executor environment (identifyexecutor/
+	/// getgenv/getconstants/... semantics); anywhere else dies by wrong key.
+	/// v15-only: on non-v15 presets the guard cannot ride the fragment
+	/// chain — an implicit default is silently skipped there (an explicit
+	/// --bind-executor still errors). Bound output is syntax-checked only
+	/// (not part of the run-equivalence matrix). Opt out with
+	/// --no-bind-executor. NOTE: this raises the bar against naive env
+	/// fakes, NOT against probe-aware ones (see
+	/// research/env-recorder-20261011/REPORT-R067.md).
 	bind_executor: bool,
+	/// true when --bind-executor / --no-bind-executor appeared explicitly
+	/// (an explicit --bind-executor on a non-v15 preset is a hard error;
+	/// the silent default just degrades to off there).
+	bind_given: bool,
 	/// WTF-PORT Phase 1 (2026-10-11): pure-Luau environment check battery
 	/// (envcheck.rs) — randomized constant challenges over buffer/bit32/
 	/// string/metatable/coroutine/freeze/loadstring semantics plus an
@@ -234,9 +244,12 @@ Options:
                          挑战 + 首尾身份全等；差值折入 SLT/MZD 静默投毒。
                          防错误语义 mock 环境，不防真环境录制重放。
   --bind-executor        增量51 executor 认证绑定（仅 v15，IronBrew2 守卫
-                         移植）：产物只在完整 Roblox executor 环境内正确运行
-                         （identifyexecutor/getgenv/闭包内省语义全认证），
-                         其他环境错钥静默死亡。绑定态产物只做语法校验。
+                         移植）——**默认开启（底层保护层）**：产物只在完整
+                         Roblox executor 环境内正确运行（identifyexecutor/
+                         getgenv/闭包内省语义全认证），其他环境错钥静默死亡。
+                         绑定态产物只做语法校验。非 v15 管线自动降级为关闭。
+  --no-bind-executor     显式关闭 executor 认证绑定（等价于 2026-10-11 前
+                         的默认产物；运行等价测试矩阵用此旗标）。
   -h, --help             show this help
   --version              show version
 ",
@@ -268,7 +281,9 @@ fn main() -> ExitCode {
 	do_junk: true,
 	junk_n: 2,
 		bind_env: None,
-		bind_executor: false,
+		// 底层保护默认开启：v15 产物默认携带 executor 认证守卫。
+		bind_executor: true,
+		bind_given: false,
 		env_check: false,
 	};
 	let mut i = 0;
@@ -359,7 +374,14 @@ fn main() -> ExitCode {
 				}
 				opts.bind_env = Some(args[i].clone());
 			}
-			"--bind-executor" => opts.bind_executor = true,
+			"--bind-executor" => {
+				opts.bind_executor = true;
+				opts.bind_given = true;
+			}
+			"--no-bind-executor" => {
+				opts.bind_executor = false;
+				opts.bind_given = true;
+			}
 			"--env-check" => opts.env_check = true,
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
@@ -433,16 +455,23 @@ fn main() -> ExitCode {
 			return ExitCode::FAILURE;
 		}
 	}
-	// 增量51 (executor 认证绑定): v15-only——守卫令牌揉进 v15 的块/常量池
-	// 钥匙流（EXG 碎片 + RTFRAG 穿线）。绑定态产物不进运行等价矩阵——
-	// 认证要求完整 executor 语义，裸 Luau/Roblox Studio/半吊子桩都会死，
-	// 只保留语法校验 + 负面实证（详见 tests/executor_guard_test.sh）。
+	// 增量51 (executor 认证绑定) — 底层保护层，默认开启（2026-10-11）：
+	// 守卫令牌揉进 v15 的块/常量池钥匙流（EXG 碎片 + RTFRAG 穿线）。
+	// v15-only：非 v15 管线没有可乘的碎片链——显式 --bind-executor 仍报错
+	// （用户明确要它却给不了），隐式默认则静默降级为关闭（legacy 产物字节
+	// 不变）。绑定态产物不进运行等价矩阵——认证要求完整 executor 语义，
+	// 裸 Luau/Roblox Studio/半吊子桩都会死，只保留语法校验 + 负面实证
+	// （详见 tests/executor_guard_test.sh）。--no-bind-executor 退出。
 	if opts.bind_executor && !(opts.do_vm && opts.do_v15) {
-		eprintln!(
-			"error: --bind-executor requires --preset v15\n  \
-				the executor attestation guard rides the v15 fragment chain."
-		);
-		return ExitCode::FAILURE;
+		if opts.bind_given {
+			eprintln!(
+				"error: --bind-executor requires --preset v15\n  \
+				\tthe executor attestation guard rides the v15 fragment chain."
+			);
+			return ExitCode::FAILURE;
+		}
+		// implicit default on a non-v15 pipeline: degrade to off
+		opts.bind_executor = false;
 	}
 	// WTF-PORT Phase 1: the check battery rides the v15 boot/RT lanes.
 	if opts.env_check && !(opts.do_vm && opts.do_v15) {

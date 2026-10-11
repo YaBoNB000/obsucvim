@@ -37,7 +37,7 @@ for case in "$ROOT"/tests/cases/*.lua; do
 	dialects="luau"
 	for d in $dialects; do
 		out="$TMP/${base}__${d}.lua"
-		if ! "$TOOL" --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then
+		if ! "$TOOL" --no-bind-executor --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then
 			echo "FAIL [tool]  $base ($d): $(head -1 "$TMP/tool_err.txt")"
 			fail=$((fail + 1)); failed+=("$base/$d/tool")
 			continue
