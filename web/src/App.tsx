@@ -8,8 +8,7 @@ import { History } from "./pages/History";
 import { Docs } from "./pages/Docs";
 import { Account } from "./pages/Account";
 import { I18nProvider, useI18n, type TKey } from "./lib/i18n";
-import { AuthProvider, HistoryProvider, useAuth, type HistoryItem } from "./lib/store";
-import type { ObfuscationOptions } from "./lib/engine";
+import { AuthProvider, HistoryProvider, useAuth } from "./lib/store";
 
 const TITLES: Record<PageId, { title: TKey; subtitle: TKey }> = {
   workspace: { title: "ws.title", subtitle: "ws.subtitle" },
@@ -23,7 +22,6 @@ function Console() {
   const { user } = useAuth();
   const [page, setPage] = useState<PageId>("workspace");
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [prefill, setPrefill] = useState<{ code: string; options: ObfuscationOptions; key: number } | null>(null);
 
   if (!user) return <LoginScreen />;
 
@@ -37,15 +35,8 @@ function Console() {
 
       <main className="px-4 py-5 sm:px-6 sm:py-6">
         <div key={page} className="animate-rise">
-          {page === "workspace" && <Workspace prefill={prefill} />}
-          {page === "history" && (
-            <History
-              onLoad={(item: HistoryItem) => {
-                setPrefill({ code: item.code, options: item.options, key: Date.now() });
-                setPage("workspace");
-              }}
-            />
-          )}
+          {page === "workspace" && <Workspace />}
+          {page === "history" && <History />}
           {page === "docs" && <Docs />}
           {page === "account" && <Account />}
         </div>

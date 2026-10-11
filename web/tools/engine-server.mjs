@@ -100,13 +100,57 @@ function appliedNames(o) {
 
 function json(res, status, body) {
   const text = JSON.stringify(body);
+  // 同源代理（Vite dev）访问，不需要 CORS；去掉通配符开放
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
-    "access-control-allow-origin": "*",
-    "access-control-allow-headers": "content-type",
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "x-content-type-options": "nosniff",
+    "cache-control": "no-store",
   });
   res.end(text);
+}
+
+/* ---------------- 安全：严格选项白名单 ---------------- */
+const ALLOWED_OPTIONS = new Set([
+  "minify", "mangle", "strings", "flatten", "junk",
+  "numbers", "body", "vmSealStrings", "seed",
+]);
+
+function validateOptions(o) {
+  if (!o || typeof o !== "object" || Array.isArray(o)) return "BAD_OPTIONS";
+  for (const k of Object.keys(o)) {
+    if (!ALLOWED_OPTIONS.has(k)) return "BAD_OPTIONS";
+  }
+  for (const k of ["minify", "mangle", "strings", "flatten", "junk", "numbers", "body", "vmSealStrings"]) {
+    if (k in o && typeof o[k] !== "boolean") return "BAD_OPTIONS";
+  }
+  if ("seed" in o && (typeof o.seed !== "string" || o.seed.length > 64)) return "BAD_OPTIONS";
+  return null;
+}
+
+/* ---------------- 安全：按 IP 限流（30 次/分钟） ---------------- */
+const RATE_LIMIT = 30;
+const RATE_WINDOW_MS = 60_000;
+const rateHits = new Map(); // ip -> { n, reset }
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, h] of rateHits) if (now > h.reset) rateHits.delete(ip);
+}, RATE_WINDOW_MS).unref?.();
+
+function clientIp(req) {
+  const xf = req.headers["x-forwarded-for"];
+  if (typeof xf === "string" && xf.length > 0) return xf.split(",")[0].trim();
+  return req.socket?.remoteAddress ?? "unknown";
+}
+
+function rateLimited(ip) {
+  const now = Date.now();
+  const h = rateHits.get(ip);
+  if (!h || now > h.reset) {
+    rateHits.set(ip, { n: 1, reset: now + RATE_WINDOW_MS });
+    return false;
+  }
+  h.n += 1;
+  return h.n > RATE_LIMIT;
 }
 
 async function readBody(req, limit) {
@@ -147,6 +191,13 @@ const server = createServer(async (req, res) => {
     const { source, options } = body || {};
     if (typeof source !== "string" || !options || typeof options !== "object") {
       return json(res, 400, { ok: false, error: "BAD_REQUEST" });
+    }
+    if (rateLimited(clientIp(req))) {
+      return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+    }
+    const optErr = validateOptions(options);
+    if (optErr) {
+      return json(res, 400, { ok: false, error: optErr });
     }
     const inputBytes = Buffer.byteLength(source, "utf8");
     if (inputBytes > MAX_SOURCE_BYTES) {

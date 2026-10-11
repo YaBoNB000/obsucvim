@@ -1,19 +1,16 @@
+import { useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { useHistory, type HistoryItem } from "../lib/store";
-import { appliedNames, type ObfuscationOptions } from "../lib/engine";
-import { Button, GlassCard, Icon, Pill } from "../components/ui";
+import { Button, GlassCard, Icon, Modal, Pill } from "../components/ui";
+import { CodeViewer } from "../components/CodeArea";
 import { cn } from "../utils/cn";
 
 const fmt = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
 
-function chips(o: ObfuscationOptions) {
-  const all = appliedNames(o);
-  return all.slice(0, 5);
-}
-
-export function History({ onLoad }: { onLoad: (item: HistoryItem) => void }) {
+export function History() {
   const { t, lang } = useI18n();
   const { items, clear } = useHistory();
+  const [viewing, setViewing] = useState<HistoryItem | null>(null);
 
   if (items.length === 0) {
     return (
@@ -58,17 +55,6 @@ export function History({ onLoad }: { onLoad: (item: HistoryItem) => void }) {
                 </span>
               </div>
 
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                {chips(item.options).map((c) => (
-                  <span
-                    key={c}
-                    className="rounded-lg border border-aqua-300/15 bg-aqua-400/[0.06] px-2 py-0.5 font-mono text-[10px] text-aqua-100/85"
-                  >
-                    {c}
-                  </span>
-                ))}
-              </div>
-
               <div className="mt-3 flex flex-wrap items-center gap-4 text-[11px] text-slate-400/80">
                 <span>
                   {t("result.inputSize")}: <span className="tabular text-slate-300">{fmt(item.inputBytes)}</span>
@@ -77,17 +63,14 @@ export function History({ onLoad }: { onLoad: (item: HistoryItem) => void }) {
                   {t("history.size")}: <span className="tabular text-slate-300">{fmt(item.outputBytes)}</span>
                 </span>
                 <span>
-                  {t("ws.appliedCount", { n: appliedNames(item.options).length })}
-                </span>
-                <span>
                   {t("history.seed")}: <span className="font-mono text-slate-300">{item.seed}</span>
                 </span>
               </div>
             </div>
 
-            <Button variant="outline" className="px-3 py-2" onClick={() => onLoad(item)}>
-              <Icon name="download" className="h-4 w-4 rotate-180" />
-              {t("history.load")}
+            <Button variant="outline" className="px-3 py-2" onClick={() => setViewing(item)}>
+              <Icon name="eye" className="h-4 w-4" />
+              {t("history.view")}
             </Button>
           </div>
 
@@ -106,6 +89,31 @@ export function History({ onLoad }: { onLoad: (item: HistoryItem) => void }) {
           </details>
         </GlassCard>
       ))}
+
+      <Modal
+        open={viewing !== null}
+        onClose={() => setViewing(null)}
+        title={`obsucvim_${viewing?.seed ?? "out"}.luau`}
+        wide
+      >
+        {viewing && (
+          <div className="grid gap-3 p-4">
+            <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400/80">
+              <span className="rounded-lg border border-white/[0.08] bg-black/25 px-2 py-0.5 font-mono">v15</span>
+              <span>
+                {t("result.inputSize")}: <span className="tabular text-slate-300">{fmt(viewing.inputBytes)}</span>
+              </span>
+              <span>
+                {t("history.size")}: <span className="tabular text-slate-300">{fmt(viewing.outputBytes)}</span>
+              </span>
+              <span>
+                {t("history.seed")}: <span className="font-mono text-aqua-100">{viewing.seed}</span>
+              </span>
+            </div>
+            <CodeViewer code={viewing.code} height="58vh" />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

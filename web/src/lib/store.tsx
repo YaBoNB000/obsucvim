@@ -18,15 +18,107 @@ export interface User {
   plan: "free";
 }
 
+export type AuthError =
+  | "bad_input"
+  | "email_taken"
+  | "no_user"
+  | "bad_password"
+  | "locked";
+
+interface AuthResult {
+  ok: boolean;
+  error?: AuthError;
+}
+
 interface AuthValue {
   user: User | null;
   remaining: number;
   usedToday: number;
   limit: number;
-  login: (email: string, password: string) => void;
+  register: (email: string, nickname: string, password: string) => Promise<AuthResult>;
+  login: (email: string, password: string) => Promise<AuthResult>;
   logout: () => void;
   consumeQuota: () => void;
   outOfQuota: boolean;
+  /** 登录锁定剩余秒数（连续失败 5 次触发） */
+  lockRemaining: number;
+}
+
+/* ---------------- 本地账户注册表（密码加盐哈希，绝不存明文） ---------------- */
+interface StoredUser {
+  email: string;
+  nickname: string;
+  salt: string;
+  hash: string;
+  created: number;
+}
+
+const USERS_KEY = "obsucvim.users";
+const LOCK_KEY = "obsucvim.authlock";
+const MAX_FAILS = 5;
+const LOCK_SECONDS = 60;
+
+function randomSalt(): string {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function hashPassword(password: string, salt: string): Promise<string> {
+  const data = new TextEncoder().encode(salt + ":" + password);
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  // 非安全上下文降级（四轮 FNV）：弱于 SHA-256，但仍避免明文落盘
+  let h1 = 0x811c9dc5 ^ 0xdeadbeef;
+  let h2 = 0x01000193 ^ 0x41c6ce57;
+  for (const b of data) {
+    h1 = Math.imul(h1 ^ b, 16777619) >>> 0;
+    h2 = Math.imul(h2 + b + 1, 2246822519) >>> 0;
+    h1 = (h1 ^ h2) >>> 0;
+  }
+  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0") + (h1 ^ h2).toString(16).padStart(8, "0");
+}
+
+function loadUsers(): Record<string, StoredUser> {
+  try {
+    const raw = localStorage.getItem(USERS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as Record<string, StoredUser>) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUsers(users: Record<string, StoredUser>) {
+  try {
+    localStorage.setItem(USERS_KEY, JSON.stringify(users));
+  } catch {
+    /* ignore */
+  }
+}
+
+function readLock(): { fails: number; until: number } {
+  try {
+    const raw = localStorage.getItem(LOCK_KEY);
+    const parsed = raw ? (JSON.parse(raw) as { fails: number; until: number }) : null;
+    return parsed ?? { fails: 0, until: 0 };
+  } catch {
+    return { fails: 0, until: 0 };
+  }
+}
+
+function writeLock(lock: { fails: number; until: number }) {
+  try {
+    localStorage.setItem(LOCK_KEY, JSON.stringify(lock));
+  } catch {
+    /* ignore */
+  }
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -73,11 +165,61 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(timer);
   }, []);
 
-  const login = useCallback((email: string, _password: string) => {
-    const u: User = { email, nickname: email.split("@")[0], plan: "free" };
-    localStorage.setItem(USER_KEY, JSON.stringify(u));
-    setUser(u);
+  const [lockRemaining, setLockRemaining] = useState(0);
+
+  useEffect(() => {
+    const tick = () => {
+      const lock = readLock();
+      setLockRemaining(Math.max(0, Math.ceil((lock.until - Date.now()) / 1000)));
+    };
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
   }, []);
+
+  const signIn = useCallback((u: StoredUser) => {
+    const session: User = { email: u.email, nickname: u.nickname, plan: "free" };
+    localStorage.setItem(USER_KEY, JSON.stringify(session));
+    writeLock({ fails: 0, until: 0 });
+    setUser(session);
+  }, []);
+
+  const register = useCallback(
+    async (email: string, nickname: string, password: string): Promise<AuthResult> => {
+      const key = email.trim().toLowerCase();
+      const users = loadUsers();
+      if (users[key]) return { ok: false, error: "email_taken" };
+      const salt = randomSalt();
+      const hash = await hashPassword(password, salt);
+      const su: StoredUser = { email: key, nickname: nickname.trim() || key.split("@")[0], salt, hash, created: Date.now() };
+      users[key] = su;
+      saveUsers(users);
+      signIn(su);
+      return { ok: true };
+    },
+    [signIn],
+  );
+
+  const login = useCallback(
+    async (email: string, password: string): Promise<AuthResult> => {
+      const lock = readLock();
+      if (lock.until > Date.now()) return { ok: false, error: "locked" };
+      const key = email.trim().toLowerCase();
+      const users = loadUsers();
+      const su = users[key];
+      if (!su) return { ok: false, error: "no_user" };
+      const hash = await hashPassword(password, su.salt);
+      if (hash !== su.hash) {
+        const fails = lock.fails + 1;
+        writeLock({ fails, until: fails >= MAX_FAILS ? Date.now() + LOCK_SECONDS * 1000 : 0 });
+        if (fails >= MAX_FAILS) setLockRemaining(LOCK_SECONDS);
+        return { ok: false, error: fails >= MAX_FAILS ? "locked" : "bad_password" };
+      }
+      signIn(su);
+      return { ok: true };
+    },
+    [signIn],
+  );
 
   const logout = useCallback(() => {
     localStorage.removeItem(USER_KEY);
@@ -93,11 +235,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       limit: DAILY_FREE_QUOTA,
       remaining: Math.max(0, DAILY_FREE_QUOTA - usedToday),
       outOfQuota: usedToday >= DAILY_FREE_QUOTA,
+      register,
       login,
       logout,
       consumeQuota,
+      lockRemaining,
     }),
-    [user, usedToday, login, logout, consumeQuota],
+    [user, usedToday, register, login, logout, consumeQuota, lockRemaining],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

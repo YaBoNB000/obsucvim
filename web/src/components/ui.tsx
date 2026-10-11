@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { cn } from "../utils/cn";
 
 /* ------------------------------ 玻璃卡片 ------------------------------ */
@@ -343,3 +343,51 @@ const ICONS: Record<IconName, ReactNode> = {
     </>
   ),
 };
+
+/* ------------------------------- 弹窗 ------------------------------- */
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  wide,
+}: {
+  open: boolean;
+  onClose: () => void;
+  title?: string;
+  children: ReactNode;
+  wide?: boolean;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <GlassCard
+        padded={false}
+        className={`relative z-10 flex max-h-[86vh] w-full flex-col overflow-hidden ${wide ? "max-w-4xl" : "max-w-lg"}`}
+      >
+        <div className="flex items-center gap-3 border-b border-white/[0.07] px-5 py-3.5">
+          <span className="h-1.5 w-1.5 rounded-full bg-aqua-300 shadow-[0_0_10px_rgba(34,226,213,0.9)]" />
+          <h3 className="min-w-0 flex-1 truncate text-[13.5px] font-semibold text-slate-100">{title}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            className="cursor-pointer rounded-lg border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-[11px] text-slate-400 transition hover:border-rose-300/30 hover:text-rose-200"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">{children}</div>
+      </GlassCard>
+    </div>
+  );
+}

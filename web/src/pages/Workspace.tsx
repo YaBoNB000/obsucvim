@@ -8,7 +8,7 @@ import {
   type ObfuscationOptions,
   type ObfuscationResult,
 } from "../lib/engine";
-import { Button, GlassCard, Icon } from "../components/ui";
+import { Button, GlassCard, Icon, Modal } from "../components/ui";
 import { LuaEditor } from "../components/CodeArea";
 import { OptionsPanel } from "../components/OptionsPanel";
 import { ResultPanel } from "../components/ResultPanel";
@@ -16,7 +16,7 @@ import { useI18n } from "../lib/i18n";
 import { loadDefaults, useAuth, useHistory } from "../lib/store";
 import { cn } from "../utils/cn";
 
-export function Workspace({ prefill }: { prefill?: { code: string; options: ObfuscationOptions } | null }) {
+export function Workspace() {
   const { t } = useI18n();
   const { outOfQuota, consumeQuota } = useAuth();
   const { push } = useHistory();
@@ -27,26 +27,19 @@ export function Workspace({ prefill }: { prefill?: { code: string; options: Obfu
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [dupConfirm, setDupConfirm] = useState(false);
+  const lastRun = useRef<{ src: string; key: string } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const inputBytes = useMemo(() => new TextEncoder().encode(code).length, [code]);
   const tooLarge = inputBytes > MAX_SOURCE_BYTES;
-
-  useEffect(() => {
-    if (prefill) {
-      setCode(prefill.code);
-      setOptions(prefill.options);
-      setResult(null);
-      setError(null);
-    }
-  }, [prefill]);
 
   // 工作台是常驻挂载的（切页不卸载），这里负责回到顶部
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
-  const run = useCallback(async () => {
+  const runImpl = useCallback(async () => {
     if (running) return;
     if (!code.trim()) {
       setError(t("ws.empty"));
@@ -66,6 +59,7 @@ export function Workspace({ prefill }: { prefill?: { code: string; options: Obfu
     try {
       const res = await runObfuscation(code, options);
       setResult(res);
+      lastRun.current = { src: code, key: JSON.stringify(options) };
       consumeQuota();
       push({
         seed: res.stats.seeded,
@@ -84,16 +78,27 @@ export function Workspace({ prefill }: { prefill?: { code: string; options: Obfu
     }
   }, [code, options, running, tooLarge, outOfQuota, consumeQuota, push, t]);
 
+  const tryRun = useCallback(() => {
+    if (running) return;
+    // 相同源码 + 相同配置的重复混淆 → 弹窗确认
+    const last = lastRun.current;
+    if (last && last.src === code && last.key === JSON.stringify(options)) {
+      setDupConfirm(true);
+      return;
+    }
+    void runImpl();
+  }, [running, code, options, runImpl]);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
         e.preventDefault();
-        void run();
+        tryRun();
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [run]);
+  }, [tryRun]);
 
   const readFile = async (file: File) => {
     const text = await file.text();
@@ -191,7 +196,7 @@ export function Workspace({ prefill }: { prefill?: { code: string; options: Obfu
         </div>
 
         <div className="flex flex-wrap items-center gap-3 border-t border-white/[0.07] px-4 py-3">
-          <Button onClick={run} disabled={running || !code.trim() || tooLarge || outOfQuota} className="min-w-[168px]">
+          <Button onClick={tryRun} disabled={running || !code.trim() || tooLarge || outOfQuota} className="min-w-[168px]">
             {running ? (
               <>
                 <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-ink-1000/40 border-t-ink-1000" />
@@ -262,6 +267,26 @@ export function Workspace({ prefill }: { prefill?: { code: string; options: Obfu
           hasInput={Boolean(code.trim())}
         />
       </div>
+
+      <Modal open={dupConfirm} onClose={() => setDupConfirm(false)} title={t("ws.dupTitle")}>
+        <div className="grid gap-4 p-5">
+          <p className="text-[12.5px] leading-relaxed text-slate-300/90">{t("ws.dupText")}</p>
+          <div className="flex items-center justify-end gap-2.5">
+            <Button variant="ghost" className="px-4 py-2" onClick={() => setDupConfirm(false)}>
+              {t("common.cancel")}
+            </Button>
+            <Button
+              className="px-4 py-2"
+              onClick={() => {
+                setDupConfirm(false);
+                void runImpl();
+              }}
+            >
+              {t("ws.dupGo")}
+            </Button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }
