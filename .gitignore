@@ -20,3 +20,10 @@ redteam/harness_meta*.lua
 redteam/harness_protos*.lua
 redteam/harness_debug.lua
 redteam/harness_wrap.lua
+
+# Local Discord / deployment credentials (never commit)
+.env
+.env.*
+!.env.example
+.venv/
+.pytest_cache/

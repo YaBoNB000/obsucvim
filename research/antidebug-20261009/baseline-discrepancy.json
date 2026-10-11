@@ -1,0 +1,300 @@
+{
+  "scope": "existing engine discrepancy discovered BEFORE candidate adapter execution",
+  "seed": 10770986916448599986,
+  "source": "obsucvim/tests/cases/stress_multival.lua",
+  "source_sha256": "d24ba659e0e5ec187bc4232172e5a23ebd8c850fcc0eff41564fc11c4216f5bd",
+  "modes": [
+    {
+      "mode": "v15",
+      "target_sha256": "1f7b0c8443391bc8c995a8e64f335223c39bbdb285d57e5ec9c89567f13593be",
+      "runs": [
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        }
+      ],
+      "diff": "--- source\n+++ v15\n@@ -15,7 +15,7 @@\n binop:\t11\n catop:\ta!\n idxop:\t1\n-fwd1:\t1\t2\t3\n+fwd1:\t1\t9\t3\n fwd2:\t3\n mix1:\t9\t3\n mix2:\t9\t0\n"
+    },
+    {
+      "mode": "v15-unminified",
+      "target_sha256": "1f7b0c8443391bc8c995a8e64f335223c39bbdb285d57e5ec9c89567f13593be",
+      "runs": [
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "4be52a49b0dee273a7ef561dfa7b4298eb127929df62774cebfcd002abba8a11"
+        }
+      ],
+      "diff": "--- source\n+++ v15-unminified\n@@ -15,7 +15,7 @@\n binop:\t11\n catop:\ta!\n idxop:\t1\n-fwd1:\t1\t2\t3\n+fwd1:\t1\t9\t3\n fwd2:\t3\n mix1:\t9\t3\n mix2:\t9\t0\n"
+    },
+    {
+      "mode": "v15-no-string-seal",
+      "target_sha256": "dbadf336ff0316d384468ea02315269c04b420e624b2840c89a8953a016f0ad7",
+      "runs": [
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        },
+        {
+          "code": 0,
+          "matches": false,
+          "stdout_sha256": "f8b116175b901d213212a8cf03525a235c1749e5e8130cff3e3c6274aeab1a89"
+        }
+      ],
+      "diff": "--- source\n+++ v15-no-string-seal\n@@ -15,7 +15,7 @@\n binop:\t11\n catop:\ta!\n idxop:\t1\n-fwd1:\t1\t2\t3\n+fwd1:\t1\t2\tnil\n fwd2:\t3\n mix1:\t9\t3\n mix2:\t9\t0\n"
+    },
+    {
+      "mode": "legacy-vm",
+      "target_sha256": "9af1f90d1bf1e342a22b88ee11a5d96a40c646c01ab592f0179fe40050dc989f",
+      "runs": [
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        }
+      ],
+      "diff": ""
+    },
+    {
+      "mode": "low",
+      "target_sha256": "07e250a99ac3763d929c69cc9c75aabc2f6ea5953cc279490d00621f93640aba",
+      "runs": [
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        },
+        {
+          "code": 0,
+          "matches": true,
+          "stdout_sha256": "a69afa9882c8a527beb224f051b8a02e377f0c2e6b22baf351eb57449092de25"
+        }
+      ],
+      "diff": ""
+    }
+  ],
+  "reduction_trials": 107,
+  "original_lines": 105,
+  "reduced_lines": 31,
+  "reduced_source_stdout": "fwd1:\t1\t2\t3\ntailnil:\tnil\n",
+  "reduced_target_stdout": "fwd1:\t1\ttable: 0x000056525aad9690\t3\ntailnil:\tnil\n",
+  "root_cause": "not established; no production fix attempted",
+  "elapsed_seconds": 9.167415656000003
+}

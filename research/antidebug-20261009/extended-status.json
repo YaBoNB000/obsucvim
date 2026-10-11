@@ -1,0 +1,71 @@
+{
+  "scope": "unchanged production engine + external root-call adapter, NOT per-instruction integration",
+  "state": "running",
+  "planned_seconds": 18000.0,
+  "rng_seed": 2026100905,
+  "engine_sha256": "e8ad35d8fc4de22308644fe29271fd3f07961ad429102c2f58b76cabb53d75c8",
+  "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+  "corpus_files": 39,
+  "attempted": 1225,
+  "passed": 1217,
+  "failed": 8,
+  "failures": [
+    {
+      "index": 100,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 3525582012654347846,
+      "reason": "production-output-difference:0"
+    },
+    {
+      "index": 106,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 12552293900259736015,
+      "reason": "production-output-difference:0"
+    },
+    {
+      "index": 493,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 2087317583667228854,
+      "reason": "production-output-difference:0"
+    },
+    {
+      "index": 519,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 16157647636138958350,
+      "reason": "production-output-difference:0"
+    },
+    {
+      "index": 549,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 10407755351155896398,
+      "reason": "production-output-difference:0"
+    },
+    {
+      "index": 651,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 6026130555315556988,
+      "reason": "production-output-difference:0"
+    },
+    {
+      "index": 743,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 2791381894518475382,
+      "reason": "production-output-difference:0"
+    },
+    {
+      "index": 1218,
+      "case": "obsucvim/tests/cases/stress_multival.lua",
+      "seed": 12675743238487333885,
+      "reason": "production-output-difference:0"
+    }
+  ],
+  "source_reference_failures": [],
+  "elapsed_seconds": 1087.352833215,
+  "root_adapter_cpu_ratio_median": 0.9995484521135742,
+  "min_target_bytes": 167386,
+  "max_target_bytes": 380840,
+  "file_integrity": {
+    "checked": 353,
+    "changed": []
+  }
+}

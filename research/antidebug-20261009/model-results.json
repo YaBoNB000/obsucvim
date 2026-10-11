@@ -1,0 +1,30 @@
+{
+  "scope": "independent models, NOT production VM security tests",
+  "seed": 20261009,
+  "rounds": 20000,
+  "elapsed_seconds": 1.5384095900000148,
+  "counts": {
+    "clean_receipts": 160000,
+    "cross_frame_rejected": 160000,
+    "replay_rejected": 160000,
+    "wrong_phase_rejected": 160000,
+    "stolen_live_receipt_accepted": 20000,
+    "full_state_rollback_accepted": 20000,
+    "clean_edges": 279535,
+    "illegal_edges_rejected": 279535,
+    "repeated_edge_event_rejected": 279535,
+    "legal_wrong_branch_accepted": 20000,
+    "self_reported_pc_accepted": 20000,
+    "integer_cases": 20000,
+    "naive_double_mod_mismatch": 19298,
+    "split16_mod_mismatch": 0,
+    "affine_forgery_accepted": 20000
+  },
+  "counterexample_notes": {
+    "counter16_wrap": "A 16-bit sequence alone repeats after 65536 events; widening delays but cannot prevent full-state rollback.",
+    "passive_observation": "Reading the same trace without changing state produces the same gate decisions; no clock-free observer detector is created.",
+    "nan_self_equality": false,
+    "infinity_subtraction_is_nan": true,
+    "2^53_plus_one_rounds_back": true
+  }
+}

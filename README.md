@@ -11,6 +11,13 @@
   L5 整段加密容器 → **L6 私有 VM** → L7 反篡改（金丝雀 / 校验和 /
   行号重映射 / 时间陷阱）
 
+## Discord 机器人（HTTP / 免费托管试用）
+
+新增 `/obf file:<附件>` 服务：Discord HTTP 交互 → Rust 引擎 → 私密回传文件。
+提供 Render Docker 配置、命令注册脚本、白名单/排队/资源限制；当前固定 v15 / Luau。
+**本地测试完成，尚未部署/真实 Discord 联调**；免费实例冷启动可能使首次命令失败。
+见 [部署教程](services/discord_obf/README.md)。服务依赖 Python，混淆器本体仍为 Rust。
+
 ## 构建
 
 需要 `rustc`/`cargo` ≥ 1.88。本仓库沙箱把工具链放在 `.tools/bin`（`gitignored`）：
@@ -24,6 +31,14 @@ CARGO_NET_OFFLINE=true cargo build --release
 沙箱外：系统 Rust 即可，不必离线。重建 `.tools` 的步骤见 `HANDOFF.md` §4。
 
 ## 用法
+
+所有新产物第一行固定为英文品牌水印（文件、stdout 和 Discord 回传一致）：
+
+```lua
+-- This file was obfuscated by Obsucvim.
+```
+
+水印在压缩后添加，`--no-minify` 也保留；代码正文不变。这是可删除的普通注释，不是防篡改机制。示例见 `handoff/R066_target.luau.lua`。
 
 ```bash
 # 默认 = v15 管线（产品形态，Luau/Roblox）——零参数、直接可运行

@@ -1,0 +1,1 @@
+RESEARCH_ABLATE fn=6 instruction=Instr { op: LoadK, a: 2, b: 0, c: 0, d: 0 }

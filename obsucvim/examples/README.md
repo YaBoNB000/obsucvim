@@ -1,5 +1,9 @@
 # 混淆示例（所有常用语法）
 
+> 2026-10-08 英文输出水印：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。
+
+> **2026-10-07 Discord 托管适配**：`/obf` 仅包装现有 v15 / Luau CLI，没有更改 pass 或本目录示例。新增服务测试含 `local a = "bysuda"` 的真实引擎 canary（随机 seed，不更新固定 seed 靶标）；Discord 网络为模拟。部署步骤见 [`services/discord_obf/README.md`](../../services/discord_obf/README.md)。
+
 `tests/cases/` 里每个语料文件经过**默认管线**的输出。增量㉕ 起默认
 即 v15 架构；增量㉖ 起产品线收敛为 **Luau-only**（Lua 5.1 目标不再
 支持）——因此每个语料只有一个示例：`*.v15.luau.lua`，它就是裸调用

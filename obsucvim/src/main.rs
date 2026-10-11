@@ -24,6 +24,7 @@ mod vmgen;
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const OUTPUT_WATERMARK: &str = "-- This file was obfuscated by Obsucvim.\n";
 
 struct Options {
 	dialect: &'static str, // "5.1" | "luau"
@@ -804,10 +805,9 @@ fn main() -> ExitCode {
 			if opts.do_v15 {
 				// F1/F2 shape: one-line body + trailing semicolon, no
 				// trailing newline (sample form).
-				// 增量⑫ (防静态, 报告突破口 #1): NO header comment —
-				// the old `luraph v0.2.0` line told the analyst exactly
-				// which tool/version they were facing. F1 accepts the
-				// 2-line no-header form.
+				// Preserve the payload layout. The user-requested brand
+				// watermark is added at the final output boundary, after
+				// minification, for every preset and output destination.
 				Ok(format!("\n{};", m.trim_end_matches('\n')))
 			} else if opts.do_guard {
 				// anti-debug guard prelude ahead of the payload
@@ -822,7 +822,10 @@ fn main() -> ExitCode {
 		}
 	})();
 
-	match result {
+	// Add branding only after successful generation and all minification.
+	// Keep the original payload bytes (including its leading newline) intact.
+	// File, stdout, and the Discord wrapper all share this output boundary.
+	match result.map(|out| format!("{OUTPUT_WATERMARK}{out}")) {
 		Ok(out) => match &opts.output {
 			Some(path) => match std::fs::write(path, out) {
 				Ok(()) => {}

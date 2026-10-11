@@ -1,0 +1,2 @@
+RESEARCH_ABLATE fn=6 instruction=Instr { op: NewTab, a: 3, b: 0, c: 0, d: 0 }
+RESEARCH_ABLATE fn=13 instruction=Instr { op: LoadNil, a: 5, b: 1, c: 0, d: 0 }

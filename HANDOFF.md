@@ -1,5 +1,10 @@
 # AI 交接文档（HANDOFF）
 
+> 2026-10-08 英文输出水印：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。
+
+> **新增托管适配（2026-10-07）**：用户选择方案 2（Render 免费 Web 服务 + Discord HTTP Interactions）。代码在 `services/discord_obf/`，根目录 `render.yaml`/`.dockerignore`。`/obf file` → 验签/白名单 → 私密 defer → 单队列 Rust v15 / Luau 混淆 → 编辑原回复附结果。不需要 Gateway；运行服务不需要 Bot Token，命令注册才用。必须单 Gunicorn worker，无 `--preload`；仅内存队列，重启任务丢失；平台冷启动不能靠 defer 消除。pytest 55 passed（含真实引擎；Discord 模拟）、cargo test 39 passed / 1 ignored；**未验证 Docker 构建/Render/真实 Discord**。未改混淆核心/重生成样本。本轮起始工作树含大量已有改名/修改，未擅自打包提交或推送。下一步：确认代码在远端工作分支，用户在 Render/Discord 填配置并联调；不要索取 Bot Token。详见 `services/discord_obf/README.md`。
+
+
 > **给新接手的 AI 读**：这份文档让你（从未参与过本项目对话的 AI）在 10 分钟内
 > 完整了解：仓库是什么、用户要什么、现在做到哪了、环境怎么用、规矩是什么、
 > 下一步该干什么。读完此文件再动手；细节在 `docs/` 里。

@@ -1,0 +1,529 @@
+{
+  "scope": "foreground independent models + read-only source-layout study; not production integration",
+  "bench_environment": "background seed sweep remained running; no CPU isolation; no whole-VM performance claim",
+  "experiments": {
+    "inline-interval": {
+      "passes": [
+        "same-boundary-caller-and-line",
+        "same-callsite-error-location",
+        "exact-arity-five-with-nils",
+        "zero-result",
+        "error-object-identity",
+        "nil-error-arity",
+        "legal-table-and-upvalue-mutation",
+        "protected-callable-single-effect",
+        "64-level-recursion",
+        "32-coroutines-640-yields",
+        "reject-single-field-family",
+        "reject-single-field-pc",
+        "reject-single-field-ticket",
+        "reject-single-field-args_arity",
+        "reject-single-field-phase",
+        "reject-single-field-fn",
+        "reject-single-field-sequence",
+        "reject-single-field-args_identity",
+        "raw-identity-does-not-invoke-user-equality"
+      ],
+      "counterexamples": [
+        "pre-entry-function-substitution-accepted",
+        "argument-buffer-content-write-not-detected",
+        "read-observe-restore-accepted",
+        "receipt-does-not-authenticate-user-result",
+        "throw-skips-postcall-validation",
+        "cancel-skips-postcall-validation",
+        "ordinary-equality-has-user-side-effect"
+      ],
+      "benchmarks": [
+        [
+          1.0,
+          0.01276071399979628,
+          0.02467868600001566,
+          1.9339580841957311
+        ],
+        [
+          2.0,
+          0.021260062999999718,
+          0.03644263400019554,
+          1.714135748336965
+        ],
+        [
+          3.0,
+          0.013018865999811169,
+          0.024212569999917832,
+          1.8598063763978385
+        ],
+        [
+          4.0,
+          0.012160994999931063,
+          0.02583995899999536,
+          2.124822763280623
+        ],
+        [
+          5.0,
+          0.012107672999945862,
+          0.023275045999980648,
+          1.9223385038631882
+        ],
+        [
+          6.0,
+          0.012016072999813332,
+          0.02342944800011537,
+          1.9498423487007233
+        ],
+        [
+          7.0,
+          0.012219815999969796,
+          0.023968886999909955,
+          1.961476915852841
+        ],
+        [
+          8.0,
+          0.012107706000051621,
+          0.027985440000065864,
+          2.3113742603220255
+        ],
+        [
+          9.0,
+          0.011956419999933132,
+          0.023179669000001013,
+          1.9386797218674694
+        ]
+      ],
+      "summary": [
+        [
+          "19",
+          "7"
+        ]
+      ]
+    },
+    "boundary-order": {
+      "passes": [
+        "consume-inside-CX-before-tail-keeps-next-generation"
+      ],
+      "counterexamples": [
+        "checking-after-entire-CX-flags-legitimate-next-CALL",
+        "late-cleanup-erases-next-generation-ticket",
+        "expecting-producer-callx-at-CX-entry-false-positive"
+      ],
+      "benchmarks": [],
+      "summary": [
+        [
+          "1",
+          "3"
+        ]
+      ]
+    },
+    "completion-forgery": {
+      "passes": [
+        "clean-completion"
+      ],
+      "counterexamples": [
+        "all-receipt-checks-pass-without-calling-user",
+        "all-receipt-checks-pass-after-result-replacement"
+      ],
+      "benchmarks": [],
+      "summary": [
+        [
+          "1",
+          "2"
+        ]
+      ]
+    },
+    "primitive-contract": {
+      "passes": [
+        "CX-shaped-clean-case",
+        "outer-pack-callee-selected-before-user-call"
+      ],
+      "counterexamples": [
+        "unchecked-pack-substitution-forges-results",
+        "unchecked-unpack-substitution-forges-call-arguments",
+        "unchecked-pack-change-persists-to-next-call"
+      ],
+      "benchmarks": [],
+      "summary": [
+        [
+          "2",
+          "3"
+        ]
+      ]
+    },
+    "lease-cost": {
+      "passes": [
+        "basic-and-persistent-mutation-mode-0",
+        "basic-and-persistent-mutation-mode-1",
+        "basic-and-persistent-mutation-mode-2",
+        "retained-old-object-distinct-from-current-ticket"
+      ],
+      "counterexamples": [
+        "16-bit-generation-ABA-after-65536-more-calls",
+        "unbounded-double-generation-eventually-stops-incrementing"
+      ],
+      "benchmarks": [
+        [
+          1.0,
+          0.021351159999994707,
+          0.04349913999999444,
+          0.07147719599993252,
+          2.0373197521823276,
+          3.347696143907415
+        ],
+        [
+          2.0,
+          0.02022272299996075,
+          0.037552469000047495,
+          0.043445047000204795,
+          1.8569442404032521,
+          2.1483282444351888
+        ],
+        [
+          3.0,
+          0.02328048399999716,
+          0.03764132999981484,
+          0.04447233599989886,
+          1.6168620033767098,
+          1.9102839958097215
+        ],
+        [
+          4.0,
+          0.019614585999988776,
+          0.03767566699980307,
+          0.045816886000011436,
+          1.9207984812845211,
+          2.335857917166218
+        ],
+        [
+          5.0,
+          0.019592662000150085,
+          0.03865989099995204,
+          0.04341152300003159,
+          1.9731821535866794,
+          2.2157031545636348
+        ],
+        [
+          6.0,
+          0.01956341999994038,
+          0.04281363199993393,
+          0.04546021299984204,
+          2.188453348139763,
+          2.3237354716087775
+        ],
+        [
+          7.0,
+          0.02021180200017625,
+          0.039480654000044524,
+          0.0428047200000492,
+          1.9533465645319625,
+          2.1178081993716313
+        ],
+        [
+          8.0,
+          0.019831188999887672,
+          0.0376355200000944,
+          0.044430659999989075,
+          1.8977944287812283,
+          2.2404435760377623
+        ],
+        [
+          9.0,
+          0.01999480099993889,
+          0.037985430999924574,
+          0.043817710999974224,
+          1.899765394016208,
+          2.1914552187895318
+        ],
+        [
+          10.0,
+          0.027373728999918967,
+          0.039050021999855744,
+          0.043968876000008095,
+          1.4265510555749032,
+          1.6062435629481921
+        ],
+        [
+          11.0,
+          0.024413436000031652,
+          0.0406685349998952,
+          0.07613725999999588,
+          1.6658259410859853,
+          3.118662198958687
+        ],
+        [
+          12.0,
+          0.022030278999864095,
+          0.045530238000083045,
+          0.04560827000000245,
+          2.066711819689797,
+          2.070253853811103
+        ]
+      ],
+      "summary": [
+        [
+          "microbenchmark only; full-VM security and memory remain unverified"
+        ]
+      ]
+    },
+    "lease-cost-branch": {
+      "passes": [
+        "basic-and-persistent-mutation-mode-0",
+        "basic-and-persistent-mutation-mode-1",
+        "basic-and-persistent-mutation-mode-2",
+        "retained-old-object-distinct-from-current-ticket"
+      ],
+      "counterexamples": [
+        "16-bit-generation-ABA-after-65536-more-calls",
+        "unbounded-double-generation-eventually-stops-incrementing"
+      ],
+      "benchmarks": [
+        [
+          1.0,
+          0.019457134000049336,
+          0.033911593000084395,
+          0.040414963000102944,
+          1.7428873646035643,
+          2.077128265653126
+        ],
+        [
+          2.0,
+          0.019333191999976407,
+          0.047334500000033586,
+          0.03897255500010033,
+          2.448354105214046,
+          2.0158365468127504
+        ],
+        [
+          3.0,
+          0.02654688500001612,
+          0.04707579900014025,
+          0.041207382000038706,
+          1.7733078287758306,
+          1.5522492375287604
+        ],
+        [
+          4.0,
+          0.019595372999901883,
+          0.033539255000050616,
+          0.03979153699992821,
+          1.7115905372262397,
+          2.030659839959538
+        ],
+        [
+          5.0,
+          0.019763366999995924,
+          0.034051471999873684,
+          0.048722905999966315,
+          1.7229590484192652,
+          2.465314032774697
+        ],
+        [
+          6.0,
+          0.01942115399992872,
+          0.03358397099987087,
+          0.03890908700009277,
+          1.7292469335238334,
+          2.0034384671598593
+        ],
+        [
+          7.0,
+          0.019310786000005464,
+          0.04519072099992627,
+          0.04147875900002873,
+          2.34018030130485,
+          2.147958089329818
+        ],
+        [
+          8.0,
+          0.01932424199981142,
+          0.039330784999947355,
+          0.03910027500000979,
+          2.035308034350386,
+          2.023379494025761
+        ],
+        [
+          9.0,
+          0.023441281000032177,
+          0.053346679000014774,
+          0.05446144799998365,
+          2.2757578393408426,
+          2.3233136448434233
+        ],
+        [
+          10.0,
+          0.02008324200005518,
+          0.033350928000118074,
+          0.038603329000125086,
+          1.6606346724311962,
+          1.922166202051393
+        ],
+        [
+          11.0,
+          0.022473392999927455,
+          0.050324303000024884,
+          0.050005070999986856,
+          2.239283716534808,
+          2.2250788298922317
+        ],
+        [
+          12.0,
+          0.02517539200016472,
+          0.03366072699986944,
+          0.039093804999993154,
+          1.3370487736456775,
+          1.5528578462546827
+        ]
+      ],
+      "summary": [
+        [
+          "microbenchmark only; full-VM security and memory remain unverified"
+        ]
+      ]
+    }
+  },
+  "performance": {
+    "inline_object_ratio_median": 1.9386797218674694,
+    "lease-cost": {
+      "numeric_ratio_median": 1.9102819376503646,
+      "object_ratio_median": 2.203579186676583
+    },
+    "lease-cost-branch": {
+      "numeric_ratio_median": 1.7580975966896975,
+      "object_ratio_median": 2.0270196669926497
+    }
+  },
+  "slot_audit": {
+    "scope": "arithmetic namespace study, no implementation or security proof",
+    "template_sha256": "92db74228dd8819a1016e571d83138047c894a6cbb30a2b0df5baf57b649fc06",
+    "layouts": 65536,
+    "existing_call_logical_indices": "0..8",
+    "exploratory_call_logical_indices": "9..12",
+    "collisions_with_reviewed_existing_numeric_fields": 0,
+    "old_cleanup_leaves_new_indices": [
+      9,
+      10,
+      11,
+      12
+    ],
+    "appending_too_many_fields_collision_examples": [
+      {
+        "family": 1,
+        "step": 8,
+        "logical": 32,
+        "alias": "family 2, logical 0"
+      },
+      {
+        "family": 1,
+        "step": 16,
+        "logical": 16,
+        "alias": "family 2, logical 0"
+      },
+      {
+        "family": 2,
+        "step": 8,
+        "logical": 32,
+        "alias": "family 3, logical 0"
+      },
+      {
+        "family": 2,
+        "step": 16,
+        "logical": 16,
+        "alias": "family 3, logical 0"
+      },
+      {
+        "family": 3,
+        "step": 8,
+        "logical": 32,
+        "alias": "family 4, logical 0"
+      },
+      {
+        "family": 3,
+        "step": 16,
+        "logical": 16,
+        "alias": "family 4, logical 0"
+      }
+    ],
+    "base_is_not_owner_identity_example": {
+      "vd": [
+        1,
+        4097
+      ],
+      "shared_cb": 2073
+    },
+    "not_checked": [
+      "all emitted/mangled field uses",
+      "future fields",
+      "gc lifetime",
+      "actual production execution with added fields",
+      "attacker resistance"
+    ],
+    "elapsed_seconds": 0.6423332689998915
+  },
+  "background_snapshot": {
+    "scope": "unchanged production engine + external root-call adapter, NOT per-instruction integration",
+    "state": "running",
+    "planned_seconds": 18000.0,
+    "rng_seed": 2026100905,
+    "engine_sha256": "e8ad35d8fc4de22308644fe29271fd3f07961ad429102c2f58b76cabb53d75c8",
+    "platform": "Linux-6.1.158+-x86_64-with-glibc2.36",
+    "corpus_files": 39,
+    "attempted": 1200,
+    "passed": 1193,
+    "failed": 7,
+    "failures": [
+      {
+        "index": 100,
+        "case": "obsucvim/tests/cases/stress_multival.lua",
+        "seed": 3525582012654347846,
+        "reason": "production-output-difference:0"
+      },
+      {
+        "index": 106,
+        "case": "obsucvim/tests/cases/stress_multival.lua",
+        "seed": 12552293900259736015,
+        "reason": "production-output-difference:0"
+      },
+      {
+        "index": 493,
+        "case": "obsucvim/tests/cases/stress_multival.lua",
+        "seed": 2087317583667228854,
+        "reason": "production-output-difference:0"
+      },
+      {
+        "index": 519,
+        "case": "obsucvim/tests/cases/stress_multival.lua",
+        "seed": 16157647636138958350,
+        "reason": "production-output-difference:0"
+      },
+      {
+        "index": 549,
+        "case": "obsucvim/tests/cases/stress_multival.lua",
+        "seed": 10407755351155896398,
+        "reason": "production-output-difference:0"
+      },
+      {
+        "index": 651,
+        "case": "obsucvim/tests/cases/stress_multival.lua",
+        "seed": 6026130555315556988,
+        "reason": "production-output-difference:0"
+      },
+      {
+        "index": 743,
+        "case": "obsucvim/tests/cases/stress_multival.lua",
+        "seed": 2791381894518475382,
+        "reason": "production-output-difference:0"
+      }
+    ],
+    "source_reference_failures": [],
+    "elapsed_seconds": 1076.989628583,
+    "root_adapter_cpu_ratio_median": 0.9996155408686992,
+    "min_target_bytes": 167386,
+    "max_target_bytes": 380840,
+    "file_integrity": {
+      "checked": 353,
+      "changed": []
+    }
+  },
+  "file_integrity": {
+    "checked": 353,
+    "changed": []
+  },
+  "decision": "not admitted; narrowed interval-only candidate lacks provenance/result integrity and integrated nonregression evidence"
+}

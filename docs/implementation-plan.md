@@ -101,6 +101,8 @@
 | 种子确定性 | `--seed`（同 seed 逐字节一致，不同 seed 编码完全不同；默认时间种子） | `rng.rs` | P0 | ✅ M1 |
 | 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7，默认) / vm(全开) / max(=vm，v2 预留) | `main.rs` | P0 | ✅ M6（`--preset`；其后 `--no-*`/`--vm` 覆盖；默认 ≡ high；`tests/run_presets.sh` 405 项） |
 | v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/v15-structural-parity-plan.md`（P0/P1/P2 ✅，P3 增量 1 ✅，P3 扩容+P4–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0–P3 增量 1 完成（2026-08-25）：指纹脚本 32 条（样本 32/32）+ CLI + 外壳换代 + 模块表铺开（65 原语槽 + 诱饵 LCG）+ **CPS 引导骨架**（初始化器/顶层机/continue 循环/单字符 handler 链/算术助手，指标随原型数线性扩展，指纹 11/32） |
+| 英文输出水印 | 最终输出加 `-- This file was obfuscated by Obsucvim.`；正文/种子不变，所有输出路径统一 | `main.rs` + `tests/watermark.rs` | P1 | ✅ 2026-10-08，4 个 CLI 集成测试与全矩阵通过 |
+| Discord HTTP 托管适配 | `/obf` 附件 → 白名单/验签/有界队列 → Rust CLI → 私密回传；Render Docker 配置 | `services/discord_obf/`（适配层 Python，核心 Rust 不变） | P1 | ✅ 本地实现/55 项测试；⬜ Render 与真实 Discord 联调 |
 | 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 29 个文件 + 多种子回归） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 204 项检查全绿 + 5 种子回归 0 失败） |
 
 ---
@@ -115,6 +117,8 @@
 | 全部混淆方法设计（L1–L7 + VM） | ✅ 100% | 本文件 §1 + research §2.6 + v15 报告 §8/§10 |
 | **Rust 混淆器代码** | ✅ **M0–M6 完成** | M6：`--preset low\|medium\|high\|vm\|max` + 产品 README + `docs/performance.md`；官方矩阵 204 + 预设矩阵 405 全绿；R064 protected-meta / trailing-nil vararg、nested-upvalue seed fix、string-table hook bypass、full recipe micro superoperator fusion、R065 canary 及产品改名 obsucvim 记录在 §4（2026-10-07） |
 | 测试语料 + 矩阵 | ✅ 100% | **29 个语料文件**（20 共享 + 9 Luau 专属；M4 续期新增 8 个 stress_*：upvalues/coroutines/metamethods/multival/errors/bigtable/control/luau_vm）；非 VM 102 项 + VM 102 项 = **204 项全绿**（含 VM 双解释器交叉）；**多种子回归**（seeds 1/7/4242/31337/999999 × 全语料 × 双方言 × 双阶段）0 失败 |
+| 英文产物水印 | ✅ 完成 | 所有预设和 minify 开关；文件/stdout/Discord 一致；37 示例只新增头部；R066 编译运行与安全指纹通过 |
+| Discord / Render 试用服务 | ✅ 本地 / ⬜ 上线 | 验签、授权、排队、限额、清理、真实引擎集成测试通过；Docker/平台网络未验证，免费额度需部署时确认 |
 | 混淆示例 | ✅ M1+M2 产出 | `obsucvim/examples/`（`tests/gen_examples.sh` 再生成） |
 
 **一句话：设计 100%，代码 M0–M6 完成（官方矩阵 204/204 + 预设 405/405 + 多种子 0 失败）。**
@@ -140,12 +144,18 @@
 | **R064 replaceable string-table hook 缓解** ✅ 2026-10-07 | VM/v15 staging 的 `byte/sub/char` primitive 改由原生 string metatable 或 numeric slots 获取；复制 string 表 setfenv hook 不再截获 VM 内部 byte/sub/char，R064 stdout 不变。仅封闭 replaceable-library hook，不防 native C hook、debugger 或 decoded micro trace | 新增 `string_primitive_hook_test.sh` 接入 run_tests；minimal/R064 seed64075 copied-library hook hits 0/0/0；S1–S5 5/5 |
 | **R065 最小字符串 canary** ✅ 2026-10-07 | 源严格为 `local a = "bysuda"`（`handoff/R065_src.lua`）；v15 seed65065 产物 `handoff/R065_target.luau.lua`（168,788B）。仅为管线/常量封存 canary，非业务逻辑或 anti-trace 充分测试 | luau-compile 双过；源/产物 stdout 等价（均空）；明文 `bysuda` 不在产物中；S1–S5 5/5；短名审计全 ≤2 字母 |
 | **产品改名 obsucvim** ✅ 2026-10-07 | 混淆引擎定名 obsucvim：crate/二进制 `luraph-rs`→`obsucvim`，工程目录 `luraph-rs/`→`obsucvim/`，环境变量 `LURAPH_*`→`OBSUCVIM_*`，全仓库脚本/文档引用同步；仓库目录与远端名保持 luraph。原 Luraph v15 指代（样本/分析文档/对标描述）不动 | `obsucvim --version` → `obsucvim 0.2.0`；R065 seed65065 重生成逐字节一致；cargo test 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；defense_audit 20/1（唯一 D3 非安全 FAIL）；S1–S5 5/5 |
+| **英文输出水印** ✅ 2026-10-08 | 最终生成边界加英文单行注释；不改内部 printer/VM/RNG，历史 R065 靶标保留 | cargo 39+4 passed / 1 ignored；run_tests 169；presets 370；multiseed 0；Discord 55；R066 S1–S5 5/5；37 示例正文逐字节不变 |
+| **Discord HTTP 适配** ✅ 本地 2026-10-07 / ⬜ 上线 | `/obf file`、Render Docker、命令注册/部署教程；固定 v15 / Luau，不执行用户脚本 | pytest 55 passed，真实 Rust CLI + 模拟 Discord；cargo test 39 passed / 1 ignored；未部署/未 Docker build，未重跑解释器全矩阵 |
 
 **M0–M6 全部完成（2026-08-25）；R064 兼容/变参、seed 对齐、replaceable string-table hook bypass 与全 recipe micro superoperator fusion 均通过所列回归（2026-10-07）；同进程 trace 仍是客户端边界。**
 
 ---
 
 ## 4. 更新日志
+
+- **2026-10-08 英文输出水印**：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。
+
+- **2026-10-07（Discord HTTP `/obf` 托管适配）**：新增 Python API/有界队列/Ed25519 验签/私密 defer 和回传/白名单/频率与资源限制；Rust CLI 固定 v15/Luau，无 shell、不执行上传代码，子进程不继承 Token。新增 Render 配置、非 root Docker、单命令注册脚本、部署文档；源码/结果用临时目录，正常成功/失败清理。pytest **55 passed**（含实际 rlimit/超时/真实引擎 canary 与错误路径，Discord 模拟）；cargo test **39 passed / 1 ignored**。**未部署到 Render、未真实 Discord 联调、无 Docker 故未验镜像构建**；核心混淆代码未改，不把历史全矩阵结果当成本轮证据。免费平台冷启动可能超过 Discord 首响时限，重启丢内存任务。见 `services/discord_obf/README.md`。
 
 - **2026-10-07（产品改名 obsucvim）**：`Cargo.toml`/`Cargo.lock` 包名、release 二进制、工程目录（`git mv luraph-rs obsucvim`）、全部测试/工具脚本与文档中的 `luraph-rs` 路径/调用、`LURAPH_*` 环境变量前缀全部切换为 obsucvim/`OBSUCVIM_*`；README 标题、HANDOFF 产品名、strong-env-bind 文档中的命令示例同步。原商业 Luraph（v14/v15 样本/逆向分析文档/对标描述/第三方工具名）与仓库目录名 `luraph` 保持不动。改名零行为变化：R065 seed65065 产物重生成逐字节一致；全矩阵重跑通过（cargo test 39 + 1 ignored、run_tests 169/169、run_presets 370/370、multiseed 0、defense_audit 20/1 唯一 D3 非安全 FAIL、S1–S5 5/5）。
 - **2026-10-07（R064 全 recipe micro superoperator fusion）**：保留第一层 10 类 safe-handler fused ops，并将其余 23 种多 primitive `micro_recipe` 自动打包成一个 per-shard superoperator record；body 逐步执行原 primitive 片段，step lexical scopes 和原顺序不变，不跨 VM instruction/callback/call phase。R064 seed64075 临时同点 A/B：原始 929,567 → 第一层 701,915 → 全 recipe fusion 412,706 条记录（每阶段 412,706 shard calls，stdout一致；完整融合相对第一层 -41.20%、相对原始 -55.60%）。样本 r2 现 340,895B（较 native-capture-only 版本 326,848B +4.3%）。`cargo test` 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；H5-P0、静态攻击 S1–S5 PASS。诚实边界：one-record-per-handler 仍泄露已执行 handler 序列，不能阻止同进程 instrumentation；详见 R2 audit。

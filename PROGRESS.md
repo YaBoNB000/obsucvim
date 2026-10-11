@@ -1,5 +1,10 @@
 # 项目进度（PROGRESS）
 
+> 2026-10-08 英文输出水印：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。
+
+> 2026-10-07 Discord HTTP `/obf` 托管适配：新增 `services/discord_obf/`（Flask + 单工作线程 + Rust 子进程），`render.yaml`、多阶段 Dockerfile、单命令注册脚本及部署教程。Ed25519 验签、私密 defer/回传、用户白名单、3 个等待位、每用户限频、256 KiB 输入/7 MiB 输出/90 秒/256 MiB 子进程限制、临时文件清理；固定 v15 / Luau，不执行用户代码，运行服务无需 Bot Token。本地 pytest 55 passed（Discord 模拟 + 真实 Rust 引擎集成），cargo test 39 passed / 1 ignored。**尚未 Render 部署、真实 Discord 联调或 Docker build**；本轮未改混淆核心，也未重跑 Lua/Luau 全矩阵。部署教程：`services/discord_obf/README.md`。
+>
+
 > 2026-10-07 产品改名 obsucvim：crate/二进制/工程目录（`luraph-rs/`→`obsucvim/`）与 `LURAPH_*`→`OBSUCVIM_*` 全切换，全仓库脚本/文档引用同步；原 Luraph v15 指代与仓库名不动。改名零行为变化（R065 seed65065 重生成逐字节一致）；回归 cargo test 39/1 ignored、run_tests169、presets370、multiseed0、defense_audit 20/1（唯一 D3 结构分）、S1–S5通过。另修复 implementation-plan.md 一个历史 ㉙ 行在上轮中断时损坏的字节（已按原文恢复）。
 >
 > 历史总结最后更新：2026-09-25（**红队战役：真破 Luraph v15**：对 `main:luraph15.txt`

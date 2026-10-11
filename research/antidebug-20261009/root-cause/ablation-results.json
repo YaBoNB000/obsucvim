@@ -1,0 +1,67 @@
+[
+  {
+    "seed": "3525582012654347846",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: LoadK, a: 3, b: 3, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=11 instruction=Instr { op: Move, a: 3, b: 3, c: 0, d: 0 }"
+    ]
+  },
+  {
+    "seed": "12552293900259736015",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: NewTab, a: 3, b: 0, c: 0, d: 0 }"
+    ]
+  },
+  {
+    "seed": "2087317583667228854",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: LoadNil, a: 3, b: 1, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=10 instruction=Instr { op: Move, a: 3, b: 2, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=11 instruction=Instr { op: LoadNil, a: 2, b: 1, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=13 instruction=Instr { op: NewTab, a: 4, b: 0, c: 0, d: 0 }"
+    ]
+  },
+  {
+    "seed": "16157647636138958350",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: LoadK, a: 3, b: 0, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=11 instruction=Instr { op: LoadK, a: 2, b: 0, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=15 instruction=Instr { op: NewTab, a: 2, b: 0, c: 0, d: 0 }"
+    ]
+  },
+  {
+    "seed": "10407755351155896398",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: LoadNil, a: 2, b: 1, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=15 instruction=Instr { op: LoadK, a: 2, b: 2, c: 0, d: 0 }"
+    ]
+  },
+  {
+    "seed": "6026130555315556988",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: NewTab, a: 3, b: 0, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=13 instruction=Instr { op: LoadNil, a: 5, b: 1, c: 0, d: 0 }"
+    ]
+  },
+  {
+    "seed": "2791381894518475382",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: LoadK, a: 2, b: 0, c: 0, d: 0 }"
+    ]
+  },
+  {
+    "seed": "12675743238487333885",
+    "ablated_matches_source": true,
+    "ablated_instructions": [
+      "RESEARCH_ABLATE fn=6 instruction=Instr { op: Move, a: 2, b: 3, c: 0, d: 0 }",
+      "RESEARCH_ABLATE fn=15 instruction=Instr { op: LoadK, a: 2, b: 3, c: 0, d: 0 }"
+    ]
+  }
+]
