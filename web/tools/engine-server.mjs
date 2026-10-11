@@ -13,10 +13,11 @@
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..", "..");
@@ -107,6 +108,180 @@ function json(res, status, body) {
     "cache-control": "no-store",
   });
   res.end(text);
+}
+
+/* ================= 账户体系（服务端，2026-10-11 安全修复） =================
+ * 审计结论修复：会话/密码/验证码/锁定/额度全部移到服务端——浏览器只持有
+ * 随机令牌，devtools 无法再伪造登录态、旁路人机验证或清除锁定。
+ * 状态持久化到 tools/.state.json（gitignored，含哈希）。 */
+const STATE_FILE = path.join(__dirname, ".state.json");
+const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+const CODE_TTL_MS = 10 * 60_000;
+const CODE_RESEND_MS = 60_000;
+const CODE_MAX_FAILS = 5;
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_LOCK_MS = 60_000;
+const AUTH_BODY_LIMIT = 32 * 1024;
+
+let state = {
+  users: {},      // email -> { email, nickname, salt, hash, created }
+  sessions: {},   // token -> { email, expires }
+  quotas: {},     // email -> { date, used }
+  fails: {},      // email -> { fails, until }
+  codes: {},      // email -> { code, expires, sentAt, fails }
+  captchas: {},   // id -> { answer, expires }
+};
+
+function loadState() {
+  try {
+    const raw = readFileSync(STATE_FILE, "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") state = { ...state, ...parsed };
+  } catch {
+    /* first run */
+  }
+}
+function saveState() {
+  try {
+    writeFileSync(STATE_FILE, JSON.stringify(state));
+  } catch {
+    /* ignore */
+  }
+}
+loadState();
+
+// 过期清扫（captchas / codes / sessions）
+setInterval(() => {
+  const n = now();
+  for (const [k, c] of Object.entries(state.captchas)) if (n > c.expires) delete state.captchas[k];
+  for (const [k, c] of Object.entries(state.codes)) if (n > c.expires) delete state.codes[k];
+  for (const [k, s] of Object.entries(state.sessions)) if (n > s.expires) delete state.sessions[k];
+  saveState();
+}, 300_000).unref?.();
+
+const now = () => Date.now();
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function hashPw(password, salt) {
+  return scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString("hex");
+}
+
+function pwEqual(password, salt, expectHex) {
+  const a = Buffer.from(hashPw(password, salt), "hex");
+  const b = Buffer.from(expectHex, "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+const userPublic = (u) => ({ email: u.email, nickname: u.nickname, plan: "free" });
+
+function sessionFor(email) {
+  const token = randomBytes(32).toString("hex");
+  state.sessions[token] = { email, expires: now() + SESSION_TTL_MS };
+  saveState();
+  return token;
+}
+
+function authUser(req) {
+  const h = req.headers["authorization"];
+  if (typeof h !== "string" || !h.startsWith("Bearer ")) return null;
+  const s = state.sessions[h.slice(7).trim()];
+  if (!s || now() > s.expires) return null;
+  return state.users[s.email] ?? null;
+}
+
+/* 两步注册的服务端草稿：第一步保存昵称/密码（10 分钟），确认步消费——
+ * 确认请求只带 email+code，防止两步之间注册信息被改写 */
+const pendingRegistrations = {};
+
+function quotaOf(email) {
+  const q = state.quotas[email];
+  return q && q.date === todayStr() ? q : { date: todayStr(), used: 0 };
+}
+
+function quotaJson(email) {
+  const q = quotaOf(email);
+  return { usedToday: q.used, remaining: Math.max(0, 30 - q.used), limit: 30 };
+}
+
+/* 服务端人机验证：算式问答——答案永不下发客户端（题面可见无妨） */
+function issueCaptcha() {
+  const a = 2 + Math.floor(Math.random() * 19);
+  const b = 2 + Math.floor(Math.random() * 19);
+  const ops = [
+    ["+", (x, y) => x + y],
+    ["-", (x, y) => x - y],
+    ["×", (x, y) => x * y],
+  ];
+  const [sym, fn] = ops[Math.floor(Math.random() * ops.length)];
+  const id = randomBytes(12).toString("hex");
+  state.captchas[id] = { answer: String(fn(a, b)), expires: now() + 5 * 60_000 };
+  saveState();
+  return { captchaId: id, question: `${a} ${sym} ${b}` };
+}
+
+function consumeCaptcha(id, answer) {
+  const c = state.captchas[id];
+  delete state.captchas[id];
+  saveState();
+  if (!c || now() > c.expires) return false;
+  return String(answer ?? "").trim() === c.answer;
+}
+
+/* 邮箱验证码：签发/校验/冷却/尝试上限全在服务端。
+ * demoMail=true（无真实邮件外发能力）时响应携带 demoCode 供界面明示。 */
+const demoMail = process.env.OBSUCVIM_REAL_MAIL !== "1";
+
+function issueEmailCode(email) {
+  const prev = state.codes[email];
+  if (prev && now() - prev.sentAt < CODE_RESEND_MS) {
+    return { ok: false, error: "RESEND_COOLDOWN", retryAfter: Math.ceil((CODE_RESEND_MS - (now() - prev.sentAt)) / 1000) };
+  }
+  const code = String(randomBytes(4).readUInt32BE(0) % 1_000_000).padStart(6, "0");
+  state.codes[email] = { code, expires: now() + CODE_TTL_MS, sentAt: now(), fails: 0 };
+  saveState();
+  console.log(`[engine-server] email code for ${email}: ${code}${demoMail ? " (demo mail — also returned in response)" : ""}`);
+  return { ok: true, code };
+}
+
+function checkEmailCode(email, input) {
+  const c = state.codes[email];
+  if (!c) return { ok: false, error: "CODE_NONE" };
+  if (now() > c.expires) {
+    delete state.codes[email];
+    saveState();
+    return { ok: false, error: "CODE_EXPIRED" };
+  }
+  if (String(input ?? "").trim() !== c.code) {
+    c.fails += 1;
+    if (c.fails >= CODE_MAX_FAILS) {
+      delete state.codes[email];
+      saveState();
+      return { ok: false, error: "CODE_EXHAUSTED" };
+    }
+    saveState();
+    return { ok: false, error: "CODE_WRONG" };
+  }
+  delete state.codes[email];
+  saveState();
+  return { ok: true };
+}
+
+/* 登录失败锁定：服务端按邮箱计数，localStorage 清不掉 */
+function loginLocked(email) {
+  const f = state.fails[email];
+  return f && f.until > now() ? Math.ceil((f.until - now()) / 1000) : 0;
+}
+
+function noteLoginFail(email) {
+  const f = state.fails[email] ?? { fails: 0, until: 0 };
+  f.fails += 1;
+  if (f.fails >= LOGIN_MAX_FAILS) {
+    f.until = now() + LOGIN_LOCK_MS;
+    f.fails = 0;
+  }
+  state.fails[email] = f;
+  saveState();
 }
 
 /* ---------------- 安全：严格选项白名单 ---------------- */
@@ -218,6 +393,135 @@ const server = createServer(async (req, res) => {
     return json(res, 200, { ok: existsSync(BIN), engine: cachedVersion || "obsucvim (binary missing)", bin: BIN });
   }
 
+  /* ================= 认证端点 ================= */
+  const handleAuth = async () => {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
+    } catch (e) {
+      if (e instanceof Error && e.message === "BODY_TOO_LARGE") {
+        json(res, 413, { ok: false, error: "BODY_TOO_LARGE" });
+        req.destroy();
+        return;
+      }
+      return json(res, 400, { ok: false, error: "BAD_JSON" });
+    }
+    if (!body || typeof body !== "object") return json(res, 400, { ok: false, error: "BAD_REQUEST" });
+
+    if (req.method === "POST" && req.url === "/api/auth/captcha") {
+      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+      return json(res, 200, { ok: true, ...issueCaptcha() });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/register") {
+      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+      const { email, nickname, password, captchaId, captchaAnswer } = body;
+      if (
+        typeof email !== "string" || !EMAIL_RE.test(email) ||
+        typeof password !== "string" || password.length < 8 || password.length > 128 ||
+        (nickname !== undefined && (typeof nickname !== "string" || nickname.length > 24))
+      ) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      if (!consumeCaptcha(captchaId, captchaAnswer)) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
+      const key = email.trim().toLowerCase();
+      if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
+      const issued = issueEmailCode(key);
+      if (!issued.ok) return json(res, 429, { ok: false, error: issued.error, retryAfter: issued.retryAfter });
+      pendingRegistrations[key] = {
+        nickname: (typeof nickname === "string" && nickname.trim()) || key.split("@")[0],
+        password,
+        expires: now() + 10 * 60_000,
+      };
+      return json(res, 200, {
+        ok: true,
+        needCode: true,
+        ...(demoMail ? { demoCode: issued.code } : {}),
+      });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/register/confirm") {
+      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+      const { email, code } = body;
+      if (typeof email !== "string" || !EMAIL_RE.test(email) || typeof code !== "string") {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      const key = email.trim().toLowerCase();
+      const v = checkEmailCode(key, code);
+      if (!v.ok) return json(res, 400, { ok: false, error: v.error });
+      if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
+      const draft = pendingRegistrations[key];
+      if (!draft || now() > draft.expires) return json(res, 400, { ok: false, error: "REGISTER_EXPIRED" });
+      delete pendingRegistrations[key];
+      const salt = randomBytes(16).toString("hex");
+      state.users[key] = {
+        email: key,
+        nickname: draft.nickname,
+        salt,
+        hash: hashPw(draft.password, salt),
+        created: now(),
+      };
+      const token = sessionFor(key);
+      return json(res, 200, { ok: true, token, user: userPublic(state.users[key]) });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/resend") {
+      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+      const { email } = body;
+      if (typeof email !== "string" || !EMAIL_RE.test(email)) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      const key = email.trim().toLowerCase();
+      if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
+      const issued = issueEmailCode(key);
+      if (!issued.ok) return json(res, 429, { ok: false, error: issued.error, retryAfter: issued.retryAfter });
+      return json(res, 200, { ok: true, ...(demoMail ? { demoCode: issued.code } : {}) });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/login") {
+      if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+      const { email, password, captchaId, captchaAnswer } = body;
+      if (typeof email !== "string" || typeof password !== "string") {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      const key = email.trim().toLowerCase();
+      const lock = loginLocked(key);
+      if (lock > 0) return json(res, 429, { ok: false, error: "LOCKED", retryAfter: lock });
+      if (!consumeCaptcha(captchaId, captchaAnswer)) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
+      const u = state.users[key];
+      if (!u) {
+        pwEqual(password, "00".repeat(16), "00".repeat(128)); // 防时序枚举
+        return json(res, 401, { ok: false, error: "NO_USER" });
+      }
+      if (!pwEqual(password, u.salt, u.hash)) {
+        noteLoginFail(key);
+        const lockAfter = loginLocked(key);
+        if (lockAfter > 0) return json(res, 429, { ok: false, error: "LOCKED", retryAfter: lockAfter });
+        return json(res, 401, { ok: false, error: "BAD_PASSWORD" });
+      }
+      delete state.fails[key];
+      saveState();
+      const token = sessionFor(key);
+      return json(res, 200, { ok: true, token, user: userPublic(u), quota: quotaJson(key) });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/logout") {
+      const h = req.headers["authorization"];
+      if (typeof h === "string" && h.startsWith("Bearer ")) {
+        delete state.sessions[h.slice(7).trim()];
+        saveState();
+      }
+      return json(res, 200, { ok: true });
+    }
+
+    return json(res, 404, { ok: false, error: "NOT_FOUND" });
+  };
+
+  if (req.url.startsWith("/api/auth/")) return await handleAuth();
+
+  if (req.method === "GET" && req.url === "/api/me") {
+    if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+    const u = authUser(req);
+    if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+    return json(res, 200, { ok: true, user: userPublic(u), quota: quotaJson(u.email) });
+  }
+
   if (req.method === "POST" && req.url === "/api/obfuscate") {
     let body;
     try {
@@ -238,6 +542,10 @@ const server = createServer(async (req, res) => {
     if (rateLimited(clientIp(req))) {
       return json(res, 429, { ok: false, error: "RATE_LIMITED" });
     }
+    const auth = authUser(req);
+    if (!auth) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+    const q = quotaOf(auth.email);
+    if (q.used >= 30) return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(auth.email) });
     const optErr = validateOptions(options);
     if (optErr) {
       return json(res, 400, { ok: false, error: optErr });
@@ -298,8 +606,12 @@ const server = createServer(async (req, res) => {
     const outputBytes = Buffer.byteLength(code, "utf8");
     log.push({ level: "ok", text: `[4/4] 完成 · 已应用 ${appliedNames(options).length} 项保护` });
 
+    q.used += 1;
+    state.quotas[auth.email] = q;
+    saveState();
     return json(res, 200, {
       ok: true,
+      quota: quotaJson(auth.email),
       result: {
         code,
         log,

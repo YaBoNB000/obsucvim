@@ -1,22 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BlackHoleSVG, Logo, LangSwitch } from "./Brand";
 import { Button, Icon } from "./ui";
-import { Captcha, type CaptchaHandle } from "./Captcha";
+import { Captcha } from "./Captcha";
 import { useI18n, type TKey } from "../lib/i18n";
-import { emailRegistered, useAuth } from "../lib/store";
-import { getMailProvider, sendVerificationEmail } from "../lib/mail";
-import {
-  RESEND_COOLDOWN_S,
-  clearPending,
-  requestCode,
-  verifyCode,
-} from "../lib/verify";
+import { useAuth, type CaptchaChallenge } from "../lib/store";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function LoginScreen() {
   const { t } = useI18n();
-  const { login, register, lockRemaining } = useAuth();
+  const { login, register, confirmRegister, resendCode, fetchCaptcha } = useAuth();
   const [mode, setMode] = useState<"login" | "register">("login");
   const [regStep, setRegStep] = useState<"form" | "code">("form");
   const [email, setEmail] = useState("");
@@ -24,14 +17,21 @@ export function LoginScreen() {
   const [password, setPassword] = useState("");
   const [confirmPwd, setConfirmPwd] = useState("");
   const [captchaInput, setCaptchaInput] = useState("");
+  const [captcha, setCaptcha] = useState<CaptchaChallenge | null>(null);
   const [codeInput, setCodeInput] = useState("");
   const [demoCode, setDemoCode] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
+  const [lockLeft, setLockLeft] = useState(0);
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const captchaRef = useRef<CaptchaHandle>(null);
 
-  const locked = lockRemaining > 0;
+  const refreshCaptcha = useCallback(() => {
+    void fetchCaptcha().then((c) => setCaptcha(c));
+  }, [fetchCaptcha]);
+
+  useEffect(() => {
+    refreshCaptcha();
+  }, [refreshCaptcha]);
 
   // 重发冷却倒计时
   useEffect(() => {
@@ -40,134 +40,140 @@ export function LoginScreen() {
     return () => clearTimeout(timer);
   }, [cooldown]);
 
-  const fail = (key: TKey) => {
-    setErr(t(key));
-    captchaRef.current?.refresh();
-    setCaptchaInput("");
-  };
+  // 服务端锁定倒计时
+  useEffect(() => {
+    if (lockLeft <= 0) return;
+    const timer = setTimeout(() => setLockLeft((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [lockLeft]);
 
-  const startVerification = async () => {
-    // 校验通过（含人机验证）→ 发送验证码，进入第二步
-    if (emailRegistered(email)) {
-      fail("login.emailTaken");
-      return;
-    }
-    setErr(null);
-    setBusy(true);
-    try {
-      const code = requestCode(email);
-      await sendVerificationEmail(email, code);
-      setDemoCode(getMailProvider().name === "demo" ? code : null);
-      setCooldown(RESEND_COOLDOWN_S);
-      setCodeInput("");
-      setRegStep("code");
-    } finally {
-      setBusy(false);
-    }
+  const errText = (key: TKey, vars?: Record<string, string | number>) => {
+    setErr(t(key, vars));
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (locked) return;
+    if (lockLeft > 0) return;
     if (!EMAIL_RE.test(email)) {
-      fail("login.invalid");
+      errText("login.invalid");
       return;
     }
+
+    // ---------- 注册 ----------
     if (mode === "register") {
       if (regStep === "code") {
-        // 第二步：验证码 → 注册
         if (codeInput.trim().length !== 6) {
-          setErr(t("verify.wrong"));
+          errText("verify.wrong");
           return;
         }
         setErr(null);
         setBusy(true);
         try {
-          const v = verifyCode(email, codeInput);
-          if (!v.ok) {
-            const key: TKey =
-              v.reason === "expired"
-                ? "verify.expired"
-                : v.reason === "exhausted"
-                  ? "verify.exhausted"
-                  : "verify.wrong";
-            setErr(t(key));
-            setCodeInput("");
-            if (v.reason === "expired" || v.reason === "exhausted") {
-              setRegStep("form");
-              captchaRef.current?.refresh();
-              setCaptchaInput("");
-            }
-            return;
-          }
-          const res = await register(email.trim(), nickname.trim(), password);
+          const res = await confirmRegister(email.trim(), codeInput.trim());
           if (!res.ok) {
             const key: TKey =
-              res.error === "email_taken"
-                ? "login.emailTaken"
-                : res.error === "locked"
-                  ? "login.locked"
-                  : "login.badPassword";
-            fail(key);
-            setRegStep("form");
+              res.error === "code_expired" ? "verify.expired"
+                : res.error === "code_exhausted" ? "verify.exhausted"
+                  : res.error === "email_taken" ? "login.emailTaken"
+                    : res.error === "register_expired" ? "verify.expired"
+                      : "verify.wrong";
+            errText(key);
+            setCodeInput("");
+            if (res.error === "code_expired" || res.error === "code_exhausted" || res.error === "register_expired") {
+              setRegStep("form");
+              refreshCaptcha();
+              setCaptchaInput("");
+            }
           }
-          // 成功则 AuthProvider 切换 user，本组件自动卸载
+          // 成功 → AuthProvider 切换 user，本组件卸载
         } finally {
           setBusy(false);
         }
         return;
       }
-      // 第一步：表单校验 → 发验证码
+      // 第一步：表单 + 服务端验证码
       if (password.length < 8) {
-        fail("login.pwdShort");
+        errText("login.pwdShort");
         return;
       }
       if (password !== confirmPwd) {
-        fail("login.pwdMismatch");
+        errText("login.pwdMismatch");
         return;
       }
-      if (!captchaRef.current?.check(captchaInput)) {
-        fail("login.captchaFail");
+      if (!captcha || !captchaInput.trim()) {
+        errText("login.captchaFail");
         return;
       }
-      await startVerification();
+      setErr(null);
+      setBusy(true);
+      try {
+        const res = await register(email.trim(), nickname.trim(), password, captcha.captchaId, captchaInput.trim());
+        refreshCaptcha();
+        setCaptchaInput("");
+        if (!res.ok) {
+          const key: TKey =
+            res.error === "email_taken" ? "login.emailTaken"
+              : res.error === "captcha_fail" ? "login.captchaFail"
+                : res.error === "rate_limited" ? "login.busy"
+                  : res.error === "resend_cooldown" ? "verify.resendIn"
+                    : "login.invalid";
+          errText(key, res.retryAfter ? { s: res.retryAfter } : undefined);
+          return;
+        }
+        setDemoCode(res.demoCode ?? null);
+        setCooldown(60);
+        setCodeInput("");
+        setRegStep("code");
+      } finally {
+        setBusy(false);
+      }
       return;
     }
-    // 登录
+
+    // ---------- 登录 ----------
     if (password.length < 1) {
-      fail("login.invalid");
+      errText("login.invalid");
       return;
     }
-    if (!captchaRef.current?.check(captchaInput)) {
-      fail("login.captchaFail");
+    if (!captcha || !captchaInput.trim()) {
+      errText("login.captchaFail");
       return;
     }
     setErr(null);
     setBusy(true);
     try {
-      const res = await login(email.trim(), password);
+      const res = await login(email.trim(), password, captcha.captchaId, captchaInput.trim());
+      refreshCaptcha();
+      setCaptchaInput("");
       if (!res.ok) {
+        if (res.error === "locked" && res.retryAfter) {
+          setLockLeft(res.retryAfter);
+          errText("login.locked", { s: res.retryAfter });
+          return;
+        }
         const key: TKey =
-          res.error === "no_user"
-            ? "login.noUser"
-            : res.error === "locked"
-              ? "login.locked"
-              : "login.badPassword";
-        fail(key);
+          res.error === "no_user" ? "login.noUser"
+            : res.error === "captcha_fail" ? "login.captchaFail"
+              : res.error === "rate_limited" ? "login.busy"
+                : "login.badPassword";
+        errText(key);
       }
     } finally {
       setBusy(false);
     }
   };
 
-  const resend = async () => {
+  const doResend = async () => {
     if (cooldown > 0 || busy) return;
     setBusy(true);
     try {
-      const code = requestCode(email);
-      await sendVerificationEmail(email, code);
-      setDemoCode(getMailProvider().name === "demo" ? code : null);
-      setCooldown(RESEND_COOLDOWN_S);
+      const res = await resendCode(email.trim());
+      if (!res.ok) {
+        if (res.error === "resend_cooldown" && res.retryAfter) setCooldown(res.retryAfter);
+        return;
+      }
+      setDemoCode(res.demoCode ?? null);
+      setCooldown(60);
       setErr(null);
       setCodeInput("");
     } finally {
@@ -175,29 +181,21 @@ export function LoginScreen() {
     }
   };
 
-  const backToForm = () => {
-    clearPending();
-    setRegStep("form");
-    setDemoCode(null);
-    setCodeInput("");
-    setErr(null);
-    captchaRef.current?.refresh();
-    setCaptchaInput("");
-  };
-
   const switchMode = (m: "login" | "register") => {
     setMode(m);
     setRegStep("form");
     setDemoCode(null);
     setErr(null);
-    captchaRef.current?.refresh();
+    setCodeInput("");
     setCaptchaInput("");
+    refreshCaptcha();
   };
 
   const field =
     "w-full rounded-xl border border-white/[0.09] bg-black/30 px-3 py-2.5 text-[13px] text-aqua-100 placeholder:text-slate-600 focus:border-aqua-300/45 focus:outline-none";
 
   const inCodeStep = mode === "register" && regStep === "code";
+  const locked = lockLeft > 0;
 
   return (
     <div className="relative flex min-h-screen items-center justify-center px-5 py-10">
@@ -283,12 +281,23 @@ export function LoginScreen() {
                   {busy ? t("login.working") : t("verify.verify")}
                 </Button>
                 <div className="flex items-center justify-between text-[11px]">
-                  <button type="button" onClick={backToForm} className="cursor-pointer text-slate-500 transition hover:text-aqua-200">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRegStep("form");
+                      setDemoCode(null);
+                      setCodeInput("");
+                      setErr(null);
+                      refreshCaptcha();
+                      setCaptchaInput("");
+                    }}
+                    className="cursor-pointer text-slate-500 transition hover:text-aqua-200"
+                  >
                     ← {t("verify.back")}
                   </button>
                   <button
                     type="button"
-                    onClick={resend}
+                    onClick={doResend}
                     disabled={cooldown > 0 || busy}
                     className={
                       "cursor-pointer transition " +
@@ -361,18 +370,18 @@ export function LoginScreen() {
                   <div className="flex items-center gap-2.5">
                     <input
                       value={captchaInput}
-                      onChange={(e) => setCaptchaInput(e.target.value)}
+                      onChange={(e) => setCaptchaInput(e.target.value.replace(/[^\d-]/g, "").slice(0, 6))}
                       placeholder={t("login.captchaPh")}
-                      maxLength={8}
-                      className={field + " font-mono tracking-[0.25em] uppercase"}
+                      inputMode="numeric"
+                      className={field + " font-mono tracking-[0.2em]"}
                       disabled={locked}
                       autoComplete="off"
                     />
-                    <Captcha ref={captchaRef} />
+                    <Captcha question={captcha?.question ?? null} onRefresh={refreshCaptcha} />
                   </div>
                   <button
                     type="button"
-                    onClick={() => captchaRef.current?.refresh()}
+                    onClick={refreshCaptcha}
                     className="mt-1.5 cursor-pointer text-[10.5px] text-slate-500 transition hover:text-aqua-200"
                   >
                     {t("login.refresh")}
@@ -382,7 +391,7 @@ export function LoginScreen() {
                 {err && (
                   <div className="flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-500/[0.08] px-3 py-2.5 text-[12px] text-rose-200">
                     <Icon name="sparkle" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    {locked ? t("login.locked", { s: lockRemaining }) : err}
+                    {locked ? t("login.locked", { s: lockLeft }) : err}
                   </div>
                 )}
 
@@ -390,7 +399,7 @@ export function LoginScreen() {
                   {busy ? (
                     <span className="animate-pulse">{t("login.working")}</span>
                   ) : locked ? (
-                    t("login.locked", { s: lockRemaining })
+                    t("login.locked", { s: lockLeft })
                   ) : mode === "login" ? (
                     t("common.login")
                   ) : (

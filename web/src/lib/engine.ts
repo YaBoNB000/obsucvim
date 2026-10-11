@@ -94,10 +94,18 @@ export interface ObfuscationStats {
   seeded: string;
 }
 
+export interface QuotaInfo {
+  usedToday: number;
+  remaining: number;
+  limit: number;
+}
+
 export interface ObfuscationResult {
   code: string;
   log: LogLine[];
   stats: ObfuscationStats;
+  /** 服务端裁决后的当日额度（真实引擎路径携带） */
+  quota?: QuotaInfo;
 }
 
 export interface ObfuscatorEngine {
@@ -106,6 +114,8 @@ export interface ObfuscatorEngine {
   /** 一次性返回最终结果 */
   obfuscate(source: string, options: ObfuscationOptions): Promise<ObfuscationResult>;
 }
+
+import { authHeaders, clearToken } from "./token";
 
 /* ------------------------------- 约束常量 ------------------------------- */
 export const MAX_SOURCE_BYTES = 1024 * 1024; // 1 MB
@@ -146,18 +156,23 @@ async function httpObfuscate(source: string, options: ObfuscationOptions): Promi
   try {
     const res = await fetch("/api/obfuscate", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders() },
       body: JSON.stringify({ source, options }),
       signal: ctrl.signal,
     });
+    if (res.status === 401) {
+      clearToken(); // 会话失效：清除本地令牌，界面回到登录页
+      throw new Error("UNAUTHORIZED");
+    }
     const payload = (await res.json()) as
-      | { ok: true; result: ObfuscationResult }
-      | { ok: false; error: string; detail?: string };
+      | { ok: true; result: ObfuscationResult; quota?: QuotaInfo }
+      | { ok: false; error: string; detail?: string; quota?: QuotaInfo };
     if (!res.ok || !payload.ok) {
       const err = payload && "error" in payload ? payload.error : `HTTP_${res.status}`;
       const detail = payload && "detail" in payload ? payload.detail : "";
       throw new Error(detail ? `${err}:${String(detail).slice(0, 160)}` : err);
     }
+    if (payload.quota) payload.result.quota = payload.quota;
     return payload.result;
   } finally {
     clearTimeout(timer);

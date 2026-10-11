@@ -8,9 +8,12 @@ import {
   type ReactNode,
 } from "react";
 import { DAILY_FREE_QUOTA, type ObfuscationOptions } from "./engine";
+import { authHeaders, clearToken, getToken, setToken } from "./token";
 
 /* ------------------------------------------------------------------ */
-/*                        账户 + 每日免费额度                          */
+/*            账户 + 每日免费额度（全部服务端裁决）                      */
+/*  会话/密码/验证码/锁定/额度都在本地后端（engine-server.mjs），        */
+/*  浏览器只持随机令牌——devtools 无法伪造登录态或旁路锁定。             */
 /* ------------------------------------------------------------------ */
 export interface User {
   email: string;
@@ -18,16 +21,38 @@ export interface User {
   plan: "free";
 }
 
+export interface QuotaInfo {
+  usedToday: number;
+  remaining: number;
+  limit: number;
+}
+
+export interface CaptchaChallenge {
+  captchaId: string;
+  question: string;
+}
+
 export type AuthError =
   | "bad_input"
   | "email_taken"
   | "no_user"
   | "bad_password"
-  | "locked";
+  | "locked"
+  | "captcha_fail"
+  | "rate_limited"
+  | "network"
+  | "code_wrong"
+  | "code_expired"
+  | "code_exhausted"
+  | "code_none"
+  | "register_expired"
+  | "resend_cooldown";
 
 interface AuthResult {
   ok: boolean;
   error?: AuthError;
+  retryAfter?: number;
+  demoCode?: string;
 }
 
 interface AuthValue {
@@ -35,249 +60,211 @@ interface AuthValue {
   remaining: number;
   usedToday: number;
   limit: number;
-  register: (email: string, nickname: string, password: string) => Promise<AuthResult>;
-  login: (email: string, password: string) => Promise<AuthResult>;
+  fetchCaptcha: () => Promise<CaptchaChallenge | null>;
+  register: (email: string, nickname: string, password: string, captchaId: string, captchaAnswer: string) => Promise<AuthResult>;
+  confirmRegister: (email: string, code: string) => Promise<AuthResult>;
+  resendCode: (email: string) => Promise<AuthResult>;
+  login: (email: string, password: string, captchaId: string, captchaAnswer: string) => Promise<AuthResult>;
   logout: () => void;
-  consumeQuota: () => void;
+  applyQuota: (q: QuotaInfo) => void;
+  refreshQuota: () => void;
   outOfQuota: boolean;
-  /** 登录锁定剩余秒数（连续失败 5 次触发） */
-  lockRemaining: number;
-}
-
-/* ---------------- 本地账户注册表（密码加盐哈希，绝不存明文） ---------------- */
-interface StoredUser {
-  email: string;
-  nickname: string;
-  salt: string;
-  hash: string;
-  created: number;
-}
-
-const USERS_KEY = "obsucvim.users";
-const LOCK_KEY = "obsucvim.authlock";
-const MAX_FAILS = 5;
-const LOCK_SECONDS = 60;
-
-function randomSalt(): string {
-  const bytes = new Uint8Array(16);
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-  } else {
-    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
-  }
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function hashPassword(password: string, salt: string): Promise<string> {
-  const data = new TextEncoder().encode(salt + ":" + password);
-  if (globalThis.crypto?.subtle) {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
-    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
-  }
-  // 非安全上下文降级（四轮 FNV）：弱于 SHA-256，但仍避免明文落盘
-  let h1 = 0x811c9dc5 ^ 0xdeadbeef;
-  let h2 = 0x01000193 ^ 0x41c6ce57;
-  for (const b of data) {
-    h1 = Math.imul(h1 ^ b, 16777619) >>> 0;
-    h2 = Math.imul(h2 + b + 1, 2246822519) >>> 0;
-    h1 = (h1 ^ h2) >>> 0;
-  }
-  return h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0") + (h1 ^ h2).toString(16).padStart(8, "0");
-}
-
-/** 邮箱是否已注册（注册流程发送验证码前检查） */
-export function emailRegistered(email: string): boolean {
-  return !!loadUsers()[email.trim().toLowerCase()];
-}
-
-function loadUsers(): Record<string, StoredUser> {
-  try {
-    const raw = localStorage.getItem(USERS_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Record<string, StoredUser>) : {};
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveUsers(users: Record<string, StoredUser>) {
-  try {
-    localStorage.setItem(USERS_KEY, JSON.stringify(users));
-  } catch {
-    /* ignore */
-  }
-}
-
-function readLock(): { fails: number; until: number } {
-  try {
-    const raw = localStorage.getItem(LOCK_KEY);
-    const parsed = raw ? (JSON.parse(raw) as { fails: number; until: number }) : null;
-    return parsed ?? { fails: 0, until: 0 };
-  } catch {
-    return { fails: 0, until: 0 };
-  }
-}
-
-function writeLock(lock: { fails: number; until: number }) {
-  try {
-    localStorage.setItem(LOCK_KEY, JSON.stringify(lock));
-  } catch {
-    /* ignore */
-  }
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
-const USER_KEY = "obsucvim.user";
-/* 额度按账号独立计数：obsucvim.quota.<email>。
- * 旧的全局键 obsucvim.quota 已废弃（首次加载时清除）。 */
-const LEGACY_QUOTA_KEY = "obsucvim.quota";
-const quotaKey = (email: string) => `obsucvim.quota.${email.trim().toLowerCase()}`;
 
-const today = () => new Date().toISOString().slice(0, 10);
+const ERROR_MAP: Record<string, AuthError> = {
+  BAD_INPUT: "bad_input",
+  EMAIL_TAKEN: "email_taken",
+  NO_USER: "no_user",
+  BAD_PASSWORD: "bad_password",
+  LOCKED: "locked",
+  CAPTCHA_FAIL: "captcha_fail",
+  RATE_LIMITED: "rate_limited",
+  CODE_WRONG: "code_wrong",
+  CODE_EXPIRED: "code_expired",
+  CODE_EXHAUSTED: "code_exhausted",
+  CODE_NONE: "code_none",
+  REGISTER_EXPIRED: "register_expired",
+  RESEND_COOLDOWN: "resend_cooldown",
+};
 
-function user0(): User | null {
-  try {
-    const raw = localStorage.getItem(USER_KEY);
-    return raw ? (JSON.parse(raw) as User) : null;
-  } catch {
-    return null;
-  }
+async function apiPost<T>(url: string, body: unknown): Promise<{ status: number; data: T }> {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, data: (await res.json()) as T };
 }
 
-function readQuota(email: string): number {
-  try {
-    const raw = localStorage.getItem(quotaKey(email));
-    const parsed = raw ? (JSON.parse(raw) as { date: string; used: number }) : null;
-    return parsed && parsed.date === today() ? parsed.used : 0;
-  } catch {
-    return 0;
-  }
+interface ApiEnvelope {
+  ok?: boolean;
+  error?: string;
+  retryAfter?: number;
+  demoCode?: string;
+  token?: string;
+  user?: User;
+  quota?: QuotaInfo;
+  captchaId?: string;
+  question?: string;
 }
 
-function writeQuota(email: string, used: number) {
-  try {
-    localStorage.setItem(quotaKey(email), JSON.stringify({ date: today(), used }));
-  } catch {
-    /* ignore */
-  }
+function mapError(d: ApiEnvelope, status: number): AuthError {
+  if (d.error && ERROR_MAP[d.error]) return ERROR_MAP[d.error];
+  if (status === 401) return "no_user";
+  return "bad_input";
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(() => {
+  const [user, setUser] = useState<User | null>(null);
+  const [quota, setQuota] = useState<QuotaInfo>({ usedToday: 0, remaining: DAILY_FREE_QUOTA, limit: DAILY_FREE_QUOTA });
+  const [booted, setBooted] = useState(false);
+
+  // 启动：令牌 -> /api/me 恢复会话与额度
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!getToken()) {
+        setBooted(true);
+        return;
+      }
+      try {
+        const res = await fetch("/api/me", { headers: authHeaders() });
+        const d = (await res.json()) as ApiEnvelope;
+        if (!alive) return;
+        if (res.ok && d.ok && d.user) {
+          setUser(d.user);
+          if (d.quota) setQuota(d.quota);
+        } else {
+          clearToken();
+        }
+      } catch {
+        /* 后端不可达：保持未登录 */
+      } finally {
+        if (alive) setBooted(true);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const fetchCaptcha = useCallback(async (): Promise<CaptchaChallenge | null> => {
     try {
-      const raw = localStorage.getItem(USER_KEY);
-      return raw ? (JSON.parse(raw) as User) : null;
+      const { data } = await apiPost<ApiEnvelope>("/api/auth/captcha", {});
+      return data.ok && data.captchaId && data.question ? { captchaId: data.captchaId, question: data.question } : null;
     } catch {
       return null;
     }
-  });
-  const [usedToday, setUsedToday] = useState<number>(() => {
-    try {
-      localStorage.removeItem(LEGACY_QUOTA_KEY); // 旧全局计数废弃
-    } catch {
-      /* ignore */
-    }
-    return user0() ? readQuota(user0()!.email) : 0;
-  });
-
-  // 登录/登出/注册切换账号 → 重载该账号的当日额度
-  const userEmail = user?.email;
-  useEffect(() => {
-    if (userEmail) setUsedToday(readQuota(userEmail));
-    else setUsedToday(0);
-  }, [userEmail]);
-
-  // 日期变更即重置额度
-  useEffect(() => {
-    const timer = setInterval(() => {
-      if (userEmail) setUsedToday(readQuota(userEmail));
-    }, 60_000);
-    return () => clearInterval(timer);
-  }, [userEmail]);
-
-  const [lockRemaining, setLockRemaining] = useState(0);
-
-  useEffect(() => {
-    const tick = () => {
-      const lock = readLock();
-      setLockRemaining(Math.max(0, Math.ceil((lock.until - Date.now()) / 1000)));
-    };
-    tick();
-    const timer = setInterval(tick, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  const signIn = useCallback((u: StoredUser) => {
-    const session: User = { email: u.email, nickname: u.nickname, plan: "free" };
-    localStorage.setItem(USER_KEY, JSON.stringify(session));
-    writeLock({ fails: 0, until: 0 });
-    setUser(session);
   }, []);
 
   const register = useCallback(
-    async (email: string, nickname: string, password: string): Promise<AuthResult> => {
-      const key = email.trim().toLowerCase();
-      const users = loadUsers();
-      if (users[key]) return { ok: false, error: "email_taken" };
-      const salt = randomSalt();
-      const hash = await hashPassword(password, salt);
-      const su: StoredUser = { email: key, nickname: nickname.trim() || key.split("@")[0], salt, hash, created: Date.now() };
-      users[key] = su;
-      saveUsers(users);
-      signIn(su);
-      return { ok: true };
+    async (email: string, nickname: string, password: string, captchaId: string, captchaAnswer: string): Promise<AuthResult> => {
+      try {
+        const { status, data } = await apiPost<ApiEnvelope>("/api/auth/register", {
+          email,
+          nickname,
+          password,
+          captchaId,
+          captchaAnswer,
+        });
+        if (data.ok) return { ok: true, demoCode: data.demoCode };
+        return { ok: false, error: mapError(data, status), retryAfter: data.retryAfter };
+      } catch {
+        return { ok: false, error: "network" };
+      }
     },
-    [signIn],
+    [],
   );
 
-  const login = useCallback(
-    async (email: string, password: string): Promise<AuthResult> => {
-      const lock = readLock();
-      if (lock.until > Date.now()) return { ok: false, error: "locked" };
-      const key = email.trim().toLowerCase();
-      const users = loadUsers();
-      const su = users[key];
-      if (!su) return { ok: false, error: "no_user" };
-      const hash = await hashPassword(password, su.salt);
-      if (hash !== su.hash) {
-        const fails = lock.fails + 1;
-        writeLock({ fails, until: fails >= MAX_FAILS ? Date.now() + LOCK_SECONDS * 1000 : 0 });
-        if (fails >= MAX_FAILS) setLockRemaining(LOCK_SECONDS);
-        return { ok: false, error: fails >= MAX_FAILS ? "locked" : "bad_password" };
+  const confirmRegister = useCallback(async (email: string, code: string): Promise<AuthResult> => {
+    try {
+      const { status, data } = await apiPost<ApiEnvelope>("/api/auth/register/confirm", { email, code });
+      if (data.ok && data.token && data.user) {
+        setToken(data.token);
+        setUser(data.user);
+        if (data.quota) setQuota(data.quota);
+        return { ok: true };
       }
-      signIn(su);
-      return { ok: true };
+      return { ok: false, error: mapError(data, status), retryAfter: data.retryAfter };
+    } catch {
+      return { ok: false, error: "network" };
+    }
+  }, []);
+
+  const resendCode = useCallback(async (email: string): Promise<AuthResult> => {
+    try {
+      const { status, data } = await apiPost<ApiEnvelope>("/api/auth/resend", { email });
+      if (data.ok) return { ok: true, demoCode: data.demoCode };
+      return { ok: false, error: mapError(data, status), retryAfter: data.retryAfter };
+    } catch {
+      return { ok: false, error: "network" };
+    }
+  }, []);
+
+  const login = useCallback(
+    async (email: string, password: string, captchaId: string, captchaAnswer: string): Promise<AuthResult> => {
+      try {
+        const { status, data } = await apiPost<ApiEnvelope>("/api/auth/login", {
+          email,
+          password,
+          captchaId,
+          captchaAnswer,
+        });
+        if (data.ok && data.token && data.user) {
+          setToken(data.token);
+          setUser(data.user);
+          if (data.quota) setQuota(data.quota);
+          return { ok: true };
+        }
+        return { ok: false, error: mapError(data, status), retryAfter: data.retryAfter };
+      } catch {
+        return { ok: false, error: "network" };
+      }
     },
-    [signIn],
+    [],
   );
 
   const logout = useCallback(() => {
-    localStorage.removeItem(USER_KEY);
+    void apiPost("/api/auth/logout", {}).catch(() => {});
+    clearToken();
     setUser(null);
+    setQuota({ usedToday: 0, remaining: DAILY_FREE_QUOTA, limit: DAILY_FREE_QUOTA });
   }, []);
 
-  const consumeQuota = useCallback(() => {
-    setUsedToday((n) => {
-      const next = Math.min(DAILY_FREE_QUOTA, n + 1);
-      if (user) writeQuota(user.email, next);
-      return next;
-    });
-  }, [user]);
+  const applyQuota = useCallback((q: QuotaInfo) => setQuota(q), []);
+
+  const refreshQuota = useCallback(() => {
+    if (!getToken()) return;
+    void (async () => {
+      try {
+        const res = await fetch("/api/me", { headers: authHeaders() });
+        const d = (await res.json()) as ApiEnvelope;
+        if (res.ok && d.quota) setQuota(d.quota);
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, []);
 
   const value = useMemo<AuthValue>(
     () => ({
-      user,
-      usedToday,
-      limit: DAILY_FREE_QUOTA,
-      remaining: Math.max(0, DAILY_FREE_QUOTA - usedToday),
-      outOfQuota: usedToday >= DAILY_FREE_QUOTA,
+      user: booted ? user : null,
+      usedToday: quota.usedToday,
+      limit: quota.limit,
+      remaining: quota.remaining,
+      outOfQuota: quota.remaining <= 0,
+      fetchCaptcha,
       register,
+      confirmRegister,
+      resendCode,
       login,
       logout,
-      consumeQuota,
-      lockRemaining,
+      applyQuota,
+      refreshQuota,
     }),
-    [user, usedToday, register, login, logout, consumeQuota, lockRemaining],
+    [booted, user, quota, fetchCaptcha, register, confirmRegister, resendCode, login, logout, applyQuota, refreshQuota],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -304,11 +291,9 @@ export interface HistoryItem {
 
 interface HistoryValue {
   items: HistoryItem[];
-  push: (item: ObfuscationItemInput) => void;
+  push: (item: Omit<HistoryItem, "id" | "timestamp">) => void;
   clear: () => void;
 }
-
-export type ObfuscationItemInput = Omit<HistoryItem, "id" | "timestamp" | "seed"> & { seed: string };
 
 const HistoryContext = createContext<HistoryValue | null>(null);
 const HISTORY_KEY = "obsucvim.history";
@@ -324,45 +309,30 @@ export function HistoryProvider({ children }: { children: ReactNode }) {
     }
   });
 
-  const persist = (next: HistoryItem[]) => {
+  const persist = useCallback((next: HistoryItem[]) => {
     setItems(next);
     try {
       localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
     } catch {
-      // 超出存储配额时保留前 2 条再试一次
       try {
         localStorage.setItem(HISTORY_KEY, JSON.stringify(next.slice(0, 2)));
       } catch {
         /* ignore */
       }
     }
-  };
+  }, []);
 
   const push = useCallback(
-    (item: ObfuscationItemInput) => {
+    (item: Omit<HistoryItem, "id" | "timestamp">) => {
       const full: HistoryItem = { ...item, id: Date.now(), timestamp: Date.now() };
-      setItems((prev) => {
-        const next = [full, ...prev].slice(0, HISTORY_MAX);
-        try {
-          localStorage.setItem(HISTORY_KEY, JSON.stringify(next));
-        } catch {
-          try {
-            localStorage.setItem(HISTORY_KEY, JSON.stringify(next.slice(0, 2)));
-          } catch {
-            /* ignore */
-          }
-        }
-        return next;
-      });
+      persist([full, ...items].slice(0, HISTORY_MAX));
     },
-    [],
+    [items, persist],
   );
 
-  const clear = useCallback(() => persist([]), []);
+  const clear = useCallback(() => persist([]), [persist]);
 
-  return (
-    <HistoryContext.Provider value={{ items, push, clear }}>{children}</HistoryContext.Provider>
-  );
+  return <HistoryContext.Provider value={{ items, push, clear }}>{children}</HistoryContext.Provider>;
 }
 
 export function useHistory() {

@@ -18,7 +18,7 @@ import { cn } from "../utils/cn";
 
 export function Workspace() {
   const { t } = useI18n();
-  const { outOfQuota, consumeQuota } = useAuth();
+  const { outOfQuota, applyQuota, refreshQuota } = useAuth();
   const { push } = useHistory();
 
   const [code, setCode] = useState(SAMPLE_LUA);
@@ -60,7 +60,8 @@ export function Workspace() {
       const res = await runObfuscation(code, options);
       setResult(res);
       lastRun.current = { src: code, key: JSON.stringify(options) };
-      consumeQuota();
+      if (res.quota) applyQuota(res.quota);
+      else refreshQuota();
       push({
         seed: res.stats.seeded,
         inputBytes: res.stats.inputBytes,
@@ -72,11 +73,12 @@ export function Workspace() {
       const msg = e instanceof Error ? e.message : "";
       if (msg.startsWith("SOURCE_TOO_LARGE")) setError(t("ws.tooLarge"));
       else if (msg === "ENGINE_TIMEOUT") setError(t("ws.timeout"));
+      else if (msg === "UNAUTHORIZED" || msg.startsWith("QUOTA_EXCEEDED")) setError(t("ws.quotaEmpty"));
       else setError(msg || t("ws.error"));
     } finally {
       setRunning(false);
     }
-  }, [code, options, running, tooLarge, outOfQuota, consumeQuota, push, t]);
+  }, [code, options, running, tooLarge, outOfQuota, applyQuota, refreshQuota, push, t]);
 
   const tryRun = useCallback(() => {
     if (running) return;
