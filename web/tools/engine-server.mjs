@@ -38,6 +38,7 @@ function buildCliArgs(o) {
   if (!o.junk) args.push("--no-junk");
   if (!o.numbers) args.push("--no-numbers");
   if (!o.body) args.push("--no-body");
+  args.push(o.vmSealStrings === false ? "--no-vm-seal-strings" : "--vm-seal-strings");
   return args;
 }
 
@@ -92,6 +93,7 @@ function appliedNames(o) {
   if (o.junk) list.push("垃圾代码注入");
   if (o.numbers) list.push("数字字面量重写");
   if (o.body) list.push("全程序加密");
+  if (o.vmSealStrings !== false) list.push("VM 字符串封存");
   if (o.minify) list.push("单行压缩");
   return list;
 }

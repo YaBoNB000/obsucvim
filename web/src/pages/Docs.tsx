@@ -30,6 +30,7 @@ pub fn obfuscate(source: &str, options_json: &str) -> Result<String, JsValue> {
     if !opts.guard   { cfg = cfg.no_guard(); }
     // 五项运行时保护固定全开（非选项）
     cfg = cfg.env_check().bind_executor().bind_env("roblox").antidbg().guard();
+    cfg = if opts.vm_seal_strings { cfg.vm_seal_strings() } else { cfg.no_vm_seal_strings() };
 
     let code = obsucvim::obfuscate(source, &cfg)?;
     // 一次性返回：{ code, log } —— 没有流式进度；首行固定英文水印
@@ -68,6 +69,7 @@ const OPTIONS_JSON = `{
   "junk": true,               // L3 垃圾代码注入     --no-junk
   "numbers": true,            // L4 数字字面量重写    --no-numbers
   "body": true,               // 全程序加密          --no-body
+  "vmSealStrings": true,      // VM 字符串封存（v15 默认开） --vm-seal-strings
   "seed": "67067"             // 留空 = 时间种子
 }`;
 
@@ -87,6 +89,7 @@ export function Docs() {
     ["bindEnv", "always on", t("ws.bindEnvHint")],
     ["antidbg", "always on", t("ws.antidbgHint")],
     ["guard", "always on", t("ws.guardHint")],
+    ["vmSealStrings", "bool (default true)", t("ws.vmSealHint")],
     ["seed", "string", t("ws.seedPh")],
   ];
 

@@ -4,6 +4,7 @@
  * ----------------------------------------------------------------------------
  *  产品形态唯一：v15 管线（无强度预设）。选项与 obsucvim CLI 旗标一一对应：
  *    变换   改名 · 压缩 · 字符串加密 · 平坦化 · 垃圾代码 · 数字重写 · 全程序加密
+ *    VM     字符串封存（--vm-seal-strings，v15 默认开）
  *    固定   防篡改 · 反调试环境守卫 · executor 认证绑定 · 环境检查组
  *           tier-1+tier-2 · 环境绑定 roblox（五项运行时保护全开，非选项）
  *    水印   产物首行固定英文水印（引擎行为，非选项）
@@ -42,6 +43,9 @@ export interface ObfuscationOptions {
   numbers: boolean;
   /** L5 全程序加密（--no-body） */
   body: boolean;
+  /* ---- VM 自定义 ---- */
+  /** VM 字符串封存（--vm-seal-strings / --no-vm-seal-strings，v15 默认开） */
+  vmSealStrings: boolean;
   /* ---- 元信息 ---- */
   seed: string;
 }
@@ -54,6 +58,7 @@ export const DEFAULT_OPTIONS: ObfuscationOptions = {
   junk: true,
   numbers: true,
   body: true,
+  vmSealStrings: true,
   seed: "",
 };
 
@@ -71,6 +76,7 @@ export function buildCliArgs(o: ObfuscationOptions): string[] {
   if (!o.junk) args.push("--no-junk");
   if (!o.numbers) args.push("--no-numbers");
   if (!o.body) args.push("--no-body");
+  args.push(o.vmSealStrings ? "--vm-seal-strings" : "--no-vm-seal-strings");
   return args;
 }
 
@@ -126,6 +132,7 @@ export function appliedNames(o: ObfuscationOptions): string[] {
   if (o.junk) list.push("垃圾代码注入");
   if (o.numbers) list.push("数字字面量重写");
   if (o.body) list.push("全程序加密");
+  if (o.vmSealStrings) list.push("VM 字符串封存");
   if (o.minify) list.push("单行压缩");
   return list;
 }
@@ -251,6 +258,7 @@ export const mockEngine: ObfuscatorEngine = {
       if (options.flatten) log.push({ level: "info", text: "控制流平坦化：状态机调度" });
       if (options.junk) log.push({ level: "info", text: "垃圾代码注入：死分支 + 不变量噪声" });
       if (options.body) log.push({ level: "info", text: "L5 全程序加密：载荷整体封存" });
+      if (options.vmSealStrings) log.push({ level: "info", text: "VM 字符串封存：编译前封存源字符串字面量" });
       log.push({ level: "info", text: "防篡改：完整性校验 lane（固定开启）" });
       log.push({ level: "info", text: "反调试环境守卫前导（固定开启）" });
       log.push({ level: "info", text: "v15 管线：模块表 + CPS 引导装配" });

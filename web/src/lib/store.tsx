@@ -198,7 +198,7 @@ const DEFAULTS_KEY = "obsucvim.defaults";
 
 const OPTION_KEYS = [
   "minify", "mangle", "strings", "flatten", "junk", "numbers",
-  "body", "seed",
+  "body", "vmSealStrings", "seed",
 ] as const;
 
 export function loadDefaults(fallback: ObfuscationOptions): ObfuscationOptions {

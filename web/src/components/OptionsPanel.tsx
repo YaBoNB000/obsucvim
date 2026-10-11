@@ -1,4 +1,4 @@
-import { appliedNames, type ObfuscationOptions } from "../lib/engine";
+import { type ObfuscationOptions } from "../lib/engine";
 import { Icon, Toggle } from "./ui";
 import { useI18n } from "../lib/i18n";
 
@@ -26,30 +26,11 @@ export function OptionsPanel({
   const set = <K extends keyof ObfuscationOptions>(key: K, value: ObfuscationOptions[K]) =>
     setOptions({ ...options, [key]: value });
 
-  const enabled = appliedNames(options);
-
   return (
     <div className="flex flex-col gap-5">
       <div>
         <h2 className="text-[13.5px] font-semibold text-slate-100">{t("ws.config")}</h2>
       </div>
-
-      <Group title={t("ws.preset")} icon={<Icon name="bolt" className="h-4 w-4" />}>
-        <div className="flex flex-wrap gap-1.5 px-0.5">
-          {enabled.length === 0 ? (
-            <span className="text-[11px] text-slate-500">{t("ws.appliedCount", { n: 0 })}</span>
-          ) : (
-            enabled.map((a) => (
-              <span
-                key={a}
-                className="rounded-lg border border-aqua-300/20 bg-aqua-400/[0.07] px-2 py-0.5 font-mono text-[10px] text-aqua-100/90"
-              >
-                {a}
-              </span>
-            ))
-          )}
-        </div>
-      </Group>
 
       <Group title={t("ws.groupTransform")} icon={<Icon name="lock" className="h-4 w-4" />}>
         <Toggle label={t("ws.mangle")} checked={options.mangle} onChange={(v) => set("mangle", v)} />
@@ -59,6 +40,10 @@ export function OptionsPanel({
         <Toggle label={t("ws.numbers")} checked={options.numbers} onChange={(v) => set("numbers", v)} />
         <Toggle label={t("ws.body")} checked={options.body} onChange={(v) => set("body", v)} />
         <Toggle label={t("ws.minify")} checked={options.minify} onChange={(v) => set("minify", v)} />
+      </Group>
+
+      <Group title={t("ws.groupVm")} icon={<Icon name="cpu" className="h-4 w-4" />}>
+        <Toggle label={t("ws.vmSeal")} checked={options.vmSealStrings} onChange={(v) => set("vmSealStrings", v)} />
       </Group>
 
       <Group title={t("ws.groupMeta")} icon={<Icon name="layers" className="h-4 w-4" />}>
