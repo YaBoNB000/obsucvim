@@ -156,6 +156,8 @@
 
 ## 4. 更新日志
 
+- **2026-10-11（R066 源码更新）**：canary 源码改为 `print("suda")`（14 字节），同命令重混淆：190,869 字节，SHA-256 `e80ce06364dde17c449d86953a9d9f731eef4252345c11662372a297e6e3c892`；语法过、stdout 同源码、确定、无明文 `suda`、bit32 mock 静默死亡。
+
 - **2026-10-11（R066 canary 更新为当前产品形态）**：`handoff/R066_target.luau.lua` 以 `--env-check --seed 66066` 重生成（190,974 字节，SHA-256 `e2cb9423d1e02ba702bdc3489540b48a95b71b9b27f229f6e07998aab7c65e13`）——水印 + tier-1 环境检查组的完整产品形态展示。验证：语法过、stdout 同源码、同 seed 确定、干净克隆环境照常输出、bit32 错值 mock 静默死亡。上一版（H3-6 修复后水印 canary）由本版取代，历史哈希见 `handoff/README-R066.md`。
 
 - **2026-10-11（WTF-PORT Phase 2：Roblox/executor 档上线，`--env-check --bind-executor` 组合）**：tier-2 检查组并入 ENVFRAG 工厂（envcheck.rs `build(rng, tier2)`，仅在双开时发射——所有既有 flag 组合字节不变，SHA 对照实证）。新增 6 组：Enum 身份缓存（FromName/FromValue/属性三次调用同一 userdata + typeof 三态 + 锁定元表）、Random 确定性（固定种子 51018400 的三条精确值 + 随机种子的同流/Clone 分叉自洽）、task 语义（spawn 立即执行返回 thread、delay 返回未运行 thread + cancel、wait 类型错误）、成员调用形态（"Expected ':' not '.'" 前缀匹配×2）、Instance 面（typeof/ClassName/父子/信号 Connect-Disconnect 生命周期/销毁后 Parent 锁定）、clonefunction 条件探针；身份全等扩至 27 引用。外部对象成员一律 `["字符串键"]` 访问——sanitize_frag 会改掉非全局接收者后的标识符成员（本轮实证：`Random` 需同时加入两个保留列表否则 `.new` 被改名）。测试 `tests/wtf_port_tier2_test.sh` + `wtf_port_roblox_mock.luau`：忠实 Roblox mock 正向 EVD=0 + 9 个破坏钩子（无 game/Enum 不缓存/Random 值错/Clone 分叉断/task 返回 nil/点调用不报错/Disconnect 不翻转/销毁锁失效/检查中换函数）全部 EVD≠0；产物级：双开构建语法过/确定/CLI 静默死 + 三组既有组合 SHA 不变。mock 侧修复两个自身 bug（Random.new 点/冒号双态签名；Parent 代理表——rawset 后二次赋值绕过 __newindex 的经典坑）。验证：cargo 47+1+4；run_tests 169/169（含 tier2 18/18）；presets 370/370；executor_guard 6/6；faithful 5/5；multiseed 0；防御审计 20/1（D3 持平）；H3/H4/H5-P0 PASS。**诚实边界**：tier-2 全常量挑战——mock 环境死于语义不忠实，真环境录制重放照常通过（L1 空缺不变）；真机（Roblox/executor）验证未做，固定种子精确值依赖 Roblox PRNG 稳定。
