@@ -1,7 +1,7 @@
 import { useI18n } from "../lib/i18n";
 import { Button, GlassCard, Icon, Pill } from "../components/ui";
 import { InlineCode } from "../components/CodeArea";
-import { ENGINE, MAX_SOURCE_BYTES, ENGINE_TIMEOUT_MS, DAILY_FREE_QUOTA, PRESETS } from "../lib/engine";
+import { ENGINE, MAX_SOURCE_BYTES, ENGINE_TIMEOUT_MS, DAILY_FREE_QUOTA } from "../lib/engine";
 
 const RUST_SNIPPET = `// src/lib.rs — obsucvim-core（选项模型与 obsucvim CLI 对齐）
 use wasm_bindgen::prelude::*;
@@ -16,8 +16,8 @@ pub fn obfuscate(source: &str, options_json: &str) -> Result<String, JsValue> {
         return Err(JsValue::from_str("SOURCE_TOO_LARGE"));
     }
 
-    // 与 CLI 等价：--preset v15（产品默认）| low..max（legacy）
-    let mut cfg = obsucvim::Options::from_preset(opts.preset)?;
+    // 产品形态固定 v15（CLI 默认管线）
+    let mut cfg = obsucvim::Options::v15();
     if let Some(seed) = opts.seed() { cfg = cfg.with_seed(seed); }
     cfg.minify = opts.minify;          // --minify / --no-minify
     if !opts.mangle  { cfg = cfg.no_mangle(); }   // L1
@@ -28,14 +28,9 @@ pub fn obfuscate(source: &str, options_json: &str) -> Result<String, JsValue> {
     if !opts.body    { cfg = cfg.no_body(); }     // L5
     if !opts.antidbg { cfg = cfg.no_antidbg(); }  // L7
     if !opts.guard   { cfg = cfg.no_guard(); }
-    if opts.preset == "vm" || opts.preset == "max" {
-        cfg = if opts.vm_seal_strings { cfg.vm_seal_strings() } else { cfg.no_vm_seal_strings() };
-    }
-    if opts.preset == "v15" {
-        if opts.env_check     { cfg = cfg.env_check(); }    // tier-1+tier-2
-        cfg = if opts.bind_executor { cfg.bind_executor() } else { cfg.no_bind_executor() }; // 默认开
-        if opts.bind_env      { cfg = cfg.bind_env("roblox"); }
-    }
+    if opts.env_check     { cfg = cfg.env_check(); }    // tier-1+tier-2
+    cfg = if opts.bind_executor { cfg.bind_executor() } else { cfg.no_bind_executor() }; // 默认开
+    if opts.bind_env      { cfg = cfg.bind_env("roblox"); }
 
     let code = obsucvim::obfuscate(source, &cfg)?;
     // 一次性返回：{ code, log } —— 没有流式进度；首行固定英文水印
@@ -64,7 +59,7 @@ export const ENGINE: ObfuscatorEngine = {
 };`;
 
 const OPTIONS_JSON = `{
-  "preset": "v15",            // v15（产品默认）| low | medium | high | vm | max
+  // 产品形态固定 v15（无强度预设）
   "minify": true,             // L1 单行压缩        --minify / --no-minify
   "mangle": true,             // L1 标识符重命名     --no-mangle
   "strings": true,            // L2 字符串加密       --no-strings
@@ -74,10 +69,9 @@ const OPTIONS_JSON = `{
   "body": true,               // L5 全程序加密       --no-body
   "antidbg": true,            // L7 防篡改           --no-antidbg
   "guard": true,              // 反调试环境守卫前导   --no-guard
-  "vmSealStrings": true,      // VM 字符串封存（实验，VM 预设）--vm-seal-strings
-  "envCheck": false,          // 环境检查组 tier-1+tier-2（仅 v15）--env-check
-  "bindExecutor": true,       // executor 认证绑定（仅 v15，默认开）--no-bind-executor 退绑
-  "bindEnv": false,           // 环境绑定 roblox（仅 v15）--bind-env roblox
+  "envCheck": false,          // 环境检查组 tier-1+tier-2   --env-check
+  "bindExecutor": true,       // executor 认证绑定（默认开） --no-bind-executor 退绑
+  "bindEnv": false,           // 环境绑定 roblox            --bind-env roblox
   "seed": "67067"             // 留空 = 时间种子
 }`;
 
@@ -92,11 +86,10 @@ export function Docs() {
   ];
 
   const vmRows = [
-    ["preset", "v15 | low..max", PRESETS["v15"].hint],
     ["bindExecutor", "bool (default true)", t("ws.bindExecutorHint")],
     ["envCheck", "bool (default false)", t("ws.envCheckHint")],
     ["bindEnv", "bool (default false)", t("ws.bindEnvHint")],
-    ["vmSealStrings", "bool (VM presets)", t("ws.vmSealHint")],
+    ["seed", "string", t("ws.seedPh")],
   ];
 
   return (

@@ -1,10 +1,9 @@
 import { useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { useAuth, loadDefaults, saveDefaults } from "../lib/store";
-import { DEFAULT_OPTIONS, ENGINE, DAILY_FREE_QUOTA, PRESETS, PRESET_IDS, type ObfuscationOptions } from "../lib/engine";
+import { DEFAULT_OPTIONS, ENGINE, DAILY_FREE_QUOTA, type ObfuscationOptions } from "../lib/engine";
 import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { LangSwitch } from "../components/Brand";
-import { presetLabel } from "../components/OptionsPanel";
 import { Toggle } from "../components/ui";
 
 export function Account() {
@@ -60,45 +59,23 @@ export function Account() {
           <p className="mb-4 text-[12px] leading-relaxed text-slate-400/80">{t("account.defaultsDesc")}</p>
 
           <div className="grid gap-2.5">
-            <div className="grid grid-cols-3 gap-2">
-              {PRESET_IDS.map((p) => (
-                <button
-                  key={p}
-                  onClick={() => {
-                    const { label: _l, hint: _h, ...rest } = PRESETS[p];
-                    setDefaults({ ...defaults, ...rest, preset: p });
-                  }}
-                  className={
-                    "cursor-pointer rounded-xl border px-3 py-2 text-[12px] transition-all duration-300 " +
-                    (defaults.preset === p
-                      ? "border-aqua-300/40 bg-aqua-400/[0.12] text-aqua-100"
-                      : "border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-aqua-300/25 hover:text-aqua-100")
-                  }
-                >
-                  {presetLabel(p, t)}
-                </button>
-              ))}
-            </div>
             <Toggle
               label={t("ws.bindExecutor")}
               hint={t("ws.bindExecutorHint")}
               checked={defaults.bindExecutor}
-              locked={defaults.preset !== "v15"}
               onChange={(v) => setDefaults({ ...defaults, bindExecutor: v })}
             />
             <Toggle
               label={t("ws.envCheck")}
               hint={t("ws.envCheckHint")}
               checked={defaults.envCheck}
-              locked={defaults.preset !== "v15"}
               onChange={(v) => setDefaults({ ...defaults, envCheck: v })}
             />
             <Toggle
-              label={t("ws.vmSeal")}
-              hint={t("ws.vmSealHint")}
-              checked={defaults.vmSealStrings}
-              locked={defaults.preset !== "vm" && defaults.preset !== "max"}
-              onChange={(v) => setDefaults({ ...defaults, vmSealStrings: v })}
+              label={t("ws.guard")}
+              hint={t("ws.guardHint")}
+              checked={defaults.guard}
+              onChange={(v) => setDefaults({ ...defaults, guard: v })}
             />
           </div>
 

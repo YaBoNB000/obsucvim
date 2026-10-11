@@ -2,7 +2,6 @@ import { useI18n } from "../lib/i18n";
 import { useHistory, type HistoryItem } from "../lib/store";
 import { appliedNames, type ObfuscationOptions } from "../lib/engine";
 import { Button, GlassCard, Icon, Pill } from "../components/ui";
-import { presetLabel } from "../components/OptionsPanel";
 import { cn } from "../utils/cn";
 
 const fmt = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
@@ -50,7 +49,7 @@ export function History({ onLoad }: { onLoad: (item: HistoryItem) => void }) {
                   obsucvim_{item.seed}.luau
                 </span>
                 <span className="rounded-lg border border-white/[0.08] bg-black/25 px-2 py-0.5 font-mono text-[10.5px] text-slate-400">
-                  {presetLabel(item.preset, t)}
+                  v15
                 </span>
                 <span className="tabular text-[10.5px] text-slate-500">
                   {new Date(item.timestamp).toLocaleString(lang === "zh" ? "zh-CN" : "en-US", {

@@ -13,6 +13,12 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), viteSingleFile()],
   server: {
     allowedHosts: true,
+    proxy: {
+      "/api": {
+        target: "http://127.0.0.1:8787",
+        changeOrigin: false,
+      },
+    },
   },
   resolve: {
     alias: {

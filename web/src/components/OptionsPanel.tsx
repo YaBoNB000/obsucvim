@@ -1,7 +1,6 @@
-import { appliedNames, PRESETS, PRESET_IDS, type ObfuscationOptions, type PresetId } from "../lib/engine";
+import { appliedNames, type ObfuscationOptions } from "../lib/engine";
 import { Icon, Toggle } from "./ui";
-import { useI18n, type TKey } from "../lib/i18n";
-import { cn } from "../utils/cn";
+import { useI18n } from "../lib/i18n";
 
 function Group({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
@@ -27,44 +26,16 @@ export function OptionsPanel({
   const set = <K extends keyof ObfuscationOptions>(key: K, value: ObfuscationOptions[K]) =>
     setOptions({ ...options, [key]: value });
 
-  const applyPreset = (p: PresetId) => {
-    const { label: _l, hint: _h, ...rest } = PRESETS[p];
-    setOptions({ ...options, ...rest, preset: p });
-  };
-
   const enabled = appliedNames(options);
-  const isV15 = options.preset === "v15";
 
   return (
     <div className="flex flex-col gap-5">
       <div>
         <h2 className="text-[13.5px] font-semibold text-slate-100">{t("ws.config")}</h2>
-        <p className="mt-1 text-[11px] leading-relaxed text-slate-400/70">{PRESETS[options.preset].hint}</p>
+        <p className="mt-1 text-[11px] leading-relaxed text-slate-400/70">{t("ws.pipelineNote")}</p>
       </div>
 
       <Group title={t("ws.preset")} icon={<Icon name="bolt" className="h-4 w-4" />}>
-        <div className="glass-soft grid grid-cols-3 gap-1 rounded-xl border border-white/[0.08] p-1">
-          {PRESET_IDS.map((p) => (
-            <button
-              key={p}
-              onClick={() => applyPreset(p)}
-              className={cn(
-                "relative cursor-pointer rounded-lg px-2 py-1.5 text-[12px] font-medium transition-all duration-300",
-                options.preset === p
-                  ? "bg-aqua-400/20 text-aqua-100 shadow-[0_0_24px_-10px_rgba(34,226,213,0.95)_inset]"
-                  : "text-slate-400 hover:text-aqua-100",
-              )}
-            >
-              {t(`preset.${p}` as TKey)}
-              {p === "v15" && (
-                <span className="ml-1 rounded border border-aqua-300/30 px-1 py-px font-mono text-[8.5px] tracking-wide text-aqua-200/80">
-                  {t("preset.default")}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-        <p className="px-0.5 text-[10.5px] leading-relaxed text-slate-500">{t("ws.presetLegacyHint")}</p>
         <div className="flex flex-wrap gap-1.5 px-0.5">
           {enabled.length === 0 ? (
             <span className="text-[11px] text-slate-500">{t("ws.appliedCount", { n: 0 })}</span>
@@ -82,26 +53,22 @@ export function OptionsPanel({
       </Group>
 
       <Group title={t("ws.groupV15")} icon={<Icon name="shield" className="h-4 w-4" />}>
-        {!isV15 && <p className="px-1 text-[10.5px] leading-relaxed text-amber-200/70">{t("ws.v15Only")}</p>}
         <Toggle
           label={t("ws.bindExecutor")}
           hint={t("ws.bindExecutorHint")}
           checked={options.bindExecutor}
-          locked={!isV15}
           onChange={(v) => set("bindExecutor", v)}
         />
         <Toggle
           label={t("ws.envCheck")}
           hint={t("ws.envCheckHint")}
           checked={options.envCheck}
-          locked={!isV15}
           onChange={(v) => set("envCheck", v)}
         />
         <Toggle
           label={t("ws.bindEnv")}
           hint={t("ws.bindEnvHint")}
           checked={options.bindEnv}
-          locked={!isV15}
           onChange={(v) => set("bindEnv", v)}
         />
       </Group>
@@ -119,13 +86,6 @@ export function OptionsPanel({
       <Group title={t("ws.groupRuntime")} icon={<Icon name="cpu" className="h-4 w-4" />}>
         <Toggle label={t("ws.antidbg")} hint={t("ws.antidbgHint")} checked={options.antidbg} onChange={(v) => set("antidbg", v)} />
         <Toggle label={t("ws.guard")} hint={t("ws.guardHint")} checked={options.guard} onChange={(v) => set("guard", v)} />
-        <Toggle
-          label={t("ws.vmSeal")}
-          hint={t("ws.vmSealHint")}
-          checked={options.vmSealStrings}
-          locked={options.preset !== "vm" && options.preset !== "max"}
-          onChange={(v) => set("vmSealStrings", v)}
-        />
       </Group>
 
       <Group title={t("ws.groupMeta")} icon={<Icon name="layers" className="h-4 w-4" />}>
@@ -152,6 +112,3 @@ export function OptionsPanel({
   );
 }
 
-export function presetLabel(preset: PresetId, t: (k: TKey) => string) {
-  return t(`preset.${preset}` as TKey);
-}

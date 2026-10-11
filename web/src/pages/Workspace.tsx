@@ -68,7 +68,6 @@ export function Workspace({ prefill }: { prefill?: { code: string; options: Obfu
       setResult(res);
       consumeQuota();
       push({
-        preset: options.preset,
         seed: res.stats.seeded,
         inputBytes: res.stats.inputBytes,
         outputBytes: res.stats.outputBytes,
