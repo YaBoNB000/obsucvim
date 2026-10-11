@@ -1,5 +1,6 @@
 # 混淆示例（所有常用语法）
 
+> **2026-10-11 R066 canary 更新**：`handoff/R066_target.luau.lua` 重生成为当前产品形态 canary（`--env-check` + 水印，seed 66066）；本目录示例（默认管线）不受影响。
 > **2026-10-11 H3-6 修复重生成**：死寄存器噪声避让动态调用结果窗口后，v15 噪声位置全局变化，本目录 37 个示例已由新构建重生成（运行等价由官方矩阵覆盖，抽查 4 例 stdout 一致）。legacy 路径不受影响。
 
 > 2026-10-08 英文输出水印：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。
