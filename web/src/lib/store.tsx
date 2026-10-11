@@ -123,9 +123,39 @@ function writeLock(lock: { fails: number; until: number }) {
 
 const AuthContext = createContext<AuthValue | null>(null);
 const USER_KEY = "obsucvim.user";
-const QUOTA_KEY = "obsucvim.quota";
+/* 额度按账号独立计数：obsucvim.quota.<email>。
+ * 旧的全局键 obsucvim.quota 已废弃（首次加载时清除）。 */
+const LEGACY_QUOTA_KEY = "obsucvim.quota";
+const quotaKey = (email: string) => `obsucvim.quota.${email.trim().toLowerCase()}`;
 
 const today = () => new Date().toISOString().slice(0, 10);
+
+function user0(): User | null {
+  try {
+    const raw = localStorage.getItem(USER_KEY);
+    return raw ? (JSON.parse(raw) as User) : null;
+  } catch {
+    return null;
+  }
+}
+
+function readQuota(email: string): number {
+  try {
+    const raw = localStorage.getItem(quotaKey(email));
+    const parsed = raw ? (JSON.parse(raw) as { date: string; used: number }) : null;
+    return parsed && parsed.date === today() ? parsed.used : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeQuota(email: string, used: number) {
+  try {
+    localStorage.setItem(quotaKey(email), JSON.stringify({ date: today(), used }));
+  } catch {
+    /* ignore */
+  }
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(() => {
@@ -138,32 +168,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
   const [usedToday, setUsedToday] = useState<number>(() => {
     try {
-      const raw = localStorage.getItem(QUOTA_KEY);
-      const parsed = raw ? (JSON.parse(raw) as { date: string; used: number }) : null;
-      return parsed && parsed.date === today() ? parsed.used : 0;
+      localStorage.removeItem(LEGACY_QUOTA_KEY); // 旧全局计数废弃
     } catch {
-      return 0;
+      /* ignore */
     }
+    return user0() ? readQuota(user0()!.email) : 0;
   });
+
+  // 登录/登出/注册切换账号 → 重载该账号的当日额度
+  const userEmail = user?.email;
+  useEffect(() => {
+    if (userEmail) setUsedToday(readQuota(userEmail));
+    else setUsedToday(0);
+  }, [userEmail]);
 
   // 日期变更即重置额度
   useEffect(() => {
-    const s = JSON.stringify({ date: today(), used: usedToday });
-    localStorage.setItem(QUOTA_KEY, s);
-  }, [usedToday]);
-
-  useEffect(() => {
     const timer = setInterval(() => {
-      try {
-        const raw = localStorage.getItem(QUOTA_KEY);
-        const parsed = raw ? (JSON.parse(raw) as { date: string }) : null;
-        if (parsed && parsed.date !== today()) setUsedToday(0);
-      } catch {
-        /* ignore */
-      }
+      if (userEmail) setUsedToday(readQuota(userEmail));
     }, 60_000);
     return () => clearInterval(timer);
-  }, []);
+  }, [userEmail]);
 
   const [lockRemaining, setLockRemaining] = useState(0);
 
@@ -226,7 +251,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
-  const consumeQuota = useCallback(() => setUsedToday((n) => Math.min(DAILY_FREE_QUOTA, n + 1)), []);
+  const consumeQuota = useCallback(() => {
+    setUsedToday((n) => {
+      const next = Math.min(DAILY_FREE_QUOTA, n + 1);
+      if (user) writeQuota(user.email, next);
+      return next;
+    });
+  }, [user]);
 
   const value = useMemo<AuthValue>(
     () => ({
