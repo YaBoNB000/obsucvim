@@ -1,24 +1,3 @@
-//! L7 anti-tamper (container layer; our differentiator vs Luraph v15):
-//!
-//! Post-pass over the L5 container. The final `loadstring(DEC(...))()`
-//! statement is wrapped with:
-//!
-//!   1. canary self-check — a tiny pure function that must return a
-//!      build-specific value; patched environment -> silent trap
-//!   2. container checksum — byte sum of the ciphertext (concat of the
-//!      chunk literals) mod a prime vs the build-time expected value;
-//!      tampered ciphertext -> silent trap BEFORE decryption
-//!   3. error rewrite — uncaught inner errors are pcall'd; the line
-//!      number in the message is remapped (+ random offset) and the
-//!      error re-raised at level 0 (stack depth hides the wrapper)
-//!   4. timing trap — os.clock around the whole protection+execute
-//!      sequence; single-step / slow hook beyond the threshold ->
-//!      silent trap
-//!
-//! All traps are silent `while true do end` (no message, no exit code
-//! hint). All constants are seed-derived; all locals are fresh mangled
-//! names (reserved set includes every existing symbol + the globals the
-//! wrapper itself references, so nothing can shadow).
 
 use crate::ast::*;
 use crate::mangle::gen_name;
@@ -26,7 +5,6 @@ use crate::rng::Rng;
 use crate::symtab::{Sym, SymTable};
 use std::collections::{HashMap, HashSet};
 
-/// Primes for the container checksum modulus.
 const PRIMES: &[i64] = &[1009, 2003, 4001, 8191, 104729, 15485863, 20132659];
 
 fn num(v: i64) -> Expr {
@@ -50,7 +28,6 @@ fn global(name: &str) -> Expr {
 	}
 }
 
-/// `table.fn(args)` or bare `table(args)` when fn_name is empty.
 fn global_call(table_name: &str, fn_name: &str, args: Vec<Expr>) -> Expr {
 	let func = if fn_name.is_empty() {
 		global(table_name)
@@ -66,7 +43,6 @@ fn global_call(table_name: &str, fn_name: &str, args: Vec<Expr>) -> Expr {
 	}
 }
 
-/// Create a fresh symbol for the container layer.
 fn fresh(
 	table: &mut SymTable,
 	rng: &mut Rng,
@@ -107,8 +83,6 @@ fn trap() -> Stmt {
 	}
 }
 
-/// Match the L5 container's final statement: ( loadstring( DEC(C1..CN) ) )()
-/// Returns (chunks, dec_call) of the final container call.
 fn find_container(stmts: &[Stmt]) -> Option<(Vec<Expr>, Expr)> {
 	match stmts.last() {
 		Some(Stmt::ExprStmt(Expr::Call {
@@ -133,8 +107,6 @@ fn find_container(stmts: &[Stmt]) -> Option<(Vec<Expr>, Expr)> {
 	}
 }
 
-/// Canary self-check: a tiny pure function that must return a
-/// build-specific value.
 fn canary(
 	table: &mut SymTable,
 	rng: &mut Rng,
@@ -203,8 +175,6 @@ fn canary(
 	]
 }
 
-/// The L7 execution wrapper: checksum -> pcall+rewrite -> timing trap.
-/// (The canary is emitted separately at the top of the chunk.)
 fn wrapper(
 	cipher: &[u8],
 	chunks_concat: Expr,
@@ -213,10 +183,8 @@ fn wrapper(
 	rng: &mut Rng,
 	reserved: &mut HashSet<String>,
 ) -> Vec<Stmt> {
-	// t0 starts everything (timing trap window)
 	let (t_t0, t_t0_name) = fresh(table, rng, reserved);
 
-	// --- container checksum (before decryption) ---------------------
 	let (t_sum, t_sum_name) = fresh(table, rng, reserved);
 	let (t_buf, t_buf_name) = fresh(table, rng, reserved);
 	let (t_i, t_i_name) = fresh(table, rng, reserved);
@@ -270,14 +238,12 @@ fn wrapper(
 		elseb: None,
 	});
 
-	// --- execute under pcall + error rewrite ------------------------
 	let (t_ok, t_ok_name) = fresh(table, rng, reserved);
 	let (t_err, t_err_name) = fresh(table, rng, reserved);
 	let (t_line, t_line_name) = fresh(table, rng, reserved);
 	let offset = rng.int(1000, 99999);
 
 	let run = Expr::Call {
-		// ( loadstring( DEC(C1..CN) ) )()
 		func: Box::new(Expr::Call {
 			func: Box::new(global("loadstring")),
 			args: vec![dec_call],
@@ -308,7 +274,6 @@ fn wrapper(
 		}),
 		thenb: Block {
 			stmts: vec![
-				// only string errors carry a location
 				Stmt::If {
 					cond: Box::new(Expr::Bin {
 						op: BinOp::Eq,
@@ -372,11 +337,6 @@ fn wrapper(
 		elseb: None,
 	});
 
-	// --- timing trap (single-step / slow hook) -----------------------
-	// Scale by ciphertext size: large containers (VM builds ship a full
-	// interpreter — ~300KB) legitimately need far more CPU time to
-	// decrypt + execute; +1s per 10KB keeps single-step detection
-	// sensitive (stepping is 100x+ slower than legitimate).
 	let threshold = rng.int(5, 15) + (cipher.len() / 10_000) as i64;
 	out.push(Stmt::If {
 		cond: Box::new(Expr::Bin {
@@ -405,22 +365,17 @@ pub fn apply_antidbg(
 	let mut rsv = reserved.clone();
 	rsv.extend(table.globals.iter().cloned());
 	rsv.extend(table.syms.iter().map(|s| s.name.clone()));
-	// the wrapper references these globals — the container must never
-	// declare locals with these names
 	for g in [
 		"loadstring", "pcall", "error", "type", "tonumber", "os", "string",
 	] {
 		rsv.insert(g.to_string());
 	}
 
-	// canary always (protects even when L5 is disabled)
 	let canary_stmts = canary(table, rng, &mut rsv);
 
 	let mut new_stmts = Vec::new();
 	new_stmts.extend(canary_stmts);
 
-	// resolve the ciphertext bytes: the DEC call arguments are Idents of
-	// the chunk locals; map them back to their Str literals
 	let mut byte_map: HashMap<SymId, Vec<u8>> = HashMap::new();
 	for s in &block.stmts {
 		if let Stmt::Local { syms, values, .. } = s {
@@ -459,7 +414,6 @@ pub fn apply_antidbg(
 			new_stmts.extend(wrap);
 		}
 		None => {
-			// no L5 container (e.g. --no-body): canary only
 			new_stmts.extend(block.stmts.iter().cloned());
 		}
 	}

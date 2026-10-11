@@ -1,52 +1,3 @@
-//! L3 control flow flattening (the Luraph-style signature transform).
-//!
-//! Every function body (and the top-level chunk) is compiled to a block
-//! graph and emitted as a state machine:
-//!
-//!   local st = <random_id>
-//!   local <hoisted locals>
-//!   while true do
-//!     if st == <id_A> then ... st = <id_B>
-//!     elseif st == <id_C> then ...
-//!     ... (branch order shuffled)
-//!   end
-//!
-//! Scope-soundness (the machine's arms are sibling scopes in Lua, so a
-//! `local` declared in one arm is invisible to all the others):
-//!
-//! - A local referenced from another arm — directly, from a closure
-//!   defined in another arm, or from a loop body — is declared once at
-//!   the machine top (its original block keeps a plain assignment).
-//!   A local used only within its own arm stays arm-local.
-//! - Mangled names are unique across the program and never collide with
-//!   global names (see mangle.rs), so machine-top declarations can never
-//!   shadow a global use.
-//!
-//! Loops are NESTED sub-machines: a loop is an opaque node in the
-//! enclosing graph; its arm emits
-//!
-//!   <per-pass `local` declarations (fresh EVERY iteration)>
-//!   local st_l = <first_body_id>
-//!   local broke = false
-//!   while true do
-//!     if st_l == ... then ... st_l = ...   (body blocks, shuffled)
-//!     ...
-//!   end
-//!   <loop bookkeeping: increment / re-cond / exit>
-//!
-//! which gives loop variables and body locals true per-iteration
-//! freshness (closures created in iteration k capture iteration k's
-//! values, exactly like real Lua `for` loops), while `break` and
-//! `continue` are plain graph edges:
-//!
-//!   break    -> loop exit
-//!   continue -> body end (for/while: re-pass = increment + re-cond,
-//!               which is exactly Luau's continue semantics; repeat:
-//!               the until-check, which lives inside the dispatch)
-//!
-//! for-numeric loops run in true Lua order: range check BEFORE the body
-//! (an empty range runs 0 times), fresh loop variable per iteration,
-//! increment after the body.
 
 use crate::ast::*;
 use crate::mangle::gen_name;
@@ -54,19 +5,11 @@ use crate::rng::Rng;
 use crate::symtab::{Sym, SymTable};
 use std::collections::{HashMap, HashSet, VecDeque};
 
-// ---------------------------------------------------------------------------
-// block graph
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 enum Succ {
-	/// normal edge to block `x`
 	B(usize),
-	/// `break` — exits the innermost loop (inner graphs only)
 	Brk,
-	/// `continue` — placeholder, rewired to the loop's continue target
-	/// (the body-end join, or the repeat's until-check) after the body is
-	/// built
 	Cont,
 }
 
@@ -74,17 +17,13 @@ enum Succ {
 enum LoopKind {
 	While { cond: Expr },
 	Repeat { cond: Expr },
-	/// init: `local cur, lim, stp = start, limit, step` (one graph block,
-	/// evaluation order = start, limit, step, like the original for)
 	ForNum { var: SymId, lim: SymId, stp: SymId, cur: SymId },
-	/// init: `local it, stt, ctl = <iters...>`
 	ForGen { vars: Vec<SymId>, it: SymId, stt: SymId, ctl: SymId },
 }
 
 #[derive(Debug, Clone)]
 struct LoopNode {
 	kind: LoopKind,
-	/// the loop body's block graph (a separate machine)
 	blocks: Vec<Blk>,
 	start: usize,
 }
@@ -95,7 +34,6 @@ enum BlkBody {
 	Cond(Expr),
 	Join,
 	Return(Vec<Expr>),
-	/// opaque loop (its body is a nested sub-machine)
 	Loop(Box<LoopNode>),
 }
 
@@ -107,7 +45,6 @@ struct Blk {
 
 struct Ctx {
 	blocks: Vec<Blk>,
-	/// true while building a loop body (break/continue are allowed)
 	inner: bool,
 }
 
@@ -128,17 +65,12 @@ impl Ctx {
 	}
 }
 
-/// What follows a statement chain that falls off the end.
 enum Cont {
-	/// create a continuation join block (top-level chunk/function)
 	Join,
-	/// create a body-end join block (loop body: while/for)
 	Done,
-	/// create the repeat's until-check cond block (loop body: repeat)
 	Check { cond: Expr },
 }
 
-/// Expand `Do` statements inline (they carry no bindings).
 fn expand(stmts: &[Stmt]) -> Vec<Stmt> {
 	let mut out = Vec::with_capacity(stmts.len());
 	for s in stmts {
@@ -180,12 +112,7 @@ fn new_rand_sym(
 	(id, name)
 }
 
-// ---------------------------------------------------------------------------
-// graph construction
-// ---------------------------------------------------------------------------
 
-/// Build the block graph for a statement list. Returns (start, cont) where
-/// cont is the block created by `cont` (join / done-join / check-cond).
 fn build_graph(
 	ctx: &mut Ctx,
 	stmts: &[Stmt],
@@ -199,7 +126,7 @@ fn build_graph(
 	let mut cur: Option<usize> = Some(start);
 	for stmt in flat.iter() {
 		cur = match cur {
-			None => None, // unreachable tail
+None => None,
 			Some(c) => emit_stmt(ctx, c, stmt, table, rng, reserved),
 		};
 	}
@@ -213,7 +140,6 @@ fn build_graph(
 		}
 		Cont::Check { cond } => {
 			let check = ctx.push(BlkBody::Cond(cond));
-			// repeat: cond true -> EXIT (break), cond false -> re-run body
 			ctx.blocks[check].succ = vec![Succ::Brk, Succ::B(start)];
 			if let Some(x) = cur {
 				ctx.blocks[x].succ.push(Succ::B(check));
@@ -224,8 +150,6 @@ fn build_graph(
 	(start, cont_blk)
 }
 
-/// Emit one statement into the chain. Returns the new current position,
-/// or None when the chain dies (return/break/continue).
 fn emit_stmt(
 	ctx: &mut Ctx,
 	cur: usize,
@@ -251,7 +175,6 @@ fn emit_stmt(
 			None
 		}
 		Stmt::If { cond, thenb, elsifs, elseb } => {
-			// bodies first (stable indices), then cond blocks, then wire
 			let (t_s, t_e) = build_graph(ctx, &thenb.stmts, Cont::Join, table, rng, reserved);
 			let mut els = Vec::new();
 			for (_, b) in elsifs.iter() {
@@ -306,8 +229,6 @@ fn emit_stmt(
 	}
 }
 
-/// Turn a loop statement into: [init block] -> loop node -> exit join.
-/// The loop body is built as a separate (nested) block graph.
 fn make_loop(
 	ctx: &mut Ctx,
 	cur: usize,
@@ -336,8 +257,6 @@ fn make_loop(
 					value: 1.0,
 					isfloat: false,
 				});
-			// `local cur, lim, stp = start, limit, step` — value evaluation
-			// order matches the original for (start, limit, step)
 			let init = Stmt::Local {
 				names: vec![
 					table.name_of(s_cur).to_string(),
@@ -361,11 +280,6 @@ fn make_loop(
 			let (s_it, _) = new_rand_sym(table, rng, reserved);
 			let (s_stt, _) = new_rand_sym(table, rng, reserved);
 			let (s_ctl, _) = new_rand_sym(table, rng, reserved);
-			// it, stt, ctl = <iterator expression list> — a single
-			// non-call expression is the iterator value itself (in
-			// 5.1 a bare table errors at the call, like the host; the
-			// Luau `for ... in t` form is normalized to `next, t` at
-			// parse time)
 			let init = Stmt::Local {
 				names: vec![
 					table.name_of(s_it).to_string(),
@@ -388,7 +302,6 @@ fn make_loop(
 		_ => unreachable!("make_loop called on a non-loop"),
 	};
 
-	// init block (for-loops only), in the enclosing graph
 	let mut prev = cur;
 	if let Some(init) = init_local {
 		let b = ctx.push(BlkBody::Stmt(init));
@@ -396,7 +309,6 @@ fn make_loop(
 		prev = b;
 	}
 
-	// loop node + exit join in the enclosing graph
 	let node_blk = ctx.push(BlkBody::Loop(Box::new(LoopNode {
 		kind: kind.clone(),
 		blocks: Vec::new(),
@@ -406,7 +318,6 @@ fn make_loop(
 	let exit_blk = ctx.push(BlkBody::Join);
 	ctx.blocks[node_blk].succ.push(Succ::B(exit_blk));
 
-	// the nested body graph
 	let body = match stmt {
 		Stmt::While { body, .. }
 		| Stmt::Repeat { body, .. }
@@ -421,8 +332,6 @@ fn make_loop(
 	let mut ictx = Ctx::new(true);
 	let (start, cont_blk) = build_graph(&mut ictx, &body.stmts, cont, table, rng, reserved);
 
-	// rewire continue placeholders -> the loop's continue target
-	// (body-end join for while/for, until-check cond for repeat)
 	for b in ictx.blocks.iter_mut() {
 		b.succ = b
 			.succ
@@ -462,12 +371,7 @@ fn reachable(blocks: &[Blk], start: usize) -> HashSet<usize> {
 	seen
 }
 
-// ---------------------------------------------------------------------------
-// symbol reference collection
-// ---------------------------------------------------------------------------
 
-/// Symbols referenced directly by an expression (does NOT descend into
-/// nested function bodies — those are closures, collected separately).
 fn collect_expr_syms(e: &Expr, out: &mut HashSet<SymId>) {
 	match e {
 		Expr::Ident { sym: Some(s), .. } => {
@@ -510,9 +414,6 @@ fn collect_expr_syms(e: &Expr, out: &mut HashSet<SymId>) {
 	}
 }
 
-/// Like collect_expr_syms but descends into nested function bodies (used
-/// for loop-body reference sets, where a closure inside the body still
-/// needs the enclosing machine to hoist its locals).
 fn collect_expr_syms_deep(e: &Expr, out: &mut HashSet<SymId>) {
 	match e {
 		Expr::Function { body, .. } => {
@@ -638,9 +539,6 @@ fn collect_block_syms_deep(b: &Block, out: &mut HashSet<SymId>) {
 	}
 }
 
-/// All symbols a loop node's emitted code references: the loop-kind
-/// symbols (init temporaries, loop variable) plus everything referenced
-/// anywhere in the nested body graph (closures included).
 fn loop_node_refs(node: &LoopNode, out: &mut HashSet<SymId>) {
 	match &node.kind {
 		LoopKind::While { cond } | LoopKind::Repeat { cond } => collect_expr_syms_deep(cond, out),
@@ -674,7 +572,6 @@ fn loop_node_refs(node: &LoopNode, out: &mut HashSet<SymId>) {
 	}
 }
 
-/// Shallow reference set of a block's own code (no function bodies).
 fn block_own_refs(b: &Blk, out: &mut HashSet<SymId>) {
 	match &b.body {
 		BlkBody::Stmt(s) => collect_stmt_syms_shallow(s, out),
@@ -711,11 +608,7 @@ fn collect_stmt_syms_shallow(s: &Stmt, out: &mut HashSet<SymId>) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// machine emission
-// ---------------------------------------------------------------------------
 
-/// Build the state machine for one function body / chunk.
 fn machine_block(
 	block: &Block,
 	table: &mut SymTable,
@@ -727,7 +620,6 @@ fn machine_block(
 	let n = ctx.blocks.len();
 	let reach = reachable(&ctx.blocks, start);
 
-	// ---- declarations & references -------------------------------------
 	let mut decl: HashMap<SymId, usize> = HashMap::new();
 	let mut refs: HashMap<SymId, HashSet<usize>> = HashMap::new();
 	for (i, b) in ctx.blocks.iter().enumerate() {
@@ -750,9 +642,6 @@ fn machine_block(
 		for s in syms {
 			refs.entry(s).or_default().insert(i);
 		}
-		// closures / named functions defined IN this block: their bodies
-		// capture from this block's scope, so any local they reference
-		// must be visible from this arm (hoist if declared elsewhere)
 		let mut fns = Vec::new();
 		collect_functions_stmt(b, &mut fns);
 		for f in fns {
@@ -766,7 +655,6 @@ fn machine_block(
 		}
 	}
 
-	// hoist: referenced from a block other than the declaration block
 	let mut hoisted: HashSet<SymId> = HashSet::new();
 	for (s, d) in &decl {
 		if let Some(rs) = refs.get(s) {
@@ -778,11 +666,6 @@ fn machine_block(
 			}
 		}
 	}
-	// hoisting is per STATEMENT: a local statement with any cross-arm
-	// reference moves wholesale to the machine scope (the declaration
-	// becomes a plain assignment with the original value list intact —
-	// keeping tail-call multi-value expansion). This keeps the transform
-	// semantics-exact.
 	let mut hoisted_stmts: HashSet<usize> = HashSet::new();
 	for (s, d) in &decl {
 		if hoisted.contains(s) {
@@ -790,7 +673,6 @@ fn machine_block(
 		}
 	}
 
-	// machine-top locals, in declaration order (whole hoisted statements)
 	let mut top_locals: Vec<(SymId, String)> = Vec::new();
 	{
 		let mut seen = HashSet::new();
@@ -817,7 +699,6 @@ fn machine_block(
 		}
 	}
 
-	// fresh symbols: state var + one temp per reachable cond block
 	let (st_sym, st_name) = new_rand_sym(table, rng, reserved);
 	let mut temps: HashMap<usize, (SymId, String)> = HashMap::new();
 	for i in 0..n {
@@ -827,8 +708,6 @@ fn machine_block(
 		}
 	}
 
-	// random unique state IDs (shared id space for the whole function
-	// machine, including nested sub-machines)
 	let mut used: HashSet<u32> = HashSet::new();
 	let mut ids: HashMap<usize, u32> = HashMap::new();
 	for i in 0..n {
@@ -853,7 +732,6 @@ fn machine_block(
 		values: vec![num(ids[&target])],
 	};
 
-	// ---- per-block code --------------------------------------------------
 	let mut branches: Vec<(usize, Vec<Stmt>)> = Vec::new();
 	for i in 0..n {
 		if !reach.contains(&i) {
@@ -866,7 +744,6 @@ fn machine_block(
 					Stmt::LocalFunc { sym, func, .. }
 						if hoisted_stmts.contains(&i) =>
 					{
-						// declaration moved to the machine top
 						v.push(Stmt::Assign {
 							targets: vec![Expr::Ident {
 								name: table.name_of(*sym).to_string(),
@@ -881,10 +758,6 @@ fn machine_block(
 						});
 					}
 					Stmt::Local { names, syms, values } if hoisted_stmts.contains(&i) => {
-						// declaration moved to the machine top: the
-						// statement becomes a plain assignment with the
-						// original value list (multi-value tail expansion
-						// preserved exactly)
 						let mut vals: Vec<Expr> = values.iter().filter_map(|x| x.clone()).collect();
 						if vals.is_empty() {
 							vals.push(Expr::Nil);
@@ -913,7 +786,6 @@ fn machine_block(
 			BlkBody::Return(es) => vec![Stmt::Return(es.clone())],
 			BlkBody::Join => {
 				if i == exit || ctx.blocks[i].succ.is_empty() {
-					// the chunk/function end join
 					vec![Stmt::Break]
 				} else if let Succ::B(x) = ctx.blocks[i].succ[0] {
 					vec![assign_st(x)]
@@ -984,8 +856,6 @@ fn machine_block(
 	Block { stmts: top }
 }
 
-/// Shuffle `branches` and chain them into one if/elseif dispatch over the
-/// given state variable.
 fn dispatch_chain(
 	branches: &[(usize, Vec<Stmt>)],
 	ids: &HashMap<usize, u32>,
@@ -1025,10 +895,6 @@ fn dispatch_chain(
 	}
 }
 
-/// Emit one loop node as its arm code: per-pass scope + nested dispatch +
-/// bookkeeping. `state` is the enclosing dispatch's state var (st / st_l);
-/// on re-pass the enclosing state is set to `reenter_id`, on loop exit to
-/// `exit_id`.
 fn emit_loop(
 	node: &LoopNode,
 	state: &Expr,
@@ -1042,7 +908,6 @@ fn emit_loop(
 	let n = node.blocks.len();
 	let reach = reachable(&node.blocks, node.start);
 
-	// ids for the inner dispatch (same id space as the enclosing machine)
 	let mut ids: HashMap<usize, u32> = HashMap::new();
 	for i in 0..n {
 		if !reach.contains(&i) {
@@ -1057,7 +922,6 @@ fn emit_loop(
 		}
 	}
 
-	// per-block cond temps
 	let mut temps: HashMap<usize, (SymId, String)> = HashMap::new();
 	for i in 0..n {
 		if reach.contains(&i) && matches!(node.blocks[i].body, BlkBody::Cond(_)) {
@@ -1066,9 +930,6 @@ fn emit_loop(
 		}
 	}
 
-	// per-pass locals: every local declared anywhere in the body graph is
-	// declared (nil) in the per-pass scope — fresh on every iteration,
-	// visible to every body arm and to closures the body creates
 	let mut perpass: Vec<(SymId, String)> = Vec::new();
 	{
 		let mut seen = HashSet::new();
@@ -1095,7 +956,6 @@ fn emit_loop(
 		}
 	}
 
-	// fresh per-pass symbols
 	let (stl_sym, stl_name) = new_rand_sym(table, rng, reserved);
 	let (brk_sym, brk_name) = new_rand_sym(table, rng, reserved);
 	let stl_ident = || Expr::Ident {
@@ -1111,7 +971,6 @@ fn emit_loop(
 		values: vec![num(id)],
 	};
 
-	// inner arms
 	let mut branches: Vec<(usize, Vec<Stmt>)> = Vec::new();
 	for i in 0..n {
 		if !reach.contains(&i) {
@@ -1122,10 +981,6 @@ fn emit_loop(
 				let mut v = Vec::new();
 				match s {
 					Stmt::Local { names, syms, values } => {
-						// all body locals live in the per-pass scope: the
-						// original declaration becomes a plain assignment
-						// with the original value list (multi-value tail
-						// expansion preserved exactly)
 						let mut vals: Vec<Expr> = values.iter().filter_map(|x| x.clone()).collect();
 						if vals.is_empty() {
 							vals.push(Expr::Nil);
@@ -1217,7 +1072,6 @@ fn emit_loop(
 			BlkBody::Join => {
 				match node.blocks[i].succ.first() {
 					None => {
-						// the body-end join: normal pass completion
 						vec![Stmt::Break]
 					}
 					Some(Succ::B(x)) => vec![Stmt::Assign {
@@ -1292,8 +1146,6 @@ fn emit_loop(
 			let lim_i = ident(*lim, table);
 			let stp_i = ident(*stp, table);
 			let cur_i = ident(*cur, table);
-			// range exceeded? (checked BEFORE the body each pass, like the
-			// original for: an empty range runs 0 iterations)
 			let exceeded = Expr::Bin {
 				op: BinOp::Or,
 				l: Box::new(Expr::Bin {
@@ -1326,8 +1178,6 @@ fn emit_loop(
 			let pass = Block {
 				stmts: {
 					let mut v = vec![Stmt::Local {
-						// FRESH loop variable every iteration (real Lua
-						// for semantics; closures capture it per-iteration)
 						names: vec![table.name_of(*var).to_string()],
 						syms: vec![*var],
 						values: vec![Some(cur_i.clone())],
@@ -1346,7 +1196,6 @@ fn emit_loop(
 						elsifs: Vec::new(),
 						elseb: Some(Block {
 							stmts: vec![
-								// increment after the body
 								Stmt::Assign {
 									targets: vec![cur_i.clone()],
 									values: vec![Expr::Bin {
@@ -1398,7 +1247,6 @@ fn emit_loop(
 			};
 			vec![
 				Stmt::Local {
-					// FRESH loop variables every iteration
 					names: vars.iter().map(|s| table.name_of(*s).to_string()).collect(),
 					syms: vars.clone(),
 					values: vec![Some(call)],
@@ -1452,9 +1300,6 @@ fn emit_loop(
 			]
 		}
 		LoopKind::Repeat { .. } => {
-			// the until-check lives inside the dispatch (a cond block whose
-			// false-edge re-enters the body), so one "pass" may contain many
-			// original iterations
 			let mut v = Vec::new();
 			if let Some(p) = perpass_decl(&perpass) {
 				v.push(p);
@@ -1468,9 +1313,6 @@ fn emit_loop(
 	}
 }
 
-/// Find all function bodies (anonymous closures and local functions)
-/// defined within a block's own statement — used to know which locals a
-/// closure created in this arm captures.
 fn collect_functions_stmt<'a>(b: &'a Blk, out: &mut Vec<&'a Block>) {
 	match &b.body {
 		BlkBody::Stmt(s) => collect_functions_stmt2(s, out),
@@ -1582,11 +1424,7 @@ fn collect_functions_expr<'a>(e: &'a Expr, out: &mut Vec<&'a Block>) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// entry point
-// ---------------------------------------------------------------------------
 
-/// Flatten every nested function body, then the given block itself.
 pub fn flatten_block(
 	block: &mut Block,
 	table: &mut SymTable,

@@ -1,17 +1,3 @@
-//! L3 junk code: side-effect-free dead code injected into function bodies
-//! and the top-level chunk.
-//!
-//! Patterns (all pure arithmetic on fresh locals — no globals, no calls,
-//! no I/O):
-//!   local a = N1 + N2
-//!   local b = a * N3 - N4
-//!   if b >= 0 then          (opaque predicate: always true)
-//!     local c = b - a
-//!   end
-//!   local d = (b + 1) - 1
-//!
-//! When the CFG flattener runs afterwards, these statements become native
-//! blocks of the state machine (better camouflage than a visible dead head).
 
 use crate::ast::*;
 use crate::rng::Rng;
@@ -43,7 +29,6 @@ fn junk_block(rng: &mut Rng, table: &mut SymTable) -> Block {
 		name: nb.clone(),
 		sym: Some(sb),
 	};
-	// local a = N1 + N2
 	let s1 = Stmt::Local {
 		names: vec![na],
 		syms: vec![sa],
@@ -53,7 +38,6 @@ fn junk_block(rng: &mut Rng, table: &mut SymTable) -> Block {
 			r: Box::new(num(n2)),
 		})],
 	};
-	// local b = a * N3 - N4
 	let s2 = Stmt::Local {
 		names: vec![nb],
 		syms: vec![sb],
@@ -67,10 +51,6 @@ fn junk_block(rng: &mut Rng, table: &mut SymTable) -> Block {
 			r: Box::new(num(n4)),
 		})],
 	};
-	// if b >= 0 then local c = b - a end   (opaque: b>=0 is always true here
-	// because... actually b can be negative — that's fine: the predicate is a
-	// normal condition either way; the point is the dead-looking structure.
-	// To be a TRUE opaque predicate use (b*b) >= 0 which is always true.)
 	let s3 = Stmt::If {
 		cond: Box::new(Expr::Bin {
 			op: BinOp::Ge,
@@ -95,7 +75,6 @@ fn junk_block(rng: &mut Rng, table: &mut SymTable) -> Block {
 		elsifs: vec![],
 		elseb: None,
 	};
-	// local d = (b + 1) - 1  (uses b — c is scoped inside the if above)
 	let s4 = Stmt::Local {
 		names: vec![nd],
 		syms: vec![sd],
@@ -125,20 +104,12 @@ fn mk_local(table: &mut SymTable, prefix: &str) -> (String, SymId) {
 	(name, id)
 }
 
-/// Inject `n` junk blocks at the top of every function body (and the
-/// chunk), plus rare mid-body splices at this level only. Sub-blocks of the
-/// SAME function (if/while/do) are NOT filled with junk: all of their
-/// blocks live in the same flattened machine and hoisted junk locals would
-/// push large functions past Lua 5.1's 200-locals-per-function limit.
 pub fn inject(block: &mut Block, table: &mut SymTable, rng: &mut Rng, n: usize) {
 	let mut new_stmts = Vec::with_capacity(block.stmts.len() + n);
-	// head junk
 	for _ in 0..n {
 		let j = junk_block(rng, table);
 		new_stmts.extend(j.stmts);
 	}
-	// walk statements; recurse only into nested FUNCTION bodies (separate
-	// machines with their own local budget)
 	for mut s in block.stmts.iter().cloned() {
 		match &mut s {
 			Stmt::LocalFunc { func, .. } => inject(&mut func.body, table, rng, n),
@@ -161,8 +132,6 @@ pub fn inject(block: &mut Block, table: &mut SymTable, rng: &mut Rng, n: usize) 
 		}
 		let is_return = matches!(s, Stmt::Return(_));
 		new_stmts.push(s);
-		// rare mid-body junk at this level only — never after a `return`
-		// (statements after a return are a syntax error in Lua)
 		if !is_return && rng.int(0, 15) == 0 {
 			let j = junk_block(rng, table);
 			new_stmts.extend(j.stmts);

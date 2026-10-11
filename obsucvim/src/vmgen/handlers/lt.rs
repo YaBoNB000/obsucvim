@@ -1,4 +1,3 @@
-//! Lt — V[a] = (V[b] < V[c]) with __lt fallback.
 
 use crate::vmgen::handlers::cmp_body;
 use crate::vmgen::strpool::StrPool;

@@ -1,5 +1,7 @@
 # 项目进度（PROGRESS）
 
+> 2026-10-11 src 注释剥离：71 个 .rs 模块删 3,155 条注释（22,019→18,931 行），字符串内 `//` 保留；备份 `/home/user/obsucvim-src-commented-20261011.tar.gz` + git `0358615` 可恢复。全矩阵绿（cargo 47+1+4、169/169、370/370、multiseed 0、guard 11/11、tier2 20/20），E6b/R067 双 SHA 锚逐字节复现=零语义变化。工具 strip_rs_comments.py 入库；watermark.rs 未动。
+
 > 2026-10-11 executor 认证绑定默认开启（底层保护层）：`--bind-executor` 翻转为 v15 默认，`--no-bind-executor` 退出；非 v15 隐式降级（legacy 五预设字节不变）、显式报错。`--env-check` 默认形态=tier-1+tier-2+守卫（==旧双开字节；`--env-check --seed 67067`==R067）。全矩阵绿：cargo 47+1+4、169/169、370/370、multiseed 0、D 20/1 持平、executor_guard 11/11（E6b SHA 锚）、tier2 20/20、37 示例 --no-bind 字节不变。诚实边界：防裸环境/半吊子桩，不防探针感知桩（REPORT-R067.md 实测）。
 
 

@@ -1,9 +1,6 @@
-//! Len — V[a] = #V[b] with __len fallback (5.1 hosts: probe-gated).
 
 use crate::vmgen::strpool::StrPool;
 
-/// f0 canonical (`HAS_LEN_META and mget(...)` gate); f1 expanded
-/// nested-if form of the same gate.
 pub fn code(fmt: u8, p: &mut StrPool) -> String {
 	let len = p.lit("__len");
 	match fmt {

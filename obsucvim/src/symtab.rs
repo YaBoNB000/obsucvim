@@ -1,27 +1,14 @@
-//! Scope resolution: assign SymIds to locals, fill Ident.sym, collect
-//! global names.
-//!
-//! Visibility rules (Lua 5.1 reference semantics):
-//! - A local is visible from the statement AFTER its declaration.
-//! - Initializers of `local a = a` refer to the outer (or global) a.
-//! - `local function f() end`: f is NOT visible inside its own body.
-//! - for-loop variables are visible inside the body only.
 
 use crate::ast::*;
 
 pub struct Sym {
 	pub name: String,
 	pub is_param: bool,
-	/// true for the implicit `self` param of a method declaration — the `:`
-	/// syntax binds the local to the FIXED name `self`, so it must not be
-	/// mangled
 	pub keep_name: bool,
 }
 
 pub struct SymTable {
-	/// index = SymId
 	pub syms: Vec<Sym>,
-	/// global names referenced (unique, in first-use order)
 	pub globals: Vec<String>,
 }
 
@@ -39,7 +26,6 @@ impl SymTable {
 
 struct Resolver<'a> {
 	table: &'a mut SymTable,
-	/// stack of scopes; each scope: name -> SymId
 	scopes: Vec<Vec<(String, u32)>>,
 }
 
@@ -70,9 +56,6 @@ impl<'a> Resolver<'a> {
 		id
 	}
 
-	/// Resolve a name. Within one scope a LATER declaration shadows an
-	/// earlier one (`local x = 1; local x = 2` is legal Lua; the second
-	/// wins), so scan each scope for the LAST matching entry.
 	fn lookup(&self, name: &str) -> Option<SymId> {
 		for scope in self.scopes.iter().rev() {
 			let mut found = None;
@@ -158,9 +141,6 @@ impl<'a> Resolver<'a> {
 		self_param: bool,
 	) {
 		self.new_scope();
-		// idempotency: blocks may be resolved more than once (the v15
-		// shell re-resolves the already-passed interpreter block inside
-		// the module table); clear so re-declares don't duplicate.
 		param_syms.clear();
 		for p in params {
 			param_syms.push(self.declare(p, true));
@@ -192,9 +172,6 @@ impl<'a> Resolver<'a> {
 				}
 			}
 			Stmt::LocalFunc { name, sym, func } => {
-				// `local function f`: f IS visible inside its own body
-				// (recursive local functions work in both 5.1 and Luau —
-				// verified empirically; 5.2 changed this, we don't target it)
 				*sym = self.declare(name, false);
 				self.resolve_func_body(
 					&mut func.body,
@@ -215,8 +192,6 @@ impl<'a> Resolver<'a> {
 				);
 			}
 			Stmt::Assign { targets, values } => {
-				// resolve values first (LHS may alias globals; targets are
-				// places, resolving them is harmless and needed for globals)
 				for v in values.iter_mut() {
 					self.resolve_expr(v);
 				}
@@ -226,9 +201,6 @@ impl<'a> Resolver<'a> {
 			}
 			Stmt::ExprStmt(e) => self.resolve_expr(e),
 			Stmt::If { cond, thenb, elsifs, elseb } => {
-				// each branch is a NEW scope in Lua: a branch's locals die at
-				// the end of the branch, and same-named locals in sibling
-				// branches are distinct variables
 				self.resolve_expr(cond);
 				self.new_scope();
 				self.resolve_block(thenb);
@@ -247,15 +219,11 @@ impl<'a> Resolver<'a> {
 			}
 			Stmt::While { cond, body } => {
 				self.resolve_expr(cond);
-				// the body IS a scope block in Lua/Luau: locals declared
-				// inside die at `end` (and are re-declared each iteration)
 				self.new_scope();
 				self.resolve_block(body);
 				self.pop_scope();
 			}
 			Stmt::Repeat { body, cond } => {
-				// cond sees body locals (repeat-until semantics); the body
-				// itself is still a scope block for everything OUTSIDE it
 				self.new_scope();
 				self.resolve_block(body);
 				self.resolve_expr(cond);
@@ -274,7 +242,6 @@ impl<'a> Resolver<'a> {
 				if let Some(st) = step {
 					self.resolve_expr(st);
 				}
-				// loop variable lives in a scope that ends with the body
 				self.new_scope();
 				*var_sym = self.declare(var, false);
 				self.resolve_block(body);
@@ -292,12 +259,6 @@ impl<'a> Resolver<'a> {
 				self.pop_scope();
 			}
 			Stmt::Do(b) => {
-				// `do ... end` is a scope block: locals inside must NOT
-				// leak past `end`. Skipping this scope let a block-local
-				// bind references AFTER the block (mangle then renamed the
-				// dangling reference into a free identifier the scaffold
-				// could capture with a random handler param — the v15
-				// seed=1 "attempt to call a table value" root cause).
 				self.new_scope();
 				self.resolve_block(b);
 				self.pop_scope();

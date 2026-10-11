@@ -1,23 +1,13 @@
-//! L1 name mangling: rename every local symbol (params, locals, loop vars,
-//! local function names) to a random identifier.
-//!
-//! Collision safety: new names avoid Lua keywords, Luau contextual keywords,
-//! every global name referenced by the program (avoid shadowing), and each
-//! other. Globals themselves are NOT renamed (that would require environment
-//! wrapping — out of scope for v1).
 
 use crate::ast::{Block, Expr, Stmt, SymId, TableField};
 use crate::rng::Rng;
 use crate::symtab::SymTable;
 use std::collections::HashSet;
 
-/// 5.1 keywords + Luau contextual keywords (never usable as our random names)
 pub const RESERVED: &[&str] = &[
 	"and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
 	"local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
 	"continue", "goto",
-	// "self" is the FIXED name of the implicit method parameter (keep_name)
-	// — a mangled name must never collide with it (same-scope shadowing)
 	"self",
 ];
 
@@ -27,8 +17,6 @@ pub fn reserved_set(extra: &HashSet<String>) -> HashSet<String> {
 	s
 }
 
-/// Generate a random identifier not in `reserved`.
-/// Style mix: ~30% short (2-4), ~40% medium (5-8), ~30% long (9-15).
 pub fn gen_name(rng: &mut Rng, reserved: &HashSet<String>) -> String {
 	loop {
 		let short = rng.int(0, 99);
@@ -72,7 +60,7 @@ pub fn mangle(table: &mut SymTable, rng: &mut Rng) {
 	let mut names: Vec<Option<String>> = Vec::with_capacity(n);
 	for sym in table.syms.iter() {
 		if sym.keep_name {
-			names.push(None); // fixed name (implicit self) — do not rename
+names.push(None);
 		} else {
 			let name = gen_name(rng, &reserved);
 			reserved.insert(name.clone());
@@ -86,10 +74,6 @@ pub fn mangle(table: &mut SymTable, rng: &mut Rng) {
 	}
 }
 
-/// A compact namespace for generated v15 locals/parameters. Single-letter
-/// names are kept where available for size; every other generated name is a
-/// two-letter alphabetic identifier. Names are recycled only after their
-/// lexical scope ends, and nested scopes reserve all active ancestor names.
 struct CompactNames {
 	pool: Vec<String>,
 	active: HashSet<String>,
@@ -115,7 +99,6 @@ impl CompactNames {
 		}
 		rng.shuffle(&mut singles);
 		rng.shuffle(&mut pairs);
-		// Pop singles first to minimize emitted identifier bytes.
 		pairs.extend(singles);
 		Self {
 			pool: pairs,
@@ -143,8 +126,6 @@ impl CompactNames {
 			.get(id as usize)
 			.ok_or_else(|| format!("invalid local symbol id {id}"))?;
 		if sym.keep_name {
-			// Lua's implicit `self` spelling is fixed by colon-declaration
-			// syntax. It is reserved globally, so generated locals can't shadow it.
 			return Ok(());
 		}
 		let name = self.pool.pop().ok_or_else(|| {
@@ -186,7 +167,6 @@ impl<'a> CompactMangler<'a> {
 	fn walk_stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
 		match stmt {
 			Stmt::Local { syms, values, .. } => {
-				// Initializers run before the new locals become visible.
 				for value in values.iter().flatten() {
 					self.walk_expr(value)?;
 				}
@@ -325,9 +305,6 @@ impl<'a> CompactMangler<'a> {
 	}
 }
 
-/// v15 compact-name pass. Names are unique only while their lexical scopes
-/// overlap, so large generated templates can reuse the two-character pool in
-/// sibling functions/blocks without capturing an outer variable.
 pub fn mangle_v15_compact(
 	block: &Block,
 	table: &mut SymTable,
@@ -335,9 +312,6 @@ pub fn mangle_v15_compact(
 ) -> Result<(), String> {
 	let globals: HashSet<String> = table.globals.iter().cloned().collect();
 	let mut reserved = reserved_set(&globals);
-	// The v15 scaffold splices this AST inside handlers with these lexical
-	// parameters. Keep them out of the inner compact namespace so rebinding
-	// during shell resolution cannot capture the wrapper state.
 	reserved.extend(["b", "C", "p1", "p2", "p3", "E", "V"].map(str::to_string));
 	let names = CompactNames::new(rng, &reserved);
 	let mut mangler = CompactMangler { table, names };

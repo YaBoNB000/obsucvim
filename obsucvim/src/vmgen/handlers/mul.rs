@@ -1,4 +1,3 @@
-//! Mul — V[a] = V[b] * V[c] with __mul fallback.
 
 use crate::vmgen::handlers::bin_op_body;
 use crate::vmgen::strpool::StrPool;

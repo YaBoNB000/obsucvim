@@ -1,10 +1,3 @@
-//! Byte-oriented lexer for Lua 5.1 and Luau source.
-//!
-//! Handles: numbers (dec/hex, isfloat flag), short strings with all escapes
-//! (\n \t \r \a \b \f \v \\ \" \' \ddd \xhh, line continuation), long strings
-//! ([[ ]], [= [= ]= ]]), comments (short + long), punctuation, keywords,
-//! labels (rejected later by the parser), Luau-only: `//`, compound
-//! assignments (`+=` ...), backtick string interpolation `` `a {e} b` ``.
 
 use std::fmt;
 
@@ -27,26 +20,13 @@ pub enum InterpPart {
 
 #[derive(Debug, Clone)]
 pub struct Token {
-	/// Name / Punct / Label text (keywords are plain names; the parser does
-	/// keyword dispatch contextually, like the reference implementations).
 	pub text: String,
 	pub num: f64,
 	pub isfloat: bool,
-	/// Str: decoded bytes.
-	/// Interp: text parts encoded as [4-byte LE length][bytes]...
 	pub bytes: Vec<u8>,
-	/// Interp: part kinds in order.
 	pub parts: Vec<InterpPart>,
-	/// Interp: raw source of each Expr part, in order.
 	pub interp_srcs: Vec<String>,
-	/// Str/Interp: the literal used numeric/hex escapes producing bytes
-	/// >= 0x80 (ciphertext/bytecode blob shape) — the parser lifts this
-	/// into `Expr::Str.is_binary` so the printer re-escapes every high
-	/// byte instead of UTF-8 passthrough (which would emit CJK garbage
-	/// from arbitrary blob bytes; see examples purity rule).
 	pub high_bytes: bool,
-	/// Str: source form was a long string `[[...]]` (parser maps it to
-	/// `Expr::LongStr` so the printer/minify keep the long-bracket form).
 	pub long_str: bool,
 	pub line: usize,
 	pub kind: TokKind,
@@ -218,7 +198,6 @@ impl Lexer {
 			let v = u64::from_str_radix(&text[2..], 16).map_err(|_| self.err("bad hex number"))?;
 			v as f64
 		} else {
-			// normalize Lua forms Rust doesn't accept: "5." -> "5.0", ".5" -> "0.5"
 			let mut norm = String::new();
 			if text.starts_with('.') {
 				norm.push('0');
@@ -232,19 +211,11 @@ impl Lexer {
 		Ok(self.mktok(TokKind::Num, text.to_string(), num, isfloat))
 	}
 
-	/// Escape decoding shared by short strings and backtick text sections.
-	/// `pos` is at the backslash. Returns true when the caller must NOT do its
-	/// default advance(2).
-	///
-	/// Dialect difference (verified against real 5.1.5 and Luau 0.735):
-	/// - Lua 5.1: `\x` is NOT a hex escape (it yields literal 'x'); any
-	///   unknown escape `\c` yields the literal character c.
-	/// - Luau: `\xhh` is a hex escape (1-2 digits); unknown escapes error.
 	fn decode_escape(&mut self, out: &mut Vec<u8>) -> Result<bool, LexError> {
 		let e = self.peek(1);
 		match e {
 			b'\n' => {
-				self.advance(1); // the backslash
+self.advance(1);
 				self.skip_line_continuation()?;
 				return Ok(true);
 			}
@@ -281,7 +252,6 @@ impl Lexer {
 				return Ok(true);
 			}
 			b'x' if self.luau => {
-				// Luau only: \xhh hex escape — exactly two hex digits
 				let h = self.peek_at(self.pos + 2);
 				let h2 = self.peek_at(self.pos + 3);
 				if !is_hex(h) || !is_hex(h2) {
@@ -297,7 +267,6 @@ impl Lexer {
 				if self.luau {
 					return Err(self.err("invalid escape sequence"));
 				}
-				// Lua 5.1: unknown escape (including \x) -> literal character
 				out.push(e);
 				return Ok(false);
 			}
@@ -306,7 +275,6 @@ impl Lexer {
 	}
 
 	fn skip_line_continuation(&mut self) -> Result<(), LexError> {
-		// pos is right after the backslash
 		loop {
 			let c = self.peek(0);
 			if c == b'\n' {
@@ -332,7 +300,7 @@ impl Lexer {
 	fn lex_short_string(&mut self, quote: u8) -> Result<Token, LexError> {
 		let line = self.line;
 		let start = self.pos;
-		self.advance(1); // opening quote
+self.advance(1);
 		let mut out: Vec<u8> = Vec::new();
 		let mut high = false;
 		loop {
@@ -422,12 +390,9 @@ impl Lexer {
 		}
 	}
 
-	/// Luau backtick string: `text {expr} text`. `{` starts a placeholder
-	/// (balanced to the matching `}`, strings/comments inside skipped);
-	/// `\{` is a literal brace. No placeholders => plain Str token.
 	fn lex_backtick_string(&mut self) -> Result<Token, LexError> {
 		let line = self.line;
-		self.advance(1); // opening backtick
+self.advance(1);
 		let mut parts: Vec<InterpPart> = Vec::new();
 		let mut interp_srcs: Vec<String> = Vec::new();
 		let mut texts: Vec<Vec<u8>> = Vec::new();
@@ -468,7 +433,7 @@ impl Lexer {
 			} else if c == b'{' {
 				flush_text!();
 				has_expr = true;
-				self.advance(1); // consume '{'
+self.advance(1);
 				let expr_start = self.pos;
 				let mut depth: i32 = 1;
 				let mut q = self.pos;
@@ -562,7 +527,7 @@ impl Lexer {
 				}
 				interp_srcs.push(String::from_utf8_lossy(expr_bytes).into_owned());
 				parts.push(InterpPart::Expr);
-				self.pos = q + 1; // consume '}'
+self.pos = q + 1;
 			} else {
 				cur.push(c);
 				self.advance(1);
@@ -645,7 +610,6 @@ impl Lexer {
 				}
 				toks.push(self.lex_backtick_string()?);
 			} else if c == b':' && c2 == b':' {
-				// try label ::name::
 				let mut ok = false;
 				let mut p = self.pos + 2;
 				if p < self.src.len() && is_alpha(self.src[p]) {
@@ -679,7 +643,6 @@ impl Lexer {
 				if matched {
 					continue;
 				}
-				// compound operators first (so `//=` wins over `//`)
 				let mut compound_done = false;
 				if self.luau {
 					for t in ["+=", "-=", "*=", "/=", "//=", "%=", "^="] {
@@ -748,13 +711,10 @@ mod tests {
 
 	#[test]
 	fn strings_escapes() {
-		// common escapes (both dialects)
 		let t = toks(r#""a\n\t\65\66\0""#, false);
 		assert_eq!(t[0].bytes, b"a\n\tAB\0");
-		// \x is a hex escape in Luau only
 		let tl = toks(r#""\x41\x45""#, true);
 		assert_eq!(tl[0].bytes, b"AE");
-		// ...and literal 'x..' in Lua 5.1
 		let t51 = toks(r#""\x41""#, false);
 		assert_eq!(t51[0].bytes, b"x41");
 	}
@@ -766,11 +726,6 @@ mod tests {
 		assert_eq!(t[7].bytes, b"ef");
 	}
 
-	/// 2026-08-29 regression: v15 carrier blobs (escaped >= 0x80 bytes)
-	/// re-printed as UTF-8 passthrough leaked CJK/special characters into
-	/// the output. Escaped high bytes must mark the literal binary so the
-	/// printer re-escapes everything; raw source UTF-8 keeps passing
-	/// through readable.
 	#[test]
 	fn high_escape_binary_flag() {
 		let t = toks(r#""\229\190\160\72\65""#, true);
@@ -780,7 +735,6 @@ mod tests {
 		let t3 = toks("\"你好\"", true);
 		assert!(!t3[0].high_bytes, "raw UTF-8 stays non-binary");
 
-		// end-to-end: parse + print
 		let mut b1 = crate::parser::parse(r#"local s = "\229\190\160\72\65""#, true).unwrap();
 		let tab1 = crate::symtab::resolve(&mut b1);
 		let out1 = crate::printer::print_chunk(&tab1, &b1);
@@ -831,7 +785,6 @@ mod tests {
 
 	#[test]
 	fn line_continuation() {
-		// backslash immediately followed by newline
 		let t = toks("\"abc\\\n def\"", false);
 		assert_eq!(t[0].bytes, b"abc def");
 	}
@@ -840,7 +793,6 @@ mod tests {
 	fn interp_empty_placeholder_text() {
 		let t = toks(r"`{x}`", true);
 		assert_eq!(t[0].kind, TokKind::Interp);
-		// empty leading text part is recorded explicitly
 		assert_eq!(t[0].parts, vec![InterpPart::Text, InterpPart::Expr]);
 	}
 }

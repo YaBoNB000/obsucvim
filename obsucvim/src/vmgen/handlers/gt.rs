@@ -1,4 +1,3 @@
-//! Gt — V[a] = (V[b] > V[c]) via __lt(y, x).
 
 use crate::vmgen::handlers::cmp_body;
 use crate::vmgen::strpool::StrPool;

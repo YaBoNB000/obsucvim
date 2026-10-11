@@ -1,12 +1,3 @@
-//! AST definitions for Lua 5.1 / Luau source.
-//!
-//! Conventions:
-//! - Strings are byte strings (Vec<u8>) — Lua strings are arbitrary bytes.
-//! - Identifiers carry an optional SymId, filled in by the symtab resolver.
-//! - Method calls are kept as their own node (obj, name, args) — `self` is NOT
-//!   added to args; semantics = obj.name(obj, args...).
-//! - Backtick interpolation (Luau) is desugared to string.format at parse time
-//!   (semantically identical in both dialects).
 
 use std::fmt;
 
@@ -18,8 +9,6 @@ pub enum BinOp {
 	Sub,
 	Mul,
 	Div,
-	/// Luau `//` — stored as its own op; the printer emits math.floor(l / r)
-	/// so the output is valid in both dialects
 	Idiv,
 	Mod,
 	Pow,
@@ -78,8 +67,6 @@ impl BinOp {
 		}
 	}
 
-	/// (left, right) Pratt priorities — identical to Lua 5.1 lparser.c and
-	/// Luau Parser.cpp (// sits at the mul level in Luau; we desugar it).
 	pub fn prio(&self) -> (u8, u8) {
 		match self {
 			BinOp::Or => (1, 1),
@@ -113,24 +100,12 @@ impl UnOp {
 #[derive(Debug, Clone)]
 pub enum Expr {
 	Num { value: f64, isfloat: bool },
-	/// `is_binary`: ciphertext/key-stream/bytecode blobs (printer escapes
-	/// every non-printable-ASCII byte — no UTF-8 passthrough, which would
-	/// otherwise emit random CJK garbage from arbitrary ciphertext bytes)
 	Str { bytes: Vec<u8>, is_binary: bool },
-	/// Luau/Lua long string `[[...]]` — content must be printable ASCII
-	/// (carrier blobs); the printer picks a clash-free bracket level.
-	/// Survives minify verbatim (the lexer captures the raw span). F8
-	/// sample shape: the giant RC blob lives in a long string.
 	LongStr { bytes: Vec<u8> },
-	/// Internal VM-only marker for an original source string literal whose
-	/// plaintext must not enter the serialized constant pool. The VM compiler
-	/// seals `bytes` into a per-site ciphertext constant and emits LoadStr with
-	/// the matching seed/step. This must be lowered before pretty-printing.
 	SealedStr { bytes: Vec<u8>, seed: u16, step: u16 },
 	Bool { value: bool },
 	Nil,
 	Vararg,
-	/// name = source name; sym = None for globals (filled by symtab)
 	Ident { name: String, sym: Option<SymId> },
 	Dot { obj: Box<Expr>, name: String },
 	Index { obj: Box<Expr>, idx: Box<Expr> },
@@ -138,15 +113,10 @@ pub enum Expr {
 	Method { obj: Box<Expr>, name: String, args: Vec<Expr> },
 	Un { op: UnOp, e: Box<Expr> },
 	Bin { op: BinOp, l: Box<Expr>, r: Box<Expr> },
-	/// Luau if-expression: `if c1 then v1 [elseif c then v]* else e`
-	/// (no `end`). Arms = (condition, value) pairs; the else branch is
-	/// mandatory. Only produced/emitted for Luau targets (F22 shape).
 	IfExpr { arms: Vec<(Expr, Expr)>, elseb: Box<Expr> },
 	Table { fields: Vec<TableField> },
 	Function {
 		params: Vec<String>,
-		/// SymId per parameter (filled by symtab; printer uses it so that
-		/// mangling renames the declaration, not just body references)
 		param_syms: Vec<SymId>,
 		vararg: bool,
 		body: Block,
@@ -172,8 +142,6 @@ impl Block {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
-	/// names[i] is the source name; syms[i] filled by symtab;
-	/// values[i] = None means no initializer
 	Local {
 		names: Vec<String>,
 		syms: Vec<SymId>,
@@ -181,8 +149,6 @@ pub enum Stmt {
 	},
 	LocalFunc { name: String, sym: SymId, func: Box<FuncDef> },
 	FuncDecl {
-		/// dotted object chain (None for bare `function f()`); the LAST name
-		/// (or method name) is in `name`; obj is the expr before it
 		obj: Option<Expr>,
 		name: String,
 		ismethod: bool,
@@ -216,12 +182,9 @@ pub enum Stmt {
 #[derive(Debug, Clone)]
 pub struct FuncDef {
 	pub params: Vec<String>,
-	/// SymId per parameter (filled by symtab; used by the printer so that
-	/// mangling renames the declaration, not just the body references)
 	pub param_syms: Vec<SymId>,
 	pub vararg: bool,
 	pub body: Block,
-	/// true when this is a method declaration (params[0] == "self" implicit)
 	pub has_self: bool,
 }
 

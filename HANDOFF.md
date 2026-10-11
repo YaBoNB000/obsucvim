@@ -1,5 +1,7 @@
 # AI 交接文档（HANDOFF）
 
+> **src 注释已剥离（2026-10-11）**：`obsucvim/src` 71 个模块的注释全部删除（3,155 条）——**源码里不再有解释性注释**，理解内部设计看 `docs/`（implementation-plan/lura15-adoption-inventory/v15-pipeline-rewrite 等）与本文件。恢复带注释源码：`/home/user/obsucvim-src-commented-20261011.tar.gz` 或 `git checkout 0358615 -- obsucvim/src`。剥离工具 `obsucvim/tools/strip_rs_comments.py`（Rust 感知，勿用 sed——字符串里的 `//` 是 Luau 整除运算符）。验证：全矩阵绿 + E6b/R067 双 SHA 锚逐字节复现。
+
 > **executor 绑定默认开启（2026-10-11，底层保护层）**：`--bind-executor` 翻转为 v15 默认——所有 v15 产物默认携带 EXG 认证守卫（只在完整 Roblox executor 内正确运行）。`--no-bind-executor` 显式退出；**运行等价矩阵/示例生成一律用 --no-bind-executor**（语义回归测的是管线语义，绑定态由 executor_guard 11/11 + tier2 20/20 专测）。非 v15 预设：隐式默认静默降级为关闭（legacy 五预设字节不变），显式 `--bind-executor` 仍报错。`--env-check` 默认形态现在=tier-1+tier-2+守卫（与旧双开逐字节一致；`--env-check --seed 67067` == R067 靶标）。E6b 的 SHA 锚（`fcbba5a9…`）钉死 --no-bind == 翻转前默认字节。**诚实边界**：默认开启把探针感知攻击的成本强加给所有对手，但不消除该攻击类（REPORT-R067.md：智能桩可绕过全部 17 闸门；加固提案已按用户 2026-10-11 决策**搁置**——防环境记录器强度足够，L1 录放空缺作为已接受边界，提案存档备查）。
 
 > **WTF-PORT Phase 2（2026-10-11）**：`--env-check --bind-executor` 双开发射 tier-2（envcheck.rs `build(rng, tier2)`）：Enum 身份缓存/Random 固定种子+Clone 分叉/task 语义/"Expected ':'" 成员调用形态/Instance 信号与销毁锁/clonefunction 条件探针，身份全等 27 引用。**既有 flag 组合字节不变**（tier-2 抽取全在条件内；SHA 对照进 tier2 测试）。外部对象成员**只能 `["字符串键"]`**——sanitize_frag 改名非全局接收者后的标识符成员；新全局（如 Random）要同时加入 frag_reserved 构造列表**和** sanitize_frag 的 static GLOBALS（两个不同列表！`.new` 保留看后者）。测试 `tests/wtf_port_tier2_test.sh` + `wtf_port_roblox_mock.luau`（忠实 mock 正向 + 9 钩子）。**未竟**：真机（Roblox/executor）验证；Phase 3（键存在性/utf8）缓行；L1 反录制重放空缺不变。

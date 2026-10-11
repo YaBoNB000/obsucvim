@@ -1,41 +1,3 @@
-//! L6 VM — compiler: AST → bytecode.
-//!
-//! One recursive walk compiles the whole program. Function indexes are
-//! assigned post-order (a nested function is fully compiled before its
-//! CLOSURE instruction is emitted in the parent). Registers are naive
-//! (no liveness analysis in M4): every subexpression gets a fresh
-//! register; loop variables use a per-iteration shared cell when
-//! captured by a closure (Lua's fresh-variable-per-iteration capture
-//! semantics) and a plain fixed register otherwise (no per-iteration
-//! register growth).
-//!
-//! Multi-value rules:
-//! - `local a, b = f()` / `a, b = f()`: the trailing call fills the
-//!   remaining targets — the count is known at compile time, so the
-//!   call uses a fixed nres into scratch regs, then stores. A trailing
-//!   VARARG (`a, b = ...`) expands the same way through VarArgTab.
-//! - `return e1, f()` / `return e1, ...`: truly variable — the CALL
-//!   records (lastbase, lastn); RETURN(base, 255, c, pre) merges
-//!   V[base+1..base+pre] + (c=0: V[lastbase+1..lastbase+lastn] |
-//!   c=1: the varargs).
-//! - table trailing call: CALLT stores results from the counter and
-//!   advances it (variable, runtime).
-//!
-//! Upvalues (single-cell model, exact Lua 5.1 semantics):
-//! - a cell = { v = <V array>, i = <slot> } — every closure that
-//!   captures a symbol binds a (possibly aliased) reference to ONE
-//!   cell, so reads/writes from any nesting level see one value
-//! - plain descriptor (slot in the creating frame): cell =
-//!   { v = V, i = slot }
-//! - Slot descriptor (0x8000 | slot): per-iteration shared cell —
-//!   V[slot] holds the current iteration's cell table `{ 1 = value }`;
-//!   the interpreter binds `{ v = V[slot], i = 1 }`
-//! - Up alias descriptor (0xC000 | upvalue index): the creating frame
-//!   itself materializes the symbol as an upvalue — the closure
-//!   aliases that frame's cell object directly (no intermediate value
-//!   copies anywhere: materialization is a scope alias, not a copy)
-//! - a function's upvalue list = symbols referenced by its own code or
-//!   by any nested function that are declared in an enclosing function
 
 use crate::ast::*;
 use crate::rng::Rng;
@@ -43,16 +5,6 @@ use crate::symtab::SymTable;
 use crate::vmgen::isa::{self, Carrier, Const, Instr, Op, OpMap};
 use std::collections::{HashMap, HashSet};
 
-/// How a symbol's value lives in the current frame.
-/// - Plain(r): value is in register r (V[r]).
-/// - Slot(sr): per-iteration shared cell — V[sr] holds a small table
-///   `{ 1 = value }` recreated each loop iteration; every closure
-///   created in the same iteration shares it, and body reads/writes go
-///   through the same cell (Lua 5.1/Luau per-iteration local semantics).
-/// - Up(u): a MATERIALIZED upvalue — the symbol's value lives in the
-///   canonical cell of upvalue u (aliased, never copied): reads/writes
-///   go straight through the shared cell, so every closure at every
-///   nesting level sees one single cell (exact 5.1 semantics).
 #[derive(Debug, Clone, Copy)]
 enum CellKind {
 	Plain(u16),
@@ -60,7 +12,6 @@ enum CellKind {
 	Up(u16),
 }
 
-/// v15 stage A: wire-operand role (see Ctx::op_roles).
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ORole {
 	Val,
@@ -71,81 +22,33 @@ enum ORole {
 }
 
 pub struct VmProgram {
-	/// True only when at least one source literal was lowered to LoadStr.
-	/// The generated interpreter omits that handler in all other builds.
 	pub has_loadstr: bool,
 	pub opmap: OpMap,
-	/// M5 hub randomization: operand stream-slot order.
-	/// slot_perm[i] = which operand (0=a 1=b 2=c 3=d) occupies stream
-	/// slot i. Encoder writes in this order; the template maps the
-	/// stream positions back to a/b/c/d.
 	pub slot_perm: [u8; 4],
-	/// H4-5B: independent physical operand-stream permutation per function.
-	/// The compact base/step formula is mirrored by BSS/RT; no per-function
-	/// adapter table is emitted in the protected program.
 	pub slot_perms: Vec<[u8; 4]>,
 	pub lane_base: u8,
 	pub lane_step: u8,
-	/// M5 bytecode carrier (base-94 + token escape). Shared by every
-	/// function blob so the interpreter embeds one decoder.
 	pub carrier: Carrier,
 	pub fns: Vec<Vec<u8>>,
-	/// Nop instruction indexes per function (0-based, parallel to
-	/// `fns`). Consumed by the v15 template to emit literal-constant
-	/// self-modification writes (sample `J[Q]=12` shape, F14/F27).
 	pub nop_sites: Vec<Vec<u16>>,
-	/// P1 (致命缺点③): constant-keystream LCG constants (mod 2^28),
-	/// per build. The compiler masks every constant payload byte with
-	/// the per-function seeded stream; the template parse mirrors it.
 	pub ck_km: u32,
 	pub ck_kc: u32,
-	/// P1 (动态内联): MkStr per-position additive mask constants —
-	/// mask(i) = (mk1 * i + mk2) % 65536 over the FINAL instruction
-	/// index (post Nop-padding). Emitted into the MkStr handler.
 	pub mk1: u16,
 	pub mk2: u16,
-	/// P2 (字节码不规则): blob position-mask keystream (mod 2^28) —
-	/// per-function seed = (blob_seed + fi * blob_step) % 2^28, then
-	/// byte j masked with (state_j % 256). Mirrored by parse.
 	pub blob_km: u32,
 	pub blob_kc: u32,
 	pub blob_seed: u32,
 	pub blob_step: u32,
-	/// P2: section tag bytes, index = section ID:
-	/// 0=HEAD 1=CKSEED 2=UPS 3=CONSTS 4=SLOTS 5=CODE 6=DECOY.
-	/// Per-build random distinct values (no fixed section identity).
 	pub section_tags: [u8; 7],
-	/// v15 stage E3: per-function sum of ALL wire operands (mod 2^32),
-	/// parallel to `fns`. The v15 interpreter re-reads every operand
-	/// stream with inline 7-bit ladders and folds the same checksum
-	/// (F13 shape); a mismatch traps the decode loop.
 	pub operand_sums: Vec<u64>,
-	/// 54-B: 位置加权校验和（pos = 流序号*指令数 + 指令内序号，1 基）
 	pub operand_sums2: Vec<u64>,
-	/// H4-4A Key-Carrying Chaff: per-function fold of all four physical
-	/// operand lanes at Nop sites. BSS recomputes this from the parsed
-	/// carrier and uses it in one real lane mask; RT decodes with this
-	/// compiler-side expectation, so stripping/zeroing chaff desynchronizes
-	/// later real instructions instead of merely removing dead work.
 	pub chaff_folds: Vec<u16>,
 	pub chaff_mul: u16,
 	pub chaff_coeffs: [u16; 4],
 	pub chaff_pos: u16,
 	pub chaff_fn: u16,
-	/// B-3 (状态链式按块解码): per-prototype basic-block leader PCs
-	/// (1-based). Leaders = pc 1 ∪ jump targets ∪ post-jump positions;
-	/// the v15 template encodes each block under a session-keyed
-	/// keystream and the runtime decodes block-by-block (no bulk
-	/// decoder, no whole-stream decoded surface).
 	pub block_starts: Vec<Vec<u16>>,
-	/// S1 四表: per-function S selector (0..3 → S=251/99/8/140)
 	pub s_indices: Vec<u8>,
-	/// ㉒ (选项B — B-2 碎片即用即毁): every numeric constant is
-	/// maskable (integers mask additively; other finite doubles ride
-	/// the Luau shortest-roundtrip tostring/tonumber path). False only
-	/// when NaN/inf literals appear — then the v15 template keeps
-	/// constant tables plaintext inside the encoded prototypes (the
-	/// five instruction streams stay encoded either way).
 	pub consts_mask_safe: bool,
 }
 
@@ -156,23 +59,12 @@ struct Ctx<'a> {
 	program: &'a mut VmProgram,
 	rng: &'a mut Rng,
 	symtab: &'a crate::symtab::SymTable,
-	/// target dialect: true = Lua 5.1 (table-constructor store order:
-	/// array part stores LAST), false = Luau (source order)
 	lua51: bool,
-	/// v15 stage A (operand scattering): registers/consts/upvalues are
-	/// scattered into random slots per function before serialization
 	scatter: bool,
-	/// next nested-function slot (global DFS order over the chunk)
 	next_fn_slot: usize,
-	/// scope chain of declared syms -> cell kind (outermost first)
 	scopes: Vec<HashMap<SymId, CellKind>>,
-	/// upvalues of the current function: sym -> up idx
 	upvals: HashMap<SymId, u16>,
-	/// upvalue descriptors (creating frame's V slot, 1-based), runtime order
 	upsrc: Vec<u16>,
-	/// Original upvalue index -> the current function's permuted runtime index.
-	/// Computed before compiling nested closures so their descriptors target
-	/// this function's final upvalue array layout.
 	up_perm: Vec<usize>,
 	next_reg: u16,
 	nparams: u16,
@@ -180,23 +72,11 @@ struct Ctx<'a> {
 	consts: Vec<Const>,
 	const_map: HashMap<(u8, u64), u16>,
 	code: Vec<Instr>,
-	/// label -> [positions]; entry 0 = label position (code len when
-	/// here() ran), entries 1.. = jump-instruction slots (instr index + 1)
 	labels: HashMap<u32, (Option<usize>, Vec<usize>)>,
-	/// loop stack: (break_label, continue_label)
 	loops: Vec<(Label, Label)>,
-	/// active loop stack: for each enclosing loop being compiled, the
-	/// set of loop-body-declared syms captured by a closure inside that
-	/// loop body. A local declared in the body of the INNERMOST active
-	/// loop gets a per-iteration shared cell (CellKind::Slot) iff it is
-	/// in that set; otherwise a plain fixed register (reused each
-	/// iteration — no per-iteration growth).
 	cell_loops: Vec<HashSet<SymId>>,
 }
 
-/// Derive a per-function upvalue permutation independently from the main
-/// compiler RNG. The mapping is old-index -> runtime index; child closure
-/// descriptors use it when they alias one of the creating frame's upvalues.
 fn derive_upvalue_permutation(seed: u64, fn_index: usize, count: usize, scatter: bool) -> Vec<usize> {
 	let mut order: Vec<usize> = (0..count).collect();
 	if scatter && count > 1 {
@@ -211,7 +91,6 @@ fn derive_upvalue_permutation(seed: u64, fn_index: usize, count: usize, scatter:
 	old_to_new
 }
 
-/// Collision-free constant key: (tag, payload).
 fn const_key(c: &Const) -> (u8, u64) {
 	match c {
 		Const::Nil => (0, 0),
@@ -228,8 +107,6 @@ fn const_key(c: &Const) -> (u8, u64) {
 	}
 }
 
-/// H3 测试专用审计流。只在显式设置环境变量时写出构建期统计，正式产物
-/// 不包含这批元数据；格式为每函数一行 key=value，便于跨 seed 回归。
 fn noise_audit(line: &str) {
 	if let Ok(path) = std::env::var("OBSUCVIM_NOISE_AUDIT") {
 		use std::io::Write;
@@ -246,12 +123,7 @@ struct ScatterNoiseStats {
 	decoy_holes: usize,
 }
 
-/// H3-2/H3-6：ignored operand 不再来自一眼可分的 0..65535 均匀分布。
-/// 绝大多数直接重采样同槽真实操作数，辅以贴近寄存器/常量域的小值；仅保留
-/// 少量中高值与全域值，和高位真实寄存器共同形成双向重叠分布。
 fn operand_perm_from_code(code: u8) -> [u8; 4] {
-	// Factoradic unranking over [a,b,c,d]. Result maps physical stream slot
-	// -> logical operand, matching isa::encode_soa_for.
 	let mut rem = code as usize % 24;
 	let mut pool = vec![0u8, 1, 2, 3];
 	let mut out = [0u8; 4];
@@ -323,8 +195,6 @@ impl<'a> Ctx<'a> {
 	}
 
 	fn kidx(&mut self, c: Const) -> u16 {
-		// ㉒: track mask safety — only NaN/inf fall outside the
-		// tostring/tonumber round-trip used for non-integral doubles
 		if let Const::Num(v) = c {
 			if !v.is_finite() {
 				self.program.consts_mask_safe = false;
@@ -340,9 +210,6 @@ impl<'a> Ctx<'a> {
 		i
 	}
 
-	/// Insert a constant without value-based deduplication. A sealed string's
-	/// decrypt parameters are instruction-local, so identical ciphertext bytes
-	/// under different parameter pairs must not alias one pool slot.
 	fn kidx_unique(&mut self, c: Const) -> u16 {
 		let i = self.consts.len() as u16;
 		self.consts.push(c);
@@ -354,8 +221,6 @@ impl<'a> Ctx<'a> {
 		self.code.len() - 1
 	}
 
-	/// 在最终指令流插入一条无控制流指令，并同步平移标签/跳转槽。
-	/// H3 的 NOP 与活噪声共用此入口，避免随机插入破坏跳转目标。
 	fn insert_noise_instr(&mut self, pos: usize, ins: Instr) {
 		self.code.insert(pos, ins);
 		for (_, (at, jumps)) in self.labels.iter_mut() {
@@ -408,8 +273,6 @@ impl<'a> Ctx<'a> {
 		self.scopes.last_mut().unwrap().insert(s, k);
 	}
 
-	/// The innermost active loop's capture set (a local declared now
-	/// lives in the body of the innermost active loop, if any).
 	fn cur_loop_captures(&self) -> Option<&HashSet<SymId>> {
 		self.cell_loops.last()
 	}
@@ -422,15 +285,6 @@ impl<'a> Ctx<'a> {
 		self.scopes.pop();
 	}
 
-	/// v15 stage A (operand scattering, luraph15 D1 family): operand
-	/// roles per opcode.
-	///   Reg   = single register — scattered (wire value = slot - 1)
-	///   Base  = base of a CONTIGUOUS register range — kept logical;
-	///           the v15 runtime translates through the per-function
-	///           slot table S (LoadNil/Call*/Return iterate ranges)
-	///   Const = constant index — scattered inside a padded pool
-	///   Up    = upvalue index — scattered through the up permutation
-	///   Val   = opaque value (jump target / count / flag / proto idx)
 	fn op_roles(op: Op) -> [ORole; 4] {
 		use ORole::*;
 		match op {
@@ -468,26 +322,12 @@ impl<'a> Ctx<'a> {
 			Op::SetUp => [Up, Reg, Val, Val],
 			Op::Return => [Base, Val, Val, Val],
 			Op::Nop => [Val, Val, Val, Val],
-			// P1: a = destination register (scattered); b/c/d = masked
-			// packed string bytes (opaque values, never scattered)
 			Op::MkStr => [Reg, Val, Val, Val],
 		}
 	}
 
-	/// v15 stage A: scatter registers/constants/upvalues into random
-	/// slots and rewrite the wire operands accordingly. Returns the
-	/// register slot table S (S[r] = 1-based physical slot of logical
-	/// register r-1), serialized after the constants; the v15
-	/// interpreter consults it for range-based accesses and makefn
-	/// translates upvalue descriptors through the PARENT's S. After
-	/// this pass register/const/up operands share one opaque numeric
-	/// space — static register recovery loses its small-integer anchor.
 	fn scatter_operands(&mut self, nregs: u16) -> (Vec<u16>, ScatterNoiseStats) {
 		let mut stats = ScatterNoiseStats::default();
-		// H3-6 双向均匀化（真值→噪声域）：真实寄存器不再全部挤在
-		// 0..nregs 的低区。每函数把约 20%..50% 的真实寄存器映射到
-		// ≥96 且与低槽不相交的稀疏高槽；其余仍走低槽。VM 的 V/S 本来就是稀疏表，
-		// 单寄存器和 Base/range 两类 handler 都经 S 翻译，语义不变。
 		let n = nregs as usize;
 		let n_high = if n == 0 {
 			0
@@ -514,9 +354,6 @@ impl<'a> Ctx<'a> {
 		self.rng.shuffle(&mut sigma);
 		stats.high_regs = sigma.iter().filter(|&&v| v >= 96).count();
 
-		// H3-5 nil 槽位随机化：常量池 padding 数量与 nil/decoy 比例均按
-		// 构建重掷。decoy 同时覆盖小数值、高数值、布尔和短串，固定
-		// “每四洞一个大整数、其余 nil”模板不再存在。
 		let nc = self.consts.len();
 		let pad_lo = (nc / 3).max(3);
 		let pad_hi = (nc * 2 / 3).max(pad_lo + 3);
@@ -551,10 +388,6 @@ impl<'a> Ctx<'a> {
 		}
 		self.consts = consts2;
 
-		// 3. Apply the upvalue permutation computed before compiling nested
-		// closures. They need the creating frame's final order when encoding
-		// CellKind::Up descriptors. Consume the former shuffle's main-RNG draws
-		// here to leave unrelated operand/noise layouts stable.
 		let nu = self.upsrc.len();
 		let mut consumed: Vec<usize> = (0..nu).collect();
 		self.rng.shuffle(&mut consumed);
@@ -566,7 +399,6 @@ impl<'a> Ctx<'a> {
 			self.upsrc[new_idx] = old_upsrc[old_idx];
 		}
 
-		// 4. wire operand rewrite
 		for ins in self.code.iter_mut() {
 			let roles = Self::op_roles(ins.op);
 			let ops = [ins.a, ins.b, ins.c, ins.d];
@@ -595,8 +427,6 @@ impl<'a> Ctx<'a> {
 		mut nregs: u16,
 		fn_index: usize,
 	) -> (Vec<u8>, Vec<u16>, u64, u64, u16, Vec<u16>) {
-		// implicit trailing return (a chunk/function without an explicit
-		// return returns nothing — the code must terminate)
 		let needs_return = self
 			.code
 			.last()
@@ -611,17 +441,12 @@ impl<'a> Ctx<'a> {
 		let mut active_count = 0usize;
 		let mut dead_regs = 0usize;
 		if self.scatter {
-			// H3-1：从构建 seed 的主 PRNG 派生每函数独立噪声 PRNG。噪声
-			// 随构建变化、同 seed 可复现，同时不再被后续模板随机调用数耦合。
 			noise_seed = self
 				.rng
 				.next_raw()
 				^ (fn_index as u64 + 1).wrapping_mul(0x9e37_79b9);
 			let mut nr = Rng::new(noise_seed);
 
-			// H3-4：预留用户代码绝不引用的死寄存器，注入真实执行的
-			// LoadK/Move/LoadNil/NewTab。它们写入 VM 状态而非 handler 内
-			// 一次性 local，故不能只按“NOP/无写回”过滤；结果从不流向用户槽。
 			dead_regs = nr.int(2, 4) as usize;
 			let dead_base = nregs;
 			nregs = nregs
@@ -638,8 +463,6 @@ impl<'a> Ctx<'a> {
 				decoy_ks.push(self.kidx(Const::Num(v as f64)));
 			}
 
-			// H3-3：总 padding 比例、NOP/活噪声比例、位置均随机。最小两条
-			// 保证微型函数也不再落回“固定一条全零 NOP”模板。
 			let total_lo = (base_code_len / 12).max(2);
 			let total_hi = (base_code_len / 5).max(total_lo + 1);
 			let total = nr.int(total_lo as i64, total_hi as i64) as usize;
@@ -649,22 +472,11 @@ impl<'a> Ctx<'a> {
 			active_flags.extend(std::iter::repeat(false).take(nop_count));
 			nr.shuffle(&mut active_flags);
 
-			// H3-6 (2026-10-11, stress_multival seed-bug fix): dynamic
-			// call-result windows. Call/CallE/CallM place their results at
-			// logical base+1..base+nout at RUNTIME; nout (callee return
-			// count / vargc) is unknown at build time, so those registers
-			// were never reserved. Dead-register noise writing inside an
-			// open window silently corrupts results (root cause analysis:
-			// research/antidebug-20261009/root-cause/). A window opens at
-			// the call and closes at the consumer that reads or overwrites
-			// the results: the next Call/CallE/CallM/CallT/Return.
 			let orig_len = self.code.len();
 			let window_mask = call_window_mask(&self.code);
 			let allowed: Vec<usize> = (0..orig_len)
 				.filter(|&p| !window_mask[p])
 				.collect();
-			// Position 0 precedes every window (windows cover call_idx+1..),
-			// so `allowed` is never empty and active noise stays placeable.
 			let mut placements: Vec<(usize, Instr)> = Vec::with_capacity(active_flags.len());
 
 			for active in active_flags {
@@ -686,12 +498,6 @@ impl<'a> Ctx<'a> {
 				} else {
 					Instr::op(Op::Nop)
 				};
-				// 插在最终终止指令之前，避免噪声全部落到不可达尾部。
-				// Positions are drawn against the PRE-NOISE length so they
-				// index `window_mask` (original coordinates); a forbidden
-				// draw is relocated deterministically onto an allowed
-				// position instead of being dropped, keeping the
-				// nop/active accounting exact.
 				let drawn = nr.int(0, orig_len as i64 - 1) as usize;
 				let pos = if window_mask[drawn] {
 					allowed[drawn % allowed.len()]
@@ -700,19 +506,11 @@ impl<'a> Ctx<'a> {
 				};
 				placements.push((pos, ins));
 			}
-			// Descending original positions: each insertion leaves lower
-			// original coordinates valid in the growing list, so every
-			// `pos` still lands before its intended original instruction.
 			placements.sort_by(|a, b| b.0.cmp(&a.0));
 			for (pos, ins) in placements {
 				self.insert_noise_instr(pos, ins);
 			}
 
-			// H3-6 build-time invariant: while a call window is open, no
-			// instruction may target a dead register (operand a in a
-			// Reg/Base role). Legit code never addresses registers >=
-			// dead_base, so this catches dead-register writes from ANY
-			// future pass, not just this injector.
 			let final_mask = call_window_mask(&self.code);
 			for (idx, ins) in self.code.iter().enumerate() {
 				let is_window_op = matches!(
@@ -733,15 +531,12 @@ impl<'a> Ctx<'a> {
 				);
 			}
 		} else {
-			// legacy profile 保持原 M5 行为，H3 仅作用于 v15。
 			nop_count = (self.code.len() / 10).max(1);
 			for _ in 0..nop_count {
 				let pos = self.rng.int(0, self.code.len() as i64) as usize;
 				self.insert_noise_instr(pos, Instr::op(Op::Nop));
 			}
 		}
-		// M5 SoA: jump targets are 1-based INSTRUCTION indexes into the
-		// parallel arrays (pc steps by 1). No byte-offset fixpoint.
 		for (_, (pos, jumps)) in &self.labels {
 			if let Some(base) = pos {
 				let target = (*base as u16) + 1;
@@ -750,11 +545,6 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		}
-		// P1 (动态内联): rewrite LoadK of SHORT strings (≤5 bytes) into
-		// MkStr — the string never enters the constant pool; its bytes
-		// ride the operand streams as masked immediates. Done BEFORE
-		// scattering so operand a scatters as a register and the packed
-		// b/c/d pass through as opaque values.
 		let mut mkstr_candidates = HashSet::new();
 		for ins in self.code.iter_mut() {
 			if ins.op == Op::LoadK {
@@ -779,18 +569,12 @@ impl<'a> Ctx<'a> {
 			&mut self.consts,
 			&mkstr_candidates,
 		);
-		// v15 stage A: operand scattering post-pass (rewrites wire
-		// operands; yields the register slot table S serialized below)
 		let (s_tab, scatter_stats) = if self.scatter {
 			let (slots, stats) = self.scatter_operands(nregs);
 			(Some(slots), stats)
 		} else {
 			(None, ScatterNoiseStats::default())
 		};
-		// P1: mask MkStr packed operands with a key derived from the
-		// FINAL wire register a (post-scatter): mask = (mk1*a + mk2)
-		// % 65536. The handler recomputes the same key from its a
-		// operand and unmasks via (x - mask) % 65536.
 		let mk1 = self.program.mk1 as u32;
 		let mk2 = self.program.mk2 as u32;
 		for ins in self.code.iter_mut() {
@@ -807,7 +591,6 @@ impl<'a> Ctx<'a> {
 		} else {
 			&self.program.slot_perm
 		};
-		// Nop sites are final here (no more insertions after this point)
 		let nops: Vec<u16> = self
 			.code
 			.iter()
@@ -815,10 +598,6 @@ impl<'a> Ctx<'a> {
 			.filter(|(_, i)| i.op == Op::Nop)
 			.map(|(p, _)| p as u16)
 			.collect();
-		// H3-2/H3-6：先从本函数真实已用操作数建立逐槽经验分布，再给
-		// ignored slots 采样。旧版全域均匀噪声（常见 10^4）与真值（常见
-		// 0..24）可被阈值秒分；新版多数值直接来自真分布，同时真实寄存器
-		// 已有高槽，两个类别在低/高域双向重叠。
 		let mut real_lanes: [Vec<u16>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 		let mut real_all = Vec::new();
 		let mut real_total = 0usize;
@@ -867,9 +646,6 @@ impl<'a> Ctx<'a> {
 				if m[3] { ins.d = self.rng.int(0, 65535) as u16; }
 			}
 		}
-		// H4-4A: fold the actual post-noise Nop operands in PHYSICAL stream
-		// order. This is the encoding-side mirror of BSS's QP walk. +1 keeps
-		// every clean function's lane contribution non-zero.
 		let chaff_mod = 65_521u64;
 		let mut chaff = (((fn_index as u64 + 1) * self.program.chaff_fn as u64)
 			% chaff_mod) as u64;
@@ -891,17 +667,10 @@ impl<'a> Ctx<'a> {
 			}
 		}
 		let chaff_fold = (chaff + 1) as u16;
-		// v15 stage E3: fold the sum of ALL wire operands (post-scatter,
-		// post-noise, mod 2^32). The v15 interpreter re-reads every operand
-		// stream via inline 7-bit ladders and re-folds the same checksum
-		// (F13 shape); any tamper breaks it.
 		let mut osum: u64 = 0;
 		for ins in &self.code {
 			osum = (osum + ins.a as u64 + ins.b as u64 + ins.c as u64 + ins.d as u64) % 4294967296;
 		}
-		// 54-B (R025 建议5): 位置加权累计 Σ(pos·v) mod 2^32——pos 定义与
-		// 模板 parse 侧折叠阶梯逐位镜像: 流 s (0=SA..3=SD) 第 i 条指令
-		// (1 基) 的全局位置 = s*ncode + i; 流 s 承载操作数槽 perm[s]。
 		let mut osum2: u64 = 0;
 		let ncode64 = self.code.len() as u64;
 		for (p, ins) in self.code.iter().enumerate() {
@@ -912,34 +681,22 @@ impl<'a> Ctx<'a> {
 				osum2 = (osum2 + (pos % 4294967296) * vals[k]) % 4294967296;
 			}
 		}
-		// ---------------------------------------------------------------
-		// P2 (字节码不规则): section assembly. No fixed field order —
-		// every build permutes the sections, tags their identity with
-		// per-build random bytes, varints every count, sprinkles decoy
-		// sections, then masks the whole blob with a per-function
-		// position keystream. Layout knowledge alone parses nothing.
-		// Section IDs: 0=HEAD 1=CKSEED 2=UPS 3=CONSTS 4=SLOTS 5=CODE.
 		let mut secs: Vec<(usize, Vec<u8>)> = Vec::new();
-		// HEAD
 		let mut head = Vec::new();
 		isa::encode_u16var(&mut head, nregs);
 		isa::encode_u16var(&mut head, self.nparams);
 		isa::encode_u16var(&mut head, self.vararg as u16);
 		secs.push((0, head));
-		// CKSEED (P1 constant keystream seed)
 		let ckseed = self.rng.int(0, 65535) as u16;
 		let mut cksec = Vec::new();
 		isa::encode_u16var(&mut cksec, ckseed);
 		secs.push((1, cksec));
-		// UPS
 		let mut ups = Vec::new();
 		isa::encode_u16var(&mut ups, self.upsrc.len() as u16);
 		for s in &self.upsrc {
 			isa::encode_u16var(&mut ups, *s);
 		}
 		secs.push((2, ups));
-		// CONSTS (P1: encrypted items; csl = alignment anchor +
-		// integrity check on the parse side)
 		let mut csec: Vec<u8> = Vec::new();
 		let mut lcg =
 			isa::ConstLcg::new(ckseed as u32, self.program.ck_km, self.program.ck_kc);
@@ -951,7 +708,6 @@ impl<'a> Ctx<'a> {
 		isa::encode_u16var(&mut consts_sec, csec.len() as u16);
 		consts_sec.extend_from_slice(&csec);
 		secs.push((3, consts_sec));
-		// SLOTS (v15 scatter table only)
 		if let Some(s_tab) = &s_tab {
 			let mut slots = Vec::new();
 			isa::encode_u16var(&mut slots, s_tab.len() as u16);
@@ -960,13 +716,11 @@ impl<'a> Ctx<'a> {
 			}
 			secs.push((4, slots));
 		}
-		// CODE (ncode + W + SoA streams)
 		let mut code = Vec::new();
 		isa::encode_u16var(&mut code, self.code.len() as u16);
 		let s_idx = self.program.s_indices[fn_index] as usize;
 		isa::encode_soa_for(&self.code, map, perm, s_idx, &mut code);
 		secs.push((5, code));
-		// decoy sections: seed-derived garbage runs
 		let ndecoys = self.rng.int(0, 2);
 		for _ in 0..ndecoys {
 			let len = self.rng.int(8, 48);
@@ -986,14 +740,6 @@ impl<'a> Ctx<'a> {
 			}
 			blob.extend_from_slice(body);
 		}
-		// position mask: per-function keystream over the WHOLE blob
-		// 增量⑬ (对抗 R002): two-phase self-referential mask. Phase 1
-		// masks the first ≤64 bytes with the base keystream; `hf` then
-		// folds that CIPHERTEXT prefix (bytes both sides possess), and
-		// phase 2 re-seeds the keystream to base+hf. The key for the
-		// bulk thus depends on the ciphertext itself — no independent
-		// key object to extract. The template's parse mirrors this
-		// exactly (unmask prefix → fold prefix → reseed → unmask rest).
 		let km = self.program.blob_km as u64;
 		let kc = self.program.blob_kc as u64;
 		let base = (self.program.blob_seed as u64
@@ -1014,11 +760,6 @@ impl<'a> Ctx<'a> {
 			state = (km * state + kc) % 268_435_456;
 			*byte = byte.wrapping_add(isa::fold_key(state));
 		}
-		// B-3: basic-block partition — leaders are pc 1, every jump
-		// target, and the position after every jump (fall-through
-		// merge). Positions are 1-based instruction indexes (pc steps
-		// by 1). Computed after scatter/noise: instruction positions
-		// are final here.
 		let ncode = self.code.len();
 		let mut leaders: Vec<u16> = vec![1];
 		for (idx, ins) in self.code.iter().enumerate() {
@@ -1057,20 +798,12 @@ impl<'a> Ctx<'a> {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// upvalue analysis
-// ---------------------------------------------------------------------------
 
 struct FnAnalysis {
-	/// symbols referenced by this function's own code, declared outside
 	direct_up: Vec<SymId>,
-	/// symbols referenced by nested functions (transitively), declared
-	/// outside this function -> this function must materialize them
 	nested_up: Vec<SymId>,
 }
 
-/// Syms referenced by an expression at THIS level (not entering nested
-/// function bodies). Globals (sym None) never enter.
 fn expr_refs(e: &Expr, out: &mut HashSet<SymId>) {
 	match e {
 		Expr::Ident { sym: Some(s), .. } => {
@@ -1113,8 +846,6 @@ fn expr_refs(e: &Expr, out: &mut HashSet<SymId>) {
 	}
 }
 
-/// Collect all function nodes nested inside a block (any depth), plus
-/// LocalFunc/FuncDecl statements, as (body, param_syms) pairs.
 fn collect_bodies<'a>(block: &'a Block, out: &mut Vec<(&'a Block, &'a [SymId])>) {
 	for s in &block.stmts {
 		match s {
@@ -1223,8 +954,6 @@ fn expr_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
 	}
 }
 
-/// Syms declared at all depths of a block, excluding nested function
-/// bodies (which have their own scopes).
 fn collect_declared_all(block: &Block, out: &mut Vec<SymId>) {
 	for s in &block.stmts {
 		match s {
@@ -1299,19 +1028,12 @@ fn collect_declared_expr(e: &Expr, out: &mut Vec<SymId>) {
 	}
 }
 
-/// All syms declared in a block subtree (loop variable of the block
-/// itself included when the block is a loop body — callers add it).
 fn declared_set_of(block: &Block) -> HashSet<SymId> {
 	let mut v = Vec::new();
 	collect_declared_all(block, &mut v);
 	v.into_iter().collect()
 }
 
-/// For one loop body: the set of body-declared syms captured by ANY
-/// closure created inside the body (transitively — nested functions'
-/// upvalue sets included). A captured body local must live in a
-/// per-iteration shared cell; an uncaptured one may reuse a fixed
-/// register across iterations.
 fn loop_capture_set(
 	body: &Block,
 	cond: Option<&Expr>,
@@ -1339,16 +1061,10 @@ fn loop_capture_set(
 	cap
 }
 
-/// References at the top level of a block (excluding nested function
-/// bodies). For LocalFunc/FuncDecl the body IS the function's own code —
-/// its references belong to the nested function's analysis, not this
-/// function's direct refs (except self-recursive references, which are
-/// handled as declarations).
 fn collect_block_refs_own(block: &Block, out: &mut HashSet<SymId>) {
 	for s in &block.stmts {
 		match s {
 			Stmt::LocalFunc { .. } | Stmt::FuncDecl { .. } => {
-				// FuncDecl's object expression is THIS function's code
 				if let Stmt::FuncDecl { obj, .. } = s {
 					if let Some(o) = obj {
 						expr_refs(o, out);
@@ -1417,34 +1133,20 @@ fn collect_block_refs_own(block: &Block, out: &mut HashSet<SymId>) {
 	}
 }
 
-/// References in a sub-block, skipping the bodies of nested functions
-/// (those are analyzed separately).
 fn refs_in_sub(block: &Block, out: &mut HashSet<SymId>) {
-	// collect_block_refs_own already skips nested function bodies
 	collect_block_refs_own(block, out);
-	// but it recurses into sub-blocks including ones containing nested
-	// functions — the skip happens at the LocalFunc/FuncDecl level
-	// (bodies not entered) ✓
 }
 
-/// Full analysis of one function body.
 fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 	let mut declared = Vec::new();
 	declared.extend(params.iter().copied());
 	collect_declared_all(block, &mut declared);
 	let declared_set: HashSet<SymId> = declared.iter().copied().collect();
 
-	// direct refs of this function's own code
 	let mut direct = HashSet::new();
 	collect_block_refs_own(block, &mut direct);
 	direct.retain(|s| !declared_set.contains(s));
 
-	// nested function refs (transitive, ANY depth): every symbol
-	// referenced by a nested body that is declared neither in that
-	// body's own subtree (params + all inner declarations) nor in this
-	// function's subtree lives in an ANCESTOR of this function; nested
-	// contexts start with a fresh scope stack, so this function must
-	// upvalue+materialize it for the descriptor lookup to succeed.
 	let mut bodies: Vec<(&Block, &[SymId])> = Vec::new();
 	collect_bodies(block, &mut bodies);
 	let mut nested = HashSet::new();
@@ -1453,7 +1155,6 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 		own_decl.extend(bparams.iter().copied());
 		collect_declared_all(b, &mut own_decl);
 		let own_set: HashSet<SymId> = own_decl.iter().copied().collect();
-		// direct refs of this nested fn's own code
 		let mut refs = HashSet::new();
 		collect_block_refs_own(b, &mut refs);
 		refs.retain(|s| !own_set.contains(s));
@@ -1472,15 +1173,7 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// code generation
-// ---------------------------------------------------------------------------
 
-/// Remove short-string constants made unreachable by the LoadK -> MkStr
-/// rewrite. The old path rewrote the instruction but serialized the original
-/// Const::Str entry anyway, contradicting the documented invariant. Keep any
-/// candidate still referenced by a non-MkStr operand (e.g. a global-name
-/// constant shared by deduplication), then remap all surviving constant uses.
 fn prune_dead_short_string_constants(
 	code: &mut [Instr],
 	consts: &mut Vec<Const>,
@@ -1552,20 +1245,13 @@ fn compile_chunk(
 ) -> VmProgram {
 	let total = count_fns_count(block);
 	let has_loadstr = crate::vmgen::strseal::contains_sealed_literals(block);
-	// M5: per-build random operand slot permutation (hub randomization)
 	let mut perm: Vec<u8> = vec![0, 1, 2, 3];
 	rng.shuffle(&mut perm);
 	let slot_perm: [u8; 4] = perm.try_into().unwrap();
-	// P1 (致命缺点③): per-build constant-keystream LCG constants
-	// (odd multiplier/addend, mod 2^28 — scaffold-keystream family) +
-	// MkStr additive-mask constants. The template parse mirrors the
-	// LCG; the MkStr handler mirrors the mask.
 	let ck_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
 	let ck_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 	let mk1 = rng.int(1, 65535) as u16;
 	let mk2 = rng.int(0, 65535) as u16;
-	// P2 (字节码不规则): blob position-mask keystream + per-function
-	// seed derivation + section tag identity (all per build).
 	let blob_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
 	let blob_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 	let blob_seed = rng.int(1_048_576, 268_435_455) as u32;
@@ -1573,16 +1259,11 @@ fn compile_chunk(
 	let mut tag_pool: Vec<u8> = (1..=250).collect();
 	rng.shuffle(&mut tag_pool);
 	let section_tags: [u8; 7] = tag_pool[..7].try_into().unwrap();
-	// H4-4A: build-random fold family for Nop operand chaff. Derive an
-	// independent PRNG from already-drawn build keys so this layer does not
-	// perturb the long-established compiler RNG sequence (which could expose
-	// unrelated, previously untested layout combinations).
 	let chaff_seed = (blob_seed as u64)
 		^ (blob_step as u64).rotate_left(17)
 		^ (ck_km as u64).rotate_left(33)
 		^ blob_kc as u64;
 	let mut chaff_rng = Rng::new(chaff_seed ^ 0x4844_3441);
-	// 65521 is prime and keeps every product/sum exact in Lua doubles.
 	let chaff_mul = chaff_rng.int(1, 65_520) as u16;
 	let chaff_coeffs = [
 		chaff_rng.int(1, 65_520) as u16,
@@ -1592,9 +1273,6 @@ fn compile_chunk(
 	];
 	let chaff_pos = chaff_rng.int(1, 65_520) as u16;
 	let chaff_fn = chaff_rng.int(1, 65_520) as u16;
-	// H4-5B: a full-cycle affine walk over all 24 permutations. It is
-	// independent of the main compiler RNG and therefore does not perturb
-	// established code/noise layouts.
 	let lane_steps = [1u8, 5, 7, 11, 13, 17, 19, 23];
 	let lane_base = (chaff_seed % 24) as u8;
 	let lane_step = lane_steps[((chaff_seed / 24) as usize) % lane_steps.len()];
@@ -1615,13 +1293,9 @@ fn compile_chunk(
 		lane_base,
 		lane_step,
 		carrier: Carrier::new(rng),
-		// slots 0..total-1 = nested functions (DFS order); the main chunk
-		// is compiled last and becomes slot `total` (PF[#FN] in the
-		// template)
 		fns: vec![Vec::new(); total],
 		nop_sites: vec![Vec::new(); total],
 		operand_sums: vec![0; total],
-		// 54-B (R025 建议5): 位置加权双向校验和 Σ(pos·v)
 		operand_sums2: vec![0; total],
 		chaff_folds: vec![0; total],
 		chaff_mul,
@@ -1642,7 +1316,6 @@ fn compile_chunk(
 		s_indices: vec![0; total + 1],
 	};
 	{
-		// main chunk index = slot count (children fill 0..total-1)
 		let main_index = program.fns.len();
         program.s_indices[main_index] = if scatter { rng.int(0, 3) as u8 } else { 0 };
         let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
@@ -1659,8 +1332,6 @@ fn compile_chunk(
 	program
 }
 
-/// Count nested function occurrences in the same DFS order the compiler
-/// assigns slots.
 fn count_fns(block: &Block, n: &mut usize) {
 	for s in &block.stmts {
 		count_stmt(s, n);
@@ -1794,7 +1465,6 @@ fn count_expr(e: &Expr, n: &mut usize) {
 
 impl<'a> Ctx<'a> {
 	fn compile_block(&mut self, block: &Block) {
-		// every block is a Lua scope
 		self.push_scope();
 		for s in block.stmts.iter() {
 			self.compile_stmt(s);
@@ -1811,8 +1481,6 @@ impl<'a> Ctx<'a> {
 			Stmt::LocalFunc { name, sym, func } => {
 				let _ = name;
 				let r = self.tmp();
-				// the function name is a local of the CURRENT scope
-				// (visible to the rest of the enclosing block)
 				self.declare(*sym, CellKind::Plain(r));
 				self.compile_function(r, &func.body, &func.params, &func.param_syms, false);
 			}
@@ -1860,8 +1528,6 @@ impl<'a> Ctx<'a> {
 				.unwrap_or(false);
 		let last_is_vararg =
 			matches!(values.last(), Some(Some(e)) if matches!(e, Expr::Vararg));
-		// npre = leading values assigned to targets before the final
-		// (possibly multi-value) value
 		let npre = if nv > 0 && (last_is_call || last_is_vararg) {
 			(nv - 1).min(n)
 		} else {
@@ -1872,7 +1538,6 @@ impl<'a> Ctx<'a> {
 		for _ in 0..n {
 			plain.push(self.tmp());
 		}
-		// leading values, source order (bounded by target count)
 		let nlead = npre.min(n);
 		for i in 0..nlead {
 			let r = plain[i];
@@ -1886,8 +1551,6 @@ impl<'a> Ctx<'a> {
 			}
 			valreg.push(r);
 		}
-		// extra values before the final one: evaluate (side effects) and
-		// discard
 		for i in nlead..nv.saturating_sub(1) {
 			let r = self.tmp();
 			match values.get(i) {
@@ -1900,7 +1563,6 @@ impl<'a> Ctx<'a> {
 			}
 		}
 		if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
-			// final value expands into targets npre..n
 			let nres = n - npre;
 			if last_is_call {
 				let call = values[nv - 1].as_ref().unwrap();
@@ -1913,7 +1575,6 @@ impl<'a> Ctx<'a> {
 					valreg.push(r);
 				}
 			} else {
-				// varargs as a table, then fetch the needed prefix
 				let vt = self.tmp();
 				self.emit(Instr::ab(Op::VarArgTab, vt, 0));
 				for i in 0..nres {
@@ -1926,8 +1587,6 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		} else if nv > 0 && npre < nv {
-			// final value lies beyond the targets (extra values): evaluate
-			// for side effects and discard
 			let i = nv - 1;
 			let r = self.tmp();
 			match values.get(i) {
@@ -1939,26 +1598,18 @@ impl<'a> Ctx<'a> {
 				}
 			}
 		}
-		// fewer values than targets: remaining targets get nil
 		while valreg.len() < n {
 			let r = self.tmp();
 			let knil = self.kidx(Const::Nil);
 			self.emit(Instr::ab(Op::LoadK, r, knil));
 			valreg.push(r);
 		}
-		// declare after values resolved; captured loop-body locals get a
-		// per-iteration shared cell, others a plain fixed register
 		for (i, s) in syms.iter().enumerate() {
 			let kind = self.finalize_local(*s, plain[i], valreg[i]);
 			self.declare(*s, kind);
 		}
 	}
 
-	/// Create the per-iteration shared cell for a value in `valreg`:
-	/// `ct = {}; ct[1] = valreg; sr = ct` and return Slot(sr). Every
-	/// closure created this iteration whose descriptor points at `sr`
-	/// gets the SAME cell (the interpreter binds `ups[i] = { v = V[sr],
-	/// i = 1 }`), and body reads/writes go through `ct[1]` as well.
 	fn cell_from_value(&mut self, valreg: u16) -> CellKind {
 		let sr = self.tmp();
 		let ct = self.tmp();
@@ -1971,10 +1622,6 @@ impl<'a> Ctx<'a> {
 		CellKind::Slot(sr)
 	}
 
-	/// Store a just-evaluated local's value (in `valreg`) and return the
-	/// cell kind to declare: a captured loop-body local gets a fresh
-	/// per-iteration shared cell; otherwise a plain register (reused
-	/// each iteration — no per-iteration growth).
 	fn finalize_local(&mut self, s: SymId, plain_reg: u16, valreg: u16) -> CellKind {
 		if self
 			.cur_loop_captures()
@@ -1992,11 +1639,6 @@ impl<'a> Ctx<'a> {
 	fn compile_stmt_rest(&mut self, s: &Stmt) {
 		match s {
 			Stmt::Assign { targets, values } => {
-				// targets first (5.1 semantics): 目标表达式（表对象+下
-				// 标）先物化；然后**全部**值求值完毕，才允许第一个存
-				// 储——㉜ (R016 回合): 旧实现「求值一个存一个」违反
-				// Lua 语义，`t[i], t[m] = t[m], t[i]` 这类同表交换会读
-				// 到已被覆写的槽（堆排序/交换算法全灭，语料从未覆盖）。
 				let mut tinfos: Vec<Target> = Vec::new();
 				for t in targets {
 					tinfos.push(self.eval_target(t));
@@ -2006,15 +1648,11 @@ impl<'a> Ctx<'a> {
 				let last_is_call = nv > 0 && values.last().map(is_call).unwrap_or(false);
 				let last_is_vararg =
 					nv > 0 && matches!(values.last(), Some(&Expr::Vararg));
-				// npre = leading values assigned to targets before the
-				// final (possibly multi-value) value
 				let npre = if nv > 0 && (last_is_call || last_is_vararg) {
 					(nv - 1).min(n)
 				} else {
 					nv
 				};
-				// leading values, source order (bounded by target count)
-				// —— 全部求值进寄存器，存储统一推后
 				let nlead = npre.min(n);
 				let mut lead_regs: Vec<u16> = Vec::new();
 				for i in 0..nlead {
@@ -2022,8 +1660,6 @@ impl<'a> Ctx<'a> {
 					self.compile_expr(&values[i], r);
 					lead_regs.push(r);
 				}
-				// extra values before the final one: evaluate (side
-				// effects) and discard
 				for i in nlead..nv.saturating_sub(1) {
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
@@ -2031,7 +1667,6 @@ impl<'a> Ctx<'a> {
 				let mut exp_base: Option<u16> = None;
 				let mut nres: usize = 0;
 				if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
-					// final value expands into targets npre..n
 					nres = (n - npre) as usize;
 					if last_is_call {
 						let call = values[nv - 1].clone();
@@ -2040,7 +1675,6 @@ impl<'a> Ctx<'a> {
 						self.compile_call_into(&call, freg, nres as u16, has_vararg);
 						exp_base = Some(freg + 1);
 					} else {
-						// varargs as a table, then fetch the needed prefix
 						let vt = self.tmp();
 						self.emit(Instr::ab(Op::VarArgTab, vt, 0));
 						let base = self.reserve(nres as u16);
@@ -2053,13 +1687,10 @@ impl<'a> Ctx<'a> {
 						exp_base = Some(base);
 					}
 				} else if nv > 0 && npre < nv {
-					// final value lies beyond the targets: evaluate for
-					// side effects and discard
 					let i = nv - 1;
 					let r = self.tmp();
 					self.compile_expr(&values[i], r);
 				}
-				// ㉜: 值全部就绪——按目标顺序统一存储
 				for i in 0..nlead {
 					self.store_target(&tinfos[i], lead_regs[i]);
 				}
@@ -2068,10 +1699,7 @@ impl<'a> Ctx<'a> {
 						self.store_target(&tinfos[npre + i], base + i as u16);
 					}
 				}
-				// fewer values than targets: remaining targets get nil
 				let knil = self.kidx(Const::Nil);
-				// when the final value expands (npre < n) the leading
-				// values plus the expansion cover ALL targets
 				let assigned = if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
 					n
 				} else {
@@ -2129,8 +1757,6 @@ impl<'a> Ctx<'a> {
 				self.cell_loops.pop();
 			}
 			Stmt::Repeat { body, cond } => {
-				// the until condition shares the body scope: closures in
-				// it can capture body locals
 				let cap = loop_capture_set(body, Some(cond), &declared_set_of(body));
 				self.cell_loops.push(cap);
 				let l_top = self.new_label();
@@ -2138,10 +1764,6 @@ impl<'a> Ctx<'a> {
 				let l_end = self.new_label();
 				self.here(&l_top);
 				self.loops.push((l_end.clone(), l_check.clone()));
-				// 5.1 scoping: body locals are visible in the until
-				// condition, so the body scope must stay open across it
-				// (compile_stmt directly instead of compile_block, which
-				// would pop its own scope)
 				self.push_scope();
 				for s in body.stmts.iter() {
 					self.compile_stmt(s);
@@ -2185,7 +1807,6 @@ impl<'a> Ctx<'a> {
 				let l_end = self.new_label();
 				let l_inc = self.new_label();
 				self.here(&l_top);
-				// break if (stp >= 0 and cur > lim) or (stp < 0 and cur < lim)
 				let k0 = self.kidx(Const::Num(0.0));
 				let r0 = self.tmp();
 				self.emit(Instr::ab(Op::LoadK, r0, k0));
@@ -2204,10 +1825,6 @@ impl<'a> Ctx<'a> {
 				let t7 = self.tmp();
 				self.emit_or(t7, t3, t6);
 				self.jmp(Op::Jt, t7, &l_end);
-				// loop variable: per-iteration SHARED cell when captured
-				// by a closure (each iteration's closures — and the body
-				// itself — see one cell; fresh per iteration); plain
-				// fixed register otherwise (reused each iteration)
 				self.loops.push((l_end.clone(), l_inc.clone()));
 				self.push_scope();
 				if var_captured {
@@ -2242,18 +1859,12 @@ impl<'a> Ctx<'a> {
 			if iters.len() == 1 && is_call(&iters[0]) {
 				let call = iters[0].clone();
 				let (nargs, has_vararg) = call_arg_info(&call);
-				// it, stt, ctl = f(...)  (nres = 3, known)
 				let freg = self.reserve(1 + nargs.max(1));
 				self.compile_call_into(&call, freg, 3, has_vararg);
 				self.emit(Instr::ab(Op::Move, rit, freg + 1));
 				self.emit(Instr::ab(Op::Move, rstt, freg + 2));
 				self.emit(Instr::ab(Op::Move, rctl, freg + 3));
 			} else {
-				// it, stt, ctl = <iterator expression list> — a single
-				// non-call expression is the iterator value itself (a
-				// bare table errors at the call, mirroring 5.1; the
-				// Luau `for ... in t` form is normalized to
-				// `next, t` at parse time)
 				if iters.len() > 0 {
 					self.compile_expr(&iters[0], rit);
 				}
@@ -2264,20 +1875,17 @@ impl<'a> Ctx<'a> {
 					self.compile_expr(&iters[2], rctl);
 				}
 			}
-				// loop: v1..vn = it(stt, ctl); v1 == nil? break; ctl = v1; body
 				let l_top = self.new_label();
 				let l_end = self.new_label();
 				self.here(&l_top);
 				self.loops.push((l_end.clone(), l_top.clone()));
 				let nv = syms.len() as u16;
 				let freg = self.tmp();
-				// args: stt, ctl must sit at freg+1, freg+2 at run time
 				let _ = self.reserve(2 + nv.max(2).max(2));
 				self.emit(Instr::ab(Op::Move, freg, rit));
 				self.emit(Instr::ab(Op::Move, freg + 1, rstt));
 				self.emit(Instr::ab(Op::Move, freg + 2, rctl));
 				self.emit(Instr::abcd(Op::Call, freg, 2, nv, 0));
-				// results at freg+1 .. freg+nv
 				let tnil = self.tmp();
 				let knil = self.kidx(Const::Nil);
 				self.emit(Instr::ab(Op::LoadK, tnil, knil));
@@ -2316,27 +1924,21 @@ impl<'a> Ctx<'a> {
 						self.emit(Instr::ab(Op::Return, 0, 0));
 					} else if is_call(es.last().unwrap()) {
 						let pre = es.len() - 1;
-						// preceding values at base+1..base+pre
 						let base = self.reserve(pre as u16);
 						for (i, e) in es.iter().take(pre).enumerate() {
 							self.compile_expr(e, base + i as u16);
 						}
-						// trailing multi-value call
 						let call = es.last().unwrap().clone();
 						let (nargs, has_vararg) = call_arg_info(&call);
 						let freg = self.reserve(1 + nargs.max(1));
 						self.compile_call_into(&call, freg, 255, has_vararg);
-						// RETURN: merge base+1..base+pre with lastbase+1..lastn
 						self.emit(Instr::abcd(Op::Return, base, 255, 0, pre as u16));
 					} else if matches!(es.last().unwrap(), Expr::Vararg) {
-						// `return ..., e?` — vararg is LAST: full expansion
 						let pre = es.len() - 1;
 						let base = self.reserve(pre as u16);
 						for (i, e) in es.iter().take(pre).enumerate() {
 							self.compile_expr(e, base + i as u16);
 						}
-						// RETURN: merge base+1..base+pre with the varargs
-						// (c = 1 selects the vararg source in the template)
 						self.emit(Instr::abcd(Op::Return, base, 255, 1, pre as u16));
 					} else {
 						let n = es.len() as u16;
@@ -2385,8 +1987,6 @@ impl<'a> Ctx<'a> {
 				self.emit(Instr::abcd(Op::LoadStr, dst, k, *seed, *step));
 			}
 			Expr::IfExpr { arms, elseb } => {
-				// per-arm cascade: test cond, fall into the value on
-				// truth, jump over the rest otherwise
 				let l_end = self.new_label();
 				for (cond, val) in arms {
 					let l_next = self.new_label();
@@ -2409,7 +2009,6 @@ impl<'a> Ctx<'a> {
 				self.emit(Instr::ab(Op::LoadK, dst, k));
 			}
 				Expr::Vararg => {
-					// value position: first vararg
 					let t = self.tmp();
 					self.emit(Instr::ab(Op::VarArgTab, t, 0));
 					let kreg = self.tmp();
@@ -2437,7 +2036,6 @@ impl<'a> Ctx<'a> {
 					} else if let Some(u) = self.upvals.get(s).copied() {
 						self.emit(Instr::ab(Op::GetUp, dst, u));
 					} else {
-						// defensive: treat as global by name
 						let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
 						self.emit(Instr::ab(Op::GetGlobal, dst, k));
 					}
@@ -2532,7 +2130,6 @@ impl<'a> Ctx<'a> {
 				self.emit(Instr::ab(Op::LoadK, kreg, k));
 				let n = (args.len() + 1) as u16;
 				let freg = self.reserve(1 + n);
-				// freg = method, freg+1 = obj, freg+2.. = args
 				self.emit(Instr::abc(Op::GetTab, freg, t, kreg));
 				self.emit(Instr::ab(Op::Move, freg + 1, t));
 				for (i, a) in args.iter().enumerate() {
@@ -2550,12 +2147,6 @@ impl<'a> Ctx<'a> {
 				self.emit(Instr::ab(Op::LoadK, cnt, k0));
 				let last = fields.len().saturating_sub(1);
 				if self.lua51 {
-					// 5.1 store order (verified against luac -l): field
-					// VALUES evaluate in source order, Key stores
-					// (SETTABLE) execute in source order, and the array
-					// part (SETLIST) is flushed LAST — so positional
-					// fields win over duplicate [i] keys regardless of
-					// source order.
 					let mut pending: Vec<u16> = Vec::new();
 					let mut tail_call: Option<Expr> = None;
 					let mut tail_vararg = false;
@@ -2570,13 +2161,10 @@ impl<'a> Ctx<'a> {
 							}
 							TableField::Array(e) => {
 								if i == last && is_call(e) {
-									// trailing call: its expanded store is
-									// necessarily last — defer emission
 									tail_call = Some(e.clone());
 								} else if i == last && matches!(e, Expr::Vararg) {
 									tail_vararg = true;
 								} else {
-									// truncated to the first value
 									let v = self.tmp();
 									self.compile_expr(e, v);
 									pending.push(v);
@@ -2592,21 +2180,17 @@ impl<'a> Ctx<'a> {
 					}
 					if let Some(e) = tail_call {
 						let (nargs, has_vararg) = call_arg_info(&e);
-						let _ = has_vararg; // table context: no vararg
+let _ = has_vararg;
 						let freg = self.reserve(1 + nargs.max(1));
 						self.compile_call_t(&e, freg, dst, cnt);
 					}
 				} else {
-					// Luau: stores in source order (last write wins for
-					// duplicate keys)
 					for (i, f) in fields.iter().enumerate() {
 						match f {
 							TableField::Array(e) => {
 								if i == last && is_call(e) {
-									// trailing call: CALLT (multi-value
-									// into the table, counter advances)
 									let (nargs, has_vararg) = call_arg_info(e);
-									let _ = has_vararg; // no vararg here
+let _ = has_vararg;
 									let freg = self.reserve(1 + nargs.max(1));
 									self.compile_call_t(e, freg, dst, cnt);
 								} else if i == last && matches!(e, Expr::Vararg) {
@@ -2639,7 +2223,6 @@ impl<'a> Ctx<'a> {
 		}
 	}
 
-	/// The trailing argument of a call expression, if any.
 	fn call_tail<'e>(e: &'e Expr) -> Option<&'e Expr> {
 		let args = match e {
 			Expr::Call { args, .. } => args,
@@ -2649,8 +2232,6 @@ impl<'a> Ctx<'a> {
 		args.last().filter(|a| is_call(a))
 	}
 
-	/// (fixed arg count, has trailing call) for `e`; the method count
-	/// includes the self slot.
 	fn call_nfixed(e: &Expr) -> (u16, bool) {
 		let (args, is_m) = match e {
 			Expr::Call { args, .. } => (args, false),
@@ -2667,9 +2248,6 @@ impl<'a> Ctx<'a> {
 		(fixed, has_tail)
 	}
 
-	/// Compile the callee plus the first `nfixed` arg slots (each a
-	/// single value): callee at freg, args at freg+1.. (freg+2.. for
-	/// methods). The tail call (if any) is NOT compiled here.
 	fn compile_call_prefix(&mut self, e: &Expr, freg: u16, nfixed: u16) {
 		match e {
 			Expr::Call { func, args } => {
@@ -2692,7 +2270,6 @@ impl<'a> Ctx<'a> {
 				self.emit(Instr::ab(Op::LoadK, kreg, k));
 				self.emit(Instr::abc(Op::GetTab, freg, treg, kreg));
 				self.emit(Instr::ab(Op::Move, freg + 1, treg));
-				// nfixed includes the self slot: compile nfixed-1 args
 				for (i, a) in args.iter().enumerate() {
 					if (i as u16) >= nfixed - 1 {
 						break;
@@ -2707,10 +2284,6 @@ impl<'a> Ctx<'a> {
 		}
 	}
 
-	/// Compile `e` as a call whose results are FULLY EXPANDED: results
-	/// overwrite the args at freg+1.. and the result count is stored in
-	/// the function slot freg (consumed by a CallE/CallM above). A
-	/// trailing call in `e` is itself expanded (recursive CallE chain).
 	fn compile_call_expand(&mut self, e: &Expr, freg: u16) {
 		let (nfixed, has_tail) = Self::call_nfixed(e);
 		self.compile_call_prefix(e, freg, nfixed);
@@ -2736,10 +2309,6 @@ impl<'a> Ctx<'a> {
 		self.emit(Instr::abcd(Op::CallE, freg, nfixed, 0, d));
 	}
 
-	/// Compile `call` with the function register at `freg` (args at
-	/// freg+1..freg+nargs), `nres` results (255 = variable), optional
-	/// vararg append. Results land at freg+1.. (over the args). A
-	/// trailing call arg expands all its results (5.1 call-arg rule).
 	fn compile_call_into(&mut self, e: &Expr, freg: u16, nres: u16, has_vararg: bool) {
 		let (nfixed, has_tail) = Self::call_nfixed(e);
 		self.compile_call_prefix(e, freg, nfixed);
@@ -2757,9 +2326,6 @@ impl<'a> Ctx<'a> {
 		}
 	}
 
-	/// Trailing table call: CALLT — f at freg, args freg+1.., results into
-	/// `t` from counter+1, counter advances. A trailing call arg expands
-	/// (d = nfixed*2 + tail_flag).
 	fn compile_call_t(&mut self, e: &Expr, freg: u16, t: u16, cnt: u16) {
 		let (nfixed, has_tail) = Self::call_nfixed(e);
 		self.compile_call_prefix(e, freg, nfixed);
@@ -2788,7 +2354,6 @@ impl<'a> Ctx<'a> {
 		let _ = params;
 		let analysis = analyze(body, param_syms);
 
-		// upvalue list = materialize (nested refs) ∪ direct refs
 		let mut ups: Vec<SymId> = analysis.nested_up.clone();
 		for s in &analysis.direct_up {
 			if !ups.contains(s) {
@@ -2827,11 +2392,6 @@ impl<'a> Ctx<'a> {
 
 		let child_index = self.next_fn_slot;
 		self.next_fn_slot += 1;
-		// Precompute this function's own upvalue permutation before compiling
-		// its body. Nested closures must encode CellKind::Up against the
-		// creating frame's eventual runtime upvalue order, not its temporary
-		// compiler order. A separate per-function PRNG preserves the main RNG
-		// schedule used by instruction layouts.
 		let up_seed = (self.program.blob_seed as u64)
 			^ (self.program.blob_km as u64).rotate_left(11)
 			^ (self.program.blob_kc as u64).rotate_left(23)
@@ -2840,12 +2400,6 @@ impl<'a> Ctx<'a> {
 		let child_up_perm =
 			derive_upvalue_permutation(up_seed, child_index, ups.len(), self.scatter);
 
-		// descriptors = the innermost enclosing scope holding the sym:
-		// Plain -> slot number; Slot (per-iteration cell) -> 0x8000 +
-		// slot — the interpreter binds it to the CURRENT iteration's
-		// cell table at closure creation; Up (materialized upvalue) ->
-		// 0xC000 + the creating frame's permuted upvalue index — the
-		// interpreter aliases its canonical cell at closure creation.
 		let mut descriptors: Vec<u16> = Vec::new();
 		for s in &ups {
 			let mut found = None;
@@ -2883,7 +2437,6 @@ impl<'a> Ctx<'a> {
 			upvals: HashMap::new(),
 			upsrc: descriptors,
 			up_perm: child_up_perm,
-			// temporaries start AFTER the parameter registers
 			next_reg: nparams,
 			nparams,
 			vararg,
@@ -2897,20 +2450,10 @@ impl<'a> Ctx<'a> {
 		for (i, s) in ups.iter().enumerate() {
 			child.upvals.insert(*s, i as u16);
 		}
-		// params occupy regs 0..nparams-1
 		child.push_scope();
 		for (i, s) in param_syms.iter().enumerate() {
 			child.declare(*s, CellKind::Plain(i as u16));
 		}
-		// materialize ALL upvalues (direct + nested) by ALIAS: the child
-		// scope maps the symbol straight to its upvalue cell (no value
-		// copy — 5.1 keeps ONE cell per local for every closure, and an
-		// intermediate copy would desync reads/writes across nesting
-		// levels). GRANDCHILD descriptor lookups still find the symbol
-		// in this function's scope (a grandchild may upvalue a symbol
-		// this function only DIRECTLY references — it must be
-		// materialized here or the grandchild's descriptor lookup misses
-		// it), and its descriptor becomes an upvalue-alias.
 		for s in &ups {
 			let u = child.upvals[s];
 			child.declare(*s, CellKind::Up(u));
@@ -2943,7 +2486,6 @@ impl<'a> Ctx<'a> {
 				self.compile_expr(obj, treg);
 				let kreg = self.tmp();
 				let k = self.kidx(Const::Str(name.as_bytes().to_vec()));
-				// the key must live in a register (SetTab reads V[k+1])
 				self.emit(Instr::ab(Op::LoadK, kreg, k));
 				Target::Index2 { t: treg, k: kreg }
 			}
@@ -2965,10 +2507,6 @@ impl<'a> Ctx<'a> {
 					match k {
 						CellKind::Plain(r) => {
 							self.emit(Instr::ab(Op::Move, r, vreg));
-							// a materialized upvalue is a LOCAL register
-							// here, but the value lives in a shared cell:
-							// forward the write so sibling closures and the
-							// creating frame observe it
 							if let Some(u) = self.upvals.get(&s).copied() {
 								self.emit(Instr::ab(Op::SetUp, u, r));
 							}
@@ -2980,7 +2518,6 @@ impl<'a> Ctx<'a> {
 							self.emit(Instr::abc(Op::SetTab, sr, kreg, vreg));
 						}
 						CellKind::Up(u) => {
-							// write straight through the canonical cell
 							self.emit(Instr::ab(Op::SetUp, u, vreg));
 						}
 					}
@@ -3004,8 +2541,6 @@ impl<'a> Ctx<'a> {
 enum Target {
 	Local(SymId),
 	Global(u16),
-	/// table register + key register (key is materialized by the time
-	/// eval_target returns, so it survives value compilation)
 	Index2 { t: u16, k: u16 },
 }
 
@@ -3013,18 +2548,6 @@ fn is_call(e: &Expr) -> bool {
 	matches!(e, Expr::Call { .. } | Expr::Method { .. })
 }
 
-/// H3-6 (2026-10-11): positions where inserting a register-writing
-/// instruction would land inside an OPEN dynamic call-result window.
-///
-/// Call/CallE/CallM write their results to logical registers
-/// base+1..base+nout at RUNTIME; nout is not known at build time, so the
-/// window extends unboundedly above the call base. The consumer that ends
-/// the window is the next Call/CallE/CallM/CallT/Return instruction (it
-/// reads the results via lastbase/lastn or overwrites them). `mask[p] ==
-/// true` means: an instruction inserted BEFORE original position p executes
-/// after the call but before its consumer — writing any register > base
-/// there corrupts results that were never reserved (the stress_multival
-/// seed corruption; see research/antidebug-20261009/root-cause/).
 pub(crate) fn call_window_mask(code: &[Instr]) -> Vec<bool> {
 	let mut mask = vec![false; code.len()];
 	let mut open = false;
@@ -3033,7 +2556,6 @@ pub(crate) fn call_window_mask(code: &[Instr]) -> Vec<bool> {
 		let closes =
 			matches!(ins.op, Op::Call | Op::CallE | Op::CallM | Op::CallT | Op::Return);
 		if open {
-			// insertion before this instruction is inside the open window
 			mask[idx] = true;
 			if closes {
 				open = false;
@@ -3061,9 +2583,6 @@ fn call_arg_info(e: &Expr) -> (u16, bool) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// entry point
-// ---------------------------------------------------------------------------
 
 pub fn compile(
 	block: &Block,
@@ -3260,7 +2779,7 @@ mod dbg {
 	}
 
 	#[test]
-	#[ignore] // dev tool: needs /tmp/nt5.lua
+#[ignore]
 	fn dbg_header() {
 		let src = std::fs::read_to_string("/tmp/nt5.lua").unwrap();
 		let mut block = parser::parse(&src, false).unwrap();
@@ -3325,7 +2844,6 @@ mod dbg {
 					}
 				}
 			}
-			// SoA: [ncode u16][OC bytes][4 × ncode varints]
 			let perm = &prog.slot_perms[fi];
 			let ncode = u16(p) as usize;
 			p += 2;
@@ -3356,13 +2874,8 @@ mod dbg {
 		}
 	}
 
-	/// v15 stage A: verify the scatter post-pass — S slots distinct and
-	/// spread beyond the dense range, wire operands scattered, consts
-	/// padded.
 	#[test]
 	fn call_window_mask_covers_call_to_consumer() {
-		// return f() — the R065 corruption shape: noise between Call and
-		// Return overwrote the unreserved result window.
 		let code = [
 			Instr::op(Op::Nop),
 			Instr::abcd(Op::Call, 0, 0, 255, 1),
@@ -3374,9 +2887,6 @@ mod dbg {
 
 	#[test]
 	fn call_window_mask_chains_consumers_and_closes_on_return() {
-		// g(f(...)): the outer call is the inner window's consumer and
-		// opens its own; Return merges the last one. After the closing
-		// Return the mask opens again.
 		let code = [
 			Instr::abcd(Op::CallE, 0, 0, 0, 0),
 			Instr::abcd(Op::CallM, 0, 1, 255, 0),
@@ -3403,8 +2913,6 @@ mod dbg {
 			Instr::abcd(Op::CallT, 0, 0, 0, 0),
 			Instr::op(Op::Nop),
 		];
-		// CallT stores results into a table, not a register window, so it
-		// acts only as a consumer/closer of the previous window.
 		assert_eq!(call_window_mask(&code), [false, true, false]);
 	}
 
@@ -3418,9 +2926,6 @@ mod dbg {
 		let mut saw_scattered_operand = false;
 		let tags = &prog.section_tags;
 		for (fi, b) in prog.fns.iter().enumerate() {
-			// P2: unmask the whole blob, then tag-walk the sections
-			// 增量⑬: two-phase self-referential mask (fold of the
-			// ciphertext prefix re-seeds the bulk keystream)
 			let base = (prog.blob_seed as u64 + fi as u64 * prog.blob_step as u64) % 268_435_456;
 			let ksplit = b.len().min(64);
 			let mut buf: Vec<u8> = b.clone();
@@ -3452,13 +2957,13 @@ mod dbg {
 					nregs = v as usize;
 					p = np;
 					let (_, np) = isa::decode_varint(&buf, p).unwrap();
-					p = np; // nparams
+p = np;
 					let (_, np) = isa::decode_varint(&buf, p).unwrap();
-					p = np; // vararg
+p = np;
 					got += 1;
 				} else if tag == tags[1] {
 					let (_, np) = isa::decode_varint(&buf, p).unwrap();
-					p = np; // ckseed
+p = np;
 					got += 1;
 				} else if tag == tags[2] {
 					let (mut nu, np) = isa::decode_varint(&buf, p).unwrap();
@@ -3471,7 +2976,7 @@ mod dbg {
 					got += 1;
 				} else if tag == tags[3] {
 					let (_, np) = isa::decode_varint(&buf, p).unwrap();
-					p = np; // nconst
+p = np;
 					let (csl, np) = isa::decode_varint(&buf, p).unwrap();
 					p = np + csl as usize;
 					got += 1;
@@ -3499,9 +3004,7 @@ mod dbg {
 					let (v, np) = isa::decode_varint(&buf, p).unwrap();
 					ncode = v as usize;
 					p = np;
-					p += ncode; // W array
-					// consume the four operand streams in place (the
-					// walk must land on the next section tag)
+p += ncode;
 					for s in 0..4 {
 						for _ in 0..ncode {
 							let (sv, n2) = isa::decode_varint(&buf, p).unwrap();
@@ -3525,8 +3028,6 @@ mod dbg {
 					"H3 must place some real registers in the high noise-like range"
 				);
 			}
-			// wire operands: single-register operands of arithmetic ops
-			// must reach beyond nregs somewhere
 			let perm = &prog.slot_perms[fi];
 			for i in 0..ncode {
 				let mut vals = [0u16; 4];

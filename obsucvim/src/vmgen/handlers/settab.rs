@@ -1,8 +1,6 @@
-//! SetTab — V[a][V[b]] = V[c] with full __newindex semantics.
 
 use crate::vmgen::strpool::StrPool;
 
-/// f0 canonical; f1 renamed temporaries (o/j/w/m0).
 pub fn code(fmt: u8, p: &mut StrPool) -> String {
 	let table = p.lit("table");
 	let newindex = p.lit("__newindex");

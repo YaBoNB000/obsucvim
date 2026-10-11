@@ -1,10 +1,3 @@
-//! Experimental AST literal sealing for VM output.
-//!
-//! This pass marks source string literals before VM compilation. The compiler
-//! serializes only a per-site ciphertext and lowers the marker to LoadStr;
-//! plaintext is reconstructed into the VM destination register on demand.
-//! This is a client-side obfuscation layer, not cryptographic secrecy: the
-//! runtime and all necessary parameters remain in the generated artifact.
 
 use crate::ast::{Block, Expr, Stmt, TableField};
 use crate::rng::Rng;
@@ -15,8 +8,6 @@ pub struct SealStats {
 	pub bytes: usize,
 }
 
-/// Deterministic per-site byte transform. Arithmetic stays well within the
-/// exact-integer range of Lua doubles (state < 65521; multiplier is 257).
 pub fn encode(plain: &[u8], seed: u16, step: u16) -> Vec<u8> {
 	let mut state = seed as u64;
 	plain
@@ -29,7 +20,6 @@ pub fn encode(plain: &[u8], seed: u16, step: u16) -> Vec<u8> {
 		.collect()
 }
 
-/// Mirror used by unit tests and audit tools.
 pub fn decode(cipher: &[u8], seed: u16, step: u16) -> Vec<u8> {
 	let mut state = seed as u64;
 	cipher
@@ -42,18 +32,12 @@ pub fn decode(cipher: &[u8], seed: u16, step: u16) -> Vec<u8> {
 		.collect()
 }
 
-/// Seal all non-empty source string literals in-place. This is opt-in and is
-/// run only for VM compilation, after symbol resolution and before bytecode
-/// generation. Names used as identifiers/member names are not AST string
-/// literals and remain governed by their existing compiler path.
 pub fn seal_literals(block: &mut Block, rng: &mut Rng) -> SealStats {
 	let mut stats = SealStats::default();
 	visit_block(block, rng, &mut stats);
 	stats
 }
 
-/// Detect whether the VM needs the optional LoadStr opcode before its
-/// per-build opcode table and dispatch are generated.
 pub fn contains_sealed_literals(block: &Block) -> bool {
 	block.stmts.iter().any(stmt_contains_sealed)
 }
@@ -126,8 +110,6 @@ fn expr_contains_sealed(expr: &Expr) -> bool {
 }
 
 fn params_for(bytes: &[u8], rng: &mut Rng) -> (u16, u16) {
-	// Empty strings carry no useful static content and are left alone. For all
-	// others, retry if this site's transform happens to be the identity.
 	loop {
 		let seed = rng.int(0, 65_520) as u16;
 		let step = rng.int(1, 65_520) as u16;

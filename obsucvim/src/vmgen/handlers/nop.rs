@@ -1,9 +1,3 @@
-//! Nop — polymorphic dead instruction (padding + self-modification alias target).
-//!
-//! H3: one build emits four semantics-neutral runtime shapes behind a selector
-//! derived from that site's noise operands. Different Nop sites therefore take
-//! arithmetic / comparison / fake-jump / dead-table paths, while branch order
-//! and selector lane are build-seeded.
 
 use crate::rng::Rng;
 

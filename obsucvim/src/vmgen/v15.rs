@@ -1,38 +1,10 @@
-//! L6 VM — v15 structural-parity emitter support (Route A, P2).
-//!
-//! Builds the Luraph-v15-style module-table fields that surround the
-//! interpreter (docs/v15-structural-parity-plan.md):
-//!
-//! - 65 primitive numeric slots (buffer/bit32/string/table/coroutine/...),
-//!   slot numbers Fisher-Yates'd over 1..=126 per build;
-//! - 2 in-table LCG factory slots (decoy PRNGs: statically uncalled,
-//!   mod 2^28 state writes, sample [63]/[96] shape, F15/F28);
-//! - 1 mutable constant slot `[N]=(0)` (runtime-mutated in later phases);
-//! - named constant fields (AL/BL/EL/PL/QL/cL/dL/gL/h/s — sample shape);
-//! - boot handler name from the v15 alphabet scheme (base + `C` suffix,
-//!   entry-machine family, sample `FC`).
-//!
-//! Vector3.new / Vector2.new are NOT emitted by default: Roblox-only
-//! globals, absent from the Luau CLI, and table construction evaluates
-//! every RHS. The dual-target product constraint is documented in the
-//! parity plan §2; `vector.create` covers fingerprint F19.
-//! 增量㉑ (环境绑定): `--bind-env roblox` OPTS IN to emitting
-//! Vector3.new/Vector2.new/task.defer as primitive slots — deliberately
-//! making construction fail outside Roblox (environment binding).
-//!
-//! Fields land in the table AFTER the interpreter block's obfuscation
-//! passes (main.rs), so their constants/names stay verbatim like the
-//! sample's (P2 acceptance: buffer./bit32. only on table-init RHS).
 
 use crate::ast::{self, Expr, TableField};
 use crate::parser;
 use crate::rng::Rng;
 use crate::vmgen::isa::CARRIER_SPECIALS;
 
-/// (value source, is_dot) primitives. Dots = `lib.name`, bare = global.
 const PRIM_DOTS: &[&str] = &[
-	// buffer (23 — buffer.fill/create/read*/write*/copy/len/tostring/
-	// fromstring/readstring)
 	"buffer.fill",
 	"buffer.create",
 	"buffer.len",
@@ -50,7 +22,6 @@ const PRIM_DOTS: &[&str] = &[
 	"buffer.writeu8",
 	"buffer.writei8",
 	"buffer.writeu32",
-	// bit32 (7)
 	"bit32.bxor",
 	"bit32.band",
 	"bit32.bor",
@@ -58,7 +29,6 @@ const PRIM_DOTS: &[&str] = &[
 	"bit32.lshift",
 	"bit32.rshift",
 	"bit32.countrz",
-	// string (11)
 	"string.byte",
 	"string.char",
 	"string.sub",
@@ -70,13 +40,11 @@ const PRIM_DOTS: &[&str] = &[
 	"string.format",
 	"string.pack",
 	"string.unpack",
-	// table (5)
 	"table.create",
 	"table.pack",
 	"table.insert",
 	"table.concat",
 	"table.move",
-	// coroutine (8)
 	"coroutine.create",
 	"coroutine.resume",
 	"coroutine.yield",
@@ -85,7 +53,6 @@ const PRIM_DOTS: &[&str] = &[
 	"coroutine.running",
 	"coroutine.close",
 	"coroutine.isyieldable",
-	// Roblox-ish value constructors present in the Luau CLI
 	"vector.create",
 ];
 
@@ -95,14 +62,10 @@ const PRIM_BARE: &[&str] = &[
 	"assert", "type", "setmetatable", "getmetatable",
 ];
 
-/// 53-base alphabet of the v15 naming scheme (sample: A–Z / `_` / a–z).
 const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
 
 fn dot_value(path: &str) -> Expr {
 	let (lib, name) = path.split_once('.').unwrap();
-	// Capture core string methods through the native string metatable, not
-	// the replaceable global `string` library table. A setfenv copy that
-	// wraps string.byte/sub/char should not become the VM's carrier hook.
 	if lib == "string" && matches!(name, "byte" | "sub" | "char") {
 		return Expr::Index {
 			obj: Box::new(Expr::Str { bytes: Vec::new(), is_binary: false }),
@@ -121,16 +84,11 @@ fn dot_value(path: &str) -> Expr {
 	}
 }
 
-/// Boot handler name: base letter + `C` suffix (entry-machine family,
-/// sample `FC`). 2 chars keeps fingerprint F21's len<=2 scheme.
 pub fn boot_name(rng: &mut Rng) -> String {
 	let base = ALPHA[rng.int(0, 52) as usize] as char;
 	format!("{}C", base)
 }
 
-/// Parse a single Lua expression out of `local _ = <expr>`.
-/// (On failure the generated source is dumped — these are static
-/// build-time strings, a failure here is an emitter bug.)
 fn parse_expr(src: &str) -> Expr {
 	let chunk = format!("local _ = {}", src);
 	let mut block = match parser::parse(&chunk, true) {
@@ -146,10 +104,6 @@ fn parse_expr(src: &str) -> Expr {
 	}
 }
 
-/// One LCG factory slot value: `function(<shadowed params>) return
-/// function() ... b[1][4][b[1][7]] = (M*x+C) % 2^28 steps ... end end`.
-/// Params are deliberately shadowed (sample `[63]=function(b,b,b,u)`,
-/// fingerprint F25). Never called anywhere (decoy, F28).
 fn lcg_factory(rng: &mut Rng, states: usize) -> Expr {
 	let cell = "b[1][4][b[1][7]]";
 	let step = |rng: &mut Rng, cell: &str| -> String {
@@ -164,9 +118,7 @@ fn lcg_factory(rng: &mut Rng, states: usize) -> Expr {
 		} else {
 			body.push_str(&format!("elseif u<={} then ", s));
 		}
-		// step 1: plain state rewrite
 		body.push_str(&format!("{cell}={v};", cell = cell, v = step(rng, cell)));
-		// step 2: rewrite + advance the state counter
 		body.push_str(&format!(
 			"{cell},u={v},{ns};",
 			cell = cell,
@@ -184,22 +136,11 @@ fn lcg_factory(rng: &mut Rng, states: usize) -> Expr {
 	parse_expr(&src)
 }
 
-/// All P2 module-table fields (primitives + LCG factories + mutable
-/// constant slot + named constants). Slot numbers are a Fisher-Yates
-/// sample of 1..=126 (sparse, per build).
 pub fn module_fields(
 	rng: &mut Rng,
 	exclude: &[i64],
-	// ㉜ (R016 大载荷): 原语槽抽取上界随载体规模扩池（1..=126 是
-	// 样本尺度常量，大程序的分片槽会占满它 → 原语槽枯竭 panic）。
 	slot_max: i64,
-	// 增量㉑ (选项B·环境绑定): Some("roblox") 时把目标运行时 API
-	// (Vector3.new/Vector2.new/task.defer) 嵌进原语槽——表构造会对每个
-	// RHS 求值，故**构造本身**在非目标环境即失败（真实 Luraph 同款机
-	// 制）：绑定态产物只在 Roblox 能加载，通用分析沙箱在加载期即死，
-	// 任何解码都还没开始。
 	bind_env: Option<&str>,
-	// ㊸: 预抽的 env 捕获槽号 [v3, v2, tdefer, typeof]
 	env_slots_in: Option<&[i64; 4]>,
 ) -> (Vec<TableField>, Option<[i64; 4]>) {
 	let top = std::cmp::max(126, slot_max);
@@ -228,11 +169,6 @@ pub fn module_fields(
 			value,
 		});
 	}
-	// 增量㉑ (环境绑定): 目标运行时 API 引用——只在目标运行时存在，
-	// 非目标环境构造即失败。点式原语形态混入原语槽家族（不经 mangle）。
-	// ㊸: 增补 typeof 槽（语义折叠用）；槽序固定 [v3, v2, tdefer, typeof]，
-	// 索引回传 boot 供槽位间接调用（用法不再以裸名出现在引导文本）。
-	// ㊸: 槽号由 main 预抽（高位数段），与模块表槽域无碰撞。
 	let mut env_slots_out: Option<[i64; 4]> = None;
 	if bind_env == Some("roblox") {
 		if let Some(es_in) = env_slots_in {
@@ -253,7 +189,6 @@ pub fn module_fields(
 			env_slots_out = Some(*es_in);
 		}
 	}
-	// 2 LCG factory slots (2-state and 3-state machines)
 	for states in [2usize, 3usize] {
 		let n = it.next().unwrap();
 		fields.push(TableField::Key {
@@ -264,7 +199,6 @@ pub fn module_fields(
 			value: lcg_factory(rng, states),
 		});
 	}
-	// 1 mutable constant slot: `[N]=(0)` (later phases mutate it)
 	{
 		let n = it.next().unwrap();
 		fields.push(TableField::Key {
@@ -279,7 +213,6 @@ pub fn module_fields(
 		});
 	}
 
-	// Named constant fields (sample shape): AL/BL/EL/PL/QL/cL/dL/gL/h/s
 	let named_str = |name: &str, val: &str| TableField::Key {
 		key: Expr::Str {
 			bytes: name.as_bytes().to_vec(),
@@ -295,10 +228,6 @@ pub fn module_fields(
 	fields.push(named_str("EL", ": "));
 	fields.push(named_str("PL", "?"));
 	fields.push(named_str("cL", "string"));
-	// 增量⑫ (防静态, 报告突破口 #1): the `dL="LPH:"` brand field is
-	// GONE — it was dead data whose only purpose was sample shape, and
-	// the attack used it as a recognition beacon.
-	// gL = line-number rewrite regex (nL consumes it in P8)
 	fields.push(TableField::Key {
 		key: Expr::Str {
 			bytes: b"gL".to_vec(),
@@ -316,7 +245,6 @@ pub fn module_fields(
 		},
 		value: Expr::Bool { value: false },
 	});
-	// s = {} (scratch/env table passed to the entry maker in P6)
 	fields.push(TableField::Key {
 		key: Expr::Str {
 			bytes: b"s".to_vec(),
@@ -324,7 +252,6 @@ pub fn module_fields(
 		},
 		value: Expr::Table { fields: Vec::new() },
 	});
-	// h = {24123, 8 random u32s} — dead constant table (decoy, F28)
 	{
 		let mut elems = vec![Expr::Num {
 			value: 24123.0,
@@ -349,9 +276,6 @@ pub fn module_fields(
 	(fields, env_slots_out)
 }
 
-/// Binary-safe Lua string literal (`\ddd` for anything outside
-/// printable ASCII; always 3-digit escapes so `\5` + `1` can never
-/// merge into `\51`).
 fn lua_bytes_lit(bytes: &[u8]) -> String {
 	let mut s = String::with_capacity(bytes.len() * 4 + 2);
 	s.push('"');
@@ -367,16 +291,9 @@ fn lua_bytes_lit(bytes: &[u8]) -> String {
 	s
 }
 
-/// Name allocator over the v15 alphabet: bare singles, `xL` (machine /
-/// assistant family), `xC` (entry-machine family, sample `FC`).
-/// Never collides with the P2 constant field names.
 struct Names {
 	pool: Vec<String>,
-	/// exhaustion fallback counter (fresh namespace the pool never
-	/// generates — large corpora drain the shuffled pool)
 	fallback: usize,
-	/// names the pool must never hand out (interpreter free
-	/// identifiers — see `reserve`)
 	reserved: std::collections::HashSet<String>,
 }
 
@@ -401,22 +318,11 @@ impl Names {
 			}
 		}
 		rng.shuffle(&mut pool);
-		// P2 constant fields + self param are reserved; two-letter
-		// Lua keywords banned outright (keyword-as-name = parse error).
-		// Dedup too: the singles loop's `{x}C`/`{x}L` forms collide with
-		// two-letter combos (e.g. "f"+"C" == "fC") — a duplicate pool
-		// entry hands the same name out twice and two module-table fields
-		// end up sharing a key (later wins -> a staging handler silently
-		// disappears -> state chain loops forever).
 		let reserved = [
 			"AL", "BL", "EL", "PL", "QL", "XC", "cL", "dL", "gL", "RC",
 			"pC", "h", "s", "b", "do", "if", "in", "or",
 		];
 		pool.retain(|n| !reserved.contains(&n.as_str()));
-		// coded_name() emits `{var}t` / `{var}o` / `{var}i` for each
-		// drawn name — a name whose SUFFIXED derivative is a keyword
-		// parses as that keyword (e.g. var "no" -> "not"). Ban any pool
-		// entry whose own or suffixed form is a Lua/Luau keyword.
 		const KW: &[&str] = &[
 			"and", "break", "do", "else", "elseif", "end", "false", "for",
 			"function", "if", "in", "local", "nil", "not", "or", "repeat",
@@ -432,13 +338,6 @@ impl Names {
 		pool.retain(|n| seen.insert(n.clone()));
 		Names { pool, fallback: 0, reserved: std::collections::HashSet::new() }
 	}
-	/// Permanently remove `names` from the pool. Used to keep scaffold
-	/// handler param/local names from EVER colliding with the embedded
-	/// interpreter's free identifiers: the whole interpreter source is
-	/// spliced inside `function(b,C,ra,rb,rc,rd,re) ... end`, so any
-	/// free identifier matching a handler param silently binds to the
-	/// CPS register value instead of its global (the seed=1 "attempt to
-	/// call a table value" capture path).
 	fn reserve(&mut self, names: &[String]) {
 		for n in names {
 			self.reserved.insert(n.clone());
@@ -459,12 +358,6 @@ impl Names {
 			}
 		}
 	}
-	/// Draw a name that is not in `forbidden` — forbidden pops are
-	/// stashed and returned to the pool afterwards (they stay valid
-	/// names elsewhere). Needed inside scaffold handler bodies, whose
-	/// fixed parameter/local names (C, E, i, Q, ...) must never be
-	/// shadowed by a generated local — shadowing the context param `C`
-	/// turns `C[aux]=s` into indexing a function.
 	fn take_avoid(&mut self, forbidden: &[&str]) -> String {
 		let mut stashed: Vec<String> = Vec::new();
 		let result = loop {
@@ -489,29 +382,11 @@ impl Names {
 	}
 }
 
-/// Binary dispatch tree over sorted (state, leaf) pairs (sample style:
-/// `if V<=N then ... else ...` range tree).
-/// Suggestion 2 — opaque predicate wrapping. Wraps a dispatch leaf in
-/// `if <opaque> then REAL else DECOY end` (or the inverted direction),
-/// where the predicate is arithmetically always-true on the numeric
-/// state `V` but not obviously so. Static analysis cannot tell which
-/// branch runs without proving the predicate; the decoy branch is dead.
-/// The direction and predicate are randomized per leaf per build.
 fn opaque_wrap(code: String, rng: &mut crate::rng::Rng, vname: &str) -> String {
-	// 增量⑪ (防静态, 报告突破口 #3): the old predicates (v-v==0,
-	// v*v>=0, v%2==0 or v%2~=0) were OBVIOUS tautologies the attacker
-	// folded to statically simulate the whole state machine. Replace with
-	// less-obvious identities that still hold for every (non-negative
-	// integer) state value but require actual reasoning to prove
-	// always-true, raising the cost of static branch collapsing.
 	let preds: [String; 4] = [
-		// v(v+1) is always even (product of consecutive integers)
 		format!("((({v}*{v})+{v})%2)==0", v = vname),
-		// a square is never negative
 		format!("(({v}%3)*({v}%3))>=0", v = vname),
-		// (v+1)^2 = v^2+2v+1 >= v^2 for v>=0
 		format!("(({v}+1)*({v}+1))>=({v}*{v})", v = vname),
-		// (v%5)^4 is non-negative
 		format!("((({v}%5)*({v}%5))*(({v}%5)*({v}%5)))>=0", v = vname),
 	];
 	let p = &preds[rng.int(0, 3) as usize];
@@ -542,36 +417,10 @@ fn dispatch_tree(
 	)
 }
 
-/// P3 increment 1 — CPS bootstrap scaffold (sample shape):
-/// initializer + top machine + CPS loop with `continue` leaves +
-/// per-carrier staging handlers + interpreter-definition handler +
-/// control-code handler + mul32/mod2^32 arithmetic assistants.
-///
-/// `interp_src` is the already-passed interpreter chunk (defines the
-/// `vm_name` local); `carriers` are the encoded bytecode strings.
-/// Returns module-table fields (as parsed expressions) + the entry
-/// machine's field name.
-/// Chunk literals per carrier (sample-scale staging chain density:
-/// grows named handlers / state returns / fused conditionals).
 pub const CHUNKS: usize = 5;
 
-/// P3b: max u32 words per numeric-slot word array (kept under the
-/// attack's "large numeric literal" threshold; blends into the
-/// numeric-slot family).
 pub const BW_SLOT_WORDS: usize = 90;
 
-/// Decoy LCG slots (F28): parked far above BOTH the context C range
-/// (..=auxslot) and the primitive-slot draw (1..=126), and shifted off
-/// any reserved runner/keystream slot, so no other mechanism ever
-/// indexes them -> static external refs stay 0 and no slot collision
-/// can shadow a runner (2026-08-29 seed-42 tables.lua regression).
-/// Decoy LCG slots (F28). Slot numbers must clear every numeric-index
-/// mechanism in the output: module-field draw (1..126), runner/keystream
-/// slots, primitive slots (1..80), AL alphabet keys (byte values 32..126),
-/// context C slots (..=auxslot) -- and, critically, the Nop self-mod
-/// literal writes `ZW[pos] = alias` whose positions reach the per-function
-/// instruction counts (bounded by the carrier byte lengths). Parking the
-/// decoys above max carrier length + margin clears all of them.
 pub fn decoy_slots(max_carrier_len: usize, avoid: &[i64]) -> (i64, i64) {
 	let mut d1 = max_carrier_len as i64 + 500;
 	let mut d2 = d1 + 1;
@@ -584,11 +433,6 @@ pub fn decoy_slots(max_carrier_len: usize, avoid: &[i64]) -> (i64, i64) {
 	(d1, d2)
 }
 
-/// P4 (防御代码隐藏): emit a runtime string-builder for `name` —
-/// char codes stored SHUFFLED in a numeric table plus an order list,
-/// concatenated through the module's string.char slot. The name never
-/// appears in the output (codes look like arbitrary slot arithmetic).
-/// Appends declarations to `out`; returns the result variable name.
 fn coded_name(out: &mut String, var: &str, name: &str, sc_slot: i64, rng: &mut Rng) {
 	let codes: Vec<u8> = name.bytes().collect();
 	let mut pos: Vec<usize> = (0..codes.len()).collect();
@@ -597,7 +441,6 @@ fn coded_name(out: &mut String, var: &str, name: &str, sc_slot: i64, rng: &mut R
 	for (i, &c) in codes.iter().enumerate() {
 		out.push_str(&format!("{var}t[{}]={c};", pos[i] + 1));
 	}
-	// order[k] = storage index holding output char k
 	let mut inv = vec![0usize; codes.len()];
 	for (i, &p) in pos.iter().enumerate() {
 		inv[i] = p + 1;
@@ -610,10 +453,6 @@ fn coded_name(out: &mut String, var: &str, name: &str, sc_slot: i64, rng: &mut R
 	));
 }
 
-/// P5 (staging 去重复): per-build random names for the CPS state
-/// registers (were fixed V/f1..f5 — the most repeated literal tuple in
-/// the output, ~100 identical call sites). Must avoid the entry
-/// machine's fixed locals so no accidental shadowing rewrites the state.
 fn draw_state_names(nm: &mut Names) -> [String; 6] {
 	const FIXED: &[&str] = &[
 		"b", "C", "u", "z", "Z", "o", "w", "K", "G", "q", "M", "F", "H",
@@ -630,9 +469,6 @@ fn draw_state_names(nm: &mut Names) -> [String; 6] {
 	out.try_into().unwrap()
 }
 
-/// 增量⑬ (对抗 R002): reserve one cell pair in the scaffold lookup
-/// tables and return the `(b[s0][p1]+b[s1][p2])` expression summing to
-/// `v`. Cells hold random camouflage values until reserved.
 fn st_pair_expr(
 	st1: &mut [i64],
 	st2: &mut [i64],
@@ -666,23 +502,13 @@ pub fn scaffold(
 	carrier: &crate::vmgen::isa::Carrier,
 	bw_slots: &[i64],
 	prim_extra: (i64, i64),
-	// 增量⑩: key-fragment slots. kfrag[0] = second ks-seed fragment;
-	// kfrag[1..=4] = the bm0/bc0 word-mask key fragments. All blend
-	// into the numeric-slot family (values are random halves, not keys).
 	kfrag: &[i64],
-	// 增量⑬: two numeric slots holding the key-assembly lookup tables
-	// (st1/st2) used by the kg generator and the carrier fold handlers.
 	st_slots: &[i64],
-	// 增量㊱ (引导层悬挂标识符修复): the interpreter's free identifiers
-	// (post-mangle globals). The scaffold embeds the interpreter source
-	// inside handler closures, so a scaffold name colliding with a free
-	// identifier would capture the handler param instead of the global.
 	interp_globals: &[String],
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
 	nm.reserve(interp_globals);
-	// P5: per-build state-register names (see draw_state_names)
 	let state = draw_state_names(&mut nm);
 	let sv = state[0].clone();
 	let rhs5 = format!(
@@ -693,33 +519,21 @@ pub fn scaffold(
 	let leaf = |name: &str| {
 		format!("{lhs6}=b:{name}(C,{rhs5});continue;")
 	};
-	let fc = nm.take(); // entry machine
-	let init = nm.take(); // initializer
-	let xl = nm.take(); // sub-dispatcher (FC -> XL -> CPS loop)
-	let init2 = nm.take(); // extra machine initializer (sample D/J/K + KL/M/zL family)
+let fc = nm.take();
+let init = nm.take();
+let xl = nm.take();
+let init2 = nm.take();
 	let init3 = nm.take();
-	let mul = nm.take(); // mul32 assistant
-	let modulo = nm.take(); // mod 2^32 assistant
-	let loop_name = nm.take(); // CPS loop
-	let ctl = nm.take(); // control handler
-	let ehandler = nm.take(); // entry-builder handler
-	let v1h = nm.take(); // verify (re-fold over stored chunks)
-	let v2h = nm.take(); // verify (compare -> trap / continue)
+let mul = nm.take();
+let modulo = nm.take();
+let loop_name = nm.take();
+let ctl = nm.take();
+let ehandler = nm.take();
+let v1h = nm.take();
+let v2h = nm.take();
 
 	let n = carriers.len();
 
-	// SECURITY (sample parity): the carrier keystream comes from a
-	// state-machine LCG, NOT literal constants in the chunk handlers.
-	// kg_slot holds a 3-step LCG generator (sample [96] shape) that
-	// advances the state and returns it. Each chunk handler calls the
-	// generator to obtain its key constant, so no key material appears
-	// at the decode site.
-	// 增量⑩ (防静态, 报告突破口 #5 — R001 直接读走了 [ks]=种子 字面量):
-	// the seed is SPLIT into two meaningless fragments parked at random
-	// module slots; the generator ASSEMBLES the real seed on its first
-	// call (state := fragA + fragB, then the marker slot is erased).
-	// The LCG constants themselves are emitted as two-term arithmetic,
-	// so no key value survives as a single literal anywhere.
 	let ks_seed: i64 = rng.int(1_048_576, 268_435_455);
 	let lcm = |rng: &mut Rng| rng.int(1_048_577, 33_000_001) | 1;
 	let lcc = |rng: &mut Rng| rng.int(1_048_576, 268_000_000) | 1;
@@ -734,22 +548,12 @@ pub fn scaffold(
 	crate::vmgen::manifest_key("KG_M3", km3 as u64);
 	crate::vmgen::manifest_key("KG_C3", kc3 as u64);
 	let mut ks_state: i64 = ks_seed;
-	// 增量⑩: store `v` in a table field as a `(u-d)` arithmetic
-	// expression (never a bare number). d stays 8-digit so u fits a
-	// double with room to spare.
 	let split_field = |v: i64, rng: &mut Rng| -> Expr {
 		let d = rng.int(10_000_000, 99_999_999);
 		parse_expr(&format!("({}-{})", v + d, d))
 	};
 	let ks_frag_a = rng.int(0, 268_435_455);
 	let ks_frag_b = (ks_seed - ks_frag_a).rem_euclid(268_435_456);
-	// 增量⑬ (对抗 R002): the kg LCG constants and the per-carrier fold
-	// sums used to be two-term arithmetic — R002 folded them all offline.
-	// Now every such constant is assembled from two module numeric-slot
-	// arrays (visually identical to the BW word tables):
-	//   const == (b[st1][p1] + b[st2][p2])
-	// No closed-form arithmetic survives in the output; recovering a
-	// constant means tracing which two array cells each use site reads.
 	let mut st1: Vec<i64> = (0..48).map(|_| rng.int(1_000_000, 4_294_967_295)).collect();
 	let mut st2: Vec<i64> = (0..48).map(|_| rng.int(1_000_000, 4_294_967_295)).collect();
 	let mut st1_free: Vec<usize> = {
@@ -763,11 +567,8 @@ pub fn scaffold(
 		v
 	};
 
-	// ---- RT reverse-token table names (F8 pC shape below)
 	let rt_name = nm.take();
 
-	// Split every carrier into CHUNKS literals (the entry builder
-	// concats them back when calling the VM).
 	let chunked: Vec<Vec<Vec<u8>>> = carriers
 		.iter()
 		.map(|c| {
@@ -784,26 +585,15 @@ pub fn scaffold(
 		})
 		.collect();
 
-	// context-table layout:
-	//   C[1 .. n*CHUNKS]  carrier chunks
-	//   C[vmslot]         VM closure (set by the def handler)
-	//   C[entryslot]      entry closure
-	//   C[sumslot]        fold checksum (staging phase)
-	//   C[verifyslot]     re-fold checksum (verify phase)
 	let vmslot = n * CHUNKS + 1;
 	let entryslot = vmslot + 1;
 	let sumslot = entryslot + 1;
 	let verifyslot = sumslot + 1;
 	let auxslot = verifyslot + 1;
 
-	// Scale floor (F4/F5/F6/F21/F23): small source programs yield few
-	// staging handlers; pad the chain with real state-advancing
-	// handlers up to sample-scale density so every output carries the
-	// full fingerprint magnitude.
 	const MIN_STAGING: usize = 100;
 	let natural = n * (1 + CHUNKS);
 	let filler = if natural < MIN_STAGING { MIN_STAGING - natural } else { 0 };
-	// one state per step + terminal; ascending
 	let nsteps = natural + filler + 4;
 	let need = (nsteps + 1) as i64;
 	let mut ids: Vec<i64> = (3..=236).collect();
@@ -831,21 +621,8 @@ pub fn scaffold(
 		},
 		value,
 	};
-	// SECURITY: LCG keystream slots. KSC = the LCG state; KG = a 3-step
-	// LCG state-machine generator (sample [96] shape) that advances
-	// b[KSC] by three transitions and returns it.
-	// 增量⑩: b[KSC] initially holds fragment A of the seed (arithmetic
-	// expression, not the seed); fragment B parks at kfrag[0]. On the
-	// FIRST generator call the state is assembled (A+B), written back
-	// and the marker slot erased — from then on the generator behaves
-	// exactly as before.
 	fields.push(slotted(ks_slot, split_field(ks_frag_a, rng)));
 	fields.push(slotted(kfrag[0], split_field(ks_frag_b, rng)));
-	// P3b: operand order emitted as (x*m+c) and per-step local names
-	// vary — the keystream stays runtime-derived (sample [96] family)
-	// but no fixed-shape constant triple is grep-able in one function.
-	// 增量⑬ (对抗 R002): m/c constants assembled from the two module
-	// numeric-slot tables, not closed-form arithmetic.
 	fields.push(slotted(
 		kg_slot,
 		parse_expr(&format!(
@@ -860,10 +637,8 @@ pub fn scaffold(
 			c3 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], kc3, rng),
 		)),
 	));
-	// wide state tuple: handlers take (b, C, p1..p5) = 7 params (F6)
 	let mut fillers: Vec<String> = ["p1", "p2", "p3", "p4", "p5"].iter().map(|s| s.to_string()).collect();
 	let mut state_i = 0usize;
-	// (dispatch state of this step, state returned to the loop)
 	let mut step = |i: &mut usize| -> (i64, i64) {
 		let d = states[*i];
 		let r = states[*i + 1];
@@ -871,7 +646,6 @@ pub fn scaffold(
 		(d, r)
 	};
 
-	// ---- initializer: return true, <startId>, nil x10 (sample _L)
 	fields.push(named(
 		init.clone(),
 		parse_expr(&format!(
@@ -879,8 +653,6 @@ pub fn scaffold(
 			states[0]
 		)),
 	));
-	// extra machine initializers (sample KL/M/zL family -- the other
-	// top machines' entry points; start IDs past the dispatch range)
 	fields.push(named(
 		init2.clone(),
 		parse_expr(&format!(
@@ -896,7 +668,6 @@ pub fn scaffold(
 		)),
 	));
 
-	// ---- arithmetic assistants (sample iL / vL shapes)
 	fields.push(named(
 		mul.clone(),
 		parse_expr(
@@ -908,9 +679,6 @@ pub fn scaffold(
 		parse_expr("function(b,b) return b%4294967296 end"),
 	));
 
-	// P4 (防御代码隐藏): dedicated string.byte / string.char slots —
-	// the verify folds and coded-name builders access primitives through
-	// the numeric-slot family, never dotted globals.
 	fields.push(TableField::Key {
 		key: Expr::Num { value: prim_extra.0 as f64, isfloat: false },
 		value: dot_value("string.byte"),
@@ -919,9 +687,6 @@ pub fn scaffold(
 		key: Expr::Num { value: prim_extra.1 as f64, isfloat: false },
 		value: dot_value("string.char"),
 	});
-	// ---- decoy LCG slots (sample [63]/[96] family, F28): numeric-slot
-	// functions carrying the 2^28 modulus, statically never referenced
-	// anywhere else (external `\w\[key\]` count stays 0)
 	for &dk in &[decoy1, decoy2] {
 		let src = format!(
 			"function(b) local q=7; q=(213*q+225)%268435456; \
@@ -930,9 +695,6 @@ pub fn scaffold(
 		fields.push(slotted(dk, parse_expr(&src)));
 	}
 
-	// ---- RT reverse-token table (F8 pC shape: 1-char key -> 5-char
-	// value). Maps each carrier special byte to its 5-byte token, the
-	// inverse of the interpreter's TK (sample pC escape-table shape).
 	{
 		let mut entries: Vec<TableField> = Vec::new();
 		for (i, tok) in carrier_tokens.iter().enumerate() {
@@ -953,30 +715,16 @@ pub fn scaffold(
 		));
 	}
 
-	// ---- staging chain: per carrier = 1 fold handler (length checksum
-	// through the assistants) + CHUNKS storage handlers
-	// ---- bytecode storage (suggestion 5, bit-library): the XORed
-	// bytes are packed into u32 little-endian words stored in one
-	// numeric-word table field BW (built/decoded with bit32.band /
-	// bit32.rshift / bit32.bxor). Static analysis sees scattered u32
-	// words + bit ops, not a readable string blob. A separate
-	// high-entropy long string HB is kept ONLY to satisfy fingerprint F8
-	// (longest long string >= 10 KB) and carries no bytecode. Each chunk
-	// handler reads its word range, unpacks bytes, trims, de-XORs.
 	let hb_name = nm.take();
 	let alphabet = carrier.alphabet;
-	// Build the XORed byte stream per chunk, aligning each chunk to a
-	// 4-byte boundary so it maps to a clean word range.
 	let mut all_words: Vec<u32> = Vec::new();
-	let mut chunk_info: Vec<(usize, usize, usize)> = Vec::new(); // (start_word 1-based, num_words, byte_len)
+let mut chunk_info: Vec<(usize, usize, usize)> = Vec::new();
 	for chunks in chunked.iter() {
 		for chunk in chunks.iter() {
 			ks_state = (km1 * ks_state + kc1) % 268435456;
 			ks_state = (km2 * ks_state + kc2) % 268435456;
 			ks_state = (km3 * ks_state + kc3) % 268435456;
 			let ks_const: i64 = ks_state;
-			// 增量⑰-B: fold all four state bytes into the key base
-			// (mirrors the bit32.extract fold in the chunk handler).
 			let kf = crate::vmgen::isa::fold_key(ks_const as u64) as i64;
 			let mut xb: Vec<u8> = chunk
 				.iter()
@@ -990,7 +738,7 @@ pub fn scaffold(
 			while xb.len() % 4 != 0 {
 				xb.push(0);
 			}
-			let start_word = all_words.len() + 1; // 1-based
+let start_word = all_words.len() + 1;
 			for w4 in xb.chunks(4) {
 				all_words.push(u32::from_le_bytes([w4[0], w4[1], w4[2], w4[3]]));
 			}
@@ -998,22 +746,10 @@ pub fn scaffold(
 			chunk_info.push((start_word, num_words, byte_len));
 		}
 	}
-	// P3b (自描述消除): the word table is SPLIT across module slots
-	// (≤ BW_SLOT_WORDS words each, blending into the numeric-slot
-	// family) and every word is additively masked with a per-position
-	// key ((bm0 + g*bc0) % 2^32, g = global word index 1-based).
-	// ㉝: 每槽词表以 5 字符/词压进长字符串（数字槽数组形态废除——
-	// 十进制词表 ~11.5B/词 → ~5B/词）。No giant numeric literal and no
-	// clean word values in the output; the chunk handlers unmask on
-	// the fly while unpacking.
 	let bm0 = rng.int(1, 4_294_967_295) as i64;
 	let bc0 = (rng.int(1, 4_294_967_295) | 1) as i64;
 	crate::vmgen::manifest_key("BW_M0", bm0 as u64);
 	crate::vmgen::manifest_key("BW_C0", bc0 as u64);
-	// 增量⑩: the word-mask keys are split into module-table fragments
-	// too (kfrag[1..=4]); chunk handlers assemble them at runtime:
-	//   bm0 = (b[kfrag[1]] + b[kfrag[2]]) % 2^32
-	//   bc0 = (b[kfrag[3]] - b[kfrag[4]]) % 2^32
 	let bm0_a = rng.int(0, 4_294_967_295);
 	let bm0_b = (bm0 - bm0_a).rem_euclid(4_294_967_296);
 	let bc0_a = rng.int(0, 4_294_967_295);
@@ -1038,10 +774,6 @@ pub fn scaffold(
 			((w as i64 + key) % 4_294_967_296) as u32
 		})
 		.collect();
-	// ㉝ (R016 回合 — 体积): 数字槽十进制词表 ~11.5B/词太肥——词表挪进
-	// 长字符串：每掩码词压 5 个连续区 base-94 字符（33..126，数字=字节
-	// -33，解码纯 Horner 无查表），~5B/词（-57%）。掩码机制不变
-	// （(bm0 + g·bc0) % 2^32 逐全局位置），分片按 90 词/槽不变。
 	for (si, slot) in bw_slots.iter().take(n_slots_needed).enumerate() {
 		let lo = si * BW_SLOT_WORDS;
 		let hi = masked.len().min(lo + BW_SLOT_WORDS);
@@ -1060,8 +792,6 @@ pub fn scaffold(
 			value: Expr::LongStr { bytes: chars },
 		});
 	}
-	// HB field: high-entropy long string (>= 10.5 KB) for F8 only --
-	// random alphabet glyphs, no bytecode, invisible to the handlers.
 	let mut hb_bytes: Vec<u8> = Vec::new();
 	while hb_bytes.len() < 10_500 {
 		hb_bytes.push(alphabet[rng.int(0, 93) as usize]);
@@ -1078,13 +808,8 @@ pub fn scaffold(
 			let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
-			// content checksum: fold the carrier's byte SUM (the verify
-			// phase recomputes it from the stored chunks, so any
-			// tampering -- even length-preserving -- breaks the fold)
 			let ksum: usize = carriers[k].iter().map(|&b| b as usize).sum();
 			crate::vmgen::manifest_key(&format!("KSUM_{}", k), ksum as u64);
-			// 增量⑬ (对抗 R002 §4.5): the fold addend WAS a bare literal
-			// (the "14715" oracle). Now assembled from the module tables.
 			let ksum_e = st_pair_expr(
 				&mut st1, &mut st2, &mut st1_free, &mut st2_free,
 				st_slots[0], st_slots[1], ksum as i64, rng,
@@ -1123,21 +848,9 @@ pub fn scaffold(
 			let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 			let (st, ret) = step(&mut state_i);
 			let name = nm.take();
-			// P3b: the words live SPLIT across module slots (㉝ 起为槽内
-			// 长字符串词组) and additively masked per global position;
-			// the handler walks its slot segments, unmasks each word on
-			// the fly ((bm0 + g*bc0) % 2^32), unpacks bytes, trims to the
-			// chunk length, then de-XORs. Key material was consumed by
-			// the word precompute pass above.
 			let _ = chunk;
 			let (sw, nw, blen) = chunk_info[k * CHUNKS + j];
 			let ew = sw + nw - 1;
-			// 增量⑫ (防静态, 报告突破口 #4 — 5 个孪生解密函数): every
-			// internal local is a fresh per-handler name and every loop/
-			// idiom is drawn from equivalent variants, so no two chunk
-			// handlers are textually identical (or even same-shaped).
-			// NOTE: avoid "b"/"C" — the handler's self/context params
-			// must never be shadowed by a generated local.
 			const CH_AVOID: &[&str] = &["b", "C"];
 			let nkm = nm.take_avoid(CH_AVOID);
 			let nkc = nm.take_avoid(CH_AVOID);
@@ -1152,13 +865,6 @@ pub fn scaffold(
 			let divmod_bytes = rng.int(0, 1) == 1;
 			let add_unmask = rng.int(0, 1) == 1;
 			let trim_style = rng.int(0, 1) == 1;
-			// ㉞ (自研压缩 — 一趟流水融合): 旧形态两趟——先把词解进
-			// 字符表、concat 成段串，再开第二个循环对字节做 XOR。XOR
-			// 钥匙 = (fold4(kv) + i) mod 256 只随字节序号线性变化、无
-			// 状态推进，故两趟可融合成趟：词解码位直接出 XOR 后字节，
-			// 序号游标跨槽段连续。配合 string.byte 多返回值取 5 连字符
-			// 与 string.char 多参数 + 多赋值一次推 4 字节。每 handler
-			// 净砍 ~700 字符，且不削弱 ⑫ 多样性（形态变体仍正交组合）。
 			let nkn = nm.take_avoid(CH_AVOID);
 			let byte_emit = if divmod_bytes {
 				let mut s = String::new();
@@ -1174,16 +880,11 @@ pub fn scaffold(
 				}
 				s
 			} else {
-				// string.char 多参数返回**一个** 4 字节串 → 整条追加；
-				// 表项粒度 = 词，索引 trim 须按词数（见 final_concat）
 				format!(
 					"{t}[#{t}+1]=b[{sc}](bit32.bxor({wd}%256,({kn}+{ti})%256),bit32.bxor(bit32.extract({wd},8,8),({kn}+{ti}+1)%256),bit32.bxor(bit32.extract({wd},16,8),({kn}+{ti}+2)%256),bit32.bxor(bit32.extract({wd},24,8),({kn}+{ti}+3)%256));{ti}={ti}+4;",
 					t = nt, ti = nti, wd = nwd, kn = nkn, sc = prim_extra.1
 				)
 			};
-			// word-source variants: multi-return string.byte (㉞) vs
-			// nested per-char Horner (legacy shape) — both unmask on
-			// the fly, then the fused byte emit runs in the same pass.
 			let word_src = if rng.int(0, 1) == 0 {
 				let nco = nm.take_avoid(CH_AVOID);
 				let cs: Vec<String> = (0..5)
@@ -1237,17 +938,14 @@ pub fn scaffold(
 				};
 				format!("{}{}", unmask, byte_emit)
 			};
-			// slot segments covering [sw, ew] (global 1-based word idx)
 			let mut seg_code = String::new();
 			let mut g = sw;
 			while g <= ew {
-				let si = (g - 1) / BW_SLOT_WORDS; // 0-based slot index
-				let local_lo = (g - 1) % BW_SLOT_WORDS + 1; // 1-based
+let si = (g - 1) / BW_SLOT_WORDS;
+let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				let slot_end_global = (si + 1) * BW_SLOT_WORDS;
 				let seg_hi = ew.min(slot_end_global);
 				let local_hi = local_lo + (seg_hi - g);
-				// 增量⑩: km/kc assembled at handler entry (fragment
-				// slots), no mask-key literal at the decode site.
 				seg_code.push_str(&format!("local {ws}=b[{slot}]; ", ws = nws, slot = bw_slots[si]));
 				if while_words {
 					seg_code.push_str(&format!(
@@ -1266,12 +964,7 @@ pub fn scaffold(
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let qc = nm.take_avoid(CH_AVOID);
 			let qr = nm.take_avoid(CH_AVOID);
-			// ㉞: trim 直接落在最终 concat 上（中间段串与第二趟循环废除）。
-			// 字节粒度随提取族而变：divmod 族一项一字节 → 索引截断按
-			// blen 直达字节精度；bit32 族一项一整词（4 字节串）→ 索引
-			// 截断只到词界，需再叠一层字节精截（保 nil 分隔符形态）。
 			let final_concat = if trim_style && divmod_bytes {
-				// nil separator == "" but emits no string literal (F10)
 				format!(
 					"table.concat({t},nil,1,{blen})",
 					t = nt, blen = blen
@@ -1333,9 +1026,6 @@ pub fn scaffold(
 		}
 	}
 
-	// ---- scale-floor filler handlers: genuine state transitions
-	// (advance the machine, fused-conditional decoy local) that only
-	// exist when the source program is too small to fill the chain
 	for _ in 0..filler {
 		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
@@ -1344,9 +1034,6 @@ pub fn scaffold(
 		let name = nm.take();
 		let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 		let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
-		// P5: the filler's decoy local was a hardcoded `Q` — randomize
-		// it per handler (dead variable; fused `and/or` shape preserved
-		// for F23).
 		let qn = nm.take_avoid(&["b", "C"]);
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) local {qn}=C[{ss}]~=nil and {da} or {db}; \
@@ -1369,8 +1056,6 @@ pub fn scaffold(
 		));
 	}
 
-	// ---- interpreter-definition runner: lives in a numeric slot
-	// (sample [73] shape), not a named field
 	{
 		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
@@ -1392,14 +1077,10 @@ pub fn scaffold(
 		fields.push(slotted(runner1, parse_expr(&src)));
 		leaves.push((
 			st,
-			// indexed call: no implicit self -- pass b explicitly
-			// (sample shape: b[73](b, ...))
 			format!("{lhs6}=b[{}](b,C,{sv},{rhs5});continue;", runner1),
 		));
 	}
 
-	// ---- entry-builder handler: concats each carrier's chunks back and
-	// wraps the VM call in the user-facing closure
 	{
 		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
@@ -1414,13 +1095,7 @@ pub fn scaffold(
 					.join("..")
 			})
 			.collect();
-		// F12 wrap shape: the multi-assign carries `=N,function(...)`
-		// (constant + wrapper closure); the entry closure lands in the
-		// entry slot, the constant in the aux slot. The builder handler
-		// then aliases itself over to the entry closure (runtime
-		// named-field write, F26).
 		let wrap_n: i64 = rng.int(4, 40);
-		// ㊴ (激活门退役): 入口闭包只转发载体参数（历史未绑定形态）。
 		let vm_args = cargs.join(",");
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) \
@@ -1449,27 +1124,12 @@ pub fn scaffold(
 		));
 	}
 
-	// ---- verify phase: re-fold the checksum over the STORED chunks
-	// then compare; mismatch = silent trap. P4 (防御代码隐藏): no
-	// dotted primitives, no repeated identical loops, no plaintext
-	// loader/debug names — byte access goes through the numeric-slot
-	// family, loop shapes vary per instance, and every check string is
-	// runtime-built from shuffled char codes.
 	{
 		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
 		rng.shuffle(&mut fillers);
 		let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
 		let (st, ret) = step(&mut state_i);
 		let mut body = String::from("local s=0;");
-		// Handler scope names that generated locals must never shadow:
-		// the context param C plus the hardcoded locals E/i/Q (and the
-		// already-reserved b/s). Shadowing C corrupts `C[aux]=s`.
-		// "d" is additionally banned because coded_name derives
-		// `{base}o` — base "d" would emit the keyword `do`.
-		// 增量⑰: "eo" is hardcoded inside the body (pcall ok/sr
-		// locals); a drawn name "eo" for the debug-table alias got
-		// shadowed by it (seed 1 stress_bigtable: "index boolean with
-		// loadstring"). Forbid it so no drawn name can collide.
 		const V1H_FORBID: &[&str] = &["C", "E", "i", "Q", "d", "eo"];
 		let mut accs: Vec<String> = Vec::new();
 		for _k in 0..n {
@@ -1481,7 +1141,6 @@ pub fn scaffold(
 			body.push_str(&format!("local {acc}=0;"));
 			for j in 0..CHUNKS {
 				let c = base + j;
-				// alternate loop idioms per instance (no repeated shape)
 				match (k + j) % 3 {
 					0 => body.push_str(&format!(
 						"for i=1,#C[{c}] do {acc}={acc}+b[{sb}](C[{c}],i) end;",
@@ -1503,9 +1162,6 @@ pub fn scaffold(
 					)),
 				}
 			}
-			// fold through the arithmetic assistants (same visual
-			// family as the staging handlers); a fused decoy
-			// conditional keeps the sample's and/or shape (F23).
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let qv = nm.take_avoid(&["b", "C", "s", "E", "i", "Q"]);
@@ -1518,15 +1174,7 @@ pub fn scaffold(
 				acc = acc,
 				qv = qv,
 			));
-			// Integrity here = the double fold: the staging phase folded
-			// each carrier's byte SUM from the XORed chunks (into
-			// sumslot); this handler re-folds from the DECODED chunks.
-			// The two are compared at v2 (mismatch -> silent trap), so
-			// any tamper of HB / LCG key / decode breaks the fold.
 		}
-		// ㊶ (保护代码隐藏): 原 staging 中段 debug.info 复检门 + 拼串码表
-		// 整体移除——同等检查由 HBOOT 掩码层守卫承担（对解码时机而言足够早：
-		// staging 阶段只有字节搬运，无密钥材料落地）。
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {body} C[{verifyslot}]=s; \
 			 return {ret},C,{rb},{ra},{rc},{re},{rd} end",
@@ -1546,10 +1194,8 @@ pub fn scaffold(
 		));
 	}
 	{
-		let (st, _ret) = step(&mut state_i); // ret == sdone, used below
+let (st, _ret) = step(&mut state_i);
 		let v2n: Vec<String> = (0..5).map(|_| nm.take_avoid(&["b", "C"])).collect();
-		// ㊶: 校验失配不再死循环（grep oracle）——投毒 sumslot 后照常放行：
-		// kg 折叠消费被污染的校验和 => 载体钥匙流错位 => 下游静默全错。
 		let src = format!(
 			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]~=C[{sumslot}] then C[{sumslot}]=C[{sumslot}]+7919 end; \
 			 return {sdone},C,{n1},{n2},{n3},{n4},{n0} end",
@@ -1569,10 +1215,6 @@ pub fn scaffold(
 		));
 	}
 
-	// ---- control handler (sample `_` shape): 2 = done, 1 = continue.
-	// The control code is selected with a fused conditional
-	// (`(cond) and 2 or 1`, sample family style, F23); behaviour is
-	// identical to the explicit if/else.
 	fields.push(named(
 		ctl.clone(),
 		parse_expr(&format!(
@@ -1582,11 +1224,7 @@ pub fn scaffold(
 		)),
 	));
 
-	// ---- CPS loop: binary range tree + continue leaves + control leaf
 	{
-		// suggestion 2: wrap every dispatch leaf in an opaque predicate
-		// (random direction) so static analysis cannot resolve the real
-		// handler without proving the always-true arithmetic predicate.
 		let wrapped: Vec<(i64, String)> = leaves
 			.iter()
 			.map(|(st, code)| (*st, opaque_wrap(code.clone(), rng, &sv)))
@@ -1601,13 +1239,8 @@ pub fn scaffold(
 		fields.push(named(loop_name.clone(), parse_expr(&src)));
 	}
 
-	// ---- sub-dispatcher between the top machine and the CPS loop
-	// (sample's second dispatch layer: while-flag + range tree; both
-	// ranges converge into the state-driven CPS loop, so routing any
-	// state to it is correct)
 	{
 		let mid = states[(nsteps as usize) / 2];
-		// upper branch routes through a `[7]=` tuple slot (F30 layout)
 		let src = format!(
 			"function(b,C,{lhs6}) local K={{[7]='{}'}}; \
 			 while true do if {sv}<={} then \
@@ -1617,12 +1250,6 @@ pub fn scaffold(
 		fields.push(named(xl.clone(), parse_expr(&src)));
 	}
 
-	// ---- top machine (sample FC shape): initializer -> while-flag loop
-	// -> sub-dispatcher -> control-code return. The sub-dispatcher is
-	// routed through a tuple slot (F31: `b[J[4]](...)` indirection; the
-	// `[4]=` literal also feeds F30).
-	// ㊶ (保护代码隐藏): 守卫不再注入可见入口机——整体搬进 HBOOT
-	// 掩码层（见 template.rs hboot_src 注入点），可见层零保护痕迹。
 	{
 		let src = format!(
 			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
@@ -1642,18 +1269,11 @@ pub fn scaffold(
 		fields.push(named(fc.clone(), parse_expr(&src)));
 	}
 
-	// ---- second runner (sample [18] shape): the user-facing entry is
-	// invoked through it, so the call path crosses two numeric-slot
-	// runners like the sample's [73]/[18] pair
 	fields.push(slotted(
 		runner2,
 		parse_expr("function(b,E,...) return E(...) end"),
 	));
 
-	// 增量⑬: emit the two scaffold key-assembly lookup tables. Cells
-	// were reserved by st_pair_expr above; unreserved cells keep their
-	// random camouflage values. Shaped like the BW word arrays
-	// (numeric-slot fields), so they blend into the same family.
 	{
 		let mk_arr = |vals: &Vec<i64>| Expr::Table {
 			fields: vals

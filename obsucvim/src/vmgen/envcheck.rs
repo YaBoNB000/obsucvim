@@ -1,44 +1,9 @@
-//! WTF-PORT Phase 1 (2026-10-11): pure-Luau environment check battery.
-//!
-//! Reimplementation of the CHECK CATEGORIES from the real-Luraph runtime
-//! environment payload (see research/luraph-envcheck-analysis/) — NOT a
-//! verbatim port (provenance). Differences from the blueprint, deliberate:
-//!   - failure is an ALGEBRAIC lane fold (R061: no deletable branch, no
-//!     error oracle), never `error(...)` at a fixed site;
-//!   - per-build RANDOMIZED check order / constants / multipliers, so the
-//!     emitted battery is not a fixed byte template a tool can fingerprint;
-//!   - error-text checks are status-only (52-lesson domain excluded).
-//!
-//! The emitted factory returns a rolling difference `d` that is EXACTLY 0
-//! on a clean environment: every group folds `(actual - expected)` terms
-//! that are all zero when semantics match, so no build-time mirror of the
-//! environment is needed (P1 by construction). template.rs folds `d` into
-//! the SLT block-keystream lane and the MZD scattered-poison lane.
-//!
-//! All arithmetic stays double-exact: d < 2^28, multiplier < 2^16, deltas
-//! bounded by 2^32 ⇒ products < 2^44.
-//!
-//! Tier 2 (bound executor builds, --env-check + --bind-executor) adds the
-//! Roblox/executor surface: Enum identity interning, Random determinism
-//! (fixed seed + clone fork), task semantics, member-call error forms,
-//! Instance/signal lifecycle, and a conditional clonefunction probe.
-//! External-object members are accessed EXCLUSIVELY via ["string"] keys:
-//! sanitize_frag renames identifier members after non-global receivers,
-//! so z:Method() / z.field would break (the Phase-1 lesson, inverted:
-//! string keys are the SAFE form for foreign objects, identifier fields
-//! for our own tables).
-//!
-//! Scope (honest): every challenge here is a CONSTANT challenge — it
-//! defeats wrong-semantics mock environments, not record/replay tooling
-//! that captured a real run (L1 stays uncovered after the CORE-ATTEST
-//! plan was retired; see WTF-PORT-PLAN.md §5).
 
 use crate::rng::Rng;
 
-const MOD: i64 = 268_435_456; // 2^28
+const MOD: i64 = 268_435_456;
 
 fn mul(rng: &mut Rng) -> i64 {
-	// odd multiplier < 2^16 keeps d*mul double-exact
 	rng.int(17, 65_521) | 1
 }
 
@@ -50,7 +15,6 @@ fn esc(bytes: &[u8]) -> String {
 		.join("")
 }
 
-/// Group: core arithmetic / library semantics with random operands.
 fn g_arith(rng: &mut Rng) -> String {
 	let a = rng.int(0, 4_294_967_295);
 	let b = rng.int(0, 4_294_967_295);
@@ -79,7 +43,6 @@ local a5=bit32.band({c},{d2}) d=(d*{p5}+(a5-{e_and}))%{m}",
 	)
 }
 
-/// Group: string library with embedded NULs (identity semantics, no formats).
 fn g_string(rng: &mut Rng) -> String {
 	let n = rng.int(2, 5);
 	format!(
@@ -100,7 +63,6 @@ local b1=string.byte(s1,2) d=(d*{p5}+b1)%{m}",
 	)
 }
 
-/// Group: metatable semantics + per-iteration closure captures.
 fn g_meta(rng: &mut Rng) -> String {
 	format!(
 		"local mt={{__index=function() return \"AA\" end,__add=function(x,y) return x.v+y.v end,__tostring=function() return \"o\" end}}
@@ -116,8 +78,6 @@ d=(d*{p2}+(k3 and 0 or 1))%{m}",
 	)
 }
 
-/// Group: buffer library — 26-function subset with little-endian byte
-/// layout, typed round-trips, copy/fill/bits, and OOB error STATUS.
 fn g_buffer(rng: &mut Rng) -> String {
 	let mut bytes = [0u8; 4];
 	for b in bytes.iter_mut() {
@@ -171,7 +131,6 @@ d=(d*{p}+(okb and 0 or 1))%{m}",
 	)
 }
 
-/// Group: table.freeze readonly semantics (status-only).
 fn g_freeze(rng: &mut Rng) -> String {
 	format!(
 		"local okf=type(table.freeze)==\"function\"
@@ -183,17 +142,9 @@ d=(d*{p}+(okf and 0 or 1))%{m}",
 	)
 }
 
-/// Group: coroutine semantics — resume/yield values, status, close, running.
 fn g_coroutine(rng: &mut Rng) -> String {
 	let n = rng.int(3, 8);
 	format!(
-		// NOTE: coroutine.running() is deliberately NOT probed: the CLI
-		// returns nil on the main thread while Roblox returns the main
-		// thread -- a cross-environment-variant probe (52-class FP risk).
-		// NOTE: locals here must NEVER reuse the r1..r17 prefix -- those
-		// are the identity captures; a same-named local would shadow them
-		// and silently break the trailing identity sweep (the bug caught
-		// by the second live run).
 		"local okr=true
 local co=coroutine.create(function(x) local y=coroutine.yield(x+1) return y+2 end)
 local y1,y2=coroutine.resume(co,9) local y3,y4=coroutine.resume(co,11)
@@ -208,8 +159,6 @@ d=(d*{p}+(okr and 0 or 1))%{m}",
 	)
 }
 
-/// Group: loadstring compile semantics — success arity and syntax-error
-/// form (status + types only; NO error-text matching).
 fn g_compile(rng: &mut Rng) -> String {
 	let a = rng.int(1, 999);
 	let b = rng.int(1, 999);
@@ -227,12 +176,7 @@ d=(d*{p}+(okl and 0 or 1))%{m}",
 	)
 }
 
-// ---------------------------------------------------------------------------
-// Tier 2: Roblox/executor surface (bound builds only)
-// ---------------------------------------------------------------------------
 
-/// Enum identity interning: FromName/FromValue/property must all return
-/// the SAME EnumItem userdata; typeof tags; locked metatables.
 fn g_enum(rng: &mut Rng) -> String {
 	format!(
 		"local z1=Enum.HumanoidRigType
@@ -247,10 +191,6 @@ d=(d*{p2}+(k5 and 0 or 1))%{m}",
 	)
 }
 
-/// Random determinism: the fixed-seed exact sequence is a Roblox runtime
-/// FACT (constant challenge); the self-consistency parts (same seed =>
-/// same stream, Clone forks state) are randomized per build and need no
-/// build-time mirror.
 fn g_random(rng: &mut Rng) -> String {
 	let s1 = rng.int(1, 2_147_483_646);
 	let s2 = rng.int(1, 2_147_483_646);
@@ -281,8 +221,6 @@ d=(d*{p5}+(k10 and 0 or 1))%{m}",
 	)
 }
 
-/// task semantics: spawn runs immediately and returns a thread; delay
-/// returns a NOT-yet-run thread that cancel() stops; wait type-errors.
 fn g_task(rng: &mut Rng) -> String {
 	format!(
 		"local zf=false
@@ -303,8 +241,6 @@ d=(d*{p3}+(k13 and 0 or 1))%{m}",
 	)
 }
 
-/// Member-call error form: dot-calling a member function must produce the
-/// "Expected ':' not '.'" error (prefix match, no format dependency).
 fn g_member(rng: &mut Rng) -> String {
 	format!(
 		"local zm=game:GetService(\"RunService\")
@@ -320,8 +256,6 @@ d=(d*{p2}+(k15 and 0 or 1))%{m}",
 	)
 }
 
-/// Instance surface: typeof/ClassName/parent-child, signal Connect/
-/// Disconnect lifecycle, destroyed-parent lock.
 fn g_instance(rng: &mut Rng) -> String {
 	format!(
 		"local zr=Instance.new(\"Folder\") local zs=Instance.new(\"Folder\")
@@ -345,8 +279,6 @@ d=(d*{p3}+(k18 and 0 or 1))%{m}",
 	)
 }
 
-/// Executor surface (conditional, mirrors the blueprint: absent global
-/// folds 0): clonefunction must return a working callable.
 fn g_exec(rng: &mut Rng) -> String {
 	format!(
 		"local k19=true
@@ -361,8 +293,6 @@ d=(d*{p}+(k19 and 0 or 1))%{m}",
 	)
 }
 
-/// Build the one-shot check factory. Returns `return function() ... end`
-/// whose body computes the rolling difference (0 on a clean environment).
 pub fn build(rng: &mut Rng, tier2: bool) -> String {
 	let mut groups = vec![
 		g_arith(rng),
@@ -373,8 +303,6 @@ pub fn build(rng: &mut Rng, tier2: bool) -> String {
 		g_coroutine(rng),
 		g_compile(rng),
 	];
-	// Tier-2 draws stay inside this branch so tier2=false keeps the exact
-	// Phase-1 RNG schedule (byte-identical --env-check-only artifacts).
 	if tier2 {
 		groups.extend([
 			g_enum(rng),
@@ -387,8 +315,6 @@ pub fn build(rng: &mut Rng, tier2: bool) -> String {
 	}
 	rng.shuffle(&mut groups);
 	let mut out = String::from("return function()\n");
-	// Identity refs captured at entry; the trailing group re-compares them
-	// so a mid-battery swap (hook installed while checks run) is caught.
 	out.push_str(
 		"local r1=bit32 local r2=buffer local r3=string local r4=table 
 local r5=math local r6=coroutine local r7=loadstring local r8=select 
@@ -441,7 +367,6 @@ mod tests {
 		let src = build(&mut rng, false);
 		assert!(src.starts_with("return function()\n"));
 		assert!(src.ends_with("return d\nend"));
-		// every group present regardless of shuffle order
 		for needle in [
 			"select(\"#\"",
 			"bit32.bxor(",
@@ -453,15 +378,9 @@ mod tests {
 		] {
 			assert!(src.contains(needle), "missing {needle}");
 		}
-		// rename-safety: sanitize_frag renames IDENTIFIER table fields but
-		// not string literals -- a check may never compare a string key
-		// against a field declared in identifier form (the v/zz bug caught
-		// by the first live run).
 		for banned in ["rawget(t1,\"v\")", "==\"zz\"", "return k end"] {
 			assert!(!src.contains(banned), "rename-unsafe pattern: {banned}");
 		}
-		// only the identity captures may use rN local names; any other
-		// rN local would shadow a capture and break the trailing sweep
 		let capture_count = src
 			.match_indices("local r")
 			.filter(|(i, _)| src[*i + 7..].chars().next().is_some_and(|c| c.is_ascii_digit()))
@@ -470,7 +389,6 @@ mod tests {
 		for m in ["local y1,y2=", "local y3,y4="] {
 			assert!(src.contains(m), "coroutine locals must not shadow captures");
 		}
-		// determinism: same seed, same source
 		let mut rng2 = Rng::new(20261011);
 		assert_eq!(src, build(&mut rng2, false));
 	}
@@ -490,7 +408,6 @@ mod tests {
 		] {
 			assert!(src.contains(needle), "tier2 missing {needle}");
 		}
-		// 17 tier-1 + 10 tier-2 identity captures, nothing else rN-prefixed
 		assert_eq!(
 			src.match_indices("local r")
 				.filter(|(i, _)| src[*i + 7..].chars().next().is_some_and(|c| c.is_ascii_digit()))

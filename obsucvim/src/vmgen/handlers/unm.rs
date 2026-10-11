@@ -1,8 +1,6 @@
-//! Unm — V[a] = -V[b] with __unm fallback.
 
 use crate::vmgen::strpool::StrPool;
 
-/// f0 canonical (TYP queried twice); f1 type hoisted into a local.
 pub fn code(fmt: u8, p: &mut StrPool) -> String {
 	let number = p.lit("number");
 	let unm = p.lit("__unm");

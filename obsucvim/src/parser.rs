@@ -1,17 +1,3 @@
-//! Recursive-descent parser for Lua 5.1 / Luau, with Pratt expression
-//! priorities identical to the reference implementations (5.1 lparser.c and
-//! Luau Parser.cpp — verified against source).
-//!
-//! Luau extras: continue, compound assignment (desugared to plain assign),
-//! `//` (kept as a Div-with-flag? no — desugared to math.floor at the
-//! desugar stage; here it is kept as BinOp::Div with a side marker? We keep
-//! it as its own node via Bin with op Div and a `floor` flag is overkill:
-//! `//` is stored as Bin{op: Div} only when dialect==luau and the printer
-//! re-emits `/` — that would change semantics. So: `//` is desugared to
-//! math.floor(a / b) right here at parse time when target is 5.1, and also
-//! when target is luau (identical semantics, keeps one code path).
-//! Backtick interpolation is desugared to string.format at parse time.
-//! Type annotations / type aliases are parsed and dropped.
 
 use crate::ast::*;
 use crate::lexer::{InterpPart, Lexer, TokKind, Token};
@@ -22,7 +8,6 @@ struct Parser {
 	toks: Vec<Token>,
 	i: usize,
 	luau: bool,
-	/// nesting depth of loops (break/continue validation)
 	loops: u32,
 }
 
@@ -113,8 +98,6 @@ impl Parser {
 		}
 	}
 
-	// ------------------------------------------------------------------
-	// blocks & statements
 
 	fn block(&mut self) -> Result<Block, ParseError> {
 		let mut stmts = Vec::new();
@@ -181,7 +164,6 @@ impl Parser {
 							"'continue' requires --dialect luau".to_string(),
 						));
 					}
-					// contextual keyword: only when it cannot start an expr statement
 					let nt = self.peek(1);
 					let not_expr = !(nt.kind == TokKind::Punct
 						&& matches!(
@@ -205,7 +187,7 @@ impl Parser {
 						&& n2.kind == TokKind::Punct
 						&& (n2.text == "=" || n2.text == "<")
 					{
-						self.next(); // 'type'
+self.next();
 						return self.typealias_body();
 					}
 				}
@@ -219,8 +201,8 @@ impl Parser {
 						&& n3.kind == TokKind::Punct
 						&& (n3.text == "=" || n3.text == "<")
 					{
-						self.next(); // 'export'
-						self.next(); // 'type'
+self.next();
+self.next();
 						return self.typealias_body();
 					}
 				}
@@ -258,16 +240,15 @@ impl Parser {
 			let func = self.funcbody(false)?;
 			return Ok(Stmt::LocalFunc {
 				name: nm.text,
-				sym: 0, // filled by symtab
+sym: 0,
 				func: Box::new(func),
 			});
 		}
-		// namelist (values come after, if any)
 		let mut names: Vec<String> = Vec::new();
 		loop {
 			let t = self.expect(TokKind::Name, None)?;
 			names.push(t.text.clone());
-			self.eat(TokKind::Punct, Some("?")); // optional marker
+self.eat(TokKind::Punct, Some("?"));
 			if self.eat(TokKind::Punct, Some(":")) {
 				self.typeref()?;
 			}
@@ -299,7 +280,6 @@ impl Parser {
 		let mut obj: Option<Expr> = None;
 		let mut name = first.text.clone();
 		let mut ismethod = false;
-		// push the current `name` into the object chain
 		let push = |obj: &mut Option<Expr>, name: String| {
 			let cur = match obj.take() {
 				None => Expr::Ident { name, sym: None },
@@ -332,7 +312,6 @@ impl Parser {
 		})
 	}
 
-	/// '(' params ')' [':' typeref] block 'end'
 	fn funcbody(&mut self, has_self: bool) -> Result<FuncDef, ParseError> {
 		self.expect(TokKind::Punct, Some("("))?;
 		let mut params: Vec<String> = Vec::new();
@@ -357,14 +336,11 @@ impl Parser {
 				self.expect(TokKind::Punct, Some(","))?;
 			}
 		}
-		// the ')' is already consumed: either the loop condition stopped on
-		// it (non-vararg) — no, the loop only STOPS on ')' without consuming
-		// it, or the vararg branch consumed it. Handle both:
 		if self.is(TokKind::Punct, Some(")")) {
 			self.next();
 		}
 		if self.eat(TokKind::Punct, Some(":")) {
-			self.typeref()?; // return type
+self.typeref()?;
 		}
 		let body = self.block()?;
 		self.expect_kw("end")?;
@@ -437,7 +413,6 @@ impl Parser {
 			let start = self.exp()?;
 			self.expect(TokKind::Punct, Some(","))?;
 			let limit = self.exp()?;
-			// optional step: `, step`
 			let step = if self.eat(TokKind::Punct, Some(",")) {
 				Some(self.exp()?)
 			} else {
@@ -450,7 +425,7 @@ impl Parser {
 			self.expect_kw("end")?;
 			return Ok(Stmt::ForNum {
 				var: var.text,
-				var_sym: 0, // filled by symtab
+var_sym: 0,
 				start: Box::new(start),
 				limit: Box::new(limit),
 				step: step.map(Box::new),
@@ -464,10 +439,6 @@ impl Parser {
 		}
 		self.expect_kw("in")?;
 		let mut iters = self.explist()?;
-		// Luau extension: `for ... in <expr>` with a single non-call
-		// expression is implicitly iterated with the global `next`
-		// (5.1 has no such form — the iterator must be callable, so it
-		// is left as-is there and errors at runtime like the host)
 		if self.luau
 			&& iters.len() == 1
 			&& !matches!(iters[0], Expr::Call { .. } | Expr::Method { .. })
@@ -493,20 +464,17 @@ impl Parser {
 		})
 	}
 
-	/// type Alias = ...   (parsed and dropped)
 	fn typealias_body(&mut self) -> Result<Stmt, ParseError> {
-		self.expect(TokKind::Name, None)?; // alias name
+self.expect(TokKind::Name, None)?;
 		if self.eat(TokKind::Punct, Some("<")) {
 			self.skip_generic_params()?;
 		}
 		self.expect(TokKind::Punct, Some("="))?;
 		self.typeref()?;
-		// produce an empty statement (no-op)
 		Ok(Stmt::Do(Block::empty()))
 	}
 
 	fn skip_generic_params(&mut self) -> Result<(), ParseError> {
-		// after consuming '<': skip to matching '>'
 		let mut depth = 1;
 		loop {
 			let t = self.next();
@@ -526,8 +494,6 @@ impl Parser {
 		}
 	}
 
-	// ------------------------------------------------------------------
-	// type annotations (parsed & dropped)
 
 	fn typeref(&mut self) -> Result<(), ParseError> {
 		self.t_union()?;
@@ -572,7 +538,6 @@ impl Parser {
 				self.next();
 				if !self.is(TokKind::Punct, Some(")")) {
 					loop {
-						// one parameter: `name: type` | `...` | bare type
 						if self.peek(0).kind == TokKind::Name
 							&& self.peek(1).kind == TokKind::Punct
 							&& self.peek(1).text == ":"
@@ -587,7 +552,7 @@ impl Parser {
 						}
 						if self.eat(TokKind::Punct, Some(",")) {
 							if self.is(TokKind::Punct, Some(")")) {
-								break; // trailing comma
+break;
 							}
 						} else {
 							break;
@@ -595,7 +560,6 @@ impl Parser {
 					}
 				}
 				self.expect(TokKind::Punct, Some(")"))?;
-				// function type: `->` return type
 				if self.is(TokKind::Punct, Some("-"))
 					&& self.peek(1).kind == TokKind::Punct
 					&& self.peek(1).text == ">"
@@ -618,8 +582,7 @@ impl Parser {
 						self.expect(TokKind::Punct, Some(":"))?;
 						self.t_union()?;
 					} else {
-						// `key: T` or bare array item type
-						self.next(); // name or string key
+self.next();
 						if self.is(TokKind::Punct, Some(":")) {
 							self.next();
 							self.t_union()?;
@@ -646,8 +609,6 @@ impl Parser {
 		Ok(())
 	}
 
-	// ------------------------------------------------------------------
-	// expression statements & assignments
 
 	fn exprstat(&mut self) -> Result<Stmt, ParseError> {
 		let e = self.prefixexp()?;
@@ -658,12 +619,11 @@ impl Parser {
 				while self.eat(TokKind::Punct, Some(",")) {
 					targets.push(self.prefixexp()?);
 				}
-				self.next(); // '='
+self.next();
 				let values = self.explist()?;
 				return Ok(Stmt::Assign { targets, values });
 			}
 			if t.text == "," {
-				// multi-target assignment: a, b = ...
 				let mut targets = vec![e];
 				while self.eat(TokKind::Punct, Some(",")) {
 					targets.push(self.prefixexp()?);
@@ -671,7 +631,7 @@ impl Parser {
 				if !self.is(TokKind::Punct, Some("=")) {
 					return Err(self.errf("expected assignment or a function call".to_string()));
 				}
-				self.next(); // '='
+self.next();
 				let values = self.explist()?;
 				return Ok(Stmt::Assign { targets, values });
 			}
@@ -682,7 +642,7 @@ impl Parser {
 						t.text
 					)));
 				}
-				self.next(); // '+='
+self.next();
 				let value = self.exp()?;
 				if self.is(TokKind::Punct, Some(",")) {
 					return Err(self.errf(
@@ -714,8 +674,6 @@ impl Parser {
 		Ok(list)
 	}
 
-	// ------------------------------------------------------------------
-	// expressions (Pratt — mirrors lparser.c priorities)
 
 	fn exp(&mut self) -> Result<Expr, ParseError> {
 		self.subexpr(0)
@@ -809,7 +767,6 @@ impl Parser {
 					})
 				}
 				"if" if self.luau => {
-					// Luau if-expression: if c then v (elseif c then v)* else e
 					self.next();
 					let mut arms = Vec::new();
 					loop {
@@ -840,9 +797,7 @@ impl Parser {
 		}
 	}
 
-	/// Desugar `` `a {e1} b` `` -> string.format("a %s b", e1)
 	fn interp_to_format(&mut self, t: &Token) -> Result<Expr, ParseError> {
-		// decode text parts: [len4][bytes]*  (one chunk per Text part)
 		let mut texts: Vec<Vec<u8>> = Vec::new();
 		let b = &t.bytes;
 		let mut i = 0usize;
@@ -1006,7 +961,7 @@ impl Parser {
 				&& self.peek(1).text == "="
 			{
 				let n = self.next();
-				self.next(); // '='
+self.next();
 				let v = self.exp()?;
 				fields.push(TableField::Key {
 					key: Expr::Str {
@@ -1043,7 +998,6 @@ fn compound_op(s: &str) -> Option<BinOp> {
 	}
 }
 
-/// Deep clone (no symtab info to preserve at this stage).
 fn clone_expr(e: &Expr) -> Expr {
 	match e {
 		Expr::Num { value, isfloat } => Expr::Num {
@@ -1198,7 +1152,6 @@ fn clone_func(f: &FuncDef) -> FuncDef {
 	}
 }
 
-/// Parse a bare expression snippet (interpolation placeholders).
 fn parse_expr_snippet(src: &str, luau: bool) -> Result<Expr, ParseError> {
 	let mut lexer = Lexer::new(src, luau);
 	let toks = lexer

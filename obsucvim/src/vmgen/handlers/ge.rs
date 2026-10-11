@@ -1,4 +1,3 @@
-//! Ge — V[a] = (V[b] >= V[c]) via __le(y, x).
 
 use crate::vmgen::handlers::cmp_body;
 use crate::vmgen::strpool::StrPool;

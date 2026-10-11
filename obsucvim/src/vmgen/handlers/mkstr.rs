@@ -1,14 +1,4 @@
-//! MkStr — P1 (动态内联): rebuild a short string (≤5 bytes) from
-//! masked operand immediates; the string never enters the constant
-//! pool. b/c/d carry byte pairs + len additively masked with
-//! (mk1 * a + mk2) % 65536 (a = the destination register operand);
-//! the handler recomputes the mask from its own `a` and unmasks via
-//! (x - mask) % 65536 — pure arithmetic, 5.1-safe.
 
-/// f0 canonical; f1 renamed temporaries.
-/// ㊾ (R021 回合 — 物化去钩化): 逐字节物化不再用 `CHAR`（块环境捕获的
-/// `string.char`，setfenv 钩子可截获）——改经字符串元表 `("")["char"]`
-/// （元表只读、索引不经可钩函数），字符串字面量下标不被净化器改名。
 pub fn code(fmt: u8, mk: (u16, u16)) -> String {
 	let (mk1, mk2) = (mk.0 as u32, mk.1 as u32);
 	match fmt {

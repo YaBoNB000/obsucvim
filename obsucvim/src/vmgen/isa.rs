@@ -1,53 +1,4 @@
-//! L6 VM — instruction set + bytecode encoding.
-//!
-//! Register VM. Bytecode layout per function (u16 = little-endian):
-//!
-//!   [nregs u16][nparams u16][vararg u8]
-//!   [nups u16] + nups × [src u16]        -- upvalue = slot of the CREATING
-//!                                        -- frame's value array (materialization
-//!                                        -- invariant: the creating frame holds
-//!                                        -- every upvalue symbol in its own V)
-//!   [nconst u16] + const items:
-//!     [type u8]  0=nil | 1=bool(1 byte) | 2=number(text) | 3=string
-//!     number: [len u16][ASCII digits]  (tonumber round-trips exactly)
-//!     string: [len u16][raw bytes]
-//!   SoA code (M5):
-//!     [ncode u16]
-//!     [OC : ncode × u8]                  -- opcode array
-//!     [S0 : ncode × 7-bit-varint]        -- operand stream 0
-//!     [S1 : ncode × 7-bit-varint]
-//!     [S2 : ncode × 7-bit-varint]
-//!     [S3 : ncode × 7-bit-varint]
-//!
-//! 7-bit varint (v15 complete tier): 7/14/21-bit + 128-base rebuild.
-//! Decoder needs only +,-,* (no bitops — 5.1 template constraint):
-//!   b1 < 128 -> v = b1
-//!   b2 < 128 -> v = (b1-128) + b2*128
-//!   b3 < 128 -> v = (b1-128) + (b2-128)*128 + b3*16384
-//!   else     -> v = (b1-128) + (b2-128)*128 + (b3-128)*16384 + b4*2097152
-//! Values ≥ 2³¹ are folded via `v - 2³²` (unsigned→signed, v15 归一化).
-//!
-//! M5 hub randomization: the four operand STREAM SLOTS hold a,b,c,d in
-//! a per-build random permutation (VmProgram.slot_perm); the template
-//! maps stream positions back to a/b/c/d.
-//!
-//! Jump targets are 1-based INSTRUCTION indexes into the SoA arrays
-//! (pc steps by 1; no byte-offset fixpoint).
-//! Operands are 0-based register/const/function indexes; the runtime
-//! adds 1 for Lua arrays.
-//!
-//! Opcodes are randomly permuted per build (VMC, seed-derived): the
-//! compiler and the interpreter template share one mapping, so the
-//! emitted interpreter has no recognizable opcode layout.
-//!
-//! Dead-instruction padding (M5): Nop instructions are injected at
-//! seed-derived positions; the dispatch carries a harmless Nop handler.
-//!
-//! Bytecode carrier (M5): each function blob is wrapped in a per-build
-//! base-95 encoding + 10-special → 5-char token escape (v15 pC 同款)
-//! before being embedded as a string literal.
 
-/// Base opcode table (pre-permutation).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Op {
 	Jmp,
@@ -89,26 +40,9 @@ pub enum Op {
 	SetUp,
 	Return,
 	Nop,
-	/// Call with FULL-EXPANSION results: f at V[a+1], b fixed args at
-	/// V[a+2..a+1+b]; when d >= 2 a tail follows — `V[a+2+b]` holds the
-	/// tail result count (stored by the nested CallE) and the tail values
-	/// at V[a+3+b..]. d&1 = append varargs. Results → V[a+2..] and the
-	/// RESULT COUNT is stored in the function slot V[a+1].
 	CallE,
-	/// Call with a variable-length tail (normal result handling): f at
-	/// V[a+1], b fixed args at V[a+2..a+1+b], `V[a+2+b]` = tail count
-	/// (stored by a preceding CallE), tail values at V[a+3+b..]; d =
-	/// append varargs. c = nres (255 = all).
 	CallM,
-	/// P1 (动态内联): V[a] = short string rebuilt from masked operand
-	/// bytes — the string never enters the constant pool. b/c/d carry
-	/// (byte pairs + len) additively masked with the per-position key
-	/// (mk1 * instr_index + mk2) % 65536; the handler unmasks via
-	/// (x - mask) % 65536 and concats CHAR of each byte.
 	MkStr,
-	/// Load and unseal a source string literal. The pool holds ciphertext;
-	/// c/d carry the per-site seed and step, and only the destination register
-	/// receives the plaintext value.
 	LoadStr,
 }
 
@@ -133,14 +67,12 @@ pub fn op_base() -> [u8; N_OPS] {
 	];
 	let mut out = [0u8; N_OPS];
 	for (op, code) in t {
-		// map Op -> its base code position
 		let idx = op_index(op);
 		out[idx] = code;
 	}
 	out
 }
 
-/// Op discriminant (stable order used for permutation).
 pub fn op_index(op: Op) -> usize {
 	match op {
 		Op::Jmp => 0,
@@ -189,15 +121,10 @@ pub fn op_index(op: Op) -> usize {
 	}
 }
 
-/// Per-build opcode permutation: `mapping[op_index]` = the wire code.
-/// S1 四表全置换派发: 4 套线码，同号异义，`S ∈ {251,99,8,140}` 选表。基础表 0..42，扩展表 64..106/128..170/192..234。
 #[derive(Debug, Clone)]
 pub struct OpMap {
-	/// wire code for each base op, per S table (0..3 → S=251/99/8/140)
 	pub to_wire: [[u8; N_OPS]; 4],
-	/// Second wire value that also dispatches to Nop, per table
 	pub nop_alias: [u8; 4],
-	/// S values, per table
 	pub s_values: [u8; 4],
 }
 
@@ -206,9 +133,6 @@ impl OpMap {
 		Self::new_with_count(rng, N_OPS)
 	}
 
-	/// Build a table for the active opcode prefix. Keeping inactive extension
-	/// opcodes out of the shuffle preserves the established RNG/layout schedule
-	/// when an opt-in VM instruction is not used.
 	pub fn new_with_count(rng: &mut crate::rng::Rng, active_count: usize) -> OpMap {
 		assert!(active_count > 0 && active_count <= N_OPS);
 		let mut to_wire = [[0u8; N_OPS]; 4];
@@ -235,8 +159,6 @@ impl OpMap {
 			for i in 0..active_count {
 				to_wire[t][i] = perm[i];
 			}
-			// A disabled extension aliases the unused Nop wire. It is never
-			// emitted because its opcode is omitted from the active template.
 			for i in active_count..N_OPS {
 				to_wire[t][i] = alias;
 			}
@@ -257,7 +179,6 @@ impl OpMap {
 		self.to_wire[s_idx][op_index(op)]
 	}
 
-	/// `op == code` test expression text for the interpreter template.
 	pub fn codes_text(&self) -> String {
 		let mut s = String::new();
 		for i in 0..N_OPS {
@@ -281,9 +202,6 @@ impl OpMap {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// instruction encoding
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
 pub struct Instr {
@@ -338,8 +256,6 @@ pub fn push_u16(out: &mut Vec<u8>, v: u16) {
 	out.push((v >> 8) as u8);
 }
 
-/// 7/14/21-bit varint (v15 complete tier). Continuation = byte ≥ 128.
-/// Width: v<128 → 7-bit; v<16384 → 14-bit; v<2097152 → 21-bit; else 28-bit.
 pub fn encode_varint(out: &mut Vec<u8>, v: u32) {
 	if v < 128 {
 		out.push(v as u8);
@@ -362,7 +278,6 @@ pub fn encode_u16var(out: &mut Vec<u8>, v: u16) {
 	encode_varint(out, v as u32);
 }
 
-/// Decode one varint (Rust-side; mirrors the 5.1-safe Lua decoder).
 pub fn decode_varint(src: &[u8], p: usize) -> Option<(u32, usize)> {
 	let b1 = *src.get(p)? as u32;
 	if b1 < 128 {
@@ -382,9 +297,6 @@ pub fn decode_varint(src: &[u8], p: usize) -> Option<(u32, usize)> {
 	Some((v, p + 4))
 }
 
-/// SoA instruction stream: opcode array, then four parallel operand
-/// streams. `slot_perm[i]` = which operand (0=a 1=b 2=c 3=d) occupies
-/// stream i. The ncode prefix is written by the caller (P2: varint).
 pub fn encode_soa(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], out: &mut Vec<u8>) {
 	for ins in code {
 		out.push(map.code(ins.op));
@@ -397,7 +309,6 @@ pub fn encode_soa(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], out: &mut Ve
 	}
 }
 
-/// S1 四表: per-S encoding, S ∈ {251,99,8,140}
 pub fn encode_soa_for(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], s_idx: usize, out: &mut Vec<u8>) {
 	for ins in code {
 		out.push(map.code_for(ins.op, s_idx));
@@ -410,9 +321,6 @@ pub fn encode_soa_for(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], s_idx: u
 	}
 }
 
-/// P2 (instruction-stream noise): which operands each opcode IGNORES.
-/// finish() fills them with per-build random values so the four SoA
-/// streams carry no recognizable zero-padding alignment.
 #[rustfmt::skip]
 pub fn unused_operands(op: Op) -> [bool; 4] {
 	match op {
@@ -431,9 +339,6 @@ pub fn unused_operands(op: Op) -> [bool; 4] {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// constants
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub enum Const {
@@ -443,11 +348,6 @@ pub enum Const {
 	Str(Vec<u8>),
 }
 
-/// P1 (致命缺点③整改): per-function constant keystream. LCG mod 2^28
-/// (same family as the scaffold keystream); one advance per ENCRYPTED
-/// PAYLOAD BYTE. Additive masking (`(plain + key) % 256`) keeps the
-/// decoder bitop-free (5.1-safe); the mirror in the template parse is
-/// `(x - key) % 256` (Lua's % is non-negative for positive modulus).
 pub struct ConstLcg {
 	pub state: u32,
 	pub km: u32,
@@ -458,24 +358,16 @@ impl ConstLcg {
 	pub fn new(seed: u32, km: u32, kc: u32) -> ConstLcg {
 		ConstLcg { state: seed, km, kc }
 	}
-	/// Advance and return the key byte for the next payload byte.
-	/// 增量⑰-B (R003-Q2 定理): byte-consuming an LCG as `state % 256`
-	/// collapses the effective seed space to 256 classes — every output
-	/// byte depends only on seed mod 256. Fold ALL four state bytes
-	/// instead so the full 28-bit state feeds each key byte.
 	pub fn next_key(&mut self) -> u8 {
 		self.state = ((self.km as u64 * self.state as u64 + self.kc as u64)
 			% 268_435_456) as u32;
 		fold_key(self.state as u64)
 	}
 	pub fn mask(&mut self, plain: u8) -> u8 {
-		// wrapping add == (plain + key) mod 256; parse mirrors with
-		// (x - key) % 256 (Lua % is non-negative for positive modulus)
 		plain.wrapping_add(self.next_key())
 	}
 }
 
-/// 增量⑰-B: full-state key-byte fold (mirror of the Lua consumer).
 pub(crate) fn fold_key(state: u64) -> u8 {
 	(((state % 256)
 		+ ((state / 256) % 256)
@@ -484,25 +376,18 @@ pub(crate) fn fold_key(state: u64) -> u8 {
 		% 256) as u8
 }
 
-/// Exact dyadic split of a double: v = ± m · 2^k with integer
-/// m ≤ 2^53-1 (mantissa incl. implicit bit) and k in [-1074, 971].
-/// Reconstruction `m * 2^k` is exact in IEEE-754 (both factors exact,
-/// product = original representable value).
 pub fn num_to_dyadic(v: f64) -> (bool, u64, i32) {
 	let bits = v.to_bits();
 	let neg = bits >> 63 != 0;
 	let exp = ((bits >> 52) & 0x7FF) as i32;
 	let mant = bits & 0x000F_FFFF_FFFF_FFFF;
 	if exp == 0 {
-		// zero or subnormal: no implicit bit, k fixed at -1074
 		(neg, mant, -1074)
 	} else {
 		(neg, mant | 0x0010_0000_0000_0000, exp - 1023 - 52)
 	}
 }
 
-/// 7-bit varint for values up to 2^56 (constant pool use; the decoder
-/// is a byte loop on the template side, exact for m < 2^53).
 pub fn encode_varint64(out: &mut Vec<u8>, mut v: u64) {
 	while v >= 128 {
 		out.push(((v % 128) + 128) as u8);
@@ -512,12 +397,6 @@ pub fn encode_varint64(out: &mut Vec<u8>, mut v: u64) {
 }
 
 impl Const {
-	/// 增量⑨ (防静态): the ENTIRE constant block is keystream-masked —
-	/// type byte, string length AND payload all advance the LCG, so the
-	/// constant section has no cleartext structure (the attack read the
-	/// type byte in cleartext as its structural foothold). Parse mirrors
-	/// byte-for-byte with one masked-read per byte. Numbers stay dyadic
-	/// pairs (type 4) — no ASCII digit text in the blob.
 	pub fn encode(&self, out: &mut Vec<u8>, lcg: &mut ConstLcg) {
 		match self {
 			Const::Nil => out.push(lcg.mask(0)),
@@ -553,27 +432,15 @@ impl Const {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// bytecode carrier: base-95 + 10-special token escape (v15 pC)
-// ---------------------------------------------------------------------------
 
-/// Specials that get replaced by 5-char tokens (v15 pC set).
 pub const CARRIER_SPECIALS: [u8; 10] = [
 	b'"', b'\'', b'%', b' ', b'$', b'!', b'~', b'#', b'}', b'&',
 ];
 
-/// Per-build printable carrier wrapping a raw function blob.
-///
-/// Base-94 over a shuffled 32..126 minus one reserved glyph. The
-/// reserved glyph prefixes every 5-char token, so tokens can never
-/// collide with a digit-stream substring (v15 pC, collision-free).
 #[derive(Debug, Clone)]
 pub struct Carrier {
-	/// Shuffled printable glyphs minus `reserved` — digit 0..93.
 	pub alphabet: [u8; 94],
-	/// Glyph that never appears in the digit stream; token[0].
 	pub reserved: u8,
-	/// 5-byte tokens (`reserved` + 4 alnum), one per CARRIER_SPECIALS.
 	pub tokens: [String; 10],
 }
 
@@ -601,9 +468,6 @@ impl Carrier {
 		}
 	}
 
-	/// Encode raw bytes → base-94 groups of 5, then token-escape specials.
-	/// A 4-byte little-endian length prefix is prepended so the decoder
-	/// can drop padding. 94^5 > 2^32, so every u32 group is unique.
 	pub fn encode(&self, data: &[u8]) -> Vec<u8> {
 		let n = data.len() as u32;
 		let mut src = Vec::with_capacity(data.len() + 8);
@@ -633,7 +497,6 @@ impl Carrier {
 		out
 	}
 
-	/// Rust-side inverse (unit tests + dbg). Mirrors the Lua decoder.
 	pub fn decode(&self, enc: &[u8]) -> Option<Vec<u8>> {
 		let mut s = Vec::with_capacity(enc.len());
 		let mut p = 0;
@@ -701,11 +564,8 @@ fn gen_token(rng: &mut crate::rng::Rng, reserved: u8) -> String {
 	s
 }
 
-/// Number text that tonumber() round-trips exactly (same forms the
-/// printer emits: integer -> decimal, float -> Rust {:?}).
 pub fn num_text(v: f64) -> String {
 	if v.is_nan() {
-		// 5.1: NaN prints as "nan"; the corpus does not use NaN constants
 		return "0.0/0.0".to_string();
 	}
 	if v.is_infinite() {
@@ -769,7 +629,6 @@ mod tests {
 			);
 			assert_eq!(c.decode(&enc).as_deref(), Some(msg));
 		}
-		// per-build uniqueness: a different seed must produce a different wrap
 		let mut rng2 = crate::rng::Rng::new(7);
 		let c2 = Carrier::new(&mut rng2);
 		let a = c.encode(b"payload-xyz");

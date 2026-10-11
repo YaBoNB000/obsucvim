@@ -1,8 +1,6 @@
-//! Ne — V[a] = (V[b] ~= V[c]) via the Eq logic, negated.
 
 use crate::vmgen::strpool::StrPool;
 
-/// f0 canonical; f1 renamed temporaries (u/w/tu/tw).
 pub fn code(fmt: u8, p: &mut StrPool) -> String {
 	let number = p.lit("number");
 	let string = p.lit("string");

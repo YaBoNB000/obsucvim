@@ -1,13 +1,3 @@
-//! L3 prerequisite: loop desugaring. Rewrites for-numeric / for-generic /
-//! repeat-until into plain `while true` loops (5.1-safe, no goto needed) so
-//! the CFG flattener sees a uniform world: simple stmts / if / while /
-//! return / break / continue.
-//!
-//! Semantics preserved exactly (verified against Lua 5.1 reference):
-//! - numeric for: body runs first with i=start, THEN i+=step, THEN check
-//! - generic for: iterator protocol (iter, state, ctrl); the iterator's LAST
-//!   return value is the new control; stop when first value == nil
-//! - repeat: body, then check
 
 use crate::ast::*;
 use crate::symtab::{Sym, SymTable};
@@ -46,10 +36,8 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 			step,
 			mut body,
 		} => {
-			// nested loops inside the body must be desugared first
 			desugar_block(&mut body, table, tmps);
 			let step = step.map(|b| *b);
-			// temporaries
 			let (n_lim, s_lim) = mk_local(table, "lim");
 			let (n_stp, s_stp) = mk_local(table, "stp");
 			let (n_cur, s_cur) = mk_local(table, "cur");
@@ -59,7 +47,6 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 					isfloat: false,
 				}
 			});
-			// local lim, stp, cur = limit, step, start
 			let local = Stmt::Local {
 				names: vec![n_lim.clone(), n_stp.clone(), n_cur.clone()],
 				syms: vec![s_lim, s_stp, s_cur],
@@ -72,15 +59,11 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 			let cur_i = ident(&n_cur, Some(s_cur));
 			let lim_i = ident(&n_lim, Some(s_lim));
 			let stp_i = ident(&n_stp, Some(s_stp));
-			// FRESH loop variable per iteration (real Lua gives each
-			// iteration a fresh loop variable; closures capture it
-			// per-iteration)
 			let fresh_var = Stmt::Local {
 				names: vec![var.clone()],
 				syms: vec![var_sym],
 				values: vec![Some(cur_i.clone())],
 			};
-			// cur = cur + stp
 			let inc = Stmt::Assign {
 				targets: vec![cur_i.clone()],
 				values: vec![Expr::Bin {
@@ -89,7 +72,6 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 					r: Box::new(stp_i.clone()),
 				}],
 			};
-			// if (stp >= 0 and var > lim) or (stp < 0 and var < lim) then break end
 			let ge = Expr::Bin {
 				op: BinOp::Ge,
 				l: Box::new(stp_i.clone()),
@@ -147,23 +129,10 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 			vec![local, w]
 		}
 		Stmt::ForGen { vars, syms, iters, mut body } => {
-			// nested loops inside the body must be desugared first
 			desugar_block(&mut body, table, tmps);
 			let (n_iter, s_iter) = mk_local(table, "it");
 			let (n_state, s_state) = mk_local(table, "st");
 			let (n_ctrl, s_ctrl) = mk_local(table, "ctl");
-			// do
-			//   local iter, state, ctrl = iters...
-			//   while true do
-			//     local v1..vN, c2 = iter(state, ctrl)
-			//     if v1 == nil then break end
-			//     ctrl = c2
-			//     body
-			//   end
-			// end
-		// `local iter, state, control = <the for-in expression list>` —
-		// a single non-call expression is the default-iterator form
-		// (`for ... in t` ≡ `for ... in next, t, nil`)
 		let values: Vec<Option<Expr>> = if iters.len() == 1 && !is_call_expr(&iters[0]) {
 			vec![
 				Some(ident("next", None)),
@@ -185,11 +154,6 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 					ident(&n_ctrl, Some(s_ctrl)),
 				],
 			};
-			// Lua for convention: the iterator's return values go directly to
-			// the loop variables (1st..Nth); the 1st return value is the new
-			// control value and nil stops the loop.
-			// `local v1, ..., vN = iter(state, ctrl); if v1 == nil then break end
-			//  ctrl = v1; body`
 			let mut var_names = Vec::new();
 			let mut var_syms = Vec::new();
 			for (n, s) in vars.iter().zip(syms.iter()) {
@@ -237,9 +201,7 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 			})]
 		}
 		Stmt::Repeat { mut body, cond } => {
-			// nested loops inside the body must be desugared first
 			desugar_block(&mut body, table, tmps);
-			// while true do body; if cond then break end end
 			let check = Stmt::If {
 				cond,
 				thenb: Block {
@@ -261,8 +223,6 @@ fn desugar_stmt(stmt: Stmt, table: &mut SymTable, tmps: &mut Vec<String>) -> Vec
 			}]
 		}
 		other => {
-			// recurse into nested blocks/functions (incl. Local values with
-			// anonymous functions containing loops)
 			let mut s = other;
 			recurse_stmt(&mut s, table, tmps);
 			vec![s]
@@ -288,7 +248,6 @@ fn ident(name: &str, sym: Option<SymId>) -> Expr {
 }
 
 
-/// Recurse desugaring into nested blocks/functions of non-loop statements.
 fn recurse_stmt(s: &mut Stmt, table: &mut SymTable, tmps: &mut Vec<String>) {
 	match s {
 		Stmt::If { thenb, elsifs, elseb, .. } => {

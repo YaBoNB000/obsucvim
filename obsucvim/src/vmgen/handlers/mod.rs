@@ -1,19 +1,3 @@
-//! L6 VM — per-instruction interpreter handlers (建议1).
-//!
-//! Every VM opcode lives in its OWN file (jmp.rs, add.rs, ...) and
-//! returns its fixed interpreter code; the assembler asks each file for
-//! the opcodes it dispatches ("用哪个就返回哪个").
-//!
-//! 进阶 (建议1 advanced): each instruction carries several semantically
-//! identical FORMATS; every build picks one format per instruction at
-//! random, the dispatch leaf order is shuffled per generation and the
-//! wire codes are a per-build permutation (OpMap in isa.rs) — the VM
-//! layout is different on every build.
-//!
-//! Format variants are pure surface transformations (local renames,
-//! type-check hoisting, equivalent loop forms): semantics are identical
-//! by construction, and the full corpus matrix (lua51 + luau, VM on/off,
-//! multi-seed) gates every change.
 
 use crate::vmgen::strpool::StrPool;
 
@@ -62,11 +46,8 @@ pub mod vargc;
 pub mod vargtab;
 pub mod vargtabn;
 
-/// How many formats an instruction carries in the given profile.
 pub fn n_formats(name: &str, v15: bool) -> u8 {
 	match name {
-		// v15 Return must keep the exact `return U(out, 1, total)`
-		// tail so the CPS rewrite (signal-table form) can match it.
 		"Return" if v15 => 1,
 		_ => match name {
 			"Add" | "Sub" | "Mul" | "Div" | "Mod" | "Pow" => 3,
@@ -76,10 +57,6 @@ pub fn n_formats(name: &str, v15: bool) -> u8 {
 	}
 }
 
-/// The interpreter body of one opcode, in the format chosen for this
-/// build. `v15` selects the operand-scattering variant for the opcodes
-/// that walk contiguous register ranges (isa stage A). `mk` = the
-/// per-build MkStr mask constants (used only by mkstr.rs).
 pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool, mk: (u16, u16)) -> String {
 	match name {
 		"Jmp" => jmp::code(fmt),
@@ -170,12 +147,6 @@ pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool, mk: (u16, u16)) -> S
 	}
 }
 
-/// Shared format builder: the six arithmetic two-operand handlers
-/// (Add/Sub/Mul/Div/Mod/Pow) differ only in metamethod name and the
-/// raw expression. Formats:
-///   f0 — canonical shape (x/y temps, inline TYP checks)
-///   f1 — renamed temporaries (u/w)
-///   f2 — TYP results hoisted into locals before the branch
 pub(crate) fn bin_op_body(
 	fmt: u8,
 	mm: &str,
@@ -202,9 +173,6 @@ pub(crate) fn bin_op_body(
 	}
 }
 
-/// Shared format builder: the four comparison handlers (Lt/Le/Gt/Ge).
-/// `swapped` = the metamethod receives (y, x) because Lua defines the
-/// relation only for __lt/__le. Formats mirror bin_op_body.
 pub(crate) fn cmp_body(
 	fmt: u8,
 	native: &str,
@@ -231,7 +199,6 @@ pub(crate) fn cmp_body(
 			cxy = call("x", "y")
 		),
 		1 => {
-			// renamed temps: native expression re-targeted at u/w
 			let nat_uw = native.replace('x', "u").replace('y', "w");
 			format!(
 				"local u = V[b + 1]; local w = V[c + 1]; if TYP(u) == {number} and TYP(w) == {number} then V[a + 1] = {nat_uw} elseif TYP(u) == {string} and TYP(w) == {string} then V[a + 1] = {nat_uw} else local f = mget(u, {meta}) or mget(w, {meta}); if f then V[a + 1] = {cuw} else ERR({msg} .. TYP(u) .. {with} .. TYP(w), 0) end end",

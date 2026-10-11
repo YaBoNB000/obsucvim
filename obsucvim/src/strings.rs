@@ -1,16 +1,3 @@
-//! L2 string encryption.
-//!
-//! Every string literal in the program is replaced by a call to a runtime
-//! decoder (a chunk-level local, visible to all nested functions as an
-//! upvalue). Cipher: additive keystream (5.1-safe — no bitops needed, and
-//! Lua 5.1 and Luau share floor `%` semantics — verified):
-//!
-//!     enc[i] = (byte[i] + key[i mod k] + i) mod 256      (i is 1-based)
-//!     dec[i] = (byte[i] - key[i mod k] - i) mod 256
-//!
-//! The ciphertext is split into 3 chunks passed as separate arguments
-//! (unrolling). The key is embedded as three split string literals and
-//! expanded into a byte table at runtime — no contiguous key literal.
 
 use crate::ast::*;
 use crate::mangle::{gen_name, reserved_set};
@@ -137,8 +124,6 @@ fn expr_has_str(e: &Expr) -> bool {
 	}
 }
 
-/// Replace Str nodes with decoder calls. One pass — the Str arm builds fresh
-/// chunk Str nodes that are never revisited.
 fn xform_expr(e: &Expr, cfg: &Cfg) -> Expr {
 	match e {
 		Expr::Str { bytes, .. } => {
@@ -289,26 +274,6 @@ fn xform_block(b: &Block, cfg: &Cfg) -> Block {
 	}
 }
 
-/// Build the runtime loader. All loader locals get real SymIds (created in
-/// `table`) so the printer emits them as locals, not globals:
-///
-///   local K1, K2, K3 = "<chunk1>", "<chunk2>", "<chunk3>"
-///   local KC = K1 .. K2 .. K3
-///   local KT = {}
-///   for I = 1, #KC do KT[I] = string.byte(KC, I) end
-///   local function DEC(...)
-///     local P = { ... }
-///     local S = table.concat(P)
-///     local O = {}
-///     for I = 1, #S do
-///       local K = KT[((I - 1) % #KT) + 1]
-///       local D = string.byte(S, I) - K - I
-///       local R = D % 256
-///       if R < 0 then R = R + 256 end
-///       O[I] = string.char(R)
-///     end
-///     return table.concat(O)
-///   end
 pub(crate) fn build_loader(
 	table: &mut SymTable,
 	rng: &mut Rng,
@@ -370,10 +335,6 @@ pub(crate) fn build_loader(
 	let p = ident(&np, Some(sp));
 	let s = ident(&ns, Some(ss));
 	let o = ident(&no, Some(so));
-	// Loader-local references must carry their real names, not just sym
-	// bindings: a later re-resolve (the v15 shell re-resolves the already
-	// passed interpreter block inside the module table) looks Idents up
-	// by name, and an empty-name Ident falls through to a broken global.
 	let f1 = ident(&n1, Some(s1));
 	let f2 = ident(&n2, Some(s2));
 	let f3 = ident(&n3, Some(s3));

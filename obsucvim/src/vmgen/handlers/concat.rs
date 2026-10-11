@@ -1,8 +1,6 @@
-//! Concat — V[a] = V[b] .. V[c] with __concat fallback.
 
 use crate::vmgen::strpool::StrPool;
 
-/// f0 canonical; f1 renamed temporaries (u/w/tu/tw).
 pub fn code(fmt: u8, p: &mut StrPool) -> String {
 	let number = p.lit("number");
 	let string = p.lit("string");

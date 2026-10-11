@@ -1,12 +1,9 @@
-//! Deterministic PRNG (Park-Miller minimal standard, mod 2^31-1).
-//! Pure arithmetic — behavior identical across Lua 5.1 / Luau when ported,
-//! and reproducible: same seed => same sequence.
 
 pub struct Rng {
 	state: u64,
 }
 
-const MOD: u64 = 2_147_483_647; // 2^31 - 1
+const MOD: u64 = 2_147_483_647;
 const A: u64 = 48_271;
 
 impl Rng {
@@ -18,15 +15,6 @@ impl Rng {
 		Rng { state: s }
 	}
 
-	/// Next raw value in [1, MOD-1].
-	///
-	/// Split-multiply so both terms stay below 2^63:
-	/// state = 256*hi + lo  =>  A*state = A*lo + A*hi*256.
-	/// (The earlier version dropped the `* 256`, computing
-	/// A*(lo+hi) mod M instead — a degenerate map whose cycle is only
-	/// 231 states after ~4730 warmup: the ENTIRE obfuscation
-	/// randomization cycle-locked. Verified with an exact bignum
-	/// model; the split below is algebraically A*state mod M.)
 	pub fn next_raw(&mut self) -> u64 {
 		let lo = self.state % 256;
 		let hi = (self.state - lo) / 256;
@@ -39,15 +27,6 @@ impl Rng {
 		self.state
 	}
 
-	/// Float in (0, 1].
-	/// Int in [min, max] inclusive.
-	///
-	/// Uses the FULL period via 128-bit multiplicative reduction —
-	/// NEVER `next_raw() % span`: Park-Miller's LOW bits have short
-	/// cycles (period ~2^k for mod 2^k), so low-bit mod small spans
-	/// cycle through a tiny name/choice space. With a large reserved
-	/// set (VM template: hundreds of names) a retry loop over such a
-	/// short cycle loops forever (observed hang in gen_name).
 	pub fn int(&mut self, min: i64, max: i64) -> i64 {
 		if max < min {
 			return min;

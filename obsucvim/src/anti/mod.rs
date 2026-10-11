@@ -1,18 +1,4 @@
-//! Anti-debug stage modules (suggestion 2, 2026-09-05).
-//!
-//! Each anti-debug check is an independent stage source snippet. The
-//! guard assembler (guard.rs) composes a random ORDERING of the stages
-//! per build, so the anti-debug sequence differs build-to-build
-//! (anti-folder: anti1/anti3-style modules, randomized per build).
-//! Every stage is always present (strong baseline protection); only the
-//! ordering is randomized, which defeats a fixed single-step bypass
-//! without weakening any build.
-//!
-//! Each stage is a `local function stage_X() ... end` that closes over
-//! the guard preamble's upvalues (type/pcall/error/failed/abort/
-//! tripwire/canaries/env).
 
-/// Stage 1 — core globals must be real functions.
 pub const ANTI_CORE: &str = r###"	local function stage_core()
 		if
 			type(type) ~= "function"
@@ -29,8 +15,6 @@ pub const ANTI_CORE: &str = r###"	local function stage_core()
 	end
 "###;
 
-/// Stage 2 — environment sanity (getfenv/_G, negative-key roundtrip,
-/// pcall(error) must raise).
 pub const ANTI_ENV: &str = r###"	local function stage_env()
 		local gfe = (EV and EV["getfenv"]) or getfenv
 		if type(gfe) == "function" then
@@ -65,8 +49,6 @@ pub const ANTI_ENV: &str = r###"	local function stage_env()
 	end
 "###;
 
-/// Stage 3 — debug.info line probe + loader-hook (load/loadstring)
-/// native-source detection.
 pub const ANTI_DEBUG: &str = r###"	local function stage_debug()
 		local function lineProbe() return (nil)[1] end
 
@@ -134,8 +116,6 @@ pub const ANTI_DEBUG: &str = r###"	local function stage_debug()
 	end
 "###;
 
-/// Stage 4 — newproxy metatable tripwires + table canaries with locked
-/// __metatable.
 pub const ANTI_CANARY: &str = r###"	local function stage_canaries()
 		if type(newproxy) == "function" then
 			local proxyOk, proxy = pcall(newproxy, true)
@@ -186,7 +166,6 @@ pub const ANTI_CANARY: &str = r###"	local function stage_canaries()
 	end
 "###;
 
-/// Stage 5 — unpack probe + env print/warn identity.
 pub const ANTI_MISC: &str = r###"	local function stage_misc()
 		if type(unpack) == "function" then
 			local ok = pcall(unpack, {}, 0, 64)
@@ -208,7 +187,6 @@ pub const ANTI_MISC: &str = r###"	local function stage_misc()
 	end
 "###;
 
-/// (stage name, source, call-line) for the assembler.
 pub const STAGES: [(&str, &str, &str); 5] = [
 	("core", ANTI_CORE, "stage_core()"),
 	("env", ANTI_ENV, "stage_env()"),

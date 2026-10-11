@@ -1,16 +1,3 @@
-//! L4 numeric obfuscation: numeric literals are rewritten so no raw
-//! constant is directly searchable in the output.
-//!
-//! - integers: 2~4 signed-term sum/difference (small range) or a
-//!   `a * b + c` product form (large range) — every term is
-//!   seed-random, non-trivial (never 0/±1) and never equal to the
-//!   original value
-//! - floats: exact identity wraps only (`0 + x` / `x + 0` / `x * 1` /
-//!   `x / 1`) — ANY decomposition of a float changes its IEEE value,
-//!   so floats are never split
-//!
-//! The transform is value-exact (the matrix re-runs everything under
-//! both interpreters to prove it).
 
 use crate::ast::*;
 use crate::rng::Rng;
@@ -198,19 +185,14 @@ fn is_int_value(value: f64, isfloat: bool) -> bool {
 	!isfloat && value.fract() == 0.0 && value.abs() < 1e15
 }
 
-/// Rewrite one numeric literal.
 fn rw_num(value: f64, isfloat: bool, rng: &mut Rng) -> Expr {
 	if is_int_value(value, isfloat) {
 		let v = value as i64;
-		// 0/±1 are everywhere and trivial — decomposing them only adds
-		// noise
 		if v == 0 || v == 1 || v == -1 {
 			return num_expr(value, isfloat);
 		}
 		decompose_int(v, rng)
 	} else {
-		// float: exact identity wrap only (never split — any split
-		// changes the IEEE value)
 		let inner = num_expr(value, isfloat);
 		match rng.int(0, 3) {
 			0 => bin(BinOp::Add, num_expr(0.0, false), inner),
@@ -229,16 +211,12 @@ fn bin(op: BinOp, l: Expr, r: Expr) -> Expr {
 	}
 }
 
-/// Random magnitude in [lo, hi].
 fn mag(rng: &mut Rng, lo: i64, hi: i64) -> i64 {
 	rng.int(lo, hi)
 }
 
-/// Decompose an integer into a value-exact expression whose terms never
-/// include the original value and are all non-trivial.
 fn decompose_int(v: i64, rng: &mut Rng) -> Expr {
 	if v.abs() < 1_000_000 {
-		// 2~4 signed terms in [100, 1_000_000]; solve the last term
 		for _ in 0..12 {
 			let nterms = rng.int(2, 4) as usize;
 			let mut acc: i64 = 0;
@@ -252,12 +230,10 @@ fn decompose_int(v: i64, rng: &mut Rng) -> Expr {
 						ok = false;
 						break;
 					}
-					terms.push((BinOp::Add, t)); // sign handled below
+terms.push((BinOp::Add, t));
 					acc += t;
 				} else {
 					let t = mag(rng, 100, 1_000_000);
-					// the first term is always positive (the emitted chain
-					// starts with its literal; a leading sign would be lost)
 					let sub = k > 0 && rng.int(0, 1) == 1;
 					if sub {
 						acc -= t;
@@ -268,7 +244,6 @@ fn decompose_int(v: i64, rng: &mut Rng) -> Expr {
 				}
 			}
 			if ok && acc == v {
-				// left-associative chain of positive literals
 				let mut cur = num_expr(terms[0].1 as f64, false);
 				for (op, t) in &terms[1..] {
 					cur = bin(*op, cur, num_expr(*t as f64, false));
@@ -277,11 +252,9 @@ fn decompose_int(v: i64, rng: &mut Rng) -> Expr {
 			}
 		}
 	}
-	// large |v| (or sum failed): product form  a * b + c
-	// a in [100, 10000], b = v div a, c in [100, 2a) — no term equals v
 	let a = mag(rng, 100, 10_000);
 	let mut b = v.div_euclid(a);
-	let mut c = v.rem_euclid(a); // c in [0, a)
+let mut c = v.rem_euclid(a);
 	if c < 100 {
 		b -= 1;
 		c += a;
@@ -293,7 +266,6 @@ fn decompose_int(v: i64, rng: &mut Rng) -> Expr {
 mod tests {
 	use super::*;
 
-	/// Evaluate a Num/Add/Sub/Mul/Div chain.
 	fn eval(e: &Expr) -> f64 {
 		match e {
 			Expr::Num { value, .. } => *value,
@@ -403,7 +375,6 @@ mod tests {
 		let mut rng = Rng::new(99);
 		for v in [3.14f64, -2.5, 1e-7, 1.5e10, 100.0] {
 			let e = rw_num(v, true, &mut rng);
-			// must be a Bin with an integer 0 or 1 literal on one side
 			match &e {
 				Expr::Bin { op, l, r } => {
 					let one_side = |x: &Expr| matches!(

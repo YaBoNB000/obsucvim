@@ -1,13 +1,3 @@
-//! L6 VM — interpreter string pool.
-//!
-//! v15 stage E5 (F10): string pool. Legacy profiles inline quoted
-//! literals; v15 routes every meta/type/error/select literal through
-//! the boot-time MS table built from numeric char codes, so the
-//! visible output keeps almost no short string literals.
-//!
-//! Shared by the template assembler and the per-instruction handler
-//! files (建议1: one file per opcode, each returning fixed interpreter
-//! code) so every handler resolves its literals through one pool.
 
 use std::collections::HashMap;
 
@@ -32,7 +22,6 @@ impl StrPool {
 		}
 		format!("MS[{e}]", e = e + 1)
 	}
-	/// Boot table emission: `MS[k] = CHAR(...)` from numeric codes.
 	pub fn boot_block(&self) -> String {
 		let mut s = String::from("local MS = {}\n");
 		for (i, e) in self.entries.iter().enumerate() {

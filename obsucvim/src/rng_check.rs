@@ -1,4 +1,3 @@
-// quick standalone check (not part of the build)
 const MOD: u64 = 2_147_483_647;
 const A: u64 = 48_271;
 fn next_split(state: u64) -> u64 {
@@ -10,7 +9,6 @@ fn next_split(state: u64) -> u64 {
     if s == 0 { 1 } else { s }
 }
 fn main() {
-    // compare with the naive (u128 exact) version
     let mut a = 12345u64;
     let mut b = 12345u64;
     for _ in 0..100 {
@@ -20,7 +18,6 @@ fn main() {
         assert_eq!(a, b);
     }
     println!("split == exact for 100 steps: OK");
-    // brent for up to 2^20 steps to confirm no short cycle
     let mut power: u64 = 1;
     let mut lam: u64 = 1;
     let mut tortoise = 12345u64;

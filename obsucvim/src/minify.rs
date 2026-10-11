@@ -1,34 +1,6 @@
-//! L1 minify / whitespace compression (output layer).
-//!
-//! Token-aware single-line compression: the (printer's) output is
-//! re-lexed with the target dialect's lexer and the tokens are re-emitted
-//! with the minimal whitespace Lua's syntax requires.
-//!
-//! Whitespace is emitted between two adjacent tokens iff BOTH boundary
-//! characters are identifier characters ([0-9A-Za-z_]) — otherwise the two
-//! tokens would merge into one different, longer token, e.g.
-//!
-//!   `local x`  ->  `localx`      (one identifier!)
-//!   `a and b`  ->  `aandb`
-//!   `else if`  ->  `elseif`
-//!   `not not`  ->  `notnot`
-//!   `end do`   ->  `enddo`
-//!   `1 end`    ->  `1end` (lexes fine, but the rule is uniform & safe)
-//!
-//! Everything else is safe to glue: `)` + `end`, `"` + `end`, `..` + `x`,
-//! `+` + `-`, `#` + `t`, `:` + `name`, ... Newlines/indentation are not
-//! syntactically required in Lua (the only construct that depends on a
-//! line break is a short comment, and comments are stripped by the lexer —
-//! standard minify behavior). Result: one line, minimal bytes.
-//!
-//! Strings are re-encoded from their decoded bytes with the printer's
-//! byte-exact `print_string_bytes` (escape rules + digit-merge guard), so
-//! string content round-trips exactly.
 
 use crate::lexer::{Lexer, TokKind, Token};
 
-/// Minify Lua source: returns a single-line, whitespace-minimal version
-/// with identical token sequence (hence identical semantics).
 pub fn minify(src: &str, luau: bool) -> Result<String, String> {
 	let mut lex = Lexer::new(src, luau);
 	let toks = lex.tokens().map_err(|e| e.to_string())?;
@@ -48,16 +20,10 @@ pub fn minify(src: &str, luau: bool) -> Result<String, String> {
 			if is_ident_char(p) && is_ident_char(first) {
 				out.push(' ');
 			} else if p == b'-' && first == b'-' {
-				// `- -b` (binary minus + unary minus / negative number)
-				// would glue into `--` and start a comment that eats the
-				// rest of the line
 				out.push(' ');
 			} else if text == ".." && (p >= b'0' && p <= b'9') {
-				// `1 .. 2` must stay apart: `1..2` lexes as the malformed
-				// number `1.2` (Luau rejects it outright)
 				out.push(' ');
 			} else if prev_was_concat && (first == b'.' || (first >= b'0' && first <= b'9')) {
-				// `..` glued to `.5` / `2` makes `...5` / `1.2` — malformed
 				out.push(' ');
 			}
 		}
@@ -81,10 +47,6 @@ fn token_text(t: &Token) -> Result<String, String> {
 		TokKind::Name | TokKind::Punct | TokKind::Label => Ok(t.text.clone()),
 		TokKind::Num => Ok(num_text(t.num, t.isfloat)),
 		TokKind::Str => {
-			// emit the literal EXACTLY as the printer wrote it (the lexer
-			// captured the raw span) — re-encoding from decoded bytes could
-			// re-introduce high-byte passthrough (CJK garbage) for
-			// ciphertext chunks that happen to contain no control bytes
 			Ok(t.text.clone())
 		}
 		TokKind::Interp => Err("minify: backtick interpolation reached output \
@@ -93,7 +55,6 @@ fn token_text(t: &Token) -> Result<String, String> {
 	}
 }
 
-/// Must match the printer's numeric emission exactly (round-trip).
 fn num_text(v: f64, isfloat: bool) -> String {
 	if v.is_nan() {
 		return "0.0/0.0".to_string();
@@ -116,7 +77,6 @@ fn num_text(v: f64, isfloat: bool) -> String {
 mod tests {
 	use super::*;
 
-	/// minify must not change the token sequence
 	fn assert_same_tokens(src: &str, minified: &str) {
 		let a = Lexer::new(src, false)
 			.tokens()
@@ -169,7 +129,7 @@ mod tests {
 			("1 .. 2", "1 .. 2"),
 			("1 .. 2 .. 3", "1 .. 2 .. 3"),
 			("x .. 2", "x.. 2"),
-			("1 .. .5", "1 .. 0.5"), // .5 re-encodes as 0.5 (same value)
+("1 .. .5", "1 .. 0.5"),
 			("a .. b", "a..b"),
 		];
 		for (src, want) in cases {
@@ -181,7 +141,6 @@ mod tests {
 
 	#[test]
 	fn double_minus_needs_space() {
-		// `- - 5` and `a - -b`: gluing would start a `--` comment
 		let cases = [
 			("- - 5", "- -5"),
 			("a - -b", "a- -b"),
@@ -213,9 +172,6 @@ mod tests {
 
 	#[test]
 	fn strings_roundtrip() {
-		// decoded bytes: a, NUL, b, LF, ' ', '1' — re-encoded byte-exact
-		// (NUL -> \0; LF not followed by a digit -> 2-digit \10; the
-		// 3-digit zero-pad digit-merge guard is covered by printer tests)
 		let src = "local s = \"a\\0b\\10 1\"\nprint(s)\n";
 		let m = minify(src, false).unwrap();
 		assert_same_tokens(src, &m);
@@ -228,7 +184,6 @@ mod tests {
 			env!("CARGO_MANIFEST_DIR"), "/tests/cases/edge.lua"
 		))
 		.unwrap();
-		// full pipeline input equivalent: minify twice via the lexer
 		let m1 = minify(&src, false).unwrap();
 		let m2 = minify(&m1, false).unwrap();
 		assert_eq!(m1, m2, "minify is not idempotent");
@@ -236,9 +191,6 @@ mod tests {
 
 	#[test]
 	fn numbers_roundtrip() {
-		// forms the printer actually emits: integer / plain float / large
-		// float (Rust {:?} renders 1.5e10 as 15000000000.0 — the printer
-		// does too, so minify keeps it) / tiny float (scientific kept)
 		let src = "local a = 42\nlocal b = 3.14\nlocal c = 1.5e10\nlocal d = 1e-7\nprint(a, b, c, d)\n";
 		let m = minify(src, false).unwrap();
 		assert_same_tokens(src, &m);

@@ -1,14 +1,3 @@
-//! AST -> source printer.
-//!
-//! Precedence/paren rules mirror the Pratt parser exactly:
-//! - Bin child of Bin: effective child prec = min(left,right prio);
-//!   left side: parens if eff < parent.left;
-//!   right side: parens if eff < parent.right, or (eff == parent.right and
-//!   parent is left-associative).
-//! - Unary child: right side of Bin -> never needs parens (parser accepts a
-//!   unary operand at the right position); left side -> parens if 8 <
-//!   parent.left; operand of Unary -> parens if eff < 8 (Un child: never).
-//! - This reproduces: -2^2 = -(2^2); 2^-3; (a..b)..c; 10/(3/2); 2^3^2 ...
 
 use crate::ast::*;
 use crate::symtab::SymTable;
@@ -17,27 +6,15 @@ pub struct Printer<'a> {
 	pub table: &'a SymTable,
 	pub out: String,
 	pub indent: usize,
-	/// Luau target: fold `x = x op y` into compound `x op= y` (F24
-	/// sample shape). Only pure targets (ident / dot / index chains
-	/// without calls) fold, so lvalue evaluation counts never change.
 	pub luau_fold: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Ctx {
-	/// no parent (statement level, table field, call arg, etc.)
 	Top,
-	/// operand of a binary op; `right` marks the right-hand side
 	Bin(BinOp, bool),
-	/// operand of a unary op
 	Unary,
-	/// base of a method call or function call — literals and non-atomic
-	/// expressions need parens (`"x":m()`, `("a" .. "b"):len()`)
 	Base,
-	/// base of a `.name` / `:name` / `[idx]` suffix. Only prefix-exps that
-	/// are atomics may stay bare: a NUMBER literal followed by `.` merges
-	/// into the number token (`5.nope` = malformed number in both
-	/// dialects), and tables/functions/varargs can't be suffixed at all.
 	Suffix,
 }
 
@@ -51,7 +28,6 @@ impl<'a> Printer<'a> {
 		}
 	}
 
-	/// Luau-target printer: enables compound-assignment folding.
 	pub fn new_luau(table: &'a SymTable) -> Printer<'a> {
 		Printer {
 			table,
@@ -69,9 +45,6 @@ impl<'a> Printer<'a> {
 		for (i, s) in b.stmts.iter().enumerate() {
 			self.print_stmt(s);
 			if i + 1 < b.stmts.len() {
-				// explicit statement separator: survives minify's
-				// re-lexing and gives v15-family outputs the sample's
-				// `stmt;stmt` shape (fingerprint F11 needs `...;if ...`)
 				self.out.push_str(";\n");
 			}
 		}
@@ -135,7 +108,6 @@ impl<'a> Printer<'a> {
 			}
 			Stmt::Assign { targets, values } => {
 				self.out.push_str(&self.ind());
-				// Luau compound fold: `x = x op y` -> `x op= y`
 				if self.luau_fold && targets.len() == 1 && values.len() == 1 {
 					if let Expr::Bin { op, l, r } = &values[0] {
 						if let Some(sym) = compound_sym(op) {
@@ -311,9 +283,6 @@ impl<'a> Printer<'a> {
 
 	fn print_func_signature(&mut self, f: &FuncDef) {
 		self.out.push('(');
-		// for method declarations (`:name`), params[0] is the implicit `self`
-		// provided by the `:` syntax — the body references it by the fixed
-		// name `self` (keep_name), so skip it in the printed signature
 		let start = if f.has_self { 1 } else { 0 };
 		for i in start..f.params.len() {
 			if i > start {
@@ -355,18 +324,9 @@ impl<'a> Printer<'a> {
 				self.out.push('"');
 			}
 			Expr::LongStr { bytes } => {
-				// clash-free bracket level: content must not contain the
-				// matching `]=*]` closer (finite content -> a level
-				// exists). Lua 5.1 additionally rejects a bare `[[`
-				// nested inside a level-0 long string ("nesting of
-				// [[...]] is deprecated"), so bump to >= 1 when the
-				// content contains `[[`.
 				let mut lvl = 0usize;
 				loop {
 					let closer = format!("]{}]", "=".repeat(lvl));
-					// the FIRST closer in content+closer must land exactly
-					// at the content end (content ending in `]=*` would
-					// otherwise pull the close forward, stranding a `]`)
 					let mut joined = bytes.to_vec();
 					joined.extend_from_slice(closer.as_bytes());
 					let first = joined
@@ -395,8 +355,6 @@ impl<'a> Printer<'a> {
 			}
 			Expr::Nil => self.out.push_str("nil"),
 			Expr::IfExpr { arms, elseb } => {
-				// Luau restricts bare if-expressions in operand position;
-				// parenthesize everywhere except statement-level Top
 				let par = !matches!(ctx, Ctx::Top);
 				if par {
 					self.out.push('(');
@@ -446,9 +404,6 @@ impl<'a> Printer<'a> {
 			}
 			Expr::Bin { op, l, r } => {
 			if *op == BinOp::Idiv {
-				// // desugared to math.floor(l / r) — valid in both
-				// dialects. Operands need Bin-context parens:
-				// (a + b) // c must print math.floor((a + b) / c)
 				self.out.push_str("math.floor(");
 				self.print_expr(l, Ctx::Bin(BinOp::Div, false));
 				self.out.push_str(" / ");
@@ -530,7 +485,6 @@ impl<'a> Printer<'a> {
 				self.out.push_str("()");
 			}
 			[single] if matches!(single, Expr::Table { .. }) => {
-				// f{...}  (parenless table form)
 				self.print_expr(single, Ctx::Top);
 			}
 			_ => {
@@ -563,7 +517,6 @@ impl<'a> Printer<'a> {
 		if is_int && !isfloat {
 			self.out.push_str(&format!("{}", v as i64));
 		} else {
-			// shortest round-trip; Rust's f64 Debug always keeps a '.' or 'e'
 			self.out.push_str(&format!("{:?}", v));
 		}
 	}
@@ -581,19 +534,6 @@ fn is_printable_key(b: &[u8]) -> bool {
 		&& b[0] != b'0'
 }
 
-/// Byte-exact string literal content.
-///
-/// `is_binary` (ciphertext / key-stream / VM bytecode blobs): EVERY
-/// non-printable-ASCII byte is \ddd-escaped — no UTF-8 passthrough, which
-/// would otherwise emit random CJK garbage from arbitrary ciphertext bytes
-/// (high bytes that happen to form valid UTF-8, e.g. E8 AF 9C = 嘱).
-///
-/// `!is_binary` (user strings): UTF-8-aware — valid printable UTF-8 passes
-/// through (readable 你好 stays readable); everything else is escaped.
-///
-/// IMPORTANT: a decimal escape followed by a literal digit byte would merge
-/// on re-lex (`\1` + `2` => `\12`). When the next byte is a digit we emit a
-/// 3-digit zero-padded escape (`\001`) so the lexer stops at exactly 3 digits.
 pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 	let mut out = String::new();
 	let mut i = 0usize;
@@ -615,7 +555,6 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 			}
 			i += 1;
 		} else if is_binary {
-			// ciphertext: raw high bytes must never reach the literal
 			if next_is_digit {
 				out.push_str(&format!("\\{:03}", b));
 			} else {
@@ -623,7 +562,6 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 			}
 			i += 1;
 		} else {
-			// try to decode a UTF-8 sequence
 			let len = match b {
 				0xC0..=0xDF => 2,
 				0xE0..=0xEF => 3,
@@ -649,10 +587,7 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 	out
 }
 
-/// Parenthesis decision. Returns true when `e` must be wrapped in parens
-/// inside `ctx`.
 	fn needs_parens(e: &Expr, ctx: Ctx) -> bool {
-	// base of a call: anything that is not an atomic prefixexp needs parens
 	if let Ctx::Base = ctx {
 		match e {
 			Expr::Ident { .. }
@@ -664,7 +599,6 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 			_ => return true,
 		}
 	}
-	// suffix base: only bare prefix-exps (no literals, no tables)
 	if let Ctx::Suffix = ctx {
 		match e {
 			Expr::Ident { .. } | Expr::Dot { .. } | Expr::Index { .. } | Expr::Call { .. }
@@ -689,8 +623,6 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 			lp.min(rp) < 8
 		}
 		(Expr::Un { .. }, Ctx::Bin(_, right)) => {
-			// right side: parser always accepts a unary operand here
-			// (2^-3, a and not b); left side: treat as prec 8
 			if right {
 				false
 			} else {
@@ -706,8 +638,6 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 	}
 }
 
-/// Compound-fold operator text (Luau). Idiv excluded: it prints as
-/// math.floor(l / r), and Concat has no `..=`.
 fn compound_sym(op: &BinOp) -> Option<&'static str> {
 	match op {
 		BinOp::Add => Some("+="),
@@ -720,8 +650,6 @@ fn compound_sym(op: &BinOp) -> Option<&'static str> {
 	}
 }
 
-/// Pure lvalue: identifier / dot / index chains without calls or other
-/// side effects — folding keeps the lvalue evaluation count identical.
 fn foldable_target(e: &Expr) -> bool {
 	match e {
 		Expr::Ident { .. } => true,
@@ -731,7 +659,6 @@ fn foldable_target(e: &Expr) -> bool {
 	}
 }
 
-/// Structural equality for the compound fold (`x = x op y` detection).
 fn expr_same(a: &Expr, b: &Expr) -> bool {
 	match (a, b) {
 		(Expr::Ident { sym: sa, .. }, Expr::Ident { sym: sb, .. }) => sa == sb,
@@ -748,7 +675,6 @@ fn expr_same(a: &Expr, b: &Expr) -> bool {
 	}
 }
 
-/// Public entry: print a whole chunk.
 pub fn print_chunk(table: &SymTable, block: &Block) -> String {
 	let mut p = Printer::new(table);
 	p.print_block(block);
@@ -756,7 +682,6 @@ pub fn print_chunk(table: &SymTable, block: &Block) -> String {
 	p.out
 }
 
-/// Luau-target entry: compound-assignment folding enabled.
 pub fn print_chunk_luau(table: &SymTable, block: &Block) -> String {
 	let mut p = Printer::new_luau(table);
 	p.print_block(block);
