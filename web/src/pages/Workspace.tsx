@@ -73,7 +73,8 @@ export function Workspace() {
       const msg = e instanceof Error ? e.message : "";
       if (msg.startsWith("SOURCE_TOO_LARGE")) setError(t("ws.tooLarge"));
       else if (msg === "ENGINE_TIMEOUT") setError(t("ws.timeout"));
-      else if (msg === "UNAUTHORIZED" || msg.startsWith("QUOTA_EXCEEDED")) setError(t("ws.quotaEmpty"));
+      else if (msg.startsWith("QUOTA_EXCEEDED")) setError(t("ws.quotaEmpty"));
+      else if (msg === "UNAUTHORIZED") setError(t("ws.error"));
       else setError(msg || t("ws.error"));
     } finally {
       setRunning(false);

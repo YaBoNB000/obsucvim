@@ -242,11 +242,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const res = await fetch("/api/me", { headers: authHeaders() });
         const d = (await res.json()) as ApiEnvelope;
         if (res.ok && d.quota) setQuota(d.quota);
+        else if (res.status === 401) {
+          clearToken();
+          setUser(null);
+        }
       } catch {
         /* ignore */
       }
     })();
   }, []);
+
+  // 页面获得焦点时刷新额度（防止长时间停留后状态过期）
+  useEffect(() => {
+    const onFocus = () => refreshQuota();
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") onFocus();
+    });
+    return () => window.removeEventListener("focus", onFocus);
+  }, [refreshQuota]);
 
   const value = useMemo<AuthValue>(
     () => ({

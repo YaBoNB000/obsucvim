@@ -80,7 +80,7 @@ export interface ObfuscatorEngine {
 
 export const MAX_SOURCE_BYTES = 1024 * 1024;
 export const ENGINE_TIMEOUT_MS = 60_000;
-export const DAILY_FREE_QUOTA = 10;
+export const DAILY_FREE_QUOTA = 30;
 export const WATERMARK_LINE = "-- This file was obfuscated by Obsucvim.";
 
 export function appliedNames(o: ObfuscationOptions): string[] {
