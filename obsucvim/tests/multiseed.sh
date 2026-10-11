@@ -53,6 +53,11 @@ done
 # R064 handoff canary is intentionally separate from tests/cases: it is a
 # 7KB nested-upvalue/vararg specimen and now sweeps the historical failure
 # seeds that the general corpus did not cover.
+if ! bash "$ROOT/tests/call_window_noise_test.sh" > /tmp/callwindow_multiseed.log 2>&1; then
+	echo "FAIL [call-window-noise] dead-register noise hit a call window"
+	tail -5 /tmp/callwindow_multiseed.log
+	fail=$((fail + 1))
+fi
 if ! bash "$ROOT/tests/r064_seed_stability_test.sh"; then
 	fail=$((fail + 1))
 fi

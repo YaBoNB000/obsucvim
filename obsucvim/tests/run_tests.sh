@@ -205,6 +205,13 @@ if ! bash "$ROOT/tests/r064_seed_stability_test.sh"; then
 	fail=$((fail + 1)); failed+=("r064/seed-stability")
 fi
 
+# H3-6: dead-register noise must not write into open dynamic call-result
+# windows (stress_multival seed corruption class, fixed 2026-10-11).
+if ! bash "$ROOT/tests/call_window_noise_test.sh"; then
+	echo "FAIL [call-window-noise] dead-register noise hit a call window"
+	fail=$((fail + 1)); failed+=("h3-6/call-window-noise")
+fi
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

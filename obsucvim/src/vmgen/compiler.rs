@@ -649,6 +649,24 @@ impl<'a> Ctx<'a> {
 			active_flags.extend(std::iter::repeat(false).take(nop_count));
 			nr.shuffle(&mut active_flags);
 
+			// H3-6 (2026-10-11, stress_multival seed-bug fix): dynamic
+			// call-result windows. Call/CallE/CallM place their results at
+			// logical base+1..base+nout at RUNTIME; nout (callee return
+			// count / vargc) is unknown at build time, so those registers
+			// were never reserved. Dead-register noise writing inside an
+			// open window silently corrupts results (root cause analysis:
+			// research/antidebug-20261009/root-cause/). A window opens at
+			// the call and closes at the consumer that reads or overwrites
+			// the results: the next Call/CallE/CallM/CallT/Return.
+			let orig_len = self.code.len();
+			let window_mask = call_window_mask(&self.code);
+			let allowed: Vec<usize> = (0..orig_len)
+				.filter(|&p| !window_mask[p])
+				.collect();
+			// Position 0 precedes every window (windows cover call_idx+1..),
+			// so `allowed` is never empty and active noise stays placeable.
+			let mut placements: Vec<(usize, Instr)> = Vec::with_capacity(active_flags.len());
+
 			for active in active_flags {
 				let ins = if active {
 					let dst = dead_base + nr.int(0, dead_regs as i64 - 1) as u16;
@@ -669,9 +687,50 @@ impl<'a> Ctx<'a> {
 					Instr::op(Op::Nop)
 				};
 				// 插在最终终止指令之前，避免噪声全部落到不可达尾部。
-				let max_pos = self.code.len().saturating_sub(1);
-				let pos = nr.int(0, max_pos as i64) as usize;
+				// Positions are drawn against the PRE-NOISE length so they
+				// index `window_mask` (original coordinates); a forbidden
+				// draw is relocated deterministically onto an allowed
+				// position instead of being dropped, keeping the
+				// nop/active accounting exact.
+				let drawn = nr.int(0, orig_len as i64 - 1) as usize;
+				let pos = if window_mask[drawn] {
+					allowed[drawn % allowed.len()]
+				} else {
+					drawn
+				};
+				placements.push((pos, ins));
+			}
+			// Descending original positions: each insertion leaves lower
+			// original coordinates valid in the growing list, so every
+			// `pos` still lands before its intended original instruction.
+			placements.sort_by(|a, b| b.0.cmp(&a.0));
+			for (pos, ins) in placements {
 				self.insert_noise_instr(pos, ins);
+			}
+
+			// H3-6 build-time invariant: while a call window is open, no
+			// instruction may target a dead register (operand a in a
+			// Reg/Base role). Legit code never addresses registers >=
+			// dead_base, so this catches dead-register writes from ANY
+			// future pass, not just this injector.
+			let final_mask = call_window_mask(&self.code);
+			for (idx, ins) in self.code.iter().enumerate() {
+				let is_window_op = matches!(
+					ins.op,
+					Op::Call | Op::CallE | Op::CallM | Op::CallT | Op::Return
+				);
+				assert!(
+					!(final_mask[idx]
+						&& !is_window_op
+						&& ins.op != Op::Nop
+						&& matches!(Self::op_roles(ins.op)[0], ORole::Reg | ORole::Base)
+						&& ins.a >= dead_base),
+					"H3-6 invariant violated: fn {} instruction {} targets dead \
+					 register {} inside an open call-result window",
+					fn_index,
+					idx,
+					ins.a
+				);
 			}
 		} else {
 			// legacy profile 保持原 M5 行为，H3 仅作用于 v15。
@@ -2954,6 +3013,39 @@ fn is_call(e: &Expr) -> bool {
 	matches!(e, Expr::Call { .. } | Expr::Method { .. })
 }
 
+/// H3-6 (2026-10-11): positions where inserting a register-writing
+/// instruction would land inside an OPEN dynamic call-result window.
+///
+/// Call/CallE/CallM write their results to logical registers
+/// base+1..base+nout at RUNTIME; nout is not known at build time, so the
+/// window extends unboundedly above the call base. The consumer that ends
+/// the window is the next Call/CallE/CallM/CallT/Return instruction (it
+/// reads the results via lastbase/lastn or overwrites them). `mask[p] ==
+/// true` means: an instruction inserted BEFORE original position p executes
+/// after the call but before its consumer — writing any register > base
+/// there corrupts results that were never reserved (the stress_multival
+/// seed corruption; see research/antidebug-20261009/root-cause/).
+pub(crate) fn call_window_mask(code: &[Instr]) -> Vec<bool> {
+	let mut mask = vec![false; code.len()];
+	let mut open = false;
+	for (idx, ins) in code.iter().enumerate() {
+		let opens = matches!(ins.op, Op::Call | Op::CallE | Op::CallM);
+		let closes =
+			matches!(ins.op, Op::Call | Op::CallE | Op::CallM | Op::CallT | Op::Return);
+		if open {
+			// insertion before this instruction is inside the open window
+			mask[idx] = true;
+			if closes {
+				open = false;
+			}
+		}
+		if opens {
+			open = true;
+		}
+	}
+	mask
+}
+
 fn call_arg_info(e: &Expr) -> (u16, bool) {
 	match e {
 		Expr::Call { args, .. } => {
@@ -3267,6 +3359,55 @@ mod dbg {
 	/// v15 stage A: verify the scatter post-pass — S slots distinct and
 	/// spread beyond the dense range, wire operands scattered, consts
 	/// padded.
+	#[test]
+	fn call_window_mask_covers_call_to_consumer() {
+		// return f() — the R065 corruption shape: noise between Call and
+		// Return overwrote the unreserved result window.
+		let code = [
+			Instr::op(Op::Nop),
+			Instr::abcd(Op::Call, 0, 0, 255, 1),
+			Instr::op(Op::Nop),
+			Instr::abcd(Op::Return, 0, 255, 0, 0),
+		];
+		assert_eq!(call_window_mask(&code), [false, false, true, true]);
+	}
+
+	#[test]
+	fn call_window_mask_chains_consumers_and_closes_on_return() {
+		// g(f(...)): the outer call is the inner window's consumer and
+		// opens its own; Return merges the last one. After the closing
+		// Return the mask opens again.
+		let code = [
+			Instr::abcd(Op::CallE, 0, 0, 0, 0),
+			Instr::abcd(Op::CallM, 0, 1, 255, 0),
+			Instr::abcd(Op::Return, 0, 255, 0, 0),
+			Instr::op(Op::Nop),
+		];
+		assert_eq!(call_window_mask(&code), [false, true, true, false]);
+	}
+
+	#[test]
+	fn call_window_mask_empty_without_calls() {
+		let code = [
+			Instr::abcd(Op::LoadK, 0, 0, 0, 0),
+			Instr::abcd(Op::Add, 0, 0, 0, 0),
+			Instr::abcd(Op::Return, 0, 0, 0, 0),
+		];
+		assert_eq!(call_window_mask(&code), [false, false, false]);
+	}
+
+	#[test]
+	fn call_window_mask_callt_closes_but_never_opens() {
+		let code = [
+			Instr::abcd(Op::Call, 0, 0, 255, 0),
+			Instr::abcd(Op::CallT, 0, 0, 0, 0),
+			Instr::op(Op::Nop),
+		];
+		// CallT stores results into a table, not a register window, so it
+		// acts only as a consumer/closer of the previous window.
+		assert_eq!(call_window_mask(&code), [false, true, false]);
+	}
+
 	#[test]
 	fn scatter_layout_properties() {
 		let src = "local function f(a, b, c) local x = a + b * c; local y = x - a; return y, x end return f(1, 2, 3)";
