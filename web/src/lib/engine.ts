@@ -3,10 +3,9 @@
  *  Obsucvim 引擎接入层  (src/lib/engine.ts)
  * ----------------------------------------------------------------------------
  *  产品形态唯一：v15 管线（无强度预设）。选项与 obsucvim CLI 旗标一一对应：
- *    变换   L1 改名/压缩 · L2 字符串加密 · L3 平坦化/垃圾代码 · L4 数字重写
- *           L5 全程序加密 · L7 防篡改 · 反调试环境守卫
- *    保护   executor 认证绑定（--bind-executor，默认开启的底层保护层）
- *           环境检查组 tier-1+tier-2（--env-check）· 环境绑定 roblox
+ *    变换   改名 · 压缩 · 字符串加密 · 平坦化 · 垃圾代码 · 数字重写 · 全程序加密
+ *    固定   防篡改 · 反调试环境守卫 · executor 认证绑定 · 环境检查组
+ *           tier-1+tier-2 · 环境绑定 roblox（五项运行时保护全开，非选项）
  *    水印   产物首行固定英文水印（引擎行为，非选项）
  *
  *  引擎来源（自动探测）：
@@ -43,10 +42,6 @@ export interface ObfuscationOptions {
   numbers: boolean;
   /** L5 全程序加密（--no-body） */
   body: boolean;
-  /** L7 防篡改（--no-antidbg） */
-  antidbg: boolean;
-  /** 反调试环境守卫前导（--no-guard） */
-  guard: boolean;
   /* ---- 元信息 ---- */
   seed: string;
 }
@@ -59,8 +54,6 @@ export const DEFAULT_OPTIONS: ObfuscationOptions = {
   junk: true,
   numbers: true,
   body: true,
-  antidbg: true,
-  guard: true,
   seed: "",
 };
 
@@ -78,8 +71,6 @@ export function buildCliArgs(o: ObfuscationOptions): string[] {
   if (!o.junk) args.push("--no-junk");
   if (!o.numbers) args.push("--no-numbers");
   if (!o.body) args.push("--no-body");
-  if (!o.antidbg) args.push("--no-antidbg");
-  if (!o.guard) args.push("--no-guard");
   return args;
 }
 
@@ -122,20 +113,20 @@ export const WATERMARK_LINE = "-- This file was obfuscated by Obsucvim.";
 export function appliedNames(o: ObfuscationOptions): string[] {
   const list: string[] = [
     "英文水印首行",
-    "v15 结构克隆（模块表 + CPS 引导）",
+    "v15 结构克隆",
     "executor 认证绑定",
-    "环境检查组（tier-1 + tier-2）",
+    "环境检查组",
     "环境绑定（Roblox）",
+    "防篡改",
+    "反调试环境守卫",
   ];
-  if (o.mangle) list.push("标识符重命名 (L1)");
-  if (o.strings) list.push("字符串加密 (L2)");
-  if (o.flatten) list.push("控制流平坦化 (L3)");
-  if (o.junk) list.push("垃圾代码注入 (L3)");
-  if (o.numbers) list.push("数字字面量重写 (L4)");
-  if (o.body) list.push("全程序加密 (L5)");
-  if (o.antidbg) list.push("防篡改 (L7)");
-  if (o.guard) list.push("反调试环境守卫");
-  if (o.minify) list.push("单行压缩 (L1)");
+  if (o.mangle) list.push("标识符重命名");
+  if (o.strings) list.push("字符串加密");
+  if (o.flatten) list.push("控制流平坦化");
+  if (o.junk) list.push("垃圾代码注入");
+  if (o.numbers) list.push("数字字面量重写");
+  if (o.body) list.push("全程序加密");
+  if (o.minify) list.push("单行压缩");
   return list;
 }
 
@@ -260,8 +251,8 @@ export const mockEngine: ObfuscatorEngine = {
       if (options.flatten) log.push({ level: "info", text: "控制流平坦化：状态机调度" });
       if (options.junk) log.push({ level: "info", text: "垃圾代码注入：死分支 + 不变量噪声" });
       if (options.body) log.push({ level: "info", text: "L5 全程序加密：载荷整体封存" });
-      if (options.antidbg) log.push({ level: "info", text: "L7 防篡改：完整性校验 lane" });
-      if (options.guard) log.push({ level: "info", text: "反调试环境守卫前导" });
+      log.push({ level: "info", text: "防篡改：完整性校验 lane（固定开启）" });
+      log.push({ level: "info", text: "反调试环境守卫前导（固定开启）" });
       log.push({ level: "info", text: "v15 管线：模块表 + CPS 引导装配" });
       log.push({ level: "info", text: "executor 认证绑定：EXG 守卫令牌折入钥匙流（默认底层保护）" });
       log.push({ level: "info", text: "环境检查组：tier-1+tier-2 常量挑战，差值静默投毒" });

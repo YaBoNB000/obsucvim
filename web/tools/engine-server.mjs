@@ -38,8 +38,6 @@ function buildCliArgs(o) {
   if (!o.junk) args.push("--no-junk");
   if (!o.numbers) args.push("--no-numbers");
   if (!o.body) args.push("--no-body");
-  if (!o.antidbg) args.push("--no-antidbg");
-  if (!o.guard) args.push("--no-guard");
   return args;
 }
 
@@ -81,20 +79,20 @@ function run(cmd, args, { input, timeoutMs }) {
 function appliedNames(o) {
   const list = [
     "英文水印首行",
-    "v15 结构克隆（模块表 + CPS 引导）",
+    "v15 结构克隆",
     "executor 认证绑定",
-    "环境检查组（tier-1 + tier-2）",
+    "环境检查组",
     "环境绑定（Roblox）",
+    "防篡改",
+    "反调试环境守卫",
   ];
-  if (o.mangle) list.push("标识符重命名 (L1)");
-  if (o.strings) list.push("字符串加密 (L2)");
-  if (o.flatten) list.push("控制流平坦化 (L3)");
-  if (o.junk) list.push("垃圾代码注入 (L3)");
-  if (o.numbers) list.push("数字字面量重写 (L4)");
-  if (o.body) list.push("全程序加密 (L5)");
-  if (o.antidbg) list.push("防篡改 (L7)");
-  if (o.guard) list.push("反调试环境守卫");
-  if (o.minify) list.push("单行压缩 (L1)");
+  if (o.mangle) list.push("标识符重命名");
+  if (o.strings) list.push("字符串加密");
+  if (o.flatten) list.push("控制流平坦化");
+  if (o.junk) list.push("垃圾代码注入");
+  if (o.numbers) list.push("数字字面量重写");
+  if (o.body) list.push("全程序加密");
+  if (o.minify) list.push("单行压缩");
   return list;
 }
 
@@ -179,7 +177,7 @@ const server = createServer(async (req, res) => {
     const elapsedMs = Date.now() - t0;
     log.push({ level: "info", text: `[2/4] Rust 引擎执行完成 · rc=0 · ${elapsedMs} ms` });
     log.push({ level: "info", text: `保护通道：${appliedNames(options).join(" · ")}` });
-    log.push({ level: "info", text: "运行时保护全开（executor 绑定 + 环境检查组 + Roblox 环境绑定）：产物只在完整 Roblox executor 环境内正确运行" });
+    log.push({ level: "info", text: "运行时保护全开（executor 绑定 + 环境检查组 + Roblox 环境绑定 + 防篡改 + 反调试守卫）：产物只在完整 Roblox executor 环境内正确运行" });
 
     // 可选：产物语法校验（luau-compile 存在时；无 stdin 模式，走临时文件）
     if (existsSync(LUAUC)) {

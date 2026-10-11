@@ -1,22 +1,12 @@
-import { useState } from "react";
 import { useI18n } from "../lib/i18n";
-import { useAuth, loadDefaults, saveDefaults } from "../lib/store";
-import { DEFAULT_OPTIONS, ENGINE, DAILY_FREE_QUOTA, type ObfuscationOptions } from "../lib/engine";
+import { useAuth } from "../lib/store";
+import { ENGINE, DAILY_FREE_QUOTA } from "../lib/engine";
 import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { LangSwitch } from "../components/Brand";
-import { Toggle } from "../components/ui";
 
 export function Account() {
   const { t, lang } = useI18n();
   const { user, usedToday, limit, remaining, logout } = useAuth();
-  const [defaults, setDefaults] = useState<ObfuscationOptions>(() => loadDefaults(DEFAULT_OPTIONS));
-  const [saved, setSaved] = useState(false);
-
-  const save = () => {
-    saveDefaults(defaults);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 1600);
-  };
 
   return (
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,1fr)]">
@@ -51,35 +41,6 @@ export function Account() {
           <p className="mt-4 text-[11px] leading-relaxed text-slate-500">{t("account.loginNote")}</p>
         </GlassCard>
 
-        <GlassCard className="p-6">
-          <div className="mb-4 flex items-center gap-3">
-            <Icon name="bolt" className="h-4 w-4 text-aqua-300" />
-            <h2 className="text-[13.5px] font-semibold text-slate-100">{t("account.defaults")}</h2>
-          </div>
-          <p className="mb-4 text-[12px] leading-relaxed text-slate-400/80">{t("account.defaultsDesc")}</p>
-
-          <div className="grid gap-2.5">
-            <Toggle
-              label={t("ws.guard")}
-              checked={defaults.guard}
-              onChange={(v) => setDefaults({ ...defaults, guard: v })}
-            />
-          </div>
-
-          <div className="mt-5 flex items-center gap-3">
-            <Button onClick={save} className="px-4 py-2">
-              <Icon name={saved ? "check" : "download"} className={saved ? "h-4 w-4 text-emerald-100" : "h-4 w-4"} />
-              {saved ? t("common.copied") : t("common.reset")}
-            </Button>
-            <Button
-              variant="ghost"
-              className="px-3 py-2 text-[12px]"
-              onClick={() => setDefaults(DEFAULT_OPTIONS)}
-            >
-              {t("common.reset")}
-            </Button>
-          </div>
-        </GlassCard>
       </div>
 
       <div className="grid content-start gap-5">

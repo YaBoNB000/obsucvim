@@ -28,8 +28,8 @@ pub fn obfuscate(source: &str, options_json: &str) -> Result<String, JsValue> {
     if !opts.body    { cfg = cfg.no_body(); }     // L5
     if !opts.antidbg { cfg = cfg.no_antidbg(); }  // L7
     if !opts.guard   { cfg = cfg.no_guard(); }
-    // 三项 v15 运行时保护固定全开（非选项）
-    cfg = cfg.env_check().bind_executor().bind_env("roblox");
+    // 五项运行时保护固定全开（非选项）
+    cfg = cfg.env_check().bind_executor().bind_env("roblox").antidbg().guard();
 
     let code = obsucvim::obfuscate(source, &cfg)?;
     // 一次性返回：{ code, log } —— 没有流式进度；首行固定英文水印
@@ -58,17 +58,16 @@ export const ENGINE: ObfuscatorEngine = {
 };`;
 
 const OPTIONS_JSON = `{
-  // 产品形态固定 v15（无强度预设）；三项运行时保护（executor 认证绑定 /
-  // 环境检查组 tier-1+tier-2 / Roblox 环境绑定）固定全开，不是选项
+  // 产品形态固定 v15（无强度预设）；五项运行时保护（executor 认证绑定 /
+  // 环境检查组 tier-1+tier-2 / Roblox 环境绑定 / 防篡改 / 反调试守卫）
+  // 固定全开，不是选项
   "minify": true,             // L1 单行压缩        --minify / --no-minify
   "mangle": true,             // L1 标识符重命名     --no-mangle
   "strings": true,            // L2 字符串加密       --no-strings
   "flatten": true,            // L3 控制流平坦化     --no-flatten
   "junk": true,               // L3 垃圾代码注入     --no-junk
   "numbers": true,            // L4 数字字面量重写    --no-numbers
-  "body": true,               // L5 全程序加密       --no-body
-  "antidbg": true,            // L7 防篡改           --no-antidbg
-  "guard": true,              // 反调试环境守卫前导   --no-guard
+  "body": true,               // 全程序加密          --no-body
   "seed": "67067"             // 留空 = 时间种子
 }`;
 
@@ -86,6 +85,8 @@ export function Docs() {
     ["bindExecutor", "always on", t("ws.bindExecutorHint")],
     ["envCheck", "always on", t("ws.envCheckHint")],
     ["bindEnv", "always on", t("ws.bindEnvHint")],
+    ["antidbg", "always on", t("ws.antidbgHint")],
+    ["guard", "always on", t("ws.guardHint")],
     ["seed", "string", t("ws.seedPh")],
   ];
 

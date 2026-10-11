@@ -52,18 +52,13 @@ export function OptionsPanel({
       </Group>
 
       <Group title={t("ws.groupTransform")} icon={<Icon name="lock" className="h-4 w-4" />}>
-        <Toggle label={t("ws.mangle")} hint={t("ws.mangleHint")} checked={options.mangle} onChange={(v) => set("mangle", v)} />
-        <Toggle label={t("ws.strings")} hint={t("ws.stringsHint")} checked={options.strings} onChange={(v) => set("strings", v)} />
-        <Toggle label={t("ws.flatten")} hint={t("ws.flattenHint")} checked={options.flatten} onChange={(v) => set("flatten", v)} />
-        <Toggle label={t("ws.junk")} hint={t("ws.junkHint")} checked={options.junk} onChange={(v) => set("junk", v)} />
-        <Toggle label={t("ws.numbers")} hint={t("ws.numbersHint")} checked={options.numbers} onChange={(v) => set("numbers", v)} />
-        <Toggle label={t("ws.body")} hint={t("ws.bodyHint")} checked={options.body} onChange={(v) => set("body", v)} />
-        <Toggle label={t("ws.minify")} hint={t("ws.minifyHint")} checked={options.minify} onChange={(v) => set("minify", v)} />
-      </Group>
-
-      <Group title={t("ws.groupRuntime")} icon={<Icon name="cpu" className="h-4 w-4" />}>
-        <Toggle label={t("ws.antidbg")} hint={t("ws.antidbgHint")} checked={options.antidbg} onChange={(v) => set("antidbg", v)} />
-        <Toggle label={t("ws.guard")} hint={t("ws.guardHint")} checked={options.guard} onChange={(v) => set("guard", v)} />
+        <Toggle label={t("ws.mangle")} checked={options.mangle} onChange={(v) => set("mangle", v)} />
+        <Toggle label={t("ws.strings")} checked={options.strings} onChange={(v) => set("strings", v)} />
+        <Toggle label={t("ws.flatten")} checked={options.flatten} onChange={(v) => set("flatten", v)} />
+        <Toggle label={t("ws.junk")} checked={options.junk} onChange={(v) => set("junk", v)} />
+        <Toggle label={t("ws.numbers")} checked={options.numbers} onChange={(v) => set("numbers", v)} />
+        <Toggle label={t("ws.body")} checked={options.body} onChange={(v) => set("body", v)} />
+        <Toggle label={t("ws.minify")} checked={options.minify} onChange={(v) => set("minify", v)} />
       </Group>
 
       <Group title={t("ws.groupMeta")} icon={<Icon name="layers" className="h-4 w-4" />}>
