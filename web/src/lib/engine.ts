@@ -110,6 +110,8 @@ async function httpObfuscate(source: string, options: ObfuscationOptions): Promi
     });
     if (res.status === 401) {
       clearToken();
+      // 通知 AuthProvider 重置用户状态（双保险：Workspace 也会调 logout）
+      window.dispatchEvent(new CustomEvent("obsucvim:unauthorized"));
       throw new Error("UNAUTHORIZED");
     }
     const payload = (await res.json()) as

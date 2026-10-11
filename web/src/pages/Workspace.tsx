@@ -18,7 +18,7 @@ import { cn } from "../utils/cn";
 
 export function Workspace() {
   const { t } = useI18n();
-  const { outOfQuota, applyQuota, refreshQuota } = useAuth();
+  const { outOfQuota, applyQuota, refreshQuota, logout } = useAuth();
   const { push } = useHistory();
 
   const [code, setCode] = useState(SAMPLE_LUA);
@@ -74,12 +74,16 @@ export function Workspace() {
       if (msg.startsWith("SOURCE_TOO_LARGE")) setError(t("ws.tooLarge"));
       else if (msg === "ENGINE_TIMEOUT") setError(t("ws.timeout"));
       else if (msg.startsWith("QUOTA_EXCEEDED")) setError(t("ws.quotaEmpty"));
-      else if (msg === "UNAUTHORIZED") setError(t("ws.error"));
+      else if (msg === "UNAUTHORIZED") {
+        // 会话过期：清状态回登录页，不显示"引擎执行失败"
+        logout();
+        return;
+      }
       else setError(msg || t("ws.error"));
     } finally {
       setRunning(false);
     }
-  }, [code, options, running, tooLarge, outOfQuota, applyQuota, refreshQuota, push, t]);
+  }, [code, options, running, tooLarge, outOfQuota, applyQuota, refreshQuota, logout, push, t]);
 
   const tryRun = useCallback(() => {
     if (running) return;

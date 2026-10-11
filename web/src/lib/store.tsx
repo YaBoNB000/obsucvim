@@ -262,6 +262,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshQuota]);
 
+  // 引擎层 401 → 清用户状态回登录页（与 Workspace 的 logout 双保险）
+  useEffect(() => {
+    const onUnauth = () => {
+      clearToken();
+      setUser(null);
+      setQuota({ usedToday: 0, remaining: DAILY_FREE_QUOTA, limit: DAILY_FREE_QUOTA });
+    };
+    window.addEventListener("obsucvim:unauthorized", onUnauth);
+    return () => window.removeEventListener("obsucvim:unauthorized", onUnauth);
+  }, []);
+
   const value = useMemo<AuthValue>(
     () => ({
       user: booted ? user : null,
