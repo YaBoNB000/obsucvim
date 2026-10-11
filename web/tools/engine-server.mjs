@@ -136,11 +136,15 @@ setInterval(() => {
   for (const [ip, h] of rateHits) if (now > h.reset) rateHits.delete(ip);
 }, RATE_WINDOW_MS).unref?.();
 
+/* 安全（2026-10-11 红队自测修复）：不信任 X-Forwarded-For——
+ * 攻击者可每个请求伪造一个新 XFF 无限绕过限流（实测 40 连发全 200）。
+ * 一律按 socket 地址计数：经 Vite 代理的所有流量共享一个桶（保守方向，
+ * 无法伪造）。直连 127.0.0.1 的本机流量同桶。 */
 function clientIp(req) {
-  const xf = req.headers["x-forwarded-for"];
-  if (typeof xf === "string" && xf.length > 0) return xf.split(",")[0].trim();
   return req.socket?.remoteAddress ?? "unknown";
 }
+
+let cachedVersion; // obsucvim --version，启动后首次 health 探测并缓存
 
 function rateLimited(ip) {
   const now = Date.now();
@@ -156,12 +160,14 @@ function rateLimited(ip) {
 async function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let overflowed = false;
     const chunks = [];
     req.on("data", (c) => {
+      if (overflowed) return; // 已溢出：丢弃后续数据
       size += c.length;
       if (size > limit) {
+        overflowed = true;
         reject(new Error("BODY_TOO_LARGE"));
-        req.destroy();
         return;
       }
       chunks.push(c);
@@ -171,21 +177,58 @@ async function readBody(req, limit) {
   });
 }
 
+/* 安全修复：并发引擎上限（实测 20 并发全过，无界 spawn = 资源耗尽）。
+ * 超出立即 503 ENGINE_BUSY（可重试）。 */
+const MAX_CONCURRENT = 4;
+let inFlight = 0;
+/* 安全修复（红队自测第 5 项）：临时文件名 pid+毫秒 在并发同毫秒到达时
+ * 碰撞 → 请求互删文件 → 引擎读不到源码集体 500（实测 20 并发全 500）。
+ * 追加原子计数器 + 随机后缀保证唯一。 */
+let tmpSeq = 0;
+const tmpName = (tag) =>
+  `obsucvim-web-${tag}-${process.pid}-${process.hrtime.bigint()}-${tmpSeq++}-${
+    Math.random().toString(36).slice(2, 10)
+  }.lua`;
+
+function trySlot() {
+  if (inFlight >= MAX_CONCURRENT) return false;
+  inFlight += 1;
+  return true;
+}
+
+function releaseSlot() {
+  inFlight = Math.max(0, inFlight - 1);
+}
+
 const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") return json(res, 204, {});
 
   if (req.method === "GET" && req.url === "/api/health") {
-    const version = existsSync(BIN)
-      ? (await run(BIN, ["--version"], { timeoutMs: 5000 })).out.trim()
-      : null;
-    return json(res, 200, { ok: existsSync(BIN), engine: version || "obsucvim (binary missing)", bin: BIN });
+    /* 安全修复：health 也纳入限流（此前无限流 + 每请求 spawn 一次
+     * obsucvim --version = 无限进程洪泛 DoS，实测 50 连发 0.64s）；
+     * 版本改为启动时探测一次并缓存。 */
+    if (rateLimited(clientIp(req))) {
+      return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+    }
+    if (cachedVersion === undefined) {
+      cachedVersion = existsSync(BIN)
+        ? (await run(BIN, ["--version"], { timeoutMs: 5000 })).out.trim() || null
+        : null;
+    }
+    return json(res, 200, { ok: existsSync(BIN), engine: cachedVersion || "obsucvim (binary missing)", bin: BIN });
   }
 
   if (req.method === "POST" && req.url === "/api/obfuscate") {
     let body;
     try {
       body = JSON.parse(await readBody(req, MAX_SOURCE_BYTES * 2 + 65536));
-    } catch {
+    } catch (e) {
+      // 超限：回 413 并断开残留上传流（此前对已销毁 socket 写响应 → 空 500）
+      if (e instanceof Error && e.message === "BODY_TOO_LARGE") {
+        json(res, 413, { ok: false, error: "BODY_TOO_LARGE" });
+        req.destroy();
+        return;
+      }
       return json(res, 400, { ok: false, error: "BAD_JSON" });
     }
     const { source, options } = body || {};
@@ -214,12 +257,16 @@ const server = createServer(async (req, res) => {
     log.push({ level: "step", text: `[1/4] 接收源码 · ${inputBytes} B · obsucvim ${args.join(" ")}` });
 
     // CLI 读文件（无 stdin 模式）：源码落临时文件，产物走 stdout
-    const tmpIn = path.join(tmpdir(), `obsucvim-web-${process.pid}-${Date.now()}.lua`);
+    if (!trySlot()) {
+      return json(res, 503, { ok: false, error: "ENGINE_BUSY", detail: "max concurrent obfuscations in flight" });
+    }
+    const tmpIn = path.join(tmpdir(), tmpName("in"));
     writeFileSync(tmpIn, source, "utf8");
     let r;
     try {
       r = await run(BIN, [...args, tmpIn], { timeoutMs: ENGINE_TIMEOUT_MS });
     } finally {
+      releaseSlot();
       try { unlinkSync(tmpIn); } catch { /* ignore */ }
     }
     if (r.timedOut) return json(res, 504, { ok: false, error: "ENGINE_TIMEOUT" });
@@ -234,7 +281,7 @@ const server = createServer(async (req, res) => {
 
     // 可选：产物语法校验（luau-compile 存在时；无 stdin 模式，走临时文件）
     if (existsSync(LUAUC)) {
-      const tmpOut = path.join(tmpdir(), `obsucvim-web-out-${process.pid}-${Date.now()}.lua`);
+      const tmpOut = path.join(tmpdir(), tmpName("out"));
       writeFileSync(tmpOut, code, "utf8");
       let v;
       try {
