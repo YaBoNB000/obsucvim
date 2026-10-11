@@ -8,6 +8,7 @@
 //! readable program structure.
 
 pub mod compiler;
+pub mod envcheck;
 pub mod exguard;
 pub mod handlers;
 pub mod isa;

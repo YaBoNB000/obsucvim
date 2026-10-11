@@ -13,6 +13,10 @@
 
 **第四轮（C6）：**[抗环境记录器](ROUND4.md)——nonce 绑定被证伪为环境认证手段（自研提议被自家实验推翻）；建立录制重放成本阶梯矩阵，双模型一致；未入选。
 
+**第五轮（C6 第二轮）：**[搜索发现 + 新颖查询/本地镜像实证](ROUND5.md)——真 Luau bit32 截断语义测绘、本地镜像 200k 扫描零失配、录制重放与错误移植全灭、正确实现存活；主流工具自带真 Luau 运行时，API 层才是判别面；未实施。
+
+**实施方案：**[C6-IMPL v1](C6-IMPLEMENTATION-PLAN.md)（CORE-ATTEST）——**已废弃**（2026-10-11 用户决策）。现行方案：[WTF-PORT v1](WTF-PORT-PLAN.md)——以真 Luraph 环境校验载荷为蓝本重实现检查类别，接既有代数 lane 投毒；L1 反录制重放随换轨放弃（如实记录）。
+
 最新数字见 [STATUS.md](STATUS.md)，原始数值汇总见 [evidence.json](evidence.json)。长跑直接写入 `extended-status.json` / `extended.csv`；本报告不把尚未完成的时间预算当作完成。
 
 ## 1. 遵守了哪些研究约束

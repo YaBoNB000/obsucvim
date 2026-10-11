@@ -1,5 +1,7 @@
 # AI 交接文档（HANDOFF）
 
+> **WTF-PORT Phase 1（2026-10-11）**：`--env-check`（v15，opt-in）上线环境检查组。`vmgen/envcheck.rs` 生成 7 组随机化常量挑战 + 17 项首尾身份全等，ENVFRAG 一次性工厂（EXGFRAG 同族接线，sanitize_frag 同方言）；差值 d 干净恒 0，经 RT 尾参 EVD 折 SLT、boot 折 MZD 双 lane 静默投毒，PCAL 包裹异常路径。开关关闭 = 字节级不变（全部抽取在条件内）。测试 `tests/wtf_port_test.sh`（含 `wtf_port_mockgen.py`）：**noop mock 必须复现输出**（harness 自证，防假阳性）+ 7 个针对性 mock 全击杀 + 无共享 oracle。两个工程教训已入单测/账本：净化器改名字段但字符串字面量不改（检查代码禁用字符串键访问标识符字段）；`coroutine.running()` 主线程层跨环境不恒定（CLI nil vs Roblox thread）。**未竟**：L1 反录制重放仍空缺（CORE-ATTEST 已废弃，WTF-PORT-PLAN §5）；Phase 2（Roblox/executor 档：Enum 身份缓存/Random 确定性/task 语义等）待批；真机（Roblox/executor）验证未做。
+
 > **H3-6 修复（2026-10-11）**：扩展随机 seed 扫描发现的 v15 多返回值/变参转发静默错值（~0.7% seed）已修——根因是 H3-4 死寄存器噪声写进未保留的动态调用结果窗口（调用→Return 之间）。`compiler.rs` 新增 `call_window_mask`（调用开窗、下一 Call 家族/Return 关窗），窗口内活噪声重定位到允许位（位置 0 恒允许，H3 审计活性记账不变），并加**构建期不变量**：开窗内任何指令不得指向死寄存器（未来 pass 回归直接构建失败）。`tests/call_window_noise_test.sh` 固化 9 历史失败 seed + 4 相邻，已接入 run_tests/multiseed。legacy 路径字节不变（15/15 实证）；R065 存档 seed65065 逐字节不变；v15 示例与 R066 已重生成。**未竟（诚实）**：CallE/CallM/CallT 的未保留结果窗口仍存在（现靠避让保护）；结构性收口 = 结果改走 `E.rb` 帧槽，独立增量待批。
 
 > 2026-10-08 英文输出水印：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。

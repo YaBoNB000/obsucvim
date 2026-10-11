@@ -70,6 +70,14 @@ struct Options {
 	/// anywhere else dies by wrong key. v15-only. Bound output is syntax-
 	/// checked only (not part of the run-equivalence matrix).
 	bind_executor: bool,
+	/// WTF-PORT Phase 1 (2026-10-11): pure-Luau environment check battery
+	/// (envcheck.rs) — randomized constant challenges over buffer/bit32/
+	/// string/metatable/coroutine/freeze/loadstring semantics plus an
+	/// entry/exit identity sweep. The rolling difference folds into the
+	/// SLT block-keystream and MZD poison lanes (silent, no oracle).
+	/// Constant challenges defeat wrong-semantics mock environments, NOT
+	/// record/replay of a real run (see WTF-PORT-PLAN.md).
+	env_check: bool,
 }
 
 /// Named strength presets. Individual `--no-*` / `--vm` flags that
@@ -221,6 +229,10 @@ Options:
                          (Vector3/Vector2/task) 嵌进原语槽，产物只在目标运行
                          时可加载，通用分析沙箱加载期即失败。绑定态产物不进
                          通用运行等价矩阵（只语法校验）。
+  --env-check            WTF-PORT 纯 Luau 环境检查组（仅 v15）：buffer/
+                         bit32/string/元表/协程/freeze/loadstring 语义常量
+                         挑战 + 首尾身份全等；差值折入 SLT/MZD 静默投毒。
+                         防错误语义 mock 环境，不防真环境录制重放。
   --bind-executor        增量51 executor 认证绑定（仅 v15，IronBrew2 守卫
                          移植）：产物只在完整 Roblox executor 环境内正确运行
                          （identifyexecutor/getgenv/闭包内省语义全认证），
@@ -255,9 +267,10 @@ fn main() -> ExitCode {
 	do_flatten: true,
 	do_junk: true,
 	junk_n: 2,
-	bind_env: None,
-	bind_executor: false,
-};
+		bind_env: None,
+		bind_executor: false,
+		env_check: false,
+	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
 	let mut preset_given = false;
@@ -347,6 +360,7 @@ fn main() -> ExitCode {
 				opts.bind_env = Some(args[i].clone());
 			}
 			"--bind-executor" => opts.bind_executor = true,
+			"--env-check" => opts.env_check = true,
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -426,7 +440,15 @@ fn main() -> ExitCode {
 	if opts.bind_executor && !(opts.do_vm && opts.do_v15) {
 		eprintln!(
 			"error: --bind-executor requires --preset v15\n  \
-			the executor attestation guard rides the v15 fragment chain."
+				the executor attestation guard rides the v15 fragment chain."
+		);
+		return ExitCode::FAILURE;
+	}
+	// WTF-PORT Phase 1: the check battery rides the v15 boot/RT lanes.
+	if opts.env_check && !(opts.do_vm && opts.do_v15) {
+		eprintln!(
+			"error: --env-check requires --preset v15\n  \
+				the environment check battery rides the v15 boot fragment chain."
 		);
 		return ExitCode::FAILURE;
 	}
@@ -523,6 +545,7 @@ fn main() -> ExitCode {
 				opts.bind_env.as_deref(),
 				env_slots.as_ref(),
 				opts.bind_executor,
+				opts.env_check,
 				opts.do_guard,
 			);
 			if std::env::var("OBSUCVIM_VM_TSRC").is_ok() {

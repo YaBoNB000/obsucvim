@@ -1,5 +1,7 @@
 # 项目进度（PROGRESS）
 
+> 2026-10-11 WTF-PORT Phase 1 上线：`--env-check`（v15）纯 Luau 环境检查组——7 组随机化常量挑战 + 首尾身份全等，差值经 SLT/MZD 双 lane 无分支静默投毒（WTF.txt 检查类别的重实现，CORE-ATTEST 已废弃归档）。全矩阵绿：cargo 45+1+4、run_tests 169/169（含 wtf-port 16/16：noop 自证 + 7 mock 全击杀）、presets 370/370、multiseed 0、防御审计 20/1 持平、S1–S5 5/5；开关关闭逐字节一致。实施中修掉两个自身缺陷（净化改名不安全的字符串键模式、coroutine.running 跨变体不恒定——后者按 52 类误报记入账本并移除）。诚实边界：常量挑战杀错误语义 mock，不防真环境录制重放（L1 空缺仍在）。
+
 > 2026-10-11 H3-6 修复上线：v15 死寄存器噪声不再写入动态调用结果窗口（`call_window_mask` 避让 + 构建期不变量 + 9 失败 seed 回归固化）。9/9 历史 seed 修复、300 随机 seed 0 失败、全矩阵绿（169/169、370/370、multiseed 0、H3 审计全 YES、防御审计 20/1 唯一 D3、S1–S5 5/5）；legacy 五预设 15/15 字节不变，R065 存档重生成逐字节一致，37 个 v15 示例与 R066 靶标按新布局重生成。CallE/CallM/CallT 未保留窗口的结构性收口（结果走帧槽）留待独立增量。
 
 > 2026-10-08 英文输出水印：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。

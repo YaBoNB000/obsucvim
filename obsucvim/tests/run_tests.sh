@@ -212,6 +212,12 @@ if ! bash "$ROOT/tests/call_window_noise_test.sh"; then
 	fail=$((fail + 1)); failed+=("h3-6/call-window-noise")
 fi
 
+# WTF-PORT Phase 1: --env-check battery (mock-environment kill matrix).
+if ! bash "$ROOT/tests/wtf_port_test.sh"; then
+	echo "FAIL [wtf-port] environment check battery regression"
+	fail=$((fail + 1)); failed+=("wtf-port/env-check")
+fi
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then

@@ -1384,6 +1384,9 @@ pub fn generate(
 	// 51 (IronBrew2 executor 认证守卫移植): true ⇒ 发射 EXG 碎片
 	// (wire 209)，认证令牌揉进原型/常量池钥匙流；非目标环境毒杀。
 	executor_bind: bool,
+	// WTF-PORT Phase 1 (2026-10-11): true ⇒ 发射纯 Luau 环境检查组
+	// (envcheck.rs)——常量挑战，差值折入 SLT/MZD 双 lane 静默投毒。
+	env_check: bool,
 	// H4-3: 守卫进入静态 HBOOT，敏感 API/元方法词以 CHAR 字节构造。
 	guard: bool,
 ) -> String {
@@ -2629,6 +2632,15 @@ pub fn generate(
 		} else {
 			(None, None)
 		};
+		// WTF-PORT Phase 1: pure-Luau environment check battery (one-shot
+		// factory, randomized per build). All RNG draws for the env-check
+		// path stay inside this conditional so flag-off builds keep the
+		// exact historical RNG schedule (byte-identical output).
+		let env_src = if env_check {
+			Some(super::envcheck::build(rng))
+		} else {
+			None
+		};
 		let xte_off = if let Some(c) = &exg_consts {
 			format!(" + {}", obf_num(c.xte, rng))
 		} else {
@@ -3256,6 +3268,28 @@ pub fn generate(
 		} else {
 			(String::new(), String::new())
 		};
+		// WTF-PORT Phase 1: EVD (environment difference) rides the same RT
+		// factory tail as the EXG token and folds into the SLT block
+		// keystream with its own coefficient. Clean runs return EVD = 0
+		// (every check term folds (actual - expected) = 0), so no build-
+		// time pre-compensation is needed.
+		let (sig_tail, xtfb_line, env_coef, env_coef2) = if env_check {
+			// coefficients stay < 2^16 so EVD*coef products remain
+			// double-exact (SLT/MZD lanes are mod 2^28)
+			let ec = rng.int(1024, 65_521) as u64;
+			let ec2 = rng.int(1024, 65_521) as u64;
+			(
+				format!("{sig_tail}, EVD"),
+				format!(
+					"{xtfb_line}SLT = (SLT + EVD * {}) % 268435456\n  ",
+					obf_num(ec, rng)
+				),
+				ec,
+				ec2,
+			)
+		} else {
+			(sig_tail, xtfb_line, 0, 0)
+		};
 		// H4-2C2: RT is emitted as five independently assigned static closures
 		// selected by a masked, per-build initialization protocol.  The phase
 		// dispatcher exists only while the factory is assembled; the returned
@@ -3380,6 +3414,11 @@ pub fn generate(
 				.expect("EXG factory source")
 				.to_string()
 		});
+		let mut env_static_src = env_src.map(|s| {
+			s.strip_prefix("return ")
+				.expect("ENV factory source")
+				.to_string()
+		});
 		// ㉘-A: 碎片源码净化（注释剥离 + 全标识符改名 + 单行化）。
 		// 保留集 = Lua 关键字 + 运行时固定全局名；改名映射跨全部碎片
 		// 一致（字段名跨碎片共享，必须同名）。
@@ -3467,6 +3506,47 @@ pub fn generate(
 				&mut frag_used,
 			);
 			format!("EXGFRAG={} ", clean)
+		} else {
+			String::new()
+		};
+		let env_fill = if let Some(src) = env_static_src.take() {
+			let clean = sanitize_frag(
+				&src,
+				rng,
+				&mut frag_map,
+				&frag_reserved,
+				&mut frag_used,
+			);
+			format!("ENVFRAG={} ", clean)
+		} else {
+			String::new()
+		};
+		// WTF-PORT Phase 1 wiring: EVD lives in the VM scope (like XTOK),
+		// the factory is invoked under PCAL so a nil/panicking check path
+		// still poisons (EVD falls back to a non-zero constant), and the
+		// difference folds into the MZD scattered-poison face in boot.
+		let env_decl = if env_check {
+			"\n  local EVD"
+		} else {
+			""
+		};
+		let env_frag_decl = if env_check {
+			"\n  local ENVFRAG"
+		} else {
+			""
+		};
+		let env_extract = if env_check {
+			// leading "\n    " mirrors xtok_extract: the template appends
+			// this right after "_r1 = nil" and needs a statement separator
+			"\n    local _eo, _ev = PCAL(ENVFRAG) ENVFRAG = nil EVD = (_eo and _ev or 12345679) % 268435456 "
+		} else {
+			""
+		};
+		let env_mzd = if env_check {
+			format!(
+				" MZD = (MZD + EVD * {}) % 268435456 ",
+				obf_num(env_coef2, rng)
+			)
 		} else {
 			String::new()
 		};
@@ -3964,7 +4044,7 @@ pub fn generate(
   local CT1, CT2, CT3, CT4
   local CX1, CX2, CX3, CX4
   local RTFRAG
-  local EXGFRAG
+  local EXGFRAG{env_frag_decl}
   local RPK1, RPK2, RPK3, RPK4, RPK5, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11
   local HBD
   local CHQ
@@ -3975,8 +4055,8 @@ pub fn generate(
   local PD = function() local z0, z1 = 0, 1 while z0 < 4294967296 do z0 = (z0 * 1103515245 + 12345) % 268435456 z1 = (z1 * 80659 + 95050511) % 268435456 if z0 == z1 and z0 == 123456789 then break end end end
   local MPF
   local CLK
-  local CENVPROBE{xtok_decl}
-  {hboot_fill}{exg_fill}do
+  local CENVPROBE{xtok_decl}{env_decl}
+  {hboot_fill}{exg_fill}{env_fill}do
     local LS = GFE(0)[{v_ls}]
     local TSTR = GFE(0)[{v_ts}]
     local DBG = GFE(0)[{v_dbg}]
@@ -4033,10 +4113,10 @@ pub fn generate(
     RPK11 = {shccc}
     {vault_def}local _hok, _r1 = PCAL(function() return HBOOT({vault_args}) end) HBOOT = nil BSS = nil
     if not _hok then {hbootfail} end
-    HW, MPF, SALT, SH1, SH2, CHQ{hp_recv} = _r1() _r1 = nil{xtok_extract}
+    HW, MPF, SALT, SH1, SH2, CHQ{hp_recv} = _r1() _r1 = nil{xtok_extract}{env_extract}
     {hp_stash}
     {ct_fill}{cx_fill}for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
-    {micro_fill}{hw_expand}
+    {micro_fill}{hw_expand}{env_mzd}
     HW = nil
   end"#,
 		boot = boot,
@@ -4061,6 +4141,11 @@ pub fn generate(
 		},
 		xtok_decl = xtok_decl,
 		xtok_extract = xtok_extract,
+		env_decl = env_decl,
+		env_frag_decl = env_frag_decl,
+		env_extract = env_extract,
+		env_fill = env_fill,
+		env_mzd = env_mzd,
 		av_fold = av_fold,
 			env_a = env_gate_a,
 			env_b = env_gate_b,
@@ -4190,9 +4275,17 @@ pub fn generate(
 		run_soa = String::new();
 		// ㉚ B-2: 链终值 SH1/SH2 + 归零常量 RPK6..11 入密交给 RT 工厂。
 		// 51: executor 绑定态再递启动令牌与周期探针（不透明函数值交接）。
+		// WTF-PORT: this call site lives outside the scope that builds the
+		// RT factory's {sigtail}; reconstruct the identical tail here. The
+		// two MUST stay in sync (EXG token first, then the EVD difference).
+		let call_tail = format!(
+			"{}{}",
+			if executor_bind { ", XTOK, XPROBE" } else { "" },
+			if env_check { ", EVD" } else { "" }
+		);
 		format!(
 			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE, MZD{}) RTFRAG = nil",
-			if executor_bind { ", XTOK, XPROBE" } else { "" }
+			call_tail
 		)
 	} else {
 		let run_head = String::new();
