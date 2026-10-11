@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import SimpleEditor from "react-simple-code-editor";
 import { highlightLua, highlight, type CodeLang } from "../lib/prism";
+import { useI18n } from "../lib/i18n";
 import { cn } from "../utils/cn";
 
 const LINE_HEIGHT = 22;
@@ -83,6 +84,16 @@ export function LuaEditor({
 }
 
 /* ----------------------------- 只读展示区 ----------------------------- */
+/* 大产物防冻结阈值：
+ *  - 超过 HIGHLIGHT_LIMIT 字符 → 跳过 Prism（206KB 单行产物高亮会产出
+ *    ~2.9MB 的单行 HTML，w-max 布局出 ~2000 万像素宽的一行，主线程锁死）
+ *  - 任意一行超过 MAX_LINE_CHARS → 同样走纯文本 + 软换行路径（单行
+ *    white-space:pre 的超宽布局本身是性能杀手）
+ *  - 超过 DISPLAY_LIMIT 字符 → 预览截断（复制/下载仍为完整产物） */
+const HIGHLIGHT_LIMIT = 40_000;
+const MAX_LINE_CHARS = 5_000;
+const DISPLAY_LIMIT = 120_000;
+
 export function CodeViewer({
   code,
   lang = "lua",
@@ -96,10 +107,22 @@ export function CodeViewer({
   showGutter?: boolean;
   className?: string;
 }) {
+  const { t } = useI18n();
   const scroller = useRef<HTMLDivElement>(null);
   const gutter = useRef<HTMLDivElement>(null);
-  const lines = useMemo(() => code.split("\n").length, [code]);
-  const html = useMemo(() => highlight(code, lang), [code, lang]);
+  const truncated = code.length > DISPLAY_LIMIT;
+  const shown = truncated ? code.slice(0, DISPLAY_LIMIT) : code;
+  const lines = useMemo(() => shown.split("\n").length, [shown]);
+  const maxLine = useMemo(
+    () => shown.split("\n").reduce((m, l) => (l.length > m ? l.length : m), 0),
+    [shown],
+  );
+  const plain = shown.length > HIGHLIGHT_LIMIT || maxLine > MAX_LINE_CHARS;
+  const html = useMemo(
+    () => (plain ? null : highlight(shown, lang)),
+    [shown, lang, plain],
+  );
+  const gutterOn = showGutter && !plain && lines <= 2000;
 
   // 行号与代码体同步滚动
   useEffect(() => {
@@ -115,7 +138,7 @@ export function CodeViewer({
 
   return (
     <div className={cn("relative flex overflow-hidden", className)} style={{ height }}>
-      {showGutter && (
+      {gutterOn && (
         <div
           className="hidden w-[52px] shrink-0 overflow-hidden border-r border-aqua-300/[0.08] bg-black/20 pr-3 pl-3 sm:block"
           style={{ paddingTop: 16 }}
@@ -130,10 +153,24 @@ export function CodeViewer({
         </div>
       )}
       <div ref={scroller} className="flex-1 overflow-auto p-4">
-        <pre
-          className="code-hl w-max min-w-full text-[13px] leading-[22px] whitespace-pre"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
+        {html !== null ? (
+          <pre
+            className="code-hl w-max min-w-full text-[13px] leading-[22px] whitespace-pre"
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        ) : (
+          <pre className="code-hl min-w-full text-[13px] leading-[22px] whitespace-pre-wrap break-all">
+            {shown}
+          </pre>
+        )}
+        {truncated && (
+          <div className="sticky left-0 mt-3 rounded-xl border border-amber-300/20 bg-amber-400/[0.06] px-3 py-2 text-[11px] leading-relaxed text-amber-200/80">
+            {t("result.truncated", {
+              a: new Intl.NumberFormat().format(shown.length),
+              b: new Intl.NumberFormat().format(code.length),
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
