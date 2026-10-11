@@ -1,6 +1,6 @@
+import { useI18n } from "../lib/i18n";
 import { type ObfuscationOptions } from "../lib/engine";
 import { Icon, Toggle } from "./ui";
-import { useI18n } from "../lib/i18n";
 
 function Group({ title, icon, children }: { title: string; icon: React.ReactNode; children: React.ReactNode }) {
   return (
@@ -32,6 +32,10 @@ export function OptionsPanel({
         <h2 className="text-[13.5px] font-semibold text-slate-100">{t("ws.config")}</h2>
       </div>
 
+      <Group title={t("ws.groupVm")} icon={<Icon name="cpu" className="h-4 w-4" />}>
+        <Toggle label={t("ws.vmSeal")} checked={options.vmSealStrings} onChange={(v) => set("vmSealStrings", v)} />
+      </Group>
+
       <Group title={t("ws.groupTransform")} icon={<Icon name="lock" className="h-4 w-4" />}>
         <Toggle label={t("ws.mangle")} checked={options.mangle} onChange={(v) => set("mangle", v)} />
         <Toggle label={t("ws.strings")} checked={options.strings} onChange={(v) => set("strings", v)} />
@@ -40,10 +44,6 @@ export function OptionsPanel({
         <Toggle label={t("ws.numbers")} checked={options.numbers} onChange={(v) => set("numbers", v)} />
         <Toggle label={t("ws.body")} checked={options.body} onChange={(v) => set("body", v)} />
         <Toggle label={t("ws.minify")} checked={options.minify} onChange={(v) => set("minify", v)} />
-      </Group>
-
-      <Group title={t("ws.groupVm")} icon={<Icon name="cpu" className="h-4 w-4" />}>
-        <Toggle label={t("ws.vmSeal")} checked={options.vmSealStrings} onChange={(v) => set("vmSealStrings", v)} />
       </Group>
 
       <Group title={t("ws.groupMeta")} icon={<Icon name="layers" className="h-4 w-4" />}>
@@ -62,4 +62,3 @@ export function OptionsPanel({
     </div>
   );
 }
-

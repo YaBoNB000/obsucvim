@@ -133,6 +133,7 @@ let state = {
   fails: {},      // email -> { fails, until }
   codes: {},      // email -> { code, expires, sentAt, fails }
   captchas: {},   // id -> { answer, expires }
+  apiKeys: {},    // key -> { email, created }
 };
 
 function loadState() {
@@ -188,14 +189,27 @@ function sessionFor(email) {
 function authUser(req) {
   const h = req.headers["authorization"];
   if (typeof h !== "string" || !h.startsWith("Bearer ")) return null;
-  const s = state.sessions[h.slice(7).trim()];
-  if (!s || now() > s.expires) return null;
-  return state.users[s.email] ?? null;
+  const token = h.slice(7).trim();
+  const s = state.sessions[token];
+  if (s && now() <= s.expires) return state.users[s.email] ?? null;
+  return apiKeyUser(token);
 }
 
 /* 两步注册的服务端草稿：第一步保存昵称/密码（10 分钟），确认步消费——
  * 确认请求只带 email+code，防止两步之间注册信息被改写 */
 const pendingRegistrations = {};
+
+const API_KEY_PREFIX = "obk_";
+
+function newApiKey() {
+  return API_KEY_PREFIX + randomBytes(24).toString("hex");
+}
+
+function apiKeyUser(key) {
+  if (typeof key !== "string" || !key.startsWith(API_KEY_PREFIX)) return null;
+  const k = state.apiKeys[key];
+  return k ? state.users[k.email] ?? null : null;
+}
 
 function quotaOf(email) {
   const q = state.quotas[email];
@@ -233,7 +247,13 @@ function consumeCaptcha(id, answer) {
 
 /* 邮箱验证码：签发/校验/冷却/尝试上限全在服务端。
  * demoMail=true（无真实邮件外发能力）时响应携带 demoCode 供界面明示。 */
-const demoMail = process.env.OBSUCVIM_REAL_MAIL !== "1";
+const SMTP_HOST = process.env.SMTP_HOST || "smtp-mail.outlook.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_USER = process.env.SMTP_USER || "";
+const SMTP_PASS = process.env.SMTP_PASS || "";
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER || "abcd145365@outlook.com";
+const smtpAvailable = Boolean(SMTP_USER && SMTP_PASS);
+const demoMail = !smtpAvailable;
 
 function issueEmailCode(email) {
   const prev = state.codes[email];
@@ -537,6 +557,39 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    if (req.method === "GET" && req.url === "/api/auth/apikeys") {
+      const u = authUser(req);
+      if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+      const keys = Object.entries(state.apiKeys)
+        .filter(([, v]) => v.email === u.email)
+        .map(([k, v]) => ({ id: k.slice(0, 12) + "…", created: v.created }));
+      return json(res, 200, { ok: true, keys });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/apikeys") {
+      const u = authUser(req);
+      if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+      const key = newApiKey();
+      state.apiKeys[key] = { email: u.email, created: now() };
+      saveState();
+      return json(res, 200, { ok: true, key });
+    }
+
+    if (req.method === "DELETE" && req.url === "/api/auth/apikeys") {
+      const u = authUser(req);
+      if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+      const { key } = body;
+      if (typeof key !== "string" || !state.apiKeys[key]) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
+      if (state.apiKeys[key].email !== u.email) {
+        return json(res, 403, { ok: false, error: "FORBIDDEN" });
+      }
+      delete state.apiKeys[key];
+      saveState();
+      return json(res, 200, { ok: true });
+    }
+
     return json(res, 404, { ok: false, error: "NOT_FOUND" });
   };
 
@@ -612,7 +665,7 @@ const server = createServer(async (req, res) => {
     const elapsedMs = Date.now() - t0;
     log.push({ level: "info", text: `[2/4] Rust 引擎执行完成 · rc=0 · ${elapsedMs} ms` });
     log.push({ level: "info", text: `保护通道：${appliedNames(options).join(" · ")}` });
-    log.push({ level: "info", text: "运行时保护全开（executor 绑定 + 环境检查组 + Roblox 环境绑定 + 防篡改 + 反调试守卫）：产物只在完整 Roblox executor 环境内正确运行" });
+    log.push({ level: "info", text: "Runtime protections active." });
 
     // 可选：产物语法校验（luau-compile 存在时；无 stdin 模式，走临时文件）
     if (existsSync(LUAUC)) {
