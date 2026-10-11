@@ -60,20 +60,7 @@ export function Account() {
 
           <div className="grid gap-2.5">
             <Toggle
-              label={t("ws.bindExecutor")}
-              hint={t("ws.bindExecutorHint")}
-              checked={defaults.bindExecutor}
-              onChange={(v) => setDefaults({ ...defaults, bindExecutor: v })}
-            />
-            <Toggle
-              label={t("ws.envCheck")}
-              hint={t("ws.envCheckHint")}
-              checked={defaults.envCheck}
-              onChange={(v) => setDefaults({ ...defaults, envCheck: v })}
-            />
-            <Toggle
               label={t("ws.guard")}
-              hint={t("ws.guardHint")}
               checked={defaults.guard}
               onChange={(v) => setDefaults({ ...defaults, guard: v })}
             />

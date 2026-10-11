@@ -33,6 +33,7 @@ export function ResultPanel({
   const { t } = useI18n();
   const [tab, setTab] = useState<"out" | "log" | "stats">("out");
   const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   useEffect(() => {
     if (result) setTab("out");
@@ -41,24 +42,66 @@ export function ResultPanel({
   const output = result?.code ?? "";
 
   const copy = async () => {
+    // 剪贴板 API 在无权限的 iframe（预览环境）里会静默失败——
+    // 退回 execCommand 方案，仍失败则如实提示
+    let ok = false;
     try {
       await navigator.clipboard.writeText(output);
+      ok = true;
     } catch {
-      /* ignore */
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = output;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ok = document.execCommand("copy");
+        ta.remove();
+      } catch {
+        ok = false;
+      }
     }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    setCopied(ok);
+    setCopyFailed(!ok);
+    setTimeout(() => {
+      setCopied(false);
+      setCopyFailed(false);
+    }, 1800);
   };
 
   const download = () => {
     if (!output) return;
     const blob = new Blob([output], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `obsucvim_${result?.stats.seeded ?? "out"}.luau`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const name = `obsucvim_${result?.stats.seeded ?? "out"}.luau`;
+    // 沙箱 iframe 会吞掉 <a download> —— iframe 里改为新标签页打开
+    // （浏览器直接展示文本，Ctrl+S 即可保存），直连环境走标准下载
+    let inFrame = false;
+    try {
+      inFrame = window.self !== window.top;
+    } catch {
+      inFrame = true;
+    }
+    let opened = false;
+    if (inFrame) {
+      try {
+        opened = !!window.open(url, "_blank");
+      } catch {
+        opened = false;
+      }
+    }
+    if (!opened) {
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
 
   const applied = appliedNames(options);
@@ -114,8 +157,13 @@ export function ResultPanel({
 
         <div className="ml-auto flex items-center gap-2">
           <Button variant="outline" onClick={copy} disabled={!output} className="px-3 py-2">
-            <Icon name={copied ? "check" : "copy"} className={cn("h-4 w-4", copied && "text-emerald-300")} />
-            <span className="hidden sm:inline">{copied ? t("common.copied") : t("common.copy")}</span>
+            <Icon
+              name={copied ? "check" : "copy"}
+              className={cn("h-4 w-4", copied && "text-emerald-300", copyFailed && "text-rose-300")}
+            />
+            <span className={cn("hidden sm:inline", copyFailed && "text-rose-300")}>
+              {copied ? t("common.copied") : copyFailed ? t("result.copyFailed") : t("common.copy")}
+            </span>
           </Button>
           <Button onClick={download} disabled={!output} className="px-3 py-2">
             <Icon name="download" className="h-4 w-4" />

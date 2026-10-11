@@ -28,7 +28,7 @@ const ENGINE_TIMEOUT_MS = 60_000;
 
 /* ---------------- 选项 → CLI 参数（与前端 buildCliArgs 对齐） ---------------- */
 function buildCliArgs(o) {
-  const args = ["--preset", "v15"];
+  const args = ["--preset", "v15", "--env-check", "--bind-executor", "--bind-env", "roblox"];
   const seed = normalizeSeed(o.seed);
   if (seed) args.push("--seed", seed);
   args.push(o.minify ? "--minify" : "--no-minify");
@@ -40,9 +40,6 @@ function buildCliArgs(o) {
   if (!o.body) args.push("--no-body");
   if (!o.antidbg) args.push("--no-antidbg");
   if (!o.guard) args.push("--no-guard");
-  if (o.envCheck) args.push("--env-check");
-  args.push(o.bindExecutor ? "--bind-executor" : "--no-bind-executor");
-  if (o.bindEnv) args.push("--bind-env", "roblox");
   return args;
 }
 
@@ -82,10 +79,13 @@ function run(cmd, args, { input, timeoutMs }) {
 }
 
 function appliedNames(o) {
-  const list = ["英文水印首行", "v15 结构克隆（模块表 + CPS 引导）"];
-  if (o.bindExecutor) list.push("executor 认证绑定");
-  if (o.envCheck) list.push("环境检查组（tier-1 + tier-2）");
-  if (o.bindEnv) list.push("环境绑定（Roblox）");
+  const list = [
+    "英文水印首行",
+    "v15 结构克隆（模块表 + CPS 引导）",
+    "executor 认证绑定",
+    "环境检查组（tier-1 + tier-2）",
+    "环境绑定（Roblox）",
+  ];
   if (o.mangle) list.push("标识符重命名 (L1)");
   if (o.strings) list.push("字符串加密 (L2)");
   if (o.flatten) list.push("控制流平坦化 (L3)");
@@ -179,9 +179,7 @@ const server = createServer(async (req, res) => {
     const elapsedMs = Date.now() - t0;
     log.push({ level: "info", text: `[2/4] Rust 引擎执行完成 · rc=0 · ${elapsedMs} ms` });
     log.push({ level: "info", text: `保护通道：${appliedNames(options).join(" · ")}` });
-    if (options.bindExecutor) {
-      log.push({ level: "info", text: "executor 认证绑定开启：产物只在完整 Roblox executor 环境内正确运行（裸 Luau 静默死亡为预期行为）" });
-    }
+    log.push({ level: "info", text: "运行时保护全开（executor 绑定 + 环境检查组 + Roblox 环境绑定）：产物只在完整 Roblox executor 环境内正确运行" });
 
     // 可选：产物语法校验（luau-compile 存在时；无 stdin 模式，走临时文件）
     if (existsSync(LUAUC)) {

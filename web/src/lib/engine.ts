@@ -47,13 +47,6 @@ export interface ObfuscationOptions {
   antidbg: boolean;
   /** 反调试环境守卫前导（--no-guard） */
   guard: boolean;
-  /* ---- v15 运行时保护 ---- */
-  /** executor 认证绑定（--bind-executor，默认开启；--no-bind-executor 退出） */
-  bindExecutor: boolean;
-  /** 环境检查组 tier-1+tier-2（--env-check） */
-  envCheck: boolean;
-  /** 环境绑定：Roblox API 原语槽（--bind-env roblox） */
-  bindEnv: boolean;
   /* ---- 元信息 ---- */
   seed: string;
 }
@@ -68,9 +61,6 @@ export const DEFAULT_OPTIONS: ObfuscationOptions = {
   body: true,
   antidbg: true,
   guard: true,
-  bindExecutor: true,
-  envCheck: false,
-  bindEnv: false,
   seed: "",
 };
 
@@ -79,7 +69,7 @@ export const DEFAULT_OPTIONS: ObfuscationOptions = {
  * 后端 /api/obfuscate 使用同一映射）。产品形态固定 v15。
  */
 export function buildCliArgs(o: ObfuscationOptions): string[] {
-  const args: string[] = ["--preset", "v15"];
+  const args: string[] = ["--preset", "v15", "--env-check", "--bind-executor", "--bind-env", "roblox"];
   if (o.seed) args.push("--seed", o.seed);
   args.push(o.minify ? "--minify" : "--no-minify");
   if (!o.mangle) args.push("--no-mangle");
@@ -90,9 +80,6 @@ export function buildCliArgs(o: ObfuscationOptions): string[] {
   if (!o.body) args.push("--no-body");
   if (!o.antidbg) args.push("--no-antidbg");
   if (!o.guard) args.push("--no-guard");
-  if (o.envCheck) args.push("--env-check");
-  args.push(o.bindExecutor ? "--bind-executor" : "--no-bind-executor");
-  if (o.bindEnv) args.push("--bind-env", "roblox");
   return args;
 }
 
@@ -133,11 +120,13 @@ export const WATERMARK_LINE = "-- This file was obfuscated by Obsucvim.";
 
 /* --------------------------------------------------------------------------- */
 export function appliedNames(o: ObfuscationOptions): string[] {
-  const list: string[] = ["英文水印首行"];
-  list.push("v15 结构克隆（模块表 + CPS 引导）");
-  if (o.bindExecutor) list.push("executor 认证绑定");
-  if (o.envCheck) list.push("环境检查组（tier-1 + tier-2）");
-  if (o.bindEnv) list.push("环境绑定（Roblox）");
+  const list: string[] = [
+    "英文水印首行",
+    "v15 结构克隆（模块表 + CPS 引导）",
+    "executor 认证绑定",
+    "环境检查组（tier-1 + tier-2）",
+    "环境绑定（Roblox）",
+  ];
   if (o.mangle) list.push("标识符重命名 (L1)");
   if (o.strings) list.push("字符串加密 (L2)");
   if (o.flatten) list.push("控制流平坦化 (L3)");
@@ -274,9 +263,9 @@ export const mockEngine: ObfuscatorEngine = {
       if (options.antidbg) log.push({ level: "info", text: "L7 防篡改：完整性校验 lane" });
       if (options.guard) log.push({ level: "info", text: "反调试环境守卫前导" });
       log.push({ level: "info", text: "v15 管线：模块表 + CPS 引导装配" });
-      if (options.bindExecutor) log.push({ level: "info", text: "executor 认证绑定：EXG 守卫令牌折入钥匙流（默认底层保护）" });
-      if (options.envCheck) log.push({ level: "info", text: "环境检查组：tier-1+tier-2 常量挑战，差值静默投毒" });
-      if (options.bindEnv) log.push({ level: "info", text: "环境绑定：Roblox API（Vector3/task）嵌进原语槽" });
+      log.push({ level: "info", text: "executor 认证绑定：EXG 守卫令牌折入钥匙流（默认底层保护）" });
+      log.push({ level: "info", text: "环境检查组：tier-1+tier-2 常量挑战，差值静默投毒" });
+      log.push({ level: "info", text: "环境绑定：Roblox API（Vector3/task）嵌进原语槽" });
 
       log.push({ level: "step", text: "[2/4] 代码生成" });
       out = out

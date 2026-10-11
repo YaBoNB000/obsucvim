@@ -198,8 +198,7 @@ const DEFAULTS_KEY = "obsucvim.defaults";
 
 const OPTION_KEYS = [
   "minify", "mangle", "strings", "flatten", "junk", "numbers",
-  "body", "antidbg", "guard", "envCheck", "bindExecutor",
-  "bindEnv", "seed",
+  "body", "antidbg", "guard", "seed",
 ] as const;
 
 export function loadDefaults(fallback: ObfuscationOptions): ObfuscationOptions {

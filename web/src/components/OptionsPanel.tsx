@@ -32,7 +32,6 @@ export function OptionsPanel({
     <div className="flex flex-col gap-5">
       <div>
         <h2 className="text-[13.5px] font-semibold text-slate-100">{t("ws.config")}</h2>
-        <p className="mt-1 text-[11px] leading-relaxed text-slate-400/70">{t("ws.pipelineNote")}</p>
       </div>
 
       <Group title={t("ws.preset")} icon={<Icon name="bolt" className="h-4 w-4" />}>
@@ -50,27 +49,6 @@ export function OptionsPanel({
             ))
           )}
         </div>
-      </Group>
-
-      <Group title={t("ws.groupV15")} icon={<Icon name="shield" className="h-4 w-4" />}>
-        <Toggle
-          label={t("ws.bindExecutor")}
-          hint={t("ws.bindExecutorHint")}
-          checked={options.bindExecutor}
-          onChange={(v) => set("bindExecutor", v)}
-        />
-        <Toggle
-          label={t("ws.envCheck")}
-          hint={t("ws.envCheckHint")}
-          checked={options.envCheck}
-          onChange={(v) => set("envCheck", v)}
-        />
-        <Toggle
-          label={t("ws.bindEnv")}
-          hint={t("ws.bindEnvHint")}
-          checked={options.bindEnv}
-          onChange={(v) => set("bindEnv", v)}
-        />
       </Group>
 
       <Group title={t("ws.groupTransform")} icon={<Icon name="lock" className="h-4 w-4" />}>
@@ -100,13 +78,6 @@ export function OptionsPanel({
             className="w-full rounded-xl border border-white/[0.09] bg-black/30 px-3 py-2 font-mono text-[12px] text-aqua-100 placeholder:text-slate-600 focus:border-aqua-300/45"
           />
         </label>
-        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
-          <div className="flex items-center gap-2 text-[11px] text-slate-400/80">
-            <Icon name="lock" className="h-3.5 w-3.5 text-aqua-300/70" />
-            {t("ws.watermarkNote")}
-          </div>
-          <p className="mt-1.5 font-mono text-[10.5px] leading-relaxed text-aqua-200/60">-- This file was obfuscated by Obsucvim.</p>
-        </div>
       </Group>
     </div>
   );
