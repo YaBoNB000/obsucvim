@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { DAILY_FREE_QUOTA, type ObfuscationOptions } from "./engine";
+import { DAILY_FREE_QUOTA, PRESET_IDS, type ObfuscationOptions } from "./engine";
 
 /* ------------------------------------------------------------------ */
 /*                        账户 + 每日免费额度                          */
@@ -197,10 +197,25 @@ export function useHistory() {
 /* ------------------------------------------------------------------ */
 const DEFAULTS_KEY = "obsucvim.defaults";
 
+const OPTION_KEYS = [
+  "preset", "minify", "mangle", "strings", "flatten", "junk", "numbers",
+  "body", "antidbg", "guard", "vmSealStrings", "envCheck", "bindExecutor",
+  "bindEnv", "seed",
+] as const;
+
 export function loadDefaults(fallback: ObfuscationOptions): ObfuscationOptions {
   try {
     const raw = localStorage.getItem(DEFAULTS_KEY);
-    return raw ? ({ ...fallback, ...(JSON.parse(raw) as ObfuscationOptions) } as ObfuscationOptions) : fallback;
+    if (!raw) return fallback;
+    const saved = JSON.parse(raw) as Record<string, unknown>;
+    if (!saved || typeof saved !== "object" || !PRESET_IDS.includes(saved.preset as ObfuscationOptions["preset"])) {
+      return fallback;
+    }
+    const picked: Partial<ObfuscationOptions> = {};
+    for (const k of OPTION_KEYS) {
+      if (k in saved && typeof saved[k] === typeof fallback[k]) (picked as Record<string, unknown>)[k] = saved[k];
+    }
+    return { ...fallback, ...picked };
   } catch {
     return fallback;
   }

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { useAuth, loadDefaults, saveDefaults } from "../lib/store";
-import { DEFAULT_OPTIONS, ENGINE, DAILY_FREE_QUOTA, type ObfuscationOptions } from "../lib/engine";
+import { DEFAULT_OPTIONS, ENGINE, DAILY_FREE_QUOTA, PRESETS, PRESET_IDS, type ObfuscationOptions } from "../lib/engine";
 import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { LangSwitch } from "../components/Brand";
 import { presetLabel } from "../components/OptionsPanel";
@@ -61,10 +61,13 @@ export function Account() {
 
           <div className="grid gap-2.5">
             <div className="grid grid-cols-3 gap-2">
-              {(["light", "balanced", "extreme"] as const).map((p) => (
+              {PRESET_IDS.map((p) => (
                 <button
                   key={p}
-                  onClick={() => setDefaults({ ...defaults, preset: p })}
+                  onClick={() => {
+                    const { label: _l, hint: _h, ...rest } = PRESETS[p];
+                    setDefaults({ ...defaults, ...rest, preset: p });
+                  }}
                   className={
                     "cursor-pointer rounded-xl border px-3 py-2 text-[12px] transition-all duration-300 " +
                     (defaults.preset === p
@@ -77,26 +80,26 @@ export function Account() {
               ))}
             </div>
             <Toggle
-              label={t("ws.vmMode")}
-              hint={t("ws.vmModeHint")}
-              checked={defaults.vm.mode !== "off"}
-              onChange={(v) => setDefaults({ ...defaults, vm: { ...defaults.vm, mode: v ? "function" : "off" } })}
+              label={t("ws.bindExecutor")}
+              hint={t("ws.bindExecutorHint")}
+              checked={defaults.bindExecutor}
+              locked={defaults.preset !== "v15"}
+              onChange={(v) => setDefaults({ ...defaults, bindExecutor: v })}
             />
             <Toggle
-              label={t("ws.watermark")}
-              hint={defaults.watermark || t("ws.watermarkPh")}
-              checked={defaults.watermark.length > 0}
-              onChange={(v) => setDefaults({ ...defaults, watermark: v ? (defaults.watermark || "user#00001") : "" })}
+              label={t("ws.envCheck")}
+              hint={t("ws.envCheckHint")}
+              checked={defaults.envCheck}
+              locked={defaults.preset !== "v15"}
+              onChange={(v) => setDefaults({ ...defaults, envCheck: v })}
             />
-            <label className="block">
-              <span className="mb-1 block text-[11px] text-slate-400/70">{t("ws.watermark")}</span>
-              <input
-                value={defaults.watermark}
-                onChange={(e) => setDefaults({ ...defaults, watermark: e.target.value })}
-                placeholder={t("ws.watermarkPh")}
-                className="w-full rounded-xl border border-white/[0.09] bg-black/30 px-3 py-2 font-mono text-[12px] text-aqua-100 placeholder:text-slate-600 focus:border-aqua-300/45"
-              />
-            </label>
+            <Toggle
+              label={t("ws.vmSeal")}
+              hint={t("ws.vmSealHint")}
+              checked={defaults.vmSealStrings}
+              locked={defaults.preset !== "vm" && defaults.preset !== "max"}
+              onChange={(v) => setDefaults({ ...defaults, vmSealStrings: v })}
+            />
           </div>
 
           <div className="mt-5 flex items-center gap-3">

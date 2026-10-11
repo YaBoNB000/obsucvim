@@ -1,4 +1,4 @@
-import { appliedNames, PRESETS, type ObfuscationOptions, type PresetId, type VmMode, type DispatchStyle } from "../lib/engine";
+import { appliedNames, PRESETS, PRESET_IDS, type ObfuscationOptions, type PresetId } from "../lib/engine";
 import { Icon, Toggle } from "./ui";
 import { useI18n, type TKey } from "../lib/i18n";
 import { cn } from "../utils/cn";
@@ -26,22 +26,14 @@ export function OptionsPanel({
   const { t } = useI18n();
   const set = <K extends keyof ObfuscationOptions>(key: K, value: ObfuscationOptions[K]) =>
     setOptions({ ...options, [key]: value });
-  const setVm = <K extends keyof ObfuscationOptions["vm"]>(
-    key: K,
-    value: ObfuscationOptions["vm"][K],
-  ) => setOptions({ ...options, vm: { ...options.vm, [key]: value } });
 
   const applyPreset = (p: PresetId) => {
-    const { label: _l, hint: _h, vmMode, ...rest } = PRESETS[p];
-    setOptions({
-      ...options,
-      ...rest,
-      preset: p,
-      vm: { ...options.vm, mode: vmMode ?? options.vm.mode },
-    });
+    const { label: _l, hint: _h, ...rest } = PRESETS[p];
+    setOptions({ ...options, ...rest, preset: p });
   };
 
   const enabled = appliedNames(options);
+  const isV15 = options.preset === "v15";
 
   return (
     <div className="flex flex-col gap-5">
@@ -51,28 +43,28 @@ export function OptionsPanel({
       </div>
 
       <Group title={t("ws.preset")} icon={<Icon name="bolt" className="h-4 w-4" />}>
-        <div className="glass-soft flex items-center gap-1 rounded-xl border border-white/[0.08] p-1">
-          {(
-            [
-              { value: "light", label: t("preset.light") },
-              { value: "balanced", label: t("preset.balanced") },
-              { value: "extreme", label: t("preset.extreme") },
-            ] as { value: PresetId; label: string }[]
-          ).map((p) => (
+        <div className="glass-soft grid grid-cols-3 gap-1 rounded-xl border border-white/[0.08] p-1">
+          {PRESET_IDS.map((p) => (
             <button
-              key={p.value}
-              onClick={() => applyPreset(p.value)}
+              key={p}
+              onClick={() => applyPreset(p)}
               className={cn(
-                "flex-1 cursor-pointer rounded-lg px-2 py-1.5 text-[12px] font-medium transition-all duration-300",
-                options.preset === p.value
+                "relative cursor-pointer rounded-lg px-2 py-1.5 text-[12px] font-medium transition-all duration-300",
+                options.preset === p
                   ? "bg-aqua-400/20 text-aqua-100 shadow-[0_0_24px_-10px_rgba(34,226,213,0.95)_inset]"
                   : "text-slate-400 hover:text-aqua-100",
               )}
             >
-              {p.label}
+              {t(`preset.${p}` as TKey)}
+              {p === "v15" && (
+                <span className="ml-1 rounded border border-aqua-300/30 px-1 py-px font-mono text-[8.5px] tracking-wide text-aqua-200/80">
+                  {t("preset.default")}
+                </span>
+              )}
             </button>
           ))}
         </div>
+        <p className="px-0.5 text-[10.5px] leading-relaxed text-slate-500">{t("ws.presetLegacyHint")}</p>
         <div className="flex flex-wrap gap-1.5 px-0.5">
           {enabled.length === 0 ? (
             <span className="text-[11px] text-slate-500">{t("ws.appliedCount", { n: 0 })}</span>
@@ -89,94 +81,51 @@ export function OptionsPanel({
         </div>
       </Group>
 
-      <Group title={t("ws.groupVm")} icon={<Icon name="cpu" className="h-4 w-4" />}>
-        <div className="grid grid-cols-3 gap-1.5 rounded-xl border border-aqua-300/20 bg-aqua-400/[0.05] p-1">
-          {(
-            [
-              { value: "off", label: t("ws.vmOff") },
-              { value: "function", label: t("ws.vmFunction") },
-              { value: "script", label: t("ws.vmScript") },
-            ] as { value: VmMode; label: string }[]
-          ).map((m) => (
-            <button
-              key={m.value}
-              onClick={() => setVm("mode", m.value)}
-              className={cn(
-                "cursor-pointer rounded-lg px-2 py-1.5 text-[11.5px] transition-all duration-300",
-                options.vm.mode === m.value
-                  ? "bg-aqua-400/20 text-aqua-50 shadow-[0_0_24px_-12px_rgba(34,226,213,1)_inset]"
-                  : "text-slate-400 hover:text-aqua-100",
-              )}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-        <p className="px-1 text-[11px] leading-relaxed text-slate-400/65">{t("ws.vmModeHint")}</p>
-
-        {options.vm.mode !== "off" && (
-          <>
-            <label className="block px-1">
-              <span className="mb-1.5 flex items-center justify-between text-[11px] text-slate-400/70">
-                {t("ws.dispatch")}
-                <span className="font-mono text-[10.5px] text-aqua-200/80">{options.vm.dispatchStyle}</span>
-              </span>
-              <div className="grid grid-cols-3 gap-1.5">
-                {(
-                  [
-                    { value: "switch", label: t("ws.dispatchSwitch") },
-                    { value: "table", label: t("ws.dispatchTable") },
-                    { value: "goto", label: t("ws.dispatchGoto") },
-                  ] as { value: DispatchStyle; label: string }[]
-                ).map((d) => (
-                  <button
-                    key={d.value}
-                    onClick={() => setVm("dispatchStyle", d.value)}
-                    className={cn(
-                      "cursor-pointer rounded-lg border px-2 py-1.5 text-[11px] transition-all duration-300",
-                      options.vm.dispatchStyle === d.value
-                        ? "border-aqua-300/40 bg-aqua-400/[0.12] text-aqua-100"
-                        : "border-white/[0.07] bg-white/[0.02] text-slate-400 hover:border-aqua-300/25 hover:text-aqua-100",
-                    )}
-                  >
-                    {d.label}
-                  </button>
-                ))}
-              </div>
-            </label>
-            <Toggle
-              label={t("ws.opcodeShuffle")}
-              hint={t("ws.opcodeShuffleHint")}
-              checked={options.vm.opcodeShuffle}
-              onChange={(v) => setVm("opcodeShuffle", v)}
-            />
-            <Toggle
-              label={t("ws.bytecodeEnc")}
-              hint={t("ws.bytecodeEncHint")}
-              checked={options.vm.bytecodeEncryption}
-              onChange={(v) => setVm("bytecodeEncryption", v)}
-            />
-            <Toggle
-              label={t("ws.registerMachine")}
-              hint={t("ws.registerMachineHint")}
-              checked={options.vm.registerMachine}
-              onChange={(v) => setVm("registerMachine", v)}
-            />
-          </>
-        )}
+      <Group title={t("ws.groupV15")} icon={<Icon name="shield" className="h-4 w-4" />}>
+        {!isV15 && <p className="px-1 text-[10.5px] leading-relaxed text-amber-200/70">{t("ws.v15Only")}</p>}
+        <Toggle
+          label={t("ws.bindExecutor")}
+          hint={t("ws.bindExecutorHint")}
+          checked={options.bindExecutor}
+          locked={!isV15}
+          onChange={(v) => set("bindExecutor", v)}
+        />
+        <Toggle
+          label={t("ws.envCheck")}
+          hint={t("ws.envCheckHint")}
+          checked={options.envCheck}
+          locked={!isV15}
+          onChange={(v) => set("envCheck", v)}
+        />
+        <Toggle
+          label={t("ws.bindEnv")}
+          hint={t("ws.bindEnvHint")}
+          checked={options.bindEnv}
+          locked={!isV15}
+          onChange={(v) => set("bindEnv", v)}
+        />
       </Group>
 
       <Group title={t("ws.groupTransform")} icon={<Icon name="lock" className="h-4 w-4" />}>
-        <Toggle label={t("ws.rename")} hint={t("ws.renameHint")} checked={options.renameIdentifiers} onChange={(v) => set("renameIdentifiers", v)} />
-        <Toggle label={t("ws.strings")} hint={t("ws.stringsHint")} checked={options.stringEncryption} onChange={(v) => set("stringEncryption", v)} />
-        <Toggle label={t("ws.flow")} hint={t("ws.flowHint")} checked={options.controlFlowFlattening} onChange={(v) => set("controlFlowFlattening", v)} />
-        <Toggle label={t("ws.pool")} hint={t("ws.poolHint")} checked={options.constantPool} onChange={(v) => set("constantPool", v)} />
-        <Toggle label={t("ws.numbers")} hint={t("ws.numbersHint")} checked={options.numbersToExpressions} onChange={(v) => set("numbersToExpressions", v)} />
+        <Toggle label={t("ws.mangle")} hint={t("ws.mangleHint")} checked={options.mangle} onChange={(v) => set("mangle", v)} />
+        <Toggle label={t("ws.strings")} hint={t("ws.stringsHint")} checked={options.strings} onChange={(v) => set("strings", v)} />
+        <Toggle label={t("ws.flatten")} hint={t("ws.flattenHint")} checked={options.flatten} onChange={(v) => set("flatten", v)} />
+        <Toggle label={t("ws.junk")} hint={t("ws.junkHint")} checked={options.junk} onChange={(v) => set("junk", v)} />
+        <Toggle label={t("ws.numbers")} hint={t("ws.numbersHint")} checked={options.numbers} onChange={(v) => set("numbers", v)} />
+        <Toggle label={t("ws.body")} hint={t("ws.bodyHint")} checked={options.body} onChange={(v) => set("body", v)} />
+        <Toggle label={t("ws.minify")} hint={t("ws.minifyHint")} checked={options.minify} onChange={(v) => set("minify", v)} />
       </Group>
 
-      <Group title={t("ws.groupRuntime")} icon={<Icon name="shield" className="h-4 w-4" />}>
-        <Toggle label={t("ws.antiDebug")} hint={t("ws.antiDebugHint")} checked={options.antiDebug} onChange={(v) => set("antiDebug", v)} />
-        <Toggle label={t("ws.antiTamper")} hint={t("ws.antiTamperHint")} checked={options.antiTamper} onChange={(v) => set("antiTamper", v)} />
+      <Group title={t("ws.groupRuntime")} icon={<Icon name="cpu" className="h-4 w-4" />}>
+        <Toggle label={t("ws.antidbg")} hint={t("ws.antidbgHint")} checked={options.antidbg} onChange={(v) => set("antidbg", v)} />
+        <Toggle label={t("ws.guard")} hint={t("ws.guardHint")} checked={options.guard} onChange={(v) => set("guard", v)} />
+        <Toggle
+          label={t("ws.vmSeal")}
+          hint={t("ws.vmSealHint")}
+          checked={options.vmSealStrings}
+          locked={options.preset !== "vm" && options.preset !== "max"}
+          onChange={(v) => set("vmSealStrings", v)}
+        />
       </Group>
 
       <Group title={t("ws.groupMeta")} icon={<Icon name="layers" className="h-4 w-4" />}>
@@ -191,22 +140,18 @@ export function OptionsPanel({
             className="w-full rounded-xl border border-white/[0.09] bg-black/30 px-3 py-2 font-mono text-[12px] text-aqua-100 placeholder:text-slate-600 focus:border-aqua-300/45"
           />
         </label>
-        <label className="block">
-          <span className="mb-1 block text-[11px] text-slate-400/70">
-            {t("ws.watermark")} <span className="text-slate-500">({t("common.optional")})</span>
-          </span>
-          <input
-            value={options.watermark}
-            onChange={(e) => set("watermark", e.target.value)}
-            placeholder={t("ws.watermarkPh")}
-            className="w-full rounded-xl border border-white/[0.09] bg-black/30 px-3 py-2 font-mono text-[12px] text-aqua-100 placeholder:text-slate-600 focus:border-aqua-300/45"
-          />
-        </label>
+        <div className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+          <div className="flex items-center gap-2 text-[11px] text-slate-400/80">
+            <Icon name="lock" className="h-3.5 w-3.5 text-aqua-300/70" />
+            {t("ws.watermarkNote")}
+          </div>
+          <p className="mt-1.5 font-mono text-[10.5px] leading-relaxed text-aqua-200/60">-- This file was obfuscated by Obsucvim.</p>
+        </div>
       </Group>
     </div>
   );
 }
 
 export function presetLabel(preset: PresetId, t: (k: TKey) => string) {
-  return preset === "light" ? t("preset.light") : preset === "balanced" ? t("preset.balanced") : t("preset.extreme");
+  return t(`preset.${preset}` as TKey);
 }

@@ -78,10 +78,7 @@ export function History({ onLoad }: { onLoad: (item: HistoryItem) => void }) {
                   {t("history.size")}: <span className="tabular text-slate-300">{fmt(item.outputBytes)}</span>
                 </span>
                 <span>
-                  VM:{" "}
-                  <span className="font-mono text-slate-300">
-                    {item.options.vm.mode}/{item.options.vm.dispatchStyle}
-                  </span>
+                  {t("ws.appliedCount", { n: appliedNames(item.options).length })}
                 </span>
                 <span>
                   {t("history.seed")}: <span className="font-mono text-slate-300">{item.seed}</span>

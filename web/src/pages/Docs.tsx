@@ -1,9 +1,9 @@
 import { useI18n } from "../lib/i18n";
 import { Button, GlassCard, Icon, Pill } from "../components/ui";
 import { InlineCode } from "../components/CodeArea";
-import { ENGINE, MAX_SOURCE_BYTES, ENGINE_TIMEOUT_MS, DAILY_FREE_QUOTA } from "../lib/engine";
+import { ENGINE, MAX_SOURCE_BYTES, ENGINE_TIMEOUT_MS, DAILY_FREE_QUOTA, PRESETS } from "../lib/engine";
 
-const RUST_SNIPPET = `// src/lib.rs — obsucvim-core
+const RUST_SNIPPET = `// src/lib.rs — obsucvim-core（选项模型与 obsucvim CLI 对齐）
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -16,15 +16,30 @@ pub fn obfuscate(source: &str, options_json: &str) -> Result<String, JsValue> {
         return Err(JsValue::from_str("SOURCE_TOO_LARGE"));
     }
 
-    let mut ast = luau::parse(source)?;
-    if opts.vm.mode != VmMode::Off { vm::virtualize(&mut ast, &opts.vm)?; }
-    if opts.control_flow_flattening { cff::flatten(&mut ast); }
-    if opts.string_encryption { strings::encrypt(&mut ast); }
-    if opts.rename_identifiers { rename::apply(&mut ast, &opts.seed); }
+    // 与 CLI 等价：--preset v15（产品默认）| low..max（legacy）
+    let mut cfg = obsucvim::Options::from_preset(opts.preset)?;
+    if let Some(seed) = opts.seed() { cfg = cfg.with_seed(seed); }
+    cfg.minify = opts.minify;          // --minify / --no-minify
+    if !opts.mangle  { cfg = cfg.no_mangle(); }   // L1
+    if !opts.strings { cfg = cfg.no_strings(); }  // L2
+    if !opts.flatten { cfg = cfg.no_flatten(); }  // L3
+    if !opts.junk    { cfg = cfg.no_junk(); }     // L3
+    if !opts.numbers { cfg = cfg.no_numbers(); }  // L4
+    if !opts.body    { cfg = cfg.no_body(); }     // L5
+    if !opts.antidbg { cfg = cfg.no_antidbg(); }  // L7
+    if !opts.guard   { cfg = cfg.no_guard(); }
+    if opts.preset == "vm" || opts.preset == "max" {
+        cfg = if opts.vm_seal_strings { cfg.vm_seal_strings() } else { cfg.no_vm_seal_strings() };
+    }
+    if opts.preset == "v15" {
+        if opts.env_check     { cfg = cfg.env_check(); }    // tier-1+tier-2
+        cfg = if opts.bind_executor { cfg.bind_executor() } else { cfg.no_bind_executor() }; // 默认开
+        if opts.bind_env      { cfg = cfg.bind_env("roblox"); }
+    }
 
-    let code = luau::emit(&ast);
-    // 一次性返回：{ code, log } —— 没有流式进度
-    Ok(serde_json::to_string(&BuildOutput { code, log: ast.log })?)
+    let code = obsucvim::obfuscate(source, &cfg)?;
+    // 一次性返回：{ code, log } —— 没有流式进度；首行固定英文水印
+    Ok(serde_json::to_string(&BuildOutput { code, log: cfg.log })?)
 }`;
 
 const TS_SNIPPET = `// src/lib/engine.ts —— 前端唯一需要改的地方
@@ -49,23 +64,21 @@ export const ENGINE: ObfuscatorEngine = {
 };`;
 
 const OPTIONS_JSON = `{
-  "preset": "balanced",              // light | balanced | extreme
-  "renameIdentifiers": true,
-  "stringEncryption": true,
-  "controlFlowFlattening": true,
-  "constantPool": true,
-  "numbersToExpressions": false,
-  "vm": {
-    "mode": "function",              // off | function | script
-    "dispatchStyle": "switch",       // switch | table | goto
-    "opcodeShuffle": true,
-    "bytecodeEncryption": true,
-    "registerMachine": true
-  },
-  "antiDebug": false,
-  "antiTamper": false,
-  "seed": "lic-2026",
-  "watermark": "user#88231"
+  "preset": "v15",            // v15（产品默认）| low | medium | high | vm | max
+  "minify": true,             // L1 单行压缩        --minify / --no-minify
+  "mangle": true,             // L1 标识符重命名     --no-mangle
+  "strings": true,            // L2 字符串加密       --no-strings
+  "flatten": true,            // L3 控制流平坦化     --no-flatten
+  "junk": true,               // L3 垃圾代码注入     --no-junk
+  "numbers": true,            // L4 数字字面量重写    --no-numbers
+  "body": true,               // L5 全程序加密       --no-body
+  "antidbg": true,            // L7 防篡改           --no-antidbg
+  "guard": true,              // 反调试环境守卫前导   --no-guard
+  "vmSealStrings": true,      // VM 字符串封存（实验，VM 预设）--vm-seal-strings
+  "envCheck": false,          // 环境检查组 tier-1+tier-2（仅 v15）--env-check
+  "bindExecutor": true,       // executor 认证绑定（仅 v15，默认开）--no-bind-executor 退绑
+  "bindEnv": false,           // 环境绑定 roblox（仅 v15）--bind-env roblox
+  "seed": "67067"             // 留空 = 时间种子
 }`;
 
 export function Docs() {
@@ -79,11 +92,11 @@ export function Docs() {
   ];
 
   const vmRows = [
-    ["vm.mode", "off | function | script", t("ws.vmModeHint")],
-    ["vm.dispatchStyle", "switch | table | goto", t("ws.dispatch")],
-    ["vm.opcodeShuffle", "bool", t("ws.opcodeShuffleHint")],
-    ["vm.bytecodeEncryption", "bool", t("ws.bytecodeEncHint")],
-    ["vm.registerMachine", "bool", t("ws.registerMachineHint")],
+    ["preset", "v15 | low..max", PRESETS["v15"].hint],
+    ["bindExecutor", "bool (default true)", t("ws.bindExecutorHint")],
+    ["envCheck", "bool (default false)", t("ws.envCheckHint")],
+    ["bindEnv", "bool (default false)", t("ws.bindEnvHint")],
+    ["vmSealStrings", "bool (VM presets)", t("ws.vmSealHint")],
   ];
 
   return (

@@ -2,8 +2,15 @@
  * ============================================================================
  *  Obsucvim 引擎接入层  (src/lib/engine.ts)
  * ----------------------------------------------------------------------------
- *  你的引擎：Rust 编译出的 WASM，直接在浏览器里调用（无后端、无 API）。
- *  接入方式（wasm-bindgen / wasm-pack 产物）：
+ *  选项模型与 obsucvim CLI（Rust 引擎）完全对齐：
+ *    预设   v15（产品默认）| low | medium | high | vm | max（legacy）
+ *    变换   L1 改名/压缩 · L2 字符串加密 · L3 平坦化/垃圾代码 · L4 数字重写
+ *           L5 全程序加密 · L7 防篡改 · 反调试环境守卫 · VM 字符串封存（实验）
+ *    保护   环境检查组 tier-1+tier-2（--env-check）· executor 认证绑定
+ *           （--bind-executor，默认开启的底层保护层）· 环境绑定 roblox
+ *    水印   产物首行固定英文水印（引擎行为，非选项）
+ *
+ *  接入真实引擎（wasm-bindgen / wasm-pack 产物）：
  *
  *    import init, { obfuscate } from "../wasm/obsucvim_core.js";
  *    let ready: Promise<void> | null = null;
@@ -20,113 +27,199 @@
  *      },
  *    };
  *
- *  约束（与你的引擎对齐）：
- *   · 仅支持 Luau，目标固定，无多运行时切换
+ *  约束（与引擎对齐）：
+ *   · 仅支持 Luau（5.1 自 2026-09-10 起停止支持），目标固定
  *   · 一次性返回最终结果（不做流式进度）
  *   · 源文件上限 1 MB，超出直接拒绝
  *   · 超时不重试，直接抛错
  * ============================================================================
  */
 
-export type PresetId = "light" | "balanced" | "extreme";
-/** VM 虚拟化范围 */
-export type VmMode = "off" | "function" | "script";
-/** VM 指令分发方式 */
-export type DispatchStyle = "switch" | "table" | "goto";
+/** 与 CLI --preset 一致；v15 = 产品默认形态（Luraph v15 结构克隆） */
+export type PresetId = "v15" | "low" | "medium" | "high" | "vm" | "max";
 
-export interface VmOptions {
-  /** 虚拟化范围：关闭 / 只虚拟化函数 / 全脚本字节码 */
-  mode: VmMode;
-  /** 指令集洗牌（每次出包 opcode 顺序不同） */
-  opcodeShuffle: boolean;
-  /** 字节码 + 常量池加密 */
-  bytecodeEncryption: boolean;
-  /** 指令分发方式 */
-  dispatchStyle: DispatchStyle;
-  /** 寄存器分配策略：寄存器机 / 栈机 */
-  registerMachine: boolean;
-}
+export const PRESET_IDS: PresetId[] = ["v15", "low", "medium", "high", "vm", "max"];
 
 export interface ObfuscationOptions {
   preset: PresetId;
-  /* 变换 */
-  renameIdentifiers: boolean;
-  stringEncryption: boolean;
-  controlFlowFlattening: boolean;
-  constantPool: boolean;
-  numbersToExpressions: boolean;
-  /* VM 自定义 */
-  vm: VmOptions;
-  /* 运行时防护 */
-  antiDebug: boolean;
-  antiTamper: boolean;
-  /* 可追溯 */
+  /* ---- 变换开关（对应 CLI --no-* 旗标，默认全开）---- */
+  /** L1 单行压缩（--minify / --no-minify） */
+  minify: boolean;
+  /** L1 标识符改名（--no-mangle） */
+  mangle: boolean;
+  /** L2 字符串加密（--no-strings） */
+  strings: boolean;
+  /** L3 控制流平坦化（--no-flatten） */
+  flatten: boolean;
+  /** L3 垃圾代码注入（--no-junk） */
+  junk: boolean;
+  /** L4 数字字面量重写（--no-numbers） */
+  numbers: boolean;
+  /** L5 全程序加密（--no-body） */
+  body: boolean;
+  /** L7 防篡改（--no-antidbg） */
+  antidbg: boolean;
+  /** 反调试环境守卫前导（--no-guard） */
+  guard: boolean;
+  /** VM 字符串封存 · 实验（--vm-seal-strings，VM 预设默认开） */
+  vmSealStrings: boolean;
+  /* ---- v15 运行时保护（仅 v15 管线；legacy 预设自动降级）---- */
+  /** 环境检查组 tier-1+tier-2（--env-check） */
+  envCheck: boolean;
+  /** executor 认证绑定（--bind-executor，默认开启；--no-bind-executor 退出） */
+  bindExecutor: boolean;
+  /** 环境绑定：Roblox API 原语槽（--bind-env roblox） */
+  bindEnv: boolean;
+  /* ---- 元信息 ---- */
   seed: string;
-  watermark: string;
 }
 
 export const DEFAULT_OPTIONS: ObfuscationOptions = {
-  preset: "balanced",
-  renameIdentifiers: true,
-  stringEncryption: true,
-  controlFlowFlattening: true,
-  constantPool: true,
-  numbersToExpressions: false,
-  vm: {
-    mode: "off",
-    opcodeShuffle: true,
-    bytecodeEncryption: true,
-    dispatchStyle: "switch",
-    registerMachine: true,
-  },
-  antiDebug: false,
-  antiTamper: false,
+  preset: "v15",
+  minify: true,
+  mangle: true,
+  strings: true,
+  flatten: true,
+  junk: true,
+  numbers: true,
+  body: true,
+  antidbg: true,
+  guard: true,
+  vmSealStrings: true,
+  envCheck: false,
+  bindExecutor: true,
+  bindEnv: false,
   seed: "",
-  watermark: "",
 };
 
-type PresetPatch = { label: string; hint: string } & Partial<
-  Omit<ObfuscationOptions, "preset" | "vm" | "seed" | "watermark">
-> & { vmMode?: VmMode };
+type PresetPatch = { label: string; hint: string } & Partial<ObfuscationOptions>;
 
+/** 与 CLI apply_preset 的档位语义一致 */
 export const PRESETS: Record<PresetId, PresetPatch> = {
-  light: {
-    label: "轻量",
-    hint: "改名 + 字符串加密，体积与兼容性最优",
-    renameIdentifiers: true,
-    stringEncryption: true,
-    controlFlowFlattening: false,
-    constantPool: false,
-    numbersToExpressions: false,
-    antiDebug: false,
-    antiTamper: false,
-    vmMode: "off",
+  v15: {
+    label: "v15",
+    hint: "产品默认形态：Luraph v15 结构克隆（Luau/Roblox 专用，模块表 + CPS 引导）；executor 认证绑定默认开启",
+    minify: true,
+    mangle: true,
+    strings: true,
+    flatten: true,
+    junk: true,
+    numbers: true,
+    body: true,
+    antidbg: true,
+    guard: true,
+    bindExecutor: true,
   },
-  balanced: {
-    label: "标准",
-    hint: "改名 + 字符串加密 + 控制流平坦化 + 常量池",
-    renameIdentifiers: true,
-    stringEncryption: true,
-    controlFlowFlattening: true,
-    constantPool: true,
-    numbersToExpressions: false,
-    antiDebug: false,
-    antiTamper: false,
-    vmMode: "off",
+  low: {
+    label: "low",
+    hint: "legacy 轻量：L1+L2（改名 + 压缩 + 字符串加密）",
+    minify: true,
+    mangle: true,
+    strings: true,
+    flatten: false,
+    junk: false,
+    numbers: false,
+    body: false,
+    antidbg: false,
+    guard: false,
+    envCheck: false,
+    bindExecutor: false,
+    bindEnv: false,
   },
-  extreme: {
-    label: "极限",
-    hint: "标准档 + VM 函数级虚拟化 + 数字表达式化 + 反调试防篡改",
-    renameIdentifiers: true,
-    stringEncryption: true,
-    controlFlowFlattening: true,
-    constantPool: true,
-    numbersToExpressions: true,
-    antiDebug: true,
-    antiTamper: true,
-    vmMode: "function",
+  medium: {
+    label: "medium",
+    hint: "legacy 中等：low + L3（控制流平坦化 + 垃圾代码）",
+    minify: true,
+    mangle: true,
+    strings: true,
+    flatten: true,
+    junk: true,
+    numbers: false,
+    body: false,
+    antidbg: false,
+    guard: false,
+    envCheck: false,
+    bindExecutor: false,
+    bindEnv: false,
+  },
+  high: {
+    label: "high",
+    hint: "legacy 高强度：medium + L4 数字重写 + L5 全程序加密 + L7 防篡改",
+    minify: true,
+    mangle: true,
+    strings: true,
+    flatten: true,
+    junk: true,
+    numbers: true,
+    body: true,
+    antidbg: true,
+    guard: true,
+    envCheck: false,
+    bindExecutor: false,
+    bindEnv: false,
+  },
+  vm: {
+    label: "vm",
+    hint: "legacy VM：high + L6 私有字节码虚拟机（字符串封存实验默认开）",
+    minify: true,
+    mangle: true,
+    strings: true,
+    flatten: true,
+    junk: true,
+    numbers: true,
+    body: true,
+    antidbg: true,
+    guard: true,
+    vmSealStrings: true,
+    envCheck: false,
+    bindExecutor: false,
+    bindEnv: false,
+  },
+  max: {
+    label: "max",
+    hint: "legacy 最强出货档（= vm）",
+    minify: true,
+    mangle: true,
+    strings: true,
+    flatten: true,
+    junk: true,
+    numbers: true,
+    body: true,
+    antidbg: true,
+    guard: true,
+    vmSealStrings: true,
+    envCheck: false,
+    bindExecutor: false,
+    bindEnv: false,
   },
 };
+
+/**
+ * 把 UI 选项映射成 obsucvim CLI 参数（接入后端 / WASM 时直接复用）。
+ * 与引擎 help 的旗标面一一对应。
+ */
+export function buildCliArgs(o: ObfuscationOptions): string[] {
+  const args: string[] = ["--preset", o.preset];
+  if (o.seed) args.push("--seed", o.seed);
+  args.push(o.minify ? "--minify" : "--no-minify");
+  if (!o.mangle) args.push("--no-mangle");
+  if (!o.strings) args.push("--no-strings");
+  if (!o.flatten) args.push("--no-flatten");
+  if (!o.junk) args.push("--no-junk");
+  if (!o.numbers) args.push("--no-numbers");
+  if (!o.body) args.push("--no-body");
+  if (!o.antidbg) args.push("--no-antidbg");
+  if (!o.guard) args.push("--no-guard");
+  if (o.preset === "vm" || o.preset === "max") {
+    args.push(o.vmSealStrings ? "--vm-seal-strings" : "--no-vm-seal-strings");
+  }
+  if (o.preset === "v15") {
+    if (o.envCheck) args.push("--env-check");
+    args.push(o.bindExecutor ? "--bind-executor" : "--no-bind-executor");
+    if (o.bindEnv) args.push("--bind-env", "roblox");
+  }
+  return args;
+}
 
 export interface LogLine {
   level: "info" | "ok" | "warn" | "step";
@@ -160,22 +253,31 @@ export const MAX_SOURCE_BYTES = 1024 * 1024; // 1 MB
 export const ENGINE_TIMEOUT_MS = 60_000; // 超时直接失败，不重试
 export const DAILY_FREE_QUOTA = 10; // 每日免费额度（次）
 
-/* ---------------------------------------------------------------------------
- *  保护项名称（用于产物头部与统计）
- * ------------------------------------------------------------------------- */
+/** 引擎固定的产物首行水印（非选项） */
+export const WATERMARK_LINE = "-- This file was obfuscated by Obsucvim.";
+
+/* --------------------------------------------------------------------------- */
 export function appliedNames(o: ObfuscationOptions): string[] {
-  const list: string[] = [];
-  if (o.vm.mode === "script") list.push("VM 全脚本虚拟化");
-  else if (o.vm.mode === "function") list.push("VM 函数虚拟化");
-  if (o.vm.opcodeShuffle) list.push("指令集洗牌");
-  if (o.vm.bytecodeEncryption) list.push("字节码加密");
-  if (o.controlFlowFlattening) list.push("控制流平坦化");
-  if (o.stringEncryption) list.push("字符串加密");
-  if (o.constantPool) list.push("常量池混淆");
-  if (o.renameIdentifiers) list.push("标识符重命名");
-  if (o.numbersToExpressions) list.push("数字表达式化");
-  if (o.antiDebug) list.push("反调试");
-  if (o.antiTamper) list.push("防篡改校验");
+  const list: string[] = ["英文水印首行"];
+  if (o.preset === "v15") {
+    list.push("v15 结构克隆（模块表 + CPS 引导）");
+    if (o.bindExecutor) list.push("executor 认证绑定");
+    if (o.envCheck) list.push("环境检查组（tier-1 + tier-2）");
+    if (o.bindEnv) list.push("环境绑定（Roblox）");
+  }
+  if (o.preset === "vm" || o.preset === "max") {
+    list.push("私有字节码 VM (L6)");
+    if (o.vmSealStrings) list.push("VM 字符串封存（实验）");
+  }
+  if (o.mangle) list.push("标识符重命名 (L1)");
+  if (o.strings) list.push("字符串加密 (L2)");
+  if (o.flatten) list.push("控制流平坦化 (L3)");
+  if (o.junk) list.push("垃圾代码注入 (L3)");
+  if (o.numbers) list.push("数字字面量重写 (L4)");
+  if (o.body) list.push("全程序加密 (L5)");
+  if (o.antidbg) list.push("防篡改 (L7)");
+  if (o.guard) list.push("反调试环境守卫");
+  if (o.minify) list.push("单行压缩 (L1)");
   return list;
 }
 
@@ -244,21 +346,14 @@ function hexNumbers(code: string) {
   return code.replace(/\b(\d{3,})\b/g, (m) => `0x${Number(m).toString(16)}`);
 }
 
-function vmPrelude(o: ObfuscationOptions, seed: string, next: () => number) {
+function vmPrelude(seed: string, next: () => number) {
   const ops = Array.from({ length: 8 }, () => shortName(next));
-  const shuffled = o.vm.opcodeShuffle ? [...ops].sort(() => next() - 0.5) : ops;
-  const dispatch =
-    o.vm.dispatchStyle === "switch"
-      ? "while true do local ins = bc[pc] if ins == " + shuffled[0] + " then pc = ins + 1 elseif ins == 0 then break end end"
-      : o.vm.dispatchStyle === "table"
-        ? "while bc[pc] do local h = handlers[bc[pc]] pc = h(pc, reg) end"
-        : "::vm_loop:: if bc[pc] == 0 then goto vm_end end pc = bc[pc] goto vm_loop ::vm_end::";
   return [
-    `-- VM: mode=${o.vm.mode} dispatch=${o.vm.dispatchStyle} regs=${o.vm.registerMachine ? "register" : "stack"}`,
-    `local ${shuffled[0]} = ${o.vm.registerMachine ? "{}" : "{}"} -- 寄存器/栈帧`,
-    `local ${shuffled[1]} = "${seed}" -- 字节码校验种子`,
-    `local function ${shuffled[2]}(bc, handlers, reg, pc)`,
-    `  ${dispatch}`,
+    `-- VM: L6 private bytecode (legacy preset)`,
+    `local ${ops[0]} = {}`,
+    `local ${ops[1]} = "${seed}"`,
+    `local function ${ops[2]}(bc, handlers, reg, pc)`,
+    `  while true do local ins = bc[pc] if ins == ${ops[3]} then pc = ins + 1 elseif ins == 0 then break end end`,
     `end`,
   ].join("\n");
 }
@@ -279,23 +374,34 @@ export const mockEngine: ObfuscatorEngine = {
       const seed = options.seed || Math.random().toString(36).slice(2, 10).toUpperCase();
       const next = mulberry(seed);
       const log: LogLine[] = [];
+      const isV15 = options.preset === "v15";
+      const isVm = options.preset === "vm" || options.preset === "max";
       log.push({ level: "step", text: `[1/4] Luau 词法/语法分析 · ${inputBytes} B` });
-      log.push({ level: "info", text: `目标运行时 Luau 固定 · 预设「${PRESETS[options.preset].label}」· 种子 ${seed}` });
+      log.push({
+        level: "info",
+        text: `目标运行时 Luau 固定 · 预设「${PRESETS[options.preset].label}」· 种子 ${seed} · CLI: ${buildCliArgs(options).join(" ")}`,
+      });
 
       let out = source;
-      if (options.renameIdentifiers) out = renameIdentifiers(out, next);
-      if (options.stringEncryption) out = encodeStrings(out, next);
-      if (options.constantPool) log.push({ level: "info", text: "常量池：字符串/数字并入常量表，按索引取值" });
-      if (options.controlFlowFlattening) log.push({ level: "info", text: "控制流平坦化：状态机调度" });
-      if (options.numbersToExpressions) out = hexNumbers(out);
-      if (options.antiDebug) log.push({ level: "info", text: "反调试：注入 debug hook / 环境指纹检测桩" });
-      if (options.vm.mode !== "off") {
-        out = `${vmPrelude(options, seed, next)}\n${out}`;
+      if (options.mangle) out = renameIdentifiers(out, next);
+      if (options.strings) out = encodeStrings(out, next);
+      if (options.numbers) out = hexNumbers(out);
+      if (options.flatten) log.push({ level: "info", text: "控制流平坦化：状态机调度" });
+      if (options.junk) log.push({ level: "info", text: "垃圾代码注入：死分支 + 不变量噪声" });
+      if (options.body) log.push({ level: "info", text: "L5 全程序加密：载荷整体封存" });
+      if (options.antidbg) log.push({ level: "info", text: "L7 防篡改：完整性校验 lane" });
+      if (options.guard) log.push({ level: "info", text: "反调试环境守卫前导" });
+      if (isV15) {
+        log.push({ level: "info", text: "v15 管线：模块表 + CPS 引导装配" });
+        if (options.bindExecutor) log.push({ level: "info", text: "executor 认证绑定：EXG 守卫令牌折入钥匙流（默认底层保护）" });
+        if (options.envCheck) log.push({ level: "info", text: "环境检查组：tier-1+tier-2 常量挑战，差值静默投毒" });
+        if (options.bindEnv) log.push({ level: "info", text: "环境绑定：Roblox API（Vector3/task）嵌进原语槽" });
+      }
+      if (isVm) {
+        out = `${vmPrelude(seed, next)}\n${out}`;
         log.push({
           level: "info",
-          text: `VM 虚拟化：${options.vm.mode === "script" ? "全脚本字节码" : "函数级"} · 分发 ${options.vm.dispatchStyle} · 指令集${
-            options.vm.opcodeShuffle ? "已洗牌" : "固定"
-          } · 字节码${options.vm.bytecodeEncryption ? "已加密" : "明文"}`,
+          text: `L6 私有字节码 VM · 字符串封存${options.vmSealStrings ? "开启（实验）" : "关闭"}`,
         });
       }
 
@@ -310,20 +416,14 @@ export const mockEngine: ObfuscatorEngine = {
       const header = [
         "--[[ Obsucvim · Luau obfuscated output",
         `   engine  : obsucvim-core (placeholder, rust→wasm not wired)`,
-        `   preset  : ${options.preset}   seed: ${seed}   vm: ${options.vm.mode}/${options.vm.dispatchStyle}`,
+        `   preset  : ${options.preset}   seed: ${seed}`,
+        `   cli     : obsucvim ${buildCliArgs(options).join(" ")} in.lua out.lua`,
         `   applied : ${appliedNames(options).join(" · ") || "-"}`,
-        options.watermark ? `   watermark: ${options.watermark}` : "",
         "   do not modify: integrity checked",
         "]]",
-      ]
-        .filter(Boolean)
-        .join("\n");
+      ].join("\n");
 
-      const tamper = options.antiTamper
-        ? `\nlocal ${shortName(next)} = function(s) local h = 5381 for i = 1, #s do h = (h * 33 + string.byte(s, i)) % 4294967296 end return h end\n`
-        : "";
-
-      const final = `${header}\n${out}${tamper}`;
+      const final = `${WATERMARK_LINE}\n${header}\n${out}`;
       log.push({ level: "step", text: "[3/4] 完整性校验注入 / 压缩" });
       log.push({ level: "ok", text: `[4/4] 完成 · 已应用 ${appliedNames(options).length} 项保护` });
       log.push({ level: "warn", text: "占位引擎：请在 src/lib/engine.ts 接入 obsucvim-core（Rust/WASM）" });
