@@ -447,12 +447,12 @@ impl<'a> Ctx<'a> {
 				^ (fn_index as u64 + 1).wrapping_mul(0x9e37_79b9);
 			let mut nr = Rng::new(noise_seed);
 
-			dead_regs = nr.int(2, 4) as usize;
+			dead_regs = nr.int(2, 3) as usize;
 			let dead_base = nregs;
 			nregs = nregs
 				.checked_add(dead_regs as u16)
 				.expect("H3 dead register overflow");
-			let decoy_k_count = nr.int(2, 5) as usize;
+			let decoy_k_count = nr.int(1, 3) as usize;
 			let mut decoy_ks = Vec::with_capacity(decoy_k_count);
 			for _ in 0..decoy_k_count {
 				let v = if nr.int(0, 99) < 75 {
@@ -463,10 +463,10 @@ impl<'a> Ctx<'a> {
 				decoy_ks.push(self.kidx(Const::Num(v as f64)));
 			}
 
-			let total_lo = (base_code_len / 12).max(2);
-			let total_hi = (base_code_len / 5).max(total_lo + 1);
+			let total_lo = (base_code_len / 30).max(1);
+			let total_hi = (base_code_len / 15).max(total_lo + 1);
 			let total = nr.int(total_lo as i64, total_hi as i64) as usize;
-			active_count = nr.int(1, (total / 2).max(1) as i64) as usize;
+			active_count = nr.int(1, (total / 3).max(1) as i64) as usize;
 			nop_count = total - active_count;
 			let mut active_flags = vec![true; active_count];
 			active_flags.extend(std::iter::repeat(false).take(nop_count));

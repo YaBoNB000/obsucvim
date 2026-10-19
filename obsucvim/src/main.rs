@@ -58,7 +58,7 @@ fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
 	opts.do_guard = false;
 	opts.do_vm = false;
 	opts.do_v15 = false;
-	opts.junk_n = 2;
+	opts.junk_n = 1;
 	match name {
 		"low" => {
 			opts.do_mangle = true;
