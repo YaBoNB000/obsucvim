@@ -170,6 +170,10 @@ const AUTH_BODY_LIMIT = 32 * 1024;
 const MAX_ACCOUNTS = 1000;      // 演示环境账户上限
 const EMAIL_MAX = 100;          // 邮箱长度上限（防长邮箱膨胀状态文件）
 const MAX_PENDING_REG = 200;    // 同时待验证的注册草稿上限
+const MAX_SCRIPTS_PER_ACCOUNT = 50;
+const MAX_LICENSES_PER_SCRIPT = 2000;
+const LICENSE_VERIFY_LIMIT = 60;
+const LICENSE_VERIFY_WINDOW_MS = 60_000;
 
 let state = {
   users: {},      // email -> { email, nickname, salt, hash, created }
@@ -183,6 +187,10 @@ let state = {
   pendingRegistrations: {}, // email -> { nickname, salt, hash, expires }
   registeredIps: {}, // HMAC(IP) -> { email, created }; lifetime one-account-per-IP index
   registrationIpHashKey: "", // stable per-install key; raw client IPs are never persisted
+  scripts: {}, // scriptId -> { ownerEmail, name, createdAt, active }
+  licenseKeys: {}, // licenseId -> hashed key metadata; raw keys are never stored
+  licenseKeyIndex: {}, // SHA-256(key) -> licenseId
+  licenseHwidHashKey: "", // stable server-only HMAC key; raw device IDs are never stored
 };
 
 function loadState() {
@@ -205,6 +213,16 @@ function loadState() {
   }
   if (typeof state.registrationIpHashKey !== "string" || !/^[\da-f]{64}$/i.test(state.registrationIpHashKey)) {
     state.registrationIpHashKey = randomBytes(32).toString("hex");
+    changed = true;
+  }
+  for (const key of ["scripts", "licenseKeys", "licenseKeyIndex"]) {
+    if (!state[key] || typeof state[key] !== "object" || Array.isArray(state[key])) {
+      state[key] = {};
+      changed = true;
+    }
+  }
+  if (typeof state.licenseHwidHashKey !== "string" || !/^[\da-f]{64}$/i.test(state.licenseHwidHashKey)) {
+    state.licenseHwidHashKey = randomBytes(32).toString("hex");
     changed = true;
   }
   if (changed) saveState();
@@ -275,10 +293,27 @@ function authUser(req) {
 const pendingRegistrations = state.pendingRegistrations;
 
 const API_KEY_PREFIX = "obk_";
+const SCRIPT_ID_PREFIX = "scr_";
+const LICENSE_KEY_PREFIX = "osk_";
 
 function newApiKey() {
   return API_KEY_PREFIX + randomBytes(24).toString("hex");
 }
+
+const licenseKeyDigest = (key) => createHash("sha256").update(key).digest("hex");
+const licenseHwidDigest = (hwid) =>
+  createHmac("sha256", state.licenseHwidHashKey).update(hwid.trim()).digest("hex");
+const licensePublic = (license) => ({
+  licenseId: license.licenseId,
+  scriptId: license.scriptId,
+  label: license.label,
+  createdAt: license.createdAt,
+  expiresAt: license.expiresAt,
+  revokedAt: license.revokedAt,
+  hwidBound: Boolean(license.hwidHash),
+  firstActivatedAt: license.firstActivatedAt,
+  lastUsedAt: license.lastUsedAt,
+});
 
 function apiKeyUser(key) {
   if (typeof key !== "string" || !key.startsWith(API_KEY_PREFIX)) return null;
@@ -868,6 +903,24 @@ function captchaIssueRetryAfter(ip) {
   return 0;
 }
 
+const licenseVerifyHits = new Map();
+setInterval(() => {
+  const n = Date.now();
+  for (const [ip, h] of licenseVerifyHits) if (n > h.reset) licenseVerifyHits.delete(ip);
+}, LICENSE_VERIFY_WINDOW_MS).unref?.();
+
+function licenseVerifyRetryAfter(ip) {
+  const n = Date.now();
+  const h = licenseVerifyHits.get(ip);
+  if (!h || n > h.reset) {
+    licenseVerifyHits.set(ip, { n: 1, reset: n + LICENSE_VERIFY_WINDOW_MS });
+    return 0;
+  }
+  if (h.n >= LICENSE_VERIFY_LIMIT) return Math.max(1, Math.ceil((h.reset - n) / 1000));
+  h.n += 1;
+  return 0;
+}
+
 function rateLimited(ip) {
   const now = Date.now();
   const h = rateHits.get(ip);
@@ -931,18 +984,22 @@ const server = createServer(async (req, res) => {
     if (authRateLimited(clientIp(req))) {
       return json(res, 429, { ok: false, error: "RATE_LIMITED" });
     }
-    let body;
-    try {
-      body = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
-    } catch (e) {
-      if (e instanceof Error && e.message === "BODY_TOO_LARGE") {
-        json(res, 413, { ok: false, error: "BODY_TOO_LARGE" });
-        req.destroy();
-        return;
+    let body = {};
+    if (req.method !== "GET" && req.method !== "HEAD") {
+      try {
+        body = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
+      } catch (e) {
+        if (e instanceof Error && e.message === "BODY_TOO_LARGE") {
+          json(res, 413, { ok: false, error: "BODY_TOO_LARGE" });
+          req.destroy();
+          return;
+        }
+        return json(res, 400, { ok: false, error: "BAD_JSON" });
       }
-      return json(res, 400, { ok: false, error: "BAD_JSON" });
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { ok: false, error: "BAD_REQUEST" });
+      }
     }
-    if (!body || typeof body !== "object") return json(res, 400, { ok: false, error: "BAD_REQUEST" });
 
     if (req.method === "POST" && req.url === "/api/auth/captcha") {
       const retryAfter = captchaIssueRetryAfter(clientIp(req));
@@ -955,6 +1012,121 @@ const server = createServer(async (req, res) => {
       }
       const challenge = TURNSTILE_ENABLED ? issueTurnstileChallenge() : issueCaptcha();
       return json(res, 200, { ok: true, ...challenge });
+    }
+
+    if (req.method === "GET" && req.url === "/api/auth/scripts") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const scripts = Object.values(state.scripts)
+        .filter((script) => script.ownerEmail === owner.email)
+        .map(({ scriptId, name, description, createdAt, active }) => ({ scriptId, name, description, createdAt, active }));
+      return json(res, 200, { ok: true, scripts });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/scripts") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { name, description } = body;
+      if (
+        typeof name !== "string" || name.trim().length < 2 || name.trim().length > 80 ||
+        (description !== undefined && (typeof description !== "string" || description.length > 500))
+      ) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      const owned = Object.values(state.scripts).filter((script) => script.ownerEmail === owner.email);
+      if (owned.length >= MAX_SCRIPTS_PER_ACCOUNT) return json(res, 409, { ok: false, error: "SCRIPT_LIMIT" });
+      const scriptId = SCRIPT_ID_PREFIX + randomBytes(12).toString("hex");
+      const script = {
+        scriptId,
+        ownerEmail: owner.email,
+        name: name.trim(),
+        description: typeof description === "string" ? description.trim() : "",
+        createdAt: now(),
+        active: true,
+      };
+      state.scripts[scriptId] = script;
+      saveState();
+      return json(res, 201, { ok: true, script: { scriptId, name: script.name, description: script.description, createdAt: script.createdAt, active: true } });
+    }
+
+    if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/licenses") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const url = new URL(req.url, "http://localhost");
+      const scriptId = url.searchParams.get("scriptId");
+      if (scriptId && state.scripts[scriptId]?.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
+      const licenses = Object.values(state.licenseKeys)
+        .filter((license) => license.ownerEmail === owner.email && (!scriptId || license.scriptId === scriptId))
+        .map(licensePublic);
+      return json(res, 200, { ok: true, licenses });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/licenses") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { scriptId, label, expiresAt } = body;
+      const script = typeof scriptId === "string" ? state.scripts[scriptId] : null;
+      if (!script || script.ownerEmail !== owner.email || !script.active) {
+        return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
+      }
+      if (label !== undefined && (typeof label !== "string" || label.length > 80)) {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      let expiry = null;
+      if (expiresAt !== undefined && expiresAt !== null && expiresAt !== "") {
+        if (typeof expiresAt !== "string") return json(res, 400, { ok: false, error: "BAD_INPUT" });
+        expiry = Date.parse(expiresAt);
+        if (!Number.isFinite(expiry) || expiry <= now()) return json(res, 400, { ok: false, error: "BAD_EXPIRY" });
+      }
+      const scriptLicenses = Object.values(state.licenseKeys).filter((license) => license.scriptId === scriptId);
+      if (scriptLicenses.length >= MAX_LICENSES_PER_SCRIPT) {
+        return json(res, 409, { ok: false, error: "LICENSE_LIMIT" });
+      }
+      const licenseId = "lic_" + randomBytes(12).toString("hex");
+      const licenseKey = LICENSE_KEY_PREFIX + randomBytes(32).toString("hex");
+      const keyHash = licenseKeyDigest(licenseKey);
+      const license = {
+        licenseId,
+        keyHash,
+        ownerEmail: owner.email,
+        scriptId,
+        label: typeof label === "string" ? label.trim() : "",
+        createdAt: now(),
+        expiresAt: expiry,
+        revokedAt: null,
+        hwidHash: null,
+        firstActivatedAt: null,
+        lastUsedAt: null,
+      };
+      state.licenseKeys[licenseId] = license;
+      state.licenseKeyIndex[keyHash] = licenseId;
+      saveState();
+      return json(res, 201, {
+        ok: true,
+        licenseKey, // raw key is returned once; only its hash is persisted
+        license: licensePublic(license),
+      });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/licenses/revoke") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const license = typeof body.licenseId === "string" ? state.licenseKeys[body.licenseId] : null;
+      if (!license || license.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      license.revokedAt = license.revokedAt || now();
+      saveState();
+      return json(res, 200, { ok: true, license: licensePublic(license) });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/licenses/reset-hwid") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const license = typeof body.licenseId === "string" ? state.licenseKeys[body.licenseId] : null;
+      if (!license || license.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      license.hwidHash = null;
+      license.firstActivatedAt = null;
+      saveState();
+      return json(res, 200, { ok: true, license: licensePublic(license) });
     }
 
     if (req.method === "POST" && req.url === "/api/auth/register") {
@@ -1139,6 +1311,61 @@ const server = createServer(async (req, res) => {
   };
 
   if (req.url.startsWith("/api/auth/")) return await handleAuth();
+
+  if (req.method === "POST" && req.url === "/api/licenses/validate") {
+    const retryAfter = licenseVerifyRetryAfter(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, valid: false, error: "RATE_LIMITED", retryAfter });
+    }
+    let body;
+    try {
+      body = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
+    } catch (e) {
+      if (e instanceof Error && e.message === "BODY_TOO_LARGE") {
+        json(res, 413, { ok: false, valid: false, error: "BODY_TOO_LARGE" });
+        req.destroy();
+        return;
+      }
+      return json(res, 400, { ok: false, valid: false, error: "BAD_JSON" });
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
+    }
+    const { scriptId, key, hwid } = body;
+    if (
+      typeof scriptId !== "string" || !/^scr_[\da-f]{24}$/i.test(scriptId) ||
+      typeof key !== "string" || !/^osk_[\da-f]{64}$/i.test(key) ||
+      typeof hwid !== "string" || hwid.trim().length < 8 || hwid.trim().length > 256
+    ) return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
+
+    const script = state.scripts[scriptId];
+    const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
+    const license = licenseId ? state.licenseKeys[licenseId] : null;
+    if (
+      !script || !script.active || !license || license.scriptId !== scriptId ||
+      license.revokedAt || (license.expiresAt && now() >= license.expiresAt)
+    ) return json(res, 403, { ok: false, valid: false, error: "LICENSE_INVALID" });
+
+    const hwidHash = licenseHwidDigest(hwid);
+    if (license.hwidHash && license.hwidHash !== hwidHash) {
+      return json(res, 403, { ok: false, valid: false, error: "DEVICE_MISMATCH" });
+    }
+    if (!license.hwidHash) {
+      license.hwidHash = hwidHash;
+      license.firstActivatedAt = now();
+    }
+    license.lastUsedAt = now();
+    saveState();
+    return json(res, 200, {
+      ok: true,
+      valid: true,
+      scriptId,
+      licenseId,
+      expiresAt: license.expiresAt,
+      deviceBound: true,
+    });
+  }
 
   if (req.method === "GET" && req.url === "/api/me") {
     if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });

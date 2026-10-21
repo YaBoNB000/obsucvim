@@ -54,6 +54,10 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
 在 163 邮箱网页设置中开启 SMTP 服务并生成客户端授权码。沙箱无法连外部 SMTP，所以本 ZIP 的真实外发没有在此环境实测；本地 SMTP 模拟器已验证 Nodemailer 发送、邮件验证码确认的整条程序路径。
 
+## 授权 Key 验证原型
+
+当前版本新增项目与客户授权 Key 的服务端 API：Key 原文仅在签发响应出现一次，服务器只保存摘要；首次验证绑定 executor 提供的 HWID 摘要，拥有者可撤销 Key 或重置绑定。接口和 Luau 调用示意见 `SCRIPT-KEYS.md`。此阶段还没有源码上传、混淆发布和远程脚本下载/执行 loader；HWID 由客户端提供，可伪造，仅作尽力绑定。
+
 ## Cloudflare Turnstile（可选，启用托管人机验证）
 
 1. 在 Cloudflare Turnstile 控制台为 `obsucvim.l2.ink` 创建 Widget，推荐 Managed 模式，取 Site Key 与 Secret Key。
@@ -94,5 +98,6 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 - `tools/obsucvim.wasm`：Rust 引擎（WASI Preview 1）
 - `runtime/node.exe`：Node.js v22.22.3 Windows x64（来自 npm `node-win-x64@22.22.3`）
 - `tools/node-runtime-notice.txt`：Node 运行时许可说明
+- `SCRIPT-KEYS.md`：脚本项目/授权 Key 验证 API 原型与 Luau 调用示例（尚未包含源码托管/loader 下载）
 
 Node/obsucvim 版本信息详见 `BUILD-INFO.txt` 与 `SHA256SUMS.txt`。
