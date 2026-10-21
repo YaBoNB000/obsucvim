@@ -10,6 +10,8 @@ The bundle includes Node.js 22.22.3 x64, the Rust/WASI engine, the single-file U
 - Optional Cloudflare Turnstile is verified server-side. With no Turnstile keys the local slider remains active; partial configuration fails closed.
 - Per-customer script keys are returned only at creation and stored server-side as SHA-256 hashes. Validation supports expiry, revocation, and a best-effort first-use HWID binding (client-provided HWID is spoofable).
 - In-script license guard: `tools/inject-license.mjs` prepends `tools/license-guard.luau` to user source, filling in the public project id and validate URL. The guard reads the per-customer key from `getgenv().key`, requires an executor HWID and a POST-capable HTTP API, checks the server response (status, valid, scriptId, nonce) and fails closed. Obfuscate the guarded file so the check is protected with user code.
-- Still missing: browser upload/publish pipeline and a license-protected release download endpoint. HWID is client-supplied and spoofable.
+- Hardened licensing: keys are stored as HMAC digests, nonces are single-use (5 min), a 2-hour session token gates downloads, guess throttling is per client+project and never blocks a correct key, and revoking a key invalidates its tokens immediately.
+- License-protected delivery: owners publish obfuscated artifacts via `POST /api/auth/releases`; `POST /api/releases/fetch` returns them only to a valid licence, and `tools/loader-template.luau` wires that flow. A modified loader still cannot download the artifact without a valid key.
+- Still missing: browser upload/publish UI. HWID is client-supplied and spoofable.
 
 The sandbox tests covered the key issue/validate/revoke/HWID flow and package integrity. Real Cloudflare Siteverify, physical Windows Server 2019, and external 163 SMTP were not tested here.

@@ -14,7 +14,7 @@
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, createReadStream, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, createReadStream, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -174,6 +174,12 @@ const MAX_SCRIPTS_PER_ACCOUNT = 50;
 const MAX_LICENSES_PER_SCRIPT = 2000;
 const LICENSE_VERIFY_LIMIT = 60;
 const LICENSE_VERIFY_WINDOW_MS = 60_000;
+const LICENSE_NONCE_TTL_MS = 5 * 60_000;
+const LICENSE_SESSION_TTL_MS = 2 * 3600_000;
+const LICENSE_MAX_FAILS = 10;
+const LICENSE_LOCK_MS = 10 * 60_000;
+const MAX_RELEASE_BYTES = 4 * 1024 * 1024;
+const MAX_RELEASES_PER_SCRIPT = 20;
 
 let state = {
   users: {},      // email -> { email, nickname, salt, hash, created }
@@ -191,9 +197,19 @@ let state = {
   licenseKeys: {}, // licenseId -> hashed key metadata; raw keys are never stored
   licenseKeyIndex: {}, // SHA-256(key) -> licenseId
   licenseHwidHashKey: "", // stable server-only HMAC key; raw device IDs are never stored
+  licenseKeyHashKey: "", // server-only HMAC key for license-key digests
+  licenseNonces: {}, // `${licenseId}:${nonceDigest}` -> expiresAt; replay protection
+  licenseSessions: {}, // short-lived token -> { licenseId, scriptId, hwidHash, expires }
+  licenseAttempts: {}, // `${scriptId}:${ipHash}` -> { fails, until }; per-client abuse throttle
+  releases: {}, // scriptId -> { version, sha256, size, createdAt, file }
 };
 
 function loadState() {
+  try {
+    mkdirSync(path.dirname(STATE_FILE), { recursive: true });
+  } catch {
+    /* directory may be read-only; saveState reports nothing either */
+  }
   try {
     const raw = readFileSync(STATE_FILE, "utf8");
     const parsed = JSON.parse(raw);
@@ -225,6 +241,16 @@ function loadState() {
     state.licenseHwidHashKey = randomBytes(32).toString("hex");
     changed = true;
   }
+  if (typeof state.licenseKeyHashKey !== "string" || !/^[\da-f]{64}$/i.test(state.licenseKeyHashKey)) {
+    state.licenseKeyHashKey = randomBytes(32).toString("hex");
+    changed = true;
+  }
+  for (const key of ["licenseNonces", "licenseSessions", "licenseAttempts", "releases"]) {
+    if (!state[key] || typeof state[key] !== "object" || Array.isArray(state[key])) {
+      state[key] = {};
+      changed = true;
+    }
+  }
   if (changed) saveState();
 }
 function saveState() {
@@ -233,6 +259,17 @@ function saveState() {
   } catch {
     /* ignore */
   }
+}
+
+const DATA_DIR = process.env.OBSUCVIM_DATA_DIR || path.dirname(STATE_FILE);
+const RELEASE_DIR = path.join(DATA_DIR, "releases");
+
+function saveReleaseFile(scriptId, version, code) {
+  const dir = path.join(RELEASE_DIR, scriptId);
+  mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${version}.lua`);
+  writeFileSync(file, code, "utf8");
+  return file;
 }
 loadState();
 
@@ -243,6 +280,8 @@ setInterval(() => {
   for (const [k, c] of Object.entries(state.codes)) if (n > c.expires) delete state.codes[k];
   for (const [k, s] of Object.entries(state.sessions)) if (n > s.expires) delete state.sessions[k];
   for (const [k, d] of Object.entries(state.pendingRegistrations)) if (n > d.expires) delete state.pendingRegistrations[k];
+  for (const [k, expires] of Object.entries(state.licenseNonces)) if (n > expires) delete state.licenseNonces[k];
+  for (const [k, session] of Object.entries(state.licenseSessions)) if (n > session.expires) delete state.licenseSessions[k];
   saveState();
 }, 300_000).unref?.();
 
@@ -300,9 +339,101 @@ function newApiKey() {
   return API_KEY_PREFIX + randomBytes(24).toString("hex");
 }
 
-const licenseKeyDigest = (key) => createHash("sha256").update(key).digest("hex");
+const licenseKeyDigest = (key) =>
+  createHmac("sha256", state.licenseKeyHashKey).update(key).digest("hex");
+const licenseNonceDigest = (nonce) => createHash("sha256").update(nonce).digest("hex");
 const licenseHwidDigest = (hwid) =>
   createHmac("sha256", state.licenseHwidHashKey).update(hwid.trim()).digest("hex");
+
+function digestsEqual(a, b) {
+  if (typeof a !== "string" || typeof b !== "string" || a.length !== b.length) return false;
+  try {
+    return timingSafeEqual(Buffer.from(a, "hex"), Buffer.from(b, "hex"));
+  } catch {
+    return false;
+  }
+}
+
+function licenseAttemptKey(scriptId, ip) {
+  return `${scriptId}:${createHmac("sha256", state.licenseHwidHashKey).update(ip).digest("hex")}`;
+}
+
+function licenseBlockRemaining(attemptKey) {
+  const entry = state.licenseAttempts[attemptKey];
+  return entry && entry.until > now() ? Math.ceil((entry.until - now()) / 1000) : 0;
+}
+
+function noteLicenseFailure(attemptKey) {
+  const entry = state.licenseAttempts[attemptKey] ?? { fails: 0, until: 0 };
+  entry.fails += 1;
+  if (entry.fails >= LICENSE_MAX_FAILS) {
+    entry.until = now() + LICENSE_LOCK_MS;
+    entry.fails = 0;
+  }
+  state.licenseAttempts[attemptKey] = entry;
+}
+
+function clearLicenseFailures(attemptKey) {
+  if (state.licenseAttempts[attemptKey]) delete state.licenseAttempts[attemptKey];
+}
+
+/* Decide whether a license request is acceptable. Failures are counted per
+ * client+script so a thief only throttles themselves; legitimate users are not
+ * locked out by someone replaying their traffic. */
+function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
+  const script = state.scripts[scriptId];
+  if (!script || !script.active) return { ok: false, status: 403, error: "LICENSE_INVALID" };
+
+  const attemptKey = licenseAttemptKey(scriptId, ip || "unknown");
+  const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
+  const license = licenseId ? state.licenseKeys[licenseId] : null;
+  const keyMatches = Boolean(license && digestsEqual(license.keyHash, licenseKeyDigest(key)));
+
+  // The guess throttle only applies to requests that do not present a valid key,
+  // so correct credentials are never blocked by someone else's failed attempts.
+  const blocked = keyMatches ? 0 : licenseBlockRemaining(attemptKey);
+  if (blocked > 0) return { ok: false, status: 429, error: "LICENSE_LOCKED", retryAfter: blocked };
+
+  if (!license || !keyMatches || license.scriptId !== scriptId) {
+    noteLicenseFailure(attemptKey);
+    return { ok: false, status: 403, error: "LICENSE_INVALID" };
+  }
+  if (license.revokedAt || (license.expiresAt && now() >= license.expiresAt)) {
+    noteLicenseFailure(attemptKey);
+    return { ok: false, status: 403, error: "LICENSE_INVALID" };
+  }
+
+  const hwidHash = licenseHwidDigest(hwid);
+  if (license.hwidHash && !digestsEqual(license.hwidHash, hwidHash)) {
+    // Not counted as abuse: the caller already holds the key.
+    return { ok: false, status: 403, error: "DEVICE_MISMATCH" };
+  }
+
+  const nonceKey = `${licenseId}:${licenseNonceDigest(nonce)}`;
+  if (state.licenseNonces[nonceKey] && state.licenseNonces[nonceKey] > now()) {
+    return { ok: false, status: 409, error: "NONCE_REPLAY" };
+  }
+
+  if (!license.hwidHash) {
+    license.hwidHash = hwidHash;
+    license.firstActivatedAt = now();
+  }
+  license.lastUsedAt = now();
+  state.licenseNonces[nonceKey] = now() + LICENSE_NONCE_TTL_MS;
+  clearLicenseFailures(attemptKey);
+  return { ok: true, license, script };
+}
+
+function issueLicenseSession(license) {
+  const token = "lst_" + randomBytes(32).toString("hex");
+  state.licenseSessions[token] = {
+    licenseId: license.licenseId,
+    scriptId: license.scriptId,
+    hwidHash: license.hwidHash,
+    expires: now() + LICENSE_SESSION_TTL_MS,
+  };
+  return token;
+}
 const licensePublic = (license) => ({
   licenseId: license.licenseId,
   scriptId: license.scriptId,
@@ -1129,6 +1260,50 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, license: licensePublic(license) });
     }
 
+    if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/releases") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const scriptId = new URL(req.url, "http://localhost").searchParams.get("scriptId");
+      if (scriptId && state.scripts[scriptId]?.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
+      const releases = Object.values(state.releases)
+        .filter((release) => release.ownerEmail === owner.email && (!scriptId || release.scriptId === scriptId))
+        .map(({ scriptId: sid, version, sha256, size, createdAt }) => ({ scriptId: sid, version, sha256, size, createdAt }));
+      return json(res, 200, { ok: true, releases });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/releases") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { scriptId, version, code } = body;
+      const script = typeof scriptId === "string" ? state.scripts[scriptId] : null;
+      if (!script || script.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
+      if (typeof version !== "string" || !/^[A-Za-z0-9._-]{1,32}$/.test(version)) {
+        return json(res, 400, { ok: false, error: "BAD_VERSION" });
+      }
+      if (typeof code !== "string" || !code.trim()) return json(res, 400, { ok: false, error: "BAD_CODE" });
+      const bytes = Buffer.byteLength(code, "utf8");
+      if (bytes > MAX_RELEASE_BYTES) return json(res, 413, { ok: false, error: "RELEASE_TOO_LARGE" });
+      const key = `${scriptId}:${version}`;
+      if (Object.keys(state.releases).filter((k) => k.startsWith(`${scriptId}:`)).length >= MAX_RELEASES_PER_SCRIPT && !state.releases[key]) {
+        return json(res, 409, { ok: false, error: "RELEASE_LIMIT" });
+      }
+      const file = saveReleaseFile(scriptId, version, code);
+      state.releases[key] = {
+        scriptId,
+        ownerEmail: owner.email,
+        version,
+        sha256: createHash("sha256").update(code).digest("hex"),
+        size: bytes,
+        createdAt: now(),
+        file,
+      };
+      saveState();
+      const { sha256 } = state.releases[key];
+      return json(res, 201, { ok: true, release: { scriptId, version, sha256, size: bytes } });
+    }
+
     if (req.method === "POST" && req.url === "/api/auth/register") {
       const { email, nickname, password, captchaId, captchaAnswer } = body;
       if (
@@ -1337,35 +1512,97 @@ const server = createServer(async (req, res) => {
       typeof scriptId !== "string" || !/^scr_[\da-f]{24}$/i.test(scriptId) ||
       typeof key !== "string" || !/^osk_[\da-f]{64}$/i.test(key) ||
       typeof hwid !== "string" || hwid.trim().length < 8 || hwid.trim().length > 256 ||
-      (nonce !== undefined && (typeof nonce !== "string" || !/^[\da-z]{16,64}$/i.test(nonce)))
+      typeof nonce !== "string" || !/^[\da-z]{16,64}$/i.test(nonce)
     ) return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
 
-    const script = state.scripts[scriptId];
-    const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
-    const license = licenseId ? state.licenseKeys[licenseId] : null;
-    if (
-      !script || !script.active || !license || license.scriptId !== scriptId ||
-      license.revokedAt || (license.expiresAt && now() >= license.expiresAt)
-    ) return json(res, 403, { ok: false, valid: false, error: "LICENSE_INVALID" });
-
-    const hwidHash = licenseHwidDigest(hwid);
-    if (license.hwidHash && license.hwidHash !== hwidHash) {
-      return json(res, 403, { ok: false, valid: false, error: "DEVICE_MISMATCH" });
+    const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
+    saveState();
+    if (!verdict.ok) {
+      if (verdict.retryAfter) res.setHeader("retry-after", String(verdict.retryAfter));
+      return json(res, verdict.status, {
+        ok: false,
+        valid: false,
+        error: verdict.error,
+        ...(verdict.retryAfter ? { retryAfter: verdict.retryAfter } : {}),
+      });
     }
-    if (!license.hwidHash) {
-      license.hwidHash = hwidHash;
-      license.firstActivatedAt = now();
-    }
-    license.lastUsedAt = now();
+    const token = issueLicenseSession(verdict.license);
     saveState();
     return json(res, 200, {
       ok: true,
       valid: true,
       scriptId,
-      licenseId,
-      expiresAt: license.expiresAt,
+      licenseId: verdict.license.licenseId,
+      expiresAt: verdict.license.expiresAt,
       deviceBound: true,
-      ...(nonce === undefined ? {} : { nonce }),
+      nonce,
+      token,
+      tokenExpiresIn: Math.floor(LICENSE_SESSION_TTL_MS / 1000),
+    });
+  }
+
+  if (req.method === "POST" && req.url === "/api/releases/fetch") {
+    const retryAfter = licenseVerifyRetryAfter(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, error: "RATE_LIMITED", retryAfter });
+    }
+    let body;
+    try {
+      body = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
+    } catch {
+      return json(res, 400, { ok: false, error: "BAD_JSON" });
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return json(res, 400, { ok: false, error: "BAD_REQUEST" });
+    }
+    const { scriptId, token, key, hwid, nonce } = body;
+    if (typeof scriptId !== "string" || !/^scr_[\da-f]{24}$/i.test(scriptId)) {
+      return json(res, 400, { ok: false, error: "BAD_REQUEST" });
+    }
+
+    let allowed = false;
+    if (typeof token === "string" && /^lst_[\da-f]{64}$/.test(token)) {
+      const session = state.licenseSessions[token];
+      allowed = Boolean(
+        session && session.scriptId === scriptId && now() <= session.expires &&
+        state.licenseKeys[session.licenseId] && !state.licenseKeys[session.licenseId].revokedAt,
+      );
+    } else if (
+      typeof key === "string" && typeof hwid === "string" && typeof nonce === "string" &&
+      /^osk_[\da-f]{64}$/i.test(key) && hwid.trim().length >= 8 && /^[\da-z]{16,64}$/i.test(nonce)
+    ) {
+      const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
+      saveState();
+      allowed = verdict.ok;
+      if (!verdict.ok && verdict.retryAfter) res.setHeader("retry-after", String(verdict.retryAfter));
+      if (!verdict.ok) {
+        return json(res, verdict.status, {
+          ok: false,
+          error: verdict.error,
+          ...(verdict.retryAfter ? { retryAfter: verdict.retryAfter } : {}),
+        });
+      }
+    }
+    if (!allowed) return json(res, 403, { ok: false, error: "LICENSE_INVALID" });
+
+    const release = Object.values(state.releases)
+      .filter((entry) => entry.scriptId === scriptId)
+      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    if (!release) return json(res, 404, { ok: false, error: "RELEASE_NOT_FOUND" });
+    let code;
+    try {
+      code = readFileSync(release.file, "utf8");
+    } catch {
+      return json(res, 500, { ok: false, error: "RELEASE_UNREADABLE" });
+    }
+    return json(res, 200, {
+      ok: true,
+      scriptId,
+      version: release.version,
+      sha256: release.sha256,
+      size: release.size,
+      code,
     });
   }
 
