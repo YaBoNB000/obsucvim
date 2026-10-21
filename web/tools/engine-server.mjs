@@ -284,6 +284,8 @@ function ensureDefaultFolder(ownerEmail) {
     createdAt: Date.now(),
     logWebhookUrl: "",
     alertWebhookUrl: "",
+    selfReset: false,
+    resetCooldownDays: 7,
   };
   return state.folders[folderId];
 }
@@ -520,6 +522,7 @@ function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
     }
   }
   license.lastUsedAt = now();
+  license.executions = (license.executions ?? 0) + 1;
   state.licenseNonces[nonceKey] = now() + LICENSE_NONCE_TTL_MS;
   clearLicenseFailures(attemptKey);
   return { ok: true, license, script, folder };
@@ -580,6 +583,8 @@ const folderPublic = (folder) => ({
   createdAt: folder.createdAt,
   logWebhook: Boolean(folder.logWebhookUrl),
   alertWebhook: Boolean(folder.alertWebhookUrl),
+  selfReset: Boolean(folder.selfReset),
+  resetCooldownDays: folder.resetCooldownDays ?? 7,
 });
 
 const licensePublic = (license) => ({
@@ -1348,6 +1353,8 @@ const server = createServer(async (req, res) => {
         createdAt: now(),
         logWebhookUrl: "",
         alertWebhookUrl: "",
+        selfReset: false,
+        resetCooldownDays: 7,
       };
       saveState();
       return json(res, 201, { ok: true, folder: folderPublic(state.folders[folderId]) });
@@ -1363,6 +1370,17 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { ok: false, error: "BAD_INPUT" });
         }
         folder.name = body.name.trim();
+      }
+      if (body.selfReset !== undefined) {
+        if (typeof body.selfReset !== "boolean") return json(res, 400, { ok: false, error: "BAD_INPUT" });
+        folder.selfReset = body.selfReset;
+      }
+      if (body.resetCooldownDays !== undefined) {
+        const days = Number(body.resetCooldownDays);
+        if (!Number.isInteger(days) || days < 0 || days > 365) {
+          return json(res, 400, { ok: false, error: "BAD_INPUT" });
+        }
+        folder.resetCooldownDays = days;
       }
       for (const [field, errorCode] of [["logWebhook", "BAD_WEBHOOK"], ["alertWebhook", "BAD_WEBHOOK"]]) {
         if (body[field] === undefined) continue;
@@ -1883,6 +1901,9 @@ const server = createServer(async (req, res) => {
         ["Expires", verdict.license.expiresAt ? new Date(verdict.license.expiresAt).toISOString() : "never"],
       ]);
     }
+    const secondsLeft = verdict.license.expiresAt
+      ? Math.max(0, Math.floor((verdict.license.expiresAt - now()) / 1000))
+      : null;
     return json(res, 200, {
       ok: true,
       valid: true,
@@ -1893,6 +1914,17 @@ const server = createServer(async (req, res) => {
       nonce,
       token,
       tokenExpiresIn: Math.floor(LICENSE_SESSION_TTL_MS / 1000),
+      // Runtime variables for the injected guard. Purely informational: the
+      // client can tamper with them, so nothing security critical relies on them.
+      runtime: {
+        premium: true,
+        note: verdict.license.label || "",
+        scriptName: verdict.script?.name ?? "",
+        folderName: verdict.folder?.name ?? "",
+        secondsLeft,
+        totalExecutions: verdict.license.executions ?? 0,
+        firstActivatedAt: verdict.license.firstActivatedAt ?? null,
+      },
     });
   }
 
@@ -1958,6 +1990,113 @@ const server = createServer(async (req, res) => {
       sha256: release.sha256,
       size: release.size,
       code,
+    });
+  }
+
+  /* ---------------- public key check / self-service ----------------
+   * These accept the key itself as the credential (it is a bearer secret), so
+   * they are rate limited per client and never reveal another key's data. */
+  const readKeyBody = async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
+    } catch (e) {
+      if (e instanceof Error && e.message === "BODY_TOO_LARGE") {
+        json(res, 413, { ok: false, error: "BODY_TOO_LARGE" });
+        req.destroy();
+        return { error: true };
+      }
+      json(res, 400, { ok: false, error: "BAD_JSON" });
+      return { error: true };
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      json(res, 400, { ok: false, error: "BAD_REQUEST" });
+      return { error: true };
+    }
+    const { key } = parsed;
+    if (typeof key !== "string" || !/^osk_[\da-f]{64}$/i.test(key)) {
+      json(res, 400, { ok: false, error: "BAD_REQUEST" });
+      return { error: true };
+    }
+    const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
+    const license = licenseId ? state.licenseKeys[licenseId] : null;
+    const keyMatches = Boolean(license && digestsEqual(license.keyHash, licenseKeyDigest(key)));
+    if (!license || !keyMatches) {
+      json(res, 404, { ok: false, error: "LICENSE_INVALID" });
+      return { error: true };
+    }
+    return { license, folder: state.folders[license.folderId] ?? null };
+  };
+
+  if (req.method === "POST" && req.url === "/api/key/status") {
+    const retryAfter = licenseVerifyRetryAfter(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, error: "RATE_LIMITED", retryAfter });
+    }
+    const parsed = await readKeyBody();
+    if (parsed.error) return;
+    const { license, folder } = parsed;
+    const script = license.scriptId ? state.scripts[license.scriptId] : null;
+    const expired = Boolean(license.expiresAt && now() >= license.expiresAt);
+    const stateLabel = license.revokedAt ? "revoked" : expired ? "expired" : "active";
+    const cooldownMs = (folder?.resetCooldownDays ?? 7) * 86400000;
+    const lastReset = license.lastHwidResetAt ?? 0;
+    const resetAvailableIn = Math.max(0, Math.ceil((lastReset + cooldownMs - now()) / 1000));
+    return json(res, 200, {
+      ok: true,
+      state: stateLabel,
+      note: license.label || "",
+      scriptName: script?.name ?? "",
+      folderName: folder?.name ?? "",
+      expiresAt: license.expiresAt,
+      durationDays: license.durationDays ?? null,
+      secondsLeft: license.expiresAt ? Math.max(0, Math.floor((license.expiresAt - now()) / 1000)) : null,
+      deviceBound: Boolean(license.hwidHash),
+      firstActivatedAt: license.firstActivatedAt ?? null,
+      lastUsedAt: license.lastUsedAt ?? null,
+      totalExecutions: license.executions ?? 0,
+      selfReset: Boolean(folder?.selfReset),
+      resetCooldownDays: folder?.resetCooldownDays ?? 7,
+      resetAvailableIn,
+    });
+  }
+
+  if (req.method === "POST" && req.url === "/api/key/reset-hwid") {
+    const retryAfter = licenseVerifyRetryAfter(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, error: "RATE_LIMITED", retryAfter });
+    }
+    const parsed = await readKeyBody();
+    if (parsed.error) return;
+    const { license, folder } = parsed;
+    if (!folder?.selfReset) return json(res, 403, { ok: false, error: "SELF_RESET_DISABLED" });
+    if (license.revokedAt) return json(res, 403, { ok: false, error: "LICENSE_INVALID" });
+    const cooldownMs = (folder.resetCooldownDays ?? 7) * 86400000;
+    const waitMs = (license.lastHwidResetAt ?? 0) + cooldownMs - now();
+    if (waitMs > 0) {
+      return json(res, 429, {
+        ok: false,
+        error: "RESET_COOLDOWN",
+        retryAfter: Math.ceil(waitMs / 1000),
+      });
+    }
+    license.hwidHash = null;
+    license.firstActivatedAt = null;
+    license.lastHwidResetAt = now();
+    saveState();
+    if (folder) {
+      dispatchWebhook(folder, "alert", [
+        ["Script", license.scriptId ?? "-"],
+        ["Event", "Self-service HWID reset"],
+        ["Licence", license.label || license.licenseId],
+      ]);
+    }
+    return json(res, 200, {
+      ok: true,
+      note: license.label || "",
+      resetCooldownDays: folder.resetCooldownDays ?? 7,
     });
   }
 

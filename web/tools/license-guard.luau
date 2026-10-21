@@ -77,5 +77,25 @@ do
 	if decoded.nonce ~= nonce then
 		error("[Obsucvim] license response mismatch", 0)
 	end
-	env.__obsucvim_license = { valid = true, expiresAt = decoded.expiresAt, checkedAt = os.time() }
+	local runtime = decoded.runtime
+	if type(runtime) ~= "table" then runtime = {} end
+	local secondsLeft = tonumber(runtime.secondsLeft)
+	local license = {
+		valid = true,
+		expiresAt = decoded.expiresAt,
+		checkedAt = os.time(),
+		premium = runtime.premium == true,
+		note = tostring(runtime.note or ""),
+		scriptName = tostring(runtime.scriptName or ""),
+		folderName = tostring(runtime.folderName or ""),
+		secondsLeft = secondsLeft or math.huge,
+		executions = tonumber(runtime.totalExecutions) or 0,
+	}
+	env.__obsucvim_license = license
+	env.OBS_License = license
+	env.OBS_IsPremium = license.premium
+	env.OBS_UserNote = license.note
+	env.OBS_ScriptName = license.scriptName
+	env.OBS_SecondsLeft = license.secondsLeft
+	env.OBS_TotalExecutions = license.executions
 end

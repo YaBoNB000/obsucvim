@@ -8,6 +8,7 @@ import { History } from "./pages/History";
 import { Scripts } from "./pages/Scripts";
 import { Docs } from "./pages/Docs";
 import { Account } from "./pages/Account";
+import { KeyStatusPage } from "./pages/KeyStatus";
 import { I18nProvider, useI18n, type TKey } from "./lib/i18n";
 import { AuthProvider, HistoryProvider, useAuth } from "./lib/store";
 
@@ -24,6 +25,9 @@ function Console() {
   const { user } = useAuth();
   const [page, setPage] = useState<PageId>("workspace");
   const [mobileOpen, setMobileOpen] = useState(false);
+
+  // 公开的卡密自助页：不登录也能用（凭卡密本身鉴权）
+  if (window.location.hash.startsWith("#key")) return <KeyStatusPage />;
 
   if (!user) return <LoginScreen />;
 

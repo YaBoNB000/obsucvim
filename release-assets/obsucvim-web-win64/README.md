@@ -18,6 +18,8 @@ The bundle includes Node.js 22.22.3 x64, the Rust/WASI engine, the single-file U
 - Project folders: a key belongs to a folder and unlocks every script inside it, so one key can cover a whole hub.
 - Batch issue up to 100 keys per call, plus CSV export that contains metadata only — raw keys are never re-readable because only HMAC digests are stored.
 - Optional execution-log and alert webhooks, restricted to https Discord hosts and rate limited so they cannot be abused as an SSRF relay.
+- Customers get a public `#key` page to check their licence and, when the project enables it, self-reset the device binding on a cooldown.
+- Published guards inject `OBS_IsPremium`, `OBS_UserNote`, `OBS_ScriptName`, `OBS_SecondsLeft` and `OBS_TotalExecutions` for UI gating. These are client-side values and can be tampered with, so never use them for security decisions.
 - HWID is client-supplied and spoofable; treat binding as friction, not hardware attestation.
 
 The sandbox tests covered the key issue/validate/revoke/HWID flow and package integrity. Real Cloudflare Siteverify, physical Windows Server 2019, and external 163 SMTP were not tested here.

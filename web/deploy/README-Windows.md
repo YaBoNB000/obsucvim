@@ -64,6 +64,8 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 - 卡密支持三种有效期：永久、指定日期、首次激活后 N 天计时。
 - 项目文件夹：一把 Key 解锁文件夹内全部脚本，适合做脚本 hub；支持批量签发（单次最多 100）与 CSV 导出。
 - 可配置执行日志 / 告警 Webhook（仅限 https 的 Discord 地址）。
+- 客户可用 `#key` 公开页查询卡密状态；项目开启后支持自助重置设备（带冷却）。
+- 脚本内可读取 `OBS_IsPremium` / `OBS_UserNote` / `OBS_ScriptName` / `OBS_SecondsLeft` / `OBS_TotalExecutions` 做 UI 分层（可被客户端篡改，不可用于安全判断）。
 - 尚未包含网页端上传/发布流水线和受授权保护的脚本下载端点；HWID 由客户端提供，可伪造，仅作尽力绑定。
 
 接口、注入说明与 Luau 示例见 `SCRIPT-KEYS.md`。

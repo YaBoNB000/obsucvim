@@ -200,6 +200,39 @@ print("License accepted")
 - 导出：`GET /api/auth/licenses/export?folderId=` 返回 text/csv 附件
 - 验证：Key 现在按**文件夹**判定，同一文件夹内所有脚本共用一把 Key，跨文件夹无效
 
+### P2 接口
+
+**Key Check API（无需登录，凭卡密本身鉴权）**
+
+`POST /api/key/status` → `{ key: "osk_..." }`
+
+返回 `state`（active/expired/revoked）、`note`、`scriptName`、`folderName`、`expiresAt`、`secondsLeft`、`deviceBound`、`totalExecutions`、`selfReset`、`resetCooldownDays`、`resetAvailableIn`。
+不消耗 nonce、不计入执行次数，仅限流（与验证共享 60 次/分钟/IP）。卡密不存在统一返回 404 `LICENSE_INVALID`。
+
+**自助重置设备**
+
+`POST /api/key/reset-hwid` → `{ key }`
+
+需要项目文件夹开启 `selfReset`，否则 403 `SELF_RESET_DISABLED`。冷却期内返回 429 `RESET_COOLDOWN` + `retryAfter`。
+重置成功后清空设备绑定、记录 `lastHwidResetAt`，并向项目告警 Webhook 推送一条事件。
+
+文件夹设置新增 `selfReset`（默认 `false`）与 `resetCooldownDays`（默认 7，0–365）。
+
+**运行时变量（guard 注入）**
+
+验证成功后 guard 在脚本环境里设置：
+
+| 变量 | 含义 |
+|---|---|
+| `OBS_License` | 完整表：valid / expiresAt / premium / note / scriptName / folderName / secondsLeft / executions |
+| `OBS_IsPremium` | 布尔，等价于授权有效 |
+| `OBS_UserNote` | 卡密备注 |
+| `OBS_ScriptName` | 脚本名 |
+| `OBS_SecondsLeft` | 剩余秒数，永久卡密为 `math.huge` |
+| `OBS_TotalExecutions` | 该卡密累计成功验证次数 |
+
+这些变量由客户端接收，**可被 hook 篡改**，只适合做 UI 分层或提示，不要用于安全判断。
+
 已完成：
 
 - P0-1 一条龙发布：网页端上传源码 → 服务端注入 guard → v15 混淆 → 存盘；原稿不落盘。端点 `POST /api/publish`。
@@ -212,9 +245,9 @@ print("License accepted")
 | ✅ | 项目文件夹 | 已完成：Key 属于文件夹，一个 Key 解锁文件夹内所有脚本 |
 | ✅ | 批量生成 Key + CSV 导出 | 已完成：单次最多 100 个；CSV 只含元数据，永远不含明文 Key |
 | ✅ | 执行日志 / 告警 Webhook | 已完成：仅接受 https 的 Discord webhook |
-| P2 | 用户自助页 | 查 Key 状态、自助重置 HWID |
-| P2 | 运行时变量 | 脚本内读取 note / 到期 / 是否 premium |
-| P2 | Key Check API | 执行前查询 Key 详情 |
+| ✅ | 用户自助页 | 已完成：`#key` 公开页，查状态 + 自助重置设备 |
+| ✅ | 运行时变量 | 已完成：guard 注入 `OBS_*` 变量 |
+| ✅ | Key Check API | 已完成：`POST /api/key/status` |
 
 **已取消（用户决定，不实现）**：
 

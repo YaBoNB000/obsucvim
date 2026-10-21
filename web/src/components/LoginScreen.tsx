@@ -457,6 +457,14 @@ export function LoginScreen() {
                 <Icon name="shield" className="mt-0.5 h-4 w-4 shrink-0 text-aqua-300/80" />
                 <p className="text-[10.5px] leading-relaxed text-slate-400/75">{t("login.secureNote")}</p>
               </div>
+              <a
+                href="#key"
+                onClick={() => window.location.reload()}
+                className="mt-3 inline-flex items-center gap-1.5 text-[10.5px] text-slate-500 transition hover:text-aqua-200"
+              >
+                <Icon name="lock" className="h-3 w-3" />
+                {t("key.entry")}
+              </a>
             </footer>
           )}
         </div>
