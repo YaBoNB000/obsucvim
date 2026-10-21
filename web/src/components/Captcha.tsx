@@ -6,11 +6,13 @@ export function Captcha({
   challenge,
   onAnswerChange,
   disabled = false,
+  failed = false,
   className,
 }: {
   challenge: CaptchaChallenge | null;
   onAnswerChange: (answer: string) => void;
   disabled?: boolean;
+  failed?: boolean;
   className?: string;
 }) {
   const { t } = useI18n();
@@ -67,8 +69,8 @@ export function Captcha({
 
   if (!challenge) {
     return (
-      <div className={`flex h-24 w-full max-w-[320px] items-center justify-center rounded-xl border border-white/10 bg-black/25 text-[11px] text-slate-500 ${className ?? ""}`}>
-        {t("login.captchaLoading")}
+      <div className={`flex h-24 w-full max-w-[320px] items-center justify-center rounded-xl border bg-black/25 px-4 text-center text-[11px] ${failed ? "border-rose-300/20 text-rose-200/80" : "border-white/10 text-slate-500"} ${className ?? ""}`} role="status">
+        {failed ? t("login.captchaUnavailable") : t("login.captchaLoading")}
       </div>
     );
   }

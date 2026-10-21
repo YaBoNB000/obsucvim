@@ -8,12 +8,12 @@ import {
   type ReactNode,
 } from "react";
 import { DAILY_FREE_QUOTA, type ObfuscationOptions } from "./engine";
-import { authHeaders, clearToken, getToken, setToken } from "./token";
+import { clearLegacyAuthData } from "./token";
 
 /* ------------------------------------------------------------------ */
 /*            账户 + 每日免费额度（全部服务端裁决）                      */
-/*  会话/密码/验证码/锁定/额度都在本地后端（engine-server.mjs），        */
-/*  浏览器只持随机令牌——devtools 无法伪造登录态或旁路锁定。             */
+/*  会话/密码/验证码/锁定/额度都在服务端裁决。会话仅由 HttpOnly Cookie 传输， */
+/*  JavaScript 无法读取或伪造登录凭证。                                       */
 /* ------------------------------------------------------------------ */
 export interface User {
   email: string;
@@ -100,7 +100,8 @@ const ERROR_MAP: Record<string, AuthError> = {
 async function apiPost<T>(url: string, body: unknown): Promise<{ status: number; data: T }> {
   const res = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders() },
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
   return { status: res.status, data: (await res.json()) as T };
@@ -111,7 +112,6 @@ interface ApiEnvelope {
   error?: string;
   retryAfter?: number;
   demoCode?: string;
-  token?: string;
   user?: User;
   quota?: QuotaInfo;
   captchaId?: string;
@@ -135,23 +135,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [quota, setQuota] = useState<QuotaInfo>({ usedToday: 0, remaining: DAILY_FREE_QUOTA, limit: DAILY_FREE_QUOTA });
   const [booted, setBooted] = useState(false);
 
-  // 启动：令牌 -> /api/me 恢复会话与额度
+  // 启动时先删旧版 localStorage 令牌，再通过 HttpOnly Cookie 恢复会话。
   useEffect(() => {
     let alive = true;
-    (async () => {
-      if (!getToken()) {
-        setBooted(true);
-        return;
-      }
+    clearLegacyAuthData();
+    void (async () => {
       try {
-        const res = await fetch("/api/me", { headers: authHeaders() });
+        const res = await fetch("/api/me", { credentials: "same-origin" });
         const d = (await res.json()) as ApiEnvelope;
         if (!alive) return;
         if (res.ok && d.ok && d.user) {
           setUser(d.user);
           if (d.quota) setQuota(d.quota);
-        } else {
-          clearToken();
         }
       } catch {
         /* 后端不可达：保持未登录 */
@@ -210,8 +205,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const confirmRegister = useCallback(async (email: string, code: string): Promise<AuthResult> => {
     try {
       const { status, data } = await apiPost<ApiEnvelope>("/api/auth/register/confirm", { email, code });
-      if (data.ok && data.token && data.user) {
-        setToken(data.token);
+      if (data.ok && data.user) {
         setUser(data.user);
         if (data.quota) setQuota(data.quota);
         return { ok: true };
@@ -241,8 +235,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           captchaId,
           captchaAnswer,
         });
-        if (data.ok && data.token && data.user) {
-          setToken(data.token);
+        if (data.ok && data.user) {
           setUser(data.user);
           if (data.quota) setQuota(data.quota);
           return { ok: true };
@@ -257,7 +250,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(() => {
     void apiPost("/api/auth/logout", {}).catch(() => {});
-    clearToken();
+    clearLegacyAuthData();
     setUser(null);
     setQuota({ usedToday: 0, remaining: DAILY_FREE_QUOTA, limit: DAILY_FREE_QUOTA });
   }, []);
@@ -265,21 +258,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const applyQuota = useCallback((q: QuotaInfo) => setQuota(q), []);
 
   const refreshQuota = useCallback(() => {
-    if (!getToken()) return;
+    if (!user) return;
     void (async () => {
       try {
-        const res = await fetch("/api/me", { headers: authHeaders() });
+        const res = await fetch("/api/me", { credentials: "same-origin" });
         const d = (await res.json()) as ApiEnvelope;
         if (res.ok && d.quota) setQuota(d.quota);
         else if (res.status === 401) {
-          clearToken();
+          clearLegacyAuthData();
           setUser(null);
         }
       } catch {
         /* ignore */
       }
     })();
-  }, []);
+  }, [user]);
 
   // 页面获得焦点时刷新额度（防止长时间停留后状态过期）
   useEffect(() => {
@@ -294,7 +287,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // 引擎层 401 → 清用户状态回登录页（与 Workspace 的 logout 双保险）
   useEffect(() => {
     const onUnauth = () => {
-      clearToken();
+      clearLegacyAuthData();
       setUser(null);
       setQuota({ usedToday: 0, remaining: DAILY_FREE_QUOTA, limit: DAILY_FREE_QUOTA });
     };

@@ -94,7 +94,7 @@ export function appliedNames(o: ObfuscationOptions): string[] {
   return list;
 }
 
-import { authHeaders, clearToken } from "./token";
+import { clearLegacyAuthData } from "./token";
 
 async function httpObfuscate(source: string, options: ObfuscationOptions): Promise<ObfuscationResult> {
   const ctrl = new AbortController();
@@ -102,12 +102,13 @@ async function httpObfuscate(source: string, options: ObfuscationOptions): Promi
   try {
     const res = await fetch("/api/obfuscate", {
       method: "POST",
-      headers: { "content-type": "application/json", ...authHeaders() },
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ source, options }),
       signal: ctrl.signal,
     });
     if (res.status === 401) {
-      clearToken();
+      clearLegacyAuthData();
       // 通知 AuthProvider 重置用户状态（双保险：Workspace 也会调 logout）
       window.dispatchEvent(new CustomEvent("obsucvim:unauthorized"));
       throw new Error("UNAUTHORIZED");

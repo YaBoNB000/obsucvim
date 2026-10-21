@@ -18,7 +18,7 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 import { isIP } from "node:net";
 import { deflateSync } from "node:zlib";
 import nodemailer from "nodemailer";
@@ -134,23 +134,25 @@ function appliedNames(o) {
   return list;
 }
 
-function json(res, status, body) {
+function json(res, status, body, extraHeaders = {}) {
   const text = JSON.stringify(body);
-  // 同源代理（Vite dev）访问，不需要 CORS；去掉通配符开放
+  // Same-origin API only; security headers are applied before routing.
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "x-content-type-options": "nosniff",
     "cache-control": "no-store",
+    ...extraHeaders,
   });
   res.end(text);
 }
 
-/* ================= 账户体系（服务端，2026-10-11 安全修复） =================
- * 审计结论修复：会话/密码/验证码/锁定/额度全部移到服务端——浏览器只持有
- * 随机令牌，devtools 无法再伪造登录态、旁路人机验证或清除锁定。
- * 状态持久化到 tools/.state.json（gitignored，含哈希）。 */
+/* ================= 账户体系（服务端裁决） =================
+ * 密码、会话、验证码、锁定和额度均由服务端管理；浏览器会话只通过 HttpOnly
+ * Cookie 传递，JavaScript 无法读取令牌。状态持久化到 tools/.state.json。 */
 const STATE_FILE = process.env.OBSUCVIM_STATE_FILE || path.join(__dirname, ".state.json");
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
+const SESSION_COOKIE_NAME = "obsucvim_session";
+const SESSION_COOKIE_MAX_AGE = Math.floor(SESSION_TTL_MS / 1000);
 const CODE_TTL_MS = 10 * 60_000;
 const CAPTCHA_TTL_MS = 3 * 60_000;
 const CAPTCHA_MIN_AGE_MS = 700;
@@ -165,8 +167,9 @@ const MAX_PENDING_REG = 200;    // 同时待验证的注册草稿上限
 
 let state = {
   users: {},      // email -> { email, nickname, salt, hash, created }
-  sessions: {},   // token -> { email, expires }
-  quotas: {},     // email -> { date, used }
+  sessions: {},   // server-side session token -> { email, expires }; browser token is HttpOnly cookie
+  authSessionVersion: 0, // migration marker; invalidates old JS-readable bearer sessions once
+  quotas: {},      // email -> { date, used }
   fails: {},      // email -> { fails, until }
   codes: {},      // email -> { code, expires, sentAt, fails }
   captchas: {},   // id -> { targetX, issuedAt, expires }; answer never leaves server
@@ -187,6 +190,11 @@ function loadState() {
   let changed = false;
   if (!state.registeredIps || typeof state.registeredIps !== "object" || Array.isArray(state.registeredIps)) {
     state.registeredIps = {};
+    changed = true;
+  }
+  if (state.authSessionVersion !== 1) {
+    state.sessions = {};
+    state.authSessionVersion = 1;
     changed = true;
   }
   if (typeof state.registrationIpHashKey !== "string" || !/^[\da-f]{64}$/i.test(state.registrationIpHashKey)) {
@@ -244,12 +252,16 @@ function sessionFor(email) {
 }
 
 function authUser(req) {
+  const sessionToken = sessionTokenFromCookie(req);
+  if (sessionToken) {
+    const session = state.sessions[sessionToken];
+    if (session && now() <= session.expires) return state.users[session.email] ?? null;
+  }
+
+  // Bearer tokens remain supported only for explicitly generated API keys.
   const h = req.headers["authorization"];
   if (typeof h !== "string" || !h.startsWith("Bearer ")) return null;
-  const token = h.slice(7).trim();
-  const s = state.sessions[token];
-  if (s && now() <= s.expires) return state.users[s.email] ?? null;
-  return apiKeyUser(token);
+  return apiKeyUser(h.slice(7).trim());
 }
 
 /* 两步注册的服务端草稿：第一步保存昵称/密码（10 分钟），确认步消费——
@@ -665,6 +677,87 @@ const TRUSTED_PROXY_IPS = new Set(
     .filter((ip) => ip !== null),
 );
 
+function isSecureRequest(req) {
+  if (req.socket?.encrypted || process.env.OBSUCVIM_COOKIE_SECURE === "1") return true;
+  const socketIp = normalizeIpAddress(req.socket?.remoteAddress);
+  if (!socketIp || !TRUSTED_PROXY_IPS.has(socketIp)) return false;
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  if (typeof forwardedProto !== "string") return false;
+  return forwardedProto.split(",").at(-1)?.trim().toLowerCase() === "https";
+}
+
+function sessionCookieHeader(req, token, maxAge = SESSION_COOKIE_MAX_AGE) {
+  const value = `${SESSION_COOKIE_NAME}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`;
+  const secure = isSecureRequest(req) ? "; Secure" : "";
+  const expires = maxAge === 0 ? "; Expires=Thu, 01 Jan 1970 00:00:00 GMT" : "";
+  return `${value}${expires}${secure}`;
+}
+
+function collectInlineScriptHashes() {
+  try {
+    const html = readFileSync(path.join(WEB_ROOT, "index.html"), "utf8");
+    const hashes = new Set();
+    for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+      if (/\bsrc\s*=/i.test(match[1]) || !match[2].trim()) continue;
+      const digest = createHash("sha256").update(match[2], "utf8").digest("base64");
+      hashes.add(`'sha256-${digest}'`);
+    }
+    return [...hashes];
+  } catch {
+    return [];
+  }
+}
+
+const INLINE_SCRIPT_HASHES = collectInlineScriptHashes();
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  `script-src 'self' ${INLINE_SCRIPT_HASHES.join(" ")}`.trim(),
+  "script-src-attr 'none'",
+  "style-src 'self' 'unsafe-inline'",
+  "style-src-attr 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "frame-src 'none'",
+  "frame-ancestors 'none'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "worker-src 'self' blob:",
+  "manifest-src 'self'",
+].join("; ");
+
+function applySecurityHeaders(req, res) {
+  res.setHeader("content-security-policy", CONTENT_SECURITY_POLICY);
+  res.setHeader("x-frame-options", "DENY");
+  res.setHeader("x-content-type-options", "nosniff");
+  res.setHeader("referrer-policy", "strict-origin-when-cross-origin");
+  res.setHeader("permissions-policy", "camera=(), microphone=(), geolocation=()");
+  if (isSecureRequest(req)) res.setHeader("strict-transport-security", "max-age=31536000");
+}
+
+function sessionTokenFromCookie(req) {
+  const cookieHeader = req.headers.cookie;
+  if (typeof cookieHeader !== "string") return null;
+  for (const part of cookieHeader.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0 || part.slice(0, separator).trim() !== SESSION_COOKIE_NAME) continue;
+    const value = part.slice(separator + 1).trim();
+    return /^[\da-f]{64}$/i.test(value) ? value : null;
+  }
+  return null;
+}
+
+function unauthorized(res, req) {
+  const token = sessionTokenFromCookie(req);
+  return json(
+    res,
+    401,
+    { ok: false, error: "UNAUTHORIZED" },
+    token ? { "set-cookie": sessionCookieHeader(req, "", 0) } : {},
+  );
+}
+
 function clientIp(req) {
   const socketIp = normalizeIpAddress(req.socket?.remoteAddress) || "unknown";
   if (!TRUSTED_PROXY_IPS.has(socketIp)) return socketIp;
@@ -696,6 +789,26 @@ function authRateLimited(ip) {
   }
   h.n += 1;
   return h.n > AUTH_RATE_LIMIT;
+}
+
+const CAPTCHA_ISSUE_LIMIT = 4;
+const CAPTCHA_ISSUE_WINDOW_MS = 60_000;
+const captchaIssueHits = new Map();
+setInterval(() => {
+  const n = Date.now();
+  for (const [ip, h] of captchaIssueHits) if (n > h.reset) captchaIssueHits.delete(ip);
+}, CAPTCHA_ISSUE_WINDOW_MS).unref?.();
+
+function captchaIssueRetryAfter(ip) {
+  const n = Date.now();
+  const h = captchaIssueHits.get(ip);
+  if (!h || n > h.reset) {
+    captchaIssueHits.set(ip, { n: 1, reset: n + CAPTCHA_ISSUE_WINDOW_MS });
+    return 0;
+  }
+  if (h.n >= CAPTCHA_ISSUE_LIMIT) return Math.max(1, Math.ceil((h.reset - n) / 1000));
+  h.n += 1;
+  return 0;
 }
 
 function rateLimited(ip) {
@@ -753,6 +866,7 @@ function releaseSlot() {
 }
 
 const server = createServer(async (req, res) => {
+  applySecurityHeaders(req, res);
   if (req.method === "OPTIONS") return json(res, 204, {});
 
   /* ================= 认证端点 ================= */
@@ -774,6 +888,11 @@ const server = createServer(async (req, res) => {
     if (!body || typeof body !== "object") return json(res, 400, { ok: false, error: "BAD_REQUEST" });
 
     if (req.method === "POST" && req.url === "/api/auth/captcha") {
+      const retryAfter = captchaIssueRetryAfter(clientIp(req));
+      if (retryAfter > 0) {
+        res.setHeader("retry-after", String(retryAfter));
+        return json(res, 429, { ok: false, error: "CAPTCHA_RATE_LIMITED", retryAfter });
+      }
       return json(res, 200, { ok: true, ...issueCaptcha() });
     }
 
@@ -843,7 +962,12 @@ const server = createServer(async (req, res) => {
       state.registeredIps[ipHash] = { email: key, created: now() };
       saveState();
       const token = sessionFor(key);
-      return json(res, 200, { ok: true, token, user: userPublic(state.users[key]) });
+      return json(
+        res,
+        200,
+        { ok: true, user: userPublic(state.users[key]) },
+        { "set-cookie": sessionCookieHeader(req, token) },
+      );
     }
 
     if (req.method === "POST" && req.url === "/api/auth/resend") {
@@ -889,21 +1013,37 @@ const server = createServer(async (req, res) => {
       delete state.fails[key];
       saveState();
       const token = sessionFor(key);
-      return json(res, 200, { ok: true, token, user: userPublic(u), quota: quotaJson(key) });
+      return json(
+        res,
+        200,
+        { ok: true, user: userPublic(u), quota: quotaJson(key) },
+        { "set-cookie": sessionCookieHeader(req, token) },
+      );
     }
 
     if (req.method === "POST" && req.url === "/api/auth/logout") {
+      let changed = false;
+      const cookieToken = sessionTokenFromCookie(req);
+      if (cookieToken && state.sessions[cookieToken]) {
+        delete state.sessions[cookieToken];
+        changed = true;
+      }
+      // Expire any legacy bearer session if an old client still sends it.
       const h = req.headers["authorization"];
       if (typeof h === "string" && h.startsWith("Bearer ")) {
-        delete state.sessions[h.slice(7).trim()];
-        saveState();
+        const legacyToken = h.slice(7).trim();
+        if (state.sessions[legacyToken]) {
+          delete state.sessions[legacyToken];
+          changed = true;
+        }
       }
-      return json(res, 200, { ok: true });
+      if (changed) saveState();
+      return json(res, 200, { ok: true }, { "set-cookie": sessionCookieHeader(req, "", 0) });
     }
 
     if (req.method === "GET" && req.url === "/api/auth/apikeys") {
       const u = authUser(req);
-      if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+      if (!u) return unauthorized(res, req);
       const keys = Object.entries(state.apiKeys)
         .filter(([, v]) => v.email === u.email)
         .map(([k, v]) => ({ id: k.slice(0, 12) + "…", created: v.created }));
@@ -912,7 +1052,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/auth/apikeys") {
       const u = authUser(req);
-      if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+      if (!u) return unauthorized(res, req);
       const key = newApiKey();
       state.apiKeys[key] = { email: u.email, created: now() };
       saveState();
@@ -921,7 +1061,7 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "DELETE" && req.url === "/api/auth/apikeys") {
       const u = authUser(req);
-      if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+      if (!u) return unauthorized(res, req);
       const { key } = body;
       if (typeof key !== "string" || !state.apiKeys[key]) {
         return json(res, 404, { ok: false, error: "NOT_FOUND" });
@@ -942,7 +1082,7 @@ const server = createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/api/me") {
     if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
     const u = authUser(req);
-    if (!u) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+    if (!u) return unauthorized(res, req);
     return json(res, 200, { ok: true, user: userPublic(u), quota: quotaJson(u.email) });
   }
 
@@ -967,7 +1107,7 @@ const server = createServer(async (req, res) => {
       return json(res, 429, { ok: false, error: "RATE_LIMITED" });
     }
     const auth = authUser(req);
-    if (!auth) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
+    if (!auth) return unauthorized(res, req);
     const q = quotaOf(auth.email);
     if (q.used >= 5) return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(auth.email) });
     const optErr = validateOptions(options);

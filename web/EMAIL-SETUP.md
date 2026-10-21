@@ -44,6 +44,8 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
 ## 4. 账户限制与服务器安全
 
+- 浏览器会话只通过 `HttpOnly; SameSite=Strict` Cookie 传递；JavaScript 不读取令牌。HTTPS 下附加 `Secure` 与 HSTS，部署公网时必须启用 HTTPS。
+- 页面使用 CSP 哈希白名单、`frame-ancestors 'none'` 和 `X-Frame-Options: DENY`。
 - 每个邮箱（不区分大小写）只能注册一个账户；每个 IP 只能完成一个新账户注册。IP 记录以服务端 HMAC 索引持久化，不存原始 IP。
 - 此 IP 限制适用于更新后完成注册的账户；已有账户没有历史注册 IP，无法追溯补录。
 - 每个账号每天 **5 次**，后端强制，按服务器本地时区午夜重置。

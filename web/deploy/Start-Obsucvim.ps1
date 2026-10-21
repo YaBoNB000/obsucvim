@@ -23,6 +23,7 @@ $env:OBSUCVIM_BIN = Join-Path $Root "tools\obsucvim.exe" # absent by design; for
 $env:OBSUCVIM_WASM = $Wasm
 $env:OBSUCVIM_WEB_ROOT = $Dist
 $env:OBSUCVIM_STATE_FILE = Join-Path $Data "state.json"
+if (!$env:OBSUCVIM_TRUSTED_PROXY_IPS) { $env:OBSUCVIM_TRUSTED_PROXY_IPS = "127.0.0.1,::1" }
 $env:HOST = if ($LocalOnly) { "127.0.0.1" } else { "0.0.0.0" }
 $env:PORT = $Port
 if (!$env:SMTP_USER) { $env:SMTP_USER = "obsucvim@163.com" }

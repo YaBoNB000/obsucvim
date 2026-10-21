@@ -3,13 +3,12 @@ import { GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { InlineCode } from "../components/CodeArea";
 import { ENGINE, MAX_SOURCE_BYTES, ENGINE_TIMEOUT_MS, DAILY_FREE_QUOTA } from "../lib/engine";
 
-const TS_SNIPPET = `// src/lib/engine.ts · authenticated same-origin API
-import { authHeaders } from "./token";
-
+const TS_SNIPPET = `// src/lib/engine.ts · HttpOnly same-origin session cookie
 export async function obfuscate(source: string, options: ObfuscationOptions) {
   const response = await fetch("/api/obfuscate", {
     method: "POST",
-    headers: { "content-type": "application/json", ...authHeaders() },
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ source, options }),
   });
   const payload = await response.json();

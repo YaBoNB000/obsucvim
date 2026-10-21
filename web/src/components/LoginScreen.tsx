@@ -18,6 +18,7 @@ export function LoginScreen() {
   const [confirmPwd, setConfirmPwd] = useState("");
   const [captchaInput, setCaptchaInput] = useState("");
   const [captcha, setCaptcha] = useState<CaptchaChallenge | null>(null);
+  const [captchaUnavailable, setCaptchaUnavailable] = useState(false);
   const [codeInput, setCodeInput] = useState("");
   const [demoCode, setDemoCode] = useState<string | null>(null);
   const [cooldown, setCooldown] = useState(0);
@@ -29,9 +30,13 @@ export function LoginScreen() {
   const refreshCaptcha = useCallback(() => {
     const requestId = ++captchaRequest.current;
     setCaptcha(null);
+    setCaptchaUnavailable(false);
     setCaptchaInput("");
     void fetchCaptcha().then((c) => {
-      if (requestId === captchaRequest.current) setCaptcha(c);
+      if (requestId === captchaRequest.current) {
+        setCaptcha(c);
+        setCaptchaUnavailable(!c);
+      }
     });
   }, [fetchCaptcha]);
 
@@ -417,6 +422,7 @@ export function LoginScreen() {
                     challenge={captcha}
                     onAnswerChange={setCaptchaInput}
                     disabled={locked}
+                    failed={captchaUnavailable}
                     className="mx-auto"
                   />
                 </div>

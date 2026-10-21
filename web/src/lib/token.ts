@@ -1,36 +1,19 @@
-/** 会话令牌（服务端签名发放，浏览器仅存储） */
-const KEY = "obsucvim.token";
+/**
+ * Browser-readable session tokens have been retired. Sessions now use an
+ * HttpOnly same-origin cookie; only clear legacy demo/auth keys on migration.
+ */
+const LEGACY_STORAGE_KEYS = [
+  "obsucvim.token",
+  "obsucvim.user",
+  "obsucvim.users",
+  "obsucvim.authlock",
+  "obsucvim.quota",
+];
 
-export function getToken(): string | null {
+export function clearLegacyAuthData() {
   try {
-    return localStorage.getItem(KEY);
+    for (const key of LEGACY_STORAGE_KEYS) localStorage.removeItem(key);
   } catch {
-    return null;
+    /* storage may be unavailable in privacy modes */
   }
-}
-
-export function setToken(token: string) {
-  try {
-    localStorage.setItem(KEY, token);
-  } catch {
-    /* ignore */
-  }
-}
-
-export function clearToken() {
-  try {
-    localStorage.removeItem(KEY);
-    // 清理旧演示键
-    localStorage.removeItem("obsucvim.user");
-    localStorage.removeItem("obsucvim.users");
-    localStorage.removeItem("obsucvim.authlock");
-    localStorage.removeItem("obsucvim.quota");
-  } catch {
-    /* ignore */
-  }
-}
-
-export function authHeaders(): Record<string, string> {
-  const t = getToken();
-  return t ? { authorization: `Bearer ${t}` } : {};
 }

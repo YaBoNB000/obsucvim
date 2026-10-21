@@ -7,7 +7,9 @@
 3. 在服务器上先打开 `http://localhost:8787` 测试。
 4. 从其他电脑访问 `http://<服务器内网或公网 IP>:8787`。若要从公网访问，请先配置 HTTPS 反向代理（IIS/ARR 等），**不要把明文 HTTP 登录直接暴露到公网**。
 
-服务由内置 Node.js 22.22.3 x64 启动，Rust 引擎以 WASI Preview 1 在 Node 内运行；无需安装 Rust、Visual Studio、MSVC、Python 或额外的运行时。Web 静态文件与 `/api/*` 同源提供。
+服务由内置 Node.js 22.22.3 x64 启动，Rust 引擎以 WASI Preview 1 在 Node 内运行；无需安装 Rust、Visual Studio、MSVC、Python 或额外的运行时。Web 静态文件与 `/api/*` 同源提供。登录会话使用 `HttpOnly; SameSite=Strict` Cookie，JavaScript 不再读取会话令牌；旧版可读会话升级后会失效一次，用户需重新登录。公开部署必须使用 HTTPS，HTTPS 请求会启用 Secure Cookie 与 HSTS。页面响应还包含哈希白名单 CSP、`frame-ancestors 'none'` 和 `X-Frame-Options: DENY`。
+
+Caddy/IIS 在本机终止 TLS 时，启动脚本默认信任 loopback 代理 (`127.0.0.1,::1`) 并验证其 `X-Forwarded-Proto`；其他代理需将 `OBSUCVIM_TRUSTED_PROXY_IPS` 设为精确代理 IP。不要把 `X-Forwarded-For` 信任给任意来源。
 
 ## Windows 防火墙
 
@@ -56,7 +58,8 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
 - 每个邮箱（不区分大小写）只能注册一个账户；每个 IP 只能完成一个新账户注册。
 - 更新后完成注册的 IP 限制会保存为 HMAC 索引（不存原始 IP）；更新前的账户没有历史 IP，无法追溯补录。
-- 注册与登录需拖动图片拼图完成服务端人机验证；注册另需邮箱验证码。
+- 注册与登录需拖动图片拼图完成服务端人机验证；同一 IP 每分钟最多签发 4 张挑战图，注册另需邮箱验证码。
+- 升级后旧版浏览器可读会话会失效一次；账户资料保留，用户首次访问需重新登录。
 - 每账号每日 5 次（服务端强制；00:00 本地服务器时区重置）。
 - 状态保存在 `data\state.json`（密码使用 scrypt 哈希，不存明文）；备份此文件以保留账户与 IP 限制记录。
 - 当前为单机状态文件；多进程/多服务器生产部署应迁移到共享数据库。

@@ -51,3 +51,10 @@
 - 注册按小写规范化邮箱去重，并在服务端持久化注册 IP 的 HMAC 索引；同一 IP 只能完成一个新账户注册。默认忽略 XFF；仅显式列入 `OBSUCVIM_TRUSTED_PROXY_IPS` 的反向代理可传递 XFF。
 - 旧账户注册时没有留存 IP，无法追溯补录；新策略只对更新后完成的注册可验证。
 - 人机验证改为服务端生成的 PNG 拼图缺口挑战；答案坐标不下发，服务端一次性校验，3 分钟有效、允许约 5 px 人工误差，并有 700 ms 最短答题时间及认证限流。该方案提升普通脚本绕过成本，但不能阻止高质量图像识别/AI；面向高风险公网场景，Cloudflare Turnstile 或 hCaptcha 这类托管验证通常更强，需要配置站点密钥并由服务端向提供方验证令牌。
+
+## F-01–F-04 修复（2026-10-21）
+
+- F-01：浏览器不再读取/写入会话令牌；会话只通过 `HttpOnly; SameSite=Strict` Cookie 传递，7 天到期。升级时一次性失效旧版可读 Bearer 会话；API Key 仍只通过显式 Bearer API 请求使用。
+- F-02：HTTPS 请求（直连 TLS 或来自明确受信代理的 `X-Forwarded-Proto: https`）附带 HSTS `max-age=31536000`；HTTP 不发送 HSTS。Secure Cookie 同样只在 HTTPS 请求上设置。HSTS 要在首次成功 HTTPS 响应后才生效；要保护首次访问还需经过域名校验后申请浏览器 HSTS preload。
+- F-03：所有响应添加 `X-Frame-Options: DENY` 与 CSP `frame-ancestors 'none'`；CSP 默认拒绝脚本，仅允许同源脚本和构建产物中精确哈希的内联脚本，关闭对象和内联事件处理器。
+- F-04：除认证总限流外，验证码图像接口另设 4 次/分钟/IP 限流；超过返回 429 与 `Retry-After`，限流发生在图片生成之前。
