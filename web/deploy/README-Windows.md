@@ -54,6 +54,27 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
 在 163 邮箱网页设置中开启 SMTP 服务并生成客户端授权码。沙箱无法连外部 SMTP，所以本 ZIP 的真实外发没有在此环境实测；本地 SMTP 模拟器已验证 Nodemailer 发送、邮件验证码确认的整条程序路径。
 
+## Cloudflare Turnstile（可选，启用托管人机验证）
+
+1. 在 Cloudflare Turnstile 控制台为 `obsucvim.l2.ink` 创建 Widget，推荐 Managed 模式，取 Site Key 与 Secret Key。
+2. 测试时在启动服务的 PowerShell 窗口设置（Site Key 是公开值；Secret 仅在本机私密输入）：
+
+   ```powershell
+   $env:CLOUDFLARE_TURNSTILE_SITE_KEY = "<Site Key>"
+   $env:CLOUDFLARE_TURNSTILE_HOSTNAME = "obsucvim.l2.ink"
+   $secure = Read-Host "Cloudflare Turnstile Secret Key" -AsSecureString
+   $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+   try { $env:CLOUDFLARE_TURNSTILE_SECRET_KEY = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
+   finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+   $env:OBSUCVIM_TRUSTED_PROXY_IPS = "127.0.0.1,::1"
+   .\Start-Obsucvim.ps1 -LocalOnly
+   ```
+
+   长期作为 Windows 服务运行时，把这三个 Turnstile 变量放进服务管理器的私密环境变量；不要把 Secret 写入 ZIP、Git、聊天或日志。
+3. 重启服务。启动日志出现 `captcha: Cloudflare Turnstile` 即已切换。浏览器会加载 Cloudflare 验证组件；验证令牌由服务器发往 `https://challenges.cloudflare.com/turnstile/v0/siteverify` 校验，并随验证请求发送服务端解析出的访客 IP (`remoteip`)。
+
+两把密钥都不设置时仍使用本地拼图；只设置其中一把时服务会 fail closed，不会静默退回较弱验证。请确保服务器和访客浏览器都能访问 Cloudflare Turnstile。
+
 ## 额度与账户
 
 - 每个邮箱（不区分大小写）只能注册一个账户；每个 IP 只能完成一个新账户注册。

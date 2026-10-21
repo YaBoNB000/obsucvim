@@ -27,16 +27,23 @@ export interface QuotaInfo {
   limit: number;
 }
 
-export interface CaptchaChallenge {
-  captchaId: string;
-  backgroundUrl: string;
-  pieceUrl: string;
-  width: number;
-  height: number;
-  pieceSize: number;
-  pieceY: number;
-  maxOffset: number;
-}
+export type CaptchaChallenge =
+  | {
+      provider: "puzzle";
+      captchaId: string;
+      backgroundUrl: string;
+      pieceUrl: string;
+      width: number;
+      height: number;
+      pieceSize: number;
+      pieceY: number;
+      maxOffset: number;
+    }
+  | {
+      provider: "turnstile";
+      captchaId: string;
+      siteKey: string;
+    };
 
 export type AuthError =
   | "bad_input"
@@ -115,6 +122,8 @@ interface ApiEnvelope {
   user?: User;
   quota?: QuotaInfo;
   captchaId?: string;
+  provider?: "puzzle" | "turnstile";
+  siteKey?: string;
   backgroundUrl?: string;
   pieceUrl?: string;
   width?: number;
@@ -162,22 +171,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const fetchCaptcha = useCallback(async (): Promise<CaptchaChallenge | null> => {
     try {
       const { data } = await apiPost<ApiEnvelope>("/api/auth/captcha", {});
+      if (!data.ok || !data.captchaId) return null;
+      if (data.provider === "turnstile" && data.siteKey) {
+        return { provider: "turnstile", captchaId: data.captchaId, siteKey: data.siteKey };
+      }
       if (
-        !data.ok || !data.captchaId || !data.backgroundUrl || !data.pieceUrl ||
-        !Number.isInteger(data.width) || !Number.isInteger(data.height) ||
-        !Number.isInteger(data.pieceSize) || !Number.isInteger(data.pieceY) ||
-        !Number.isInteger(data.maxOffset)
-      ) return null;
-      return {
-        captchaId: data.captchaId,
-        backgroundUrl: data.backgroundUrl,
-        pieceUrl: data.pieceUrl,
-        width: data.width!,
-        height: data.height!,
-        pieceSize: data.pieceSize!,
-        pieceY: data.pieceY!,
-        maxOffset: data.maxOffset!,
-      };
+        data.provider === "puzzle" && data.backgroundUrl && data.pieceUrl &&
+        Number.isInteger(data.width) && Number.isInteger(data.height) &&
+        Number.isInteger(data.pieceSize) && Number.isInteger(data.pieceY) &&
+        Number.isInteger(data.maxOffset)
+      ) {
+        return {
+          provider: "puzzle",
+          captchaId: data.captchaId,
+          backgroundUrl: data.backgroundUrl,
+          pieceUrl: data.pieceUrl,
+          width: data.width!,
+          height: data.height!,
+          pieceSize: data.pieceSize!,
+          pieceY: data.pieceY!,
+          maxOffset: data.maxOffset!,
+        };
+      }
+      return null;
     } catch {
       return null;
     }

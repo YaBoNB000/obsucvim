@@ -2,6 +2,52 @@ import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } f
 import { useI18n } from "../lib/i18n";
 import type { CaptchaChallenge } from "../lib/store";
 
+type PuzzleChallenge = Extract<CaptchaChallenge, { provider: "puzzle" }>;
+type TurnstileChallenge = Extract<CaptchaChallenge, { provider: "turnstile" }>;
+
+type TurnstileOptions = {
+  sitekey: string;
+  action: string;
+  theme: "dark";
+  callback: (token: string) => void;
+  "expired-callback": () => void;
+  "error-callback": () => boolean;
+};
+
+type TurnstileApi = {
+  render: (container: HTMLElement, options: TurnstileOptions) => string;
+  remove: (widgetId: string) => void;
+};
+
+declare global {
+  interface Window {
+    turnstile?: TurnstileApi;
+  }
+}
+
+let turnstileScriptPromise: Promise<TurnstileApi> | null = null;
+
+function loadTurnstileApi(): Promise<TurnstileApi> {
+  if (window.turnstile) return Promise.resolve(window.turnstile);
+  if (!turnstileScriptPromise) {
+    turnstileScriptPromise = new Promise<TurnstileApi>((resolve, reject) => {
+      const script = document.createElement("script");
+      script.id = "obsucvim-turnstile-script";
+      script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+      script.async = true;
+      script.defer = true;
+      script.onload = () => window.turnstile ? resolve(window.turnstile) : reject(new Error("Turnstile API unavailable"));
+      script.onerror = () => reject(new Error("Turnstile script failed to load"));
+      document.head.appendChild(script);
+    }).catch((error: unknown) => {
+      document.getElementById("obsucvim-turnstile-script")?.remove();
+      turnstileScriptPromise = null;
+      throw error;
+    });
+  }
+  return turnstileScriptPromise;
+}
+
 export function Captcha({
   challenge,
   onAnswerChange,
@@ -13,6 +59,101 @@ export function Captcha({
   onAnswerChange: (answer: string) => void;
   disabled?: boolean;
   failed?: boolean;
+  className?: string;
+}) {
+  if (challenge?.provider === "turnstile") {
+    return (
+      <TurnstileCaptcha
+        challenge={challenge}
+        onAnswerChange={onAnswerChange}
+        disabled={disabled}
+        className={className}
+      />
+    );
+  }
+  return (
+    <PuzzleCaptcha
+      challenge={challenge?.provider === "puzzle" ? challenge : null}
+      onAnswerChange={onAnswerChange}
+      disabled={disabled}
+      failed={failed}
+      className={className}
+    />
+  );
+}
+
+function TurnstileCaptcha({
+  challenge,
+  onAnswerChange,
+  disabled,
+  className,
+}: {
+  challenge: TurnstileChallenge;
+  onAnswerChange: (answer: string) => void;
+  disabled: boolean;
+  className?: string;
+}) {
+  const { t } = useI18n();
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [unavailable, setUnavailable] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    let api: TurnstileApi | undefined;
+    let widgetId: string | undefined;
+    onAnswerChange("");
+    setUnavailable(false);
+
+    void loadTurnstileApi()
+      .then((turnstile) => {
+        if (!active || !containerRef.current) return;
+        api = turnstile;
+        widgetId = turnstile.render(containerRef.current, {
+          sitekey: challenge.siteKey,
+          action: "auth",
+          theme: "dark",
+          callback: (token) => onAnswerChange(token),
+          "expired-callback": () => onAnswerChange(""),
+          "error-callback": () => {
+            onAnswerChange("");
+            setUnavailable(true);
+            return false;
+          },
+        });
+      })
+      .catch(() => {
+        if (active) setUnavailable(true);
+      });
+
+    return () => {
+      active = false;
+      if (api && widgetId) api.remove(widgetId);
+      onAnswerChange("");
+    };
+  }, [challenge.captchaId, challenge.siteKey, onAnswerChange]);
+
+  return (
+    <div className={`w-full max-w-[320px] ${className ?? ""}`}>
+      <div className={`flex min-h-[74px] items-center justify-center rounded-xl border px-3 py-2 ${disabled ? "pointer-events-none opacity-55" : ""} ${unavailable ? "border-rose-300/20 bg-rose-500/[0.04]" : "border-white/[0.1] bg-black/20"}`}>
+        <div ref={containerRef} className="min-h-[65px]" />
+        {unavailable && <span className="text-center text-[11px] text-rose-200/80">{t("login.captchaUnavailable")}</span>}
+      </div>
+      {!unavailable && <p className="mt-1.5 text-[10.5px] text-slate-500">{t("login.captchaCloudflare")}</p>}
+    </div>
+  );
+}
+
+function PuzzleCaptcha({
+  challenge,
+  onAnswerChange,
+  disabled,
+  failed,
+  className,
+}: {
+  challenge: PuzzleChallenge | null;
+  onAnswerChange: (answer: string) => void;
+  disabled: boolean;
+  failed: boolean;
   className?: string;
 }) {
   const { t } = useI18n();

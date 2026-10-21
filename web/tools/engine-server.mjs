@@ -156,6 +156,12 @@ const SESSION_COOKIE_MAX_AGE = Math.floor(SESSION_TTL_MS / 1000);
 const CODE_TTL_MS = 10 * 60_000;
 const CAPTCHA_TTL_MS = 3 * 60_000;
 const CAPTCHA_MIN_AGE_MS = 700;
+const TURNSTILE_SITE_KEY = (process.env.CLOUDFLARE_TURNSTILE_SITE_KEY || "").trim();
+const TURNSTILE_SECRET_KEY = (process.env.CLOUDFLARE_TURNSTILE_SECRET_KEY || "").trim();
+const TURNSTILE_HOSTNAME = (process.env.CLOUDFLARE_TURNSTILE_HOSTNAME || "").trim().toLowerCase();
+const TURNSTILE_ENABLED = Boolean(TURNSTILE_SITE_KEY && TURNSTILE_SECRET_KEY);
+const TURNSTILE_MISCONFIGURED = Boolean(TURNSTILE_SITE_KEY) !== Boolean(TURNSTILE_SECRET_KEY);
+const TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 const CODE_RESEND_MS = 60_000;
 const CODE_MAX_FAILS = 5;
 const LOGIN_MAX_FAILS = 5;
@@ -495,6 +501,7 @@ function issueCaptcha() {
   state.captchas[id] = { targetX, issuedAt: now(), expires: now() + CAPTCHA_TTL_MS };
   saveState();
   return {
+    provider: "puzzle",
     captchaId: id,
     ...images,
     width: CAPTCHA_WIDTH,
@@ -502,6 +509,14 @@ function issueCaptcha() {
     pieceSize: CAPTCHA_PIECE_SIZE,
     pieceY,
     maxOffset: CAPTCHA_MAX_OFFSET,
+  };
+}
+
+function issueTurnstileChallenge() {
+  return {
+    provider: "turnstile",
+    captchaId: randomBytes(16).toString("hex"),
+    siteKey: TURNSTILE_SITE_KEY,
   };
 }
 
@@ -518,6 +533,48 @@ function consumeCaptcha(id, answer) {
   if (typeof answer !== "string" || !/^\d{1,3}$/.test(answer)) return false;
   const guess = Number(answer);
   return Math.abs(guess - c.targetX) <= 5;
+}
+
+function requestHostname(req) {
+  const host = req.headers.host;
+  if (typeof host !== "string" || !host) return "";
+  try { return new URL(`http://${host}`).hostname.toLowerCase(); }
+  catch { return ""; }
+}
+
+async function verifyTurnstileToken(req, captchaId, token) {
+  if (typeof captchaId !== "string" || !/^[\da-f]{32}$/.test(captchaId)) return false;
+  if (typeof token !== "string" || token.length < 20 || token.length > 4096) return false;
+  const body = new URLSearchParams({ secret: TURNSTILE_SECRET_KEY, response: token });
+  const ip = clientIp(req);
+  if (ip !== "unknown") body.set("remoteip", ip);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const response = await fetch(TURNSTILE_SITEVERIFY_URL, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body,
+      signal: controller.signal,
+    });
+    if (!response.ok) return false;
+    const result = await response.json();
+    const expectedHostname = TURNSTILE_HOSTNAME || requestHostname(req);
+    return result?.success === true &&
+      typeof result.hostname === "string" && result.hostname.toLowerCase() === expectedHostname &&
+      result.action === "auth";
+  } catch {
+    console.error("[engine-server] Turnstile verification request failed");
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function verifyCaptcha(req, captchaId, answer) {
+  if (TURNSTILE_MISCONFIGURED) return false;
+  if (TURNSTILE_ENABLED) return verifyTurnstileToken(req, captchaId, answer);
+  return consumeCaptcha(captchaId, answer);
 }
 
 /* 邮箱验证码：签发/校验/冷却/尝试上限全在服务端。
@@ -711,14 +768,14 @@ function collectInlineScriptHashes() {
 const INLINE_SCRIPT_HASHES = collectInlineScriptHashes();
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
-  `script-src 'self' ${INLINE_SCRIPT_HASHES.join(" ")}`.trim(),
+  `script-src 'self' ${INLINE_SCRIPT_HASHES.join(" ")}${TURNSTILE_ENABLED ? " https://challenges.cloudflare.com" : ""}`.trim(),
   "script-src-attr 'none'",
   "style-src 'self' 'unsafe-inline'",
   "style-src-attr 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
-  "connect-src 'self'",
-  "frame-src 'none'",
+  `connect-src 'self'${TURNSTILE_ENABLED ? " https://challenges.cloudflare.com" : ""}`,
+  `frame-src ${TURNSTILE_ENABLED ? "https://challenges.cloudflare.com" : "'none'"}`,
   "frame-ancestors 'none'",
   "object-src 'none'",
   "base-uri 'self'",
@@ -893,7 +950,11 @@ const server = createServer(async (req, res) => {
         res.setHeader("retry-after", String(retryAfter));
         return json(res, 429, { ok: false, error: "CAPTCHA_RATE_LIMITED", retryAfter });
       }
-      return json(res, 200, { ok: true, ...issueCaptcha() });
+      if (TURNSTILE_MISCONFIGURED) {
+        return json(res, 503, { ok: false, error: "CAPTCHA_CONFIG_INVALID" });
+      }
+      const challenge = TURNSTILE_ENABLED ? issueTurnstileChallenge() : issueCaptcha();
+      return json(res, 200, { ok: true, ...challenge });
     }
 
     if (req.method === "POST" && req.url === "/api/auth/register") {
@@ -909,7 +970,7 @@ const server = createServer(async (req, res) => {
       if (Object.keys(pendingRegistrations).length >= MAX_PENDING_REG) {
         return json(res, 503, { ok: false, error: "SERVICE_FULL" });
       }
-      if (!consumeCaptcha(captchaId, captchaAnswer)) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
+      if (!(await verifyCaptcha(req, captchaId, captchaAnswer))) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
       const key = normalizeEmail(email);
       if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
       const ipHash = registrationIpHash(clientIp(req));
@@ -998,7 +1059,7 @@ const server = createServer(async (req, res) => {
       const key = email.trim().toLowerCase();
       const lock = loginLocked(key);
       if (lock > 0) return json(res, 429, { ok: false, error: "LOCKED", retryAfter: lock });
-      if (!consumeCaptcha(captchaId, captchaAnswer)) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
+      if (!(await verifyCaptcha(req, captchaId, captchaAnswer))) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
       const u = state.users[key];
       if (!u) {
         pwEqual(password, "00".repeat(16), "00".repeat(128)); // 防时序枚举
@@ -1239,4 +1300,5 @@ server.listen(PORT, HOST, () => {
   console.log(`[engine-server] engine mode: ${engineMode()} (native: ${existsSync(BIN) ? "found" : "missing"}; WASI: ${existsSync(WASM_BIN) ? "found" : "missing"})`);
   console.log(`[engine-server] web dist: ${WEB_ROOT} (${existsSync(path.join(WEB_ROOT, "index.html")) ? "found" : "MISSING"})`);
   console.log(`[engine-server] smtp: ${demoMail ? "demo fallback" : "configured"}`);
+  console.log(`[engine-server] captcha: ${TURNSTILE_MISCONFIGURED ? "CONFIGURATION ERROR" : TURNSTILE_ENABLED ? "Cloudflare Turnstile" : "local puzzle fallback"}`);
 });
