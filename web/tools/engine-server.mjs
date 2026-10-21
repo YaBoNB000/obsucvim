@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Obsucvim 本地引擎后端（开发用，零依赖）。
+ * Obsucvim 本地引擎后端（开发用，使用 Nodemailer 发送验证邮件）。
  * 包装真实 obsucvim CLI（Rust），给 web 控制台提供 /api/*：
  *   GET  /api/health     → { ok, engine, bin }
  *   POST /api/obfuscate  → { ok, result: { code, log, stats } }
@@ -10,20 +10,33 @@
  *   OBSUCVIM_BIN   obsucvim 二进制路径（默认 <repo>/obsucvim/target/release/obsucvim）
  *   PORT           监听端口（默认 8787，仅 127.0.0.1，由 Vite dev 代理）
  *   LUAUC          luau-compile 路径（默认 <repo>/.tools/bin/luau-compile，可选语法校验）
+ *   SMTP_*         163 邮箱 SMTP 配置（SMTP_PASS 必须由服务端私密环境变量提供）
+ *   OBSUCVIM_STATE_FILE 状态文件路径（默认 web/tools/.state.json）
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, createReadStream, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import nodemailer from "nodemailer";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(__dirname, "..", "..");
 const BIN = process.env.OBSUCVIM_BIN || path.join(REPO, "obsucvim", "target", "release", "obsucvim");
+const WASM_BIN = process.env.OBSUCVIM_WASM || path.join(__dirname, "obsucvim.wasm");
+const WASI_RUNNER = path.join(__dirname, "wasi-runner.mjs");
+const WEB_ROOT = process.env.OBSUCVIM_WEB_ROOT || path.resolve(__dirname, "..", "dist");
+const HOST = process.env.HOST || "127.0.0.1";
 const LUAUC = process.env.LUAUC || path.join(REPO, ".tools", "bin", "luau-compile");
 const PORT = Number(process.env.PORT || 8787);
+
+function engineMode() {
+  if (existsSync(BIN)) return "native";
+  if (existsSync(WASM_BIN) && existsSync(WASI_RUNNER)) return "wasi";
+  return "missing";
+}
 const MAX_SOURCE_BYTES = 1024 * 1024;
 const ENGINE_TIMEOUT_MS = 60_000;
 
@@ -78,6 +91,27 @@ function run(cmd, args, { input, timeoutMs }) {
   });
 }
 
+async function runEngine(args, workDir, timeoutMs) {
+  const mode = engineMode();
+  if (mode === "native") {
+    const result = await run(BIN, [...args, path.join(workDir, "input.lua")], { timeoutMs });
+    return { ...result, codeText: result.out };
+  }
+  if (mode === "wasi") {
+    const wasmArgs = [...args, "/work/input.lua", "/work/output.lua"];
+    const result = await run(
+      process.execPath,
+      [WASI_RUNNER, JSON.stringify({ wasmPath: WASM_BIN, workDir, args: wasmArgs })],
+      { timeoutMs },
+    );
+    let codeText = "";
+    const outputPath = path.join(workDir, "output.lua");
+    if (result.code === 0 && existsSync(outputPath)) codeText = readFileSync(outputPath, "utf8");
+    return { ...result, out: codeText, codeText };
+  }
+  return { code: null, out: "", err: "engine binary and WASM runtime are both missing", timedOut: false, codeText: "" };
+}
+
 function appliedNames(o) {
   const list = [
     "英文水印首行",
@@ -114,7 +148,7 @@ function json(res, status, body) {
  * 审计结论修复：会话/密码/验证码/锁定/额度全部移到服务端——浏览器只持有
  * 随机令牌，devtools 无法再伪造登录态、旁路人机验证或清除锁定。
  * 状态持久化到 tools/.state.json（gitignored，含哈希）。 */
-const STATE_FILE = path.join(__dirname, ".state.json");
+const STATE_FILE = process.env.OBSUCVIM_STATE_FILE || path.join(__dirname, ".state.json");
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const CODE_TTL_MS = 10 * 60_000;
 const CODE_RESEND_MS = 60_000;
@@ -134,6 +168,7 @@ let state = {
   codes: {},      // email -> { code, expires, sentAt, fails }
   captchas: {},   // id -> { answer, expires }
   apiKeys: {},    // key -> { email, created }
+  pendingRegistrations: {}, // email -> { nickname, salt, hash, expires }
 };
 
 function loadState() {
@@ -160,11 +195,15 @@ setInterval(() => {
   for (const [k, c] of Object.entries(state.captchas)) if (n > c.expires) delete state.captchas[k];
   for (const [k, c] of Object.entries(state.codes)) if (n > c.expires) delete state.codes[k];
   for (const [k, s] of Object.entries(state.sessions)) if (n > s.expires) delete state.sessions[k];
+  for (const [k, d] of Object.entries(state.pendingRegistrations)) if (n > d.expires) delete state.pendingRegistrations[k];
   saveState();
 }, 300_000).unref?.();
 
 const now = () => Date.now();
-const todayStr = () => new Date().toISOString().slice(0, 10);
+const todayStr = () => {
+  const d = new Date(); // server-local timezone; Windows Server clock/timezone is authoritative
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function hashPw(password, salt) {
@@ -197,7 +236,7 @@ function authUser(req) {
 
 /* 两步注册的服务端草稿：第一步保存昵称/密码（10 分钟），确认步消费——
  * 确认请求只带 email+code，防止两步之间注册信息被改写 */
-const pendingRegistrations = {};
+const pendingRegistrations = state.pendingRegistrations;
 
 const API_KEY_PREFIX = "obk_";
 
@@ -218,7 +257,7 @@ function quotaOf(email) {
 
 function quotaJson(email) {
   const q = quotaOf(email);
-  return { usedToday: q.used, remaining: Math.max(0, 30 - q.used), limit: 30 };
+  return { usedToday: q.used, remaining: Math.max(0, 5 - q.used), limit: 5 };
 }
 
 /* 服务端人机验证：算式问答——答案永不下发客户端（题面可见无妨） */
@@ -247,13 +286,43 @@ function consumeCaptcha(id, answer) {
 
 /* 邮箱验证码：签发/校验/冷却/尝试上限全在服务端。
  * demoMail=true（无真实邮件外发能力）时响应携带 demoCode 供界面明示。 */
-const SMTP_HOST = process.env.SMTP_HOST || "smtp-mail.outlook.com";
-const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
-const SMTP_USER = process.env.SMTP_USER || "";
+const SMTP_HOST = process.env.SMTP_HOST || "smtp.163.com";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
+const SMTP_USER = process.env.SMTP_USER || "obsucvim@163.com";
 const SMTP_PASS = process.env.SMTP_PASS || "";
-const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER || "abcd145365@outlook.com";
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 const smtpAvailable = Boolean(SMTP_USER && SMTP_PASS);
 const demoMail = !smtpAvailable;
+const mailer = smtpAvailable
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      requireTLS: SMTP_PORT === 587,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      tls: { minVersion: "TLSv1.2" },
+      connectionTimeout: 10_000,
+      greetingTimeout: 10_000,
+      socketTimeout: 15_000,
+    })
+  : null;
+
+async function deliverVerificationCode(email, code) {
+  if (!mailer) return { ok: true, demoCode: code };
+  try {
+    await mailer.sendMail({
+      from: `Obsucvim <${SMTP_FROM}>`,
+      to: email,
+      subject: "Obsucvim 邮箱验证码",
+      text: `你的 Obsucvim 注册验证码是：${code}。验证码 10 分钟内有效，请勿转发。`,
+      html: `<div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;padding:28px;background:#07111b;color:#e8f4f7;border-radius:16px"><h2 style="color:#67e8f9">Obsucvim 邮箱验证</h2><p>你的验证码：</p><div style="font-size:30px;letter-spacing:8px;font-weight:bold;color:#a5f3fc;padding:16px 0">${code}</div><p>验证码 10 分钟内有效。若非本人操作，请忽略此邮件。</p></div>`,
+    });
+    return { ok: true };
+  } catch (e) {
+    console.error(`[engine-server] SMTP delivery failed (${e?.code || "unknown"})`);
+    return { ok: false, error: "MAIL_SEND_FAILED" };
+  }
+}
 
 function issueEmailCode(email) {
   const prev = state.codes[email];
@@ -263,7 +332,6 @@ function issueEmailCode(email) {
   const code = String(randomBytes(4).readUInt32BE(0) % 1_000_000).padStart(6, "0");
   state.codes[email] = { code, expires: now() + CODE_TTL_MS, sentAt: now(), fails: 0 };
   saveState();
-  console.log(`[engine-server] email code for ${email}: ${code}${demoMail ? " (demo mail — also returned in response)" : ""}`);
   return { ok: true, code };
 }
 
@@ -428,12 +496,19 @@ const server = createServer(async (req, res) => {
     if (rateLimited(clientIp(req))) {
       return json(res, 429, { ok: false, error: "RATE_LIMITED" });
     }
+    const mode = engineMode();
     if (cachedVersion === undefined) {
-      cachedVersion = existsSync(BIN)
-        ? (await run(BIN, ["--version"], { timeoutMs: 5000 })).out.trim() || null
-        : null;
+      cachedVersion = mode === "native"
+        ? (await run(BIN, ["--version"], { timeoutMs: 5000 })).out.trim() || "obsucvim native"
+        : mode === "wasi" ? "obsucvim 0.2.0 (WASI)" : null;
     }
-    return json(res, 200, { ok: existsSync(BIN), engine: cachedVersion || "obsucvim (binary missing)", bin: BIN });
+    return json(res, 200, {
+      ok: mode !== "missing",
+      engine: cachedVersion || "obsucvim (engine missing)",
+      engineMode: mode,
+      mail: demoMail ? "demo" : "smtp",
+      quotaPerDay: 5,
+    });
   }
 
   /* ================= 认证端点 ================= */
@@ -476,15 +551,25 @@ const server = createServer(async (req, res) => {
       if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
       const issued = issueEmailCode(key);
       if (!issued.ok) return json(res, 429, { ok: false, error: issued.error, retryAfter: issued.retryAfter });
+      const salt = randomBytes(16).toString("hex");
       pendingRegistrations[key] = {
         nickname: (typeof nickname === "string" && nickname.trim()) || key.split("@")[0],
-        password,
+        salt,
+        hash: hashPw(password, salt),
         expires: now() + 10 * 60_000,
       };
+      saveState();
+      const sent = await deliverVerificationCode(key, issued.code);
+      if (!sent.ok) {
+        delete state.codes[key];
+        delete pendingRegistrations[key];
+        saveState();
+        return json(res, 502, { ok: false, error: "MAIL_SEND_FAILED" });
+      }
       return json(res, 200, {
         ok: true,
         needCode: true,
-        ...(demoMail ? { demoCode: issued.code } : {}),
+        ...(sent.demoCode ? { demoCode: sent.demoCode } : {}),
       });
     }
 
@@ -500,14 +585,14 @@ const server = createServer(async (req, res) => {
       const draft = pendingRegistrations[key];
       if (!draft || now() > draft.expires) return json(res, 400, { ok: false, error: "REGISTER_EXPIRED" });
       delete pendingRegistrations[key];
-      const salt = randomBytes(16).toString("hex");
       state.users[key] = {
         email: key,
         nickname: draft.nickname,
-        salt,
-        hash: hashPw(draft.password, salt),
+        salt: draft.salt,
+        hash: draft.hash,
         created: now(),
       };
+      saveState();
       const token = sessionFor(key);
       return json(res, 200, { ok: true, token, user: userPublic(state.users[key]) });
     }
@@ -519,7 +604,13 @@ const server = createServer(async (req, res) => {
       if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
       const issued = issueEmailCode(key);
       if (!issued.ok) return json(res, 429, { ok: false, error: issued.error, retryAfter: issued.retryAfter });
-      return json(res, 200, { ok: true, ...(demoMail ? { demoCode: issued.code } : {}) });
+      const sent = await deliverVerificationCode(key, issued.code);
+      if (!sent.ok) {
+        delete state.codes[key];
+        saveState();
+        return json(res, 502, { ok: false, error: "MAIL_SEND_FAILED" });
+      }
+      return json(res, 200, { ok: true, ...(sent.demoCode ? { demoCode: sent.demoCode } : {}) });
     }
 
     if (req.method === "POST" && req.url === "/api/auth/login") {
@@ -625,7 +716,7 @@ const server = createServer(async (req, res) => {
     const auth = authUser(req);
     if (!auth) return json(res, 401, { ok: false, error: "UNAUTHORIZED" });
     const q = quotaOf(auth.email);
-    if (q.used >= 30) return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(auth.email) });
+    if (q.used >= 5) return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(auth.email) });
     const optErr = validateOptions(options);
     if (optErr) {
       return json(res, 400, { ok: false, error: optErr });
@@ -634,8 +725,8 @@ const server = createServer(async (req, res) => {
     if (inputBytes > MAX_SOURCE_BYTES) {
       return json(res, 413, { ok: false, error: "SOURCE_TOO_LARGE", detail: String(inputBytes) });
     }
-    if (!existsSync(BIN)) {
-      return json(res, 503, { ok: false, error: "ENGINE_BINARY_MISSING", detail: BIN });
+    if (engineMode() === "missing") {
+      return json(res, 503, { ok: false, error: "ENGINE_MISSING", detail: "obsucvim native binary or WASI bundle not found" });
     }
 
     const args = buildCliArgs(options);
@@ -648,20 +739,20 @@ const server = createServer(async (req, res) => {
     if (!trySlot()) {
       return json(res, 503, { ok: false, error: "ENGINE_BUSY", detail: "max concurrent obfuscations in flight" });
     }
-    const tmpIn = path.join(tmpdir(), tmpName("in"));
-    writeFileSync(tmpIn, source, "utf8");
+    const workDir = mkdtempSync(path.join(tmpdir(), `obsucvim-job-${process.pid}-`));
+    writeFileSync(path.join(workDir, "input.lua"), source, "utf8");
     let r;
     try {
-      r = await run(BIN, [...args, tmpIn], { timeoutMs: ENGINE_TIMEOUT_MS });
+      r = await runEngine(args, workDir, ENGINE_TIMEOUT_MS);
     } finally {
       releaseSlot();
-      try { unlinkSync(tmpIn); } catch { /* ignore */ }
+      try { rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
     }
     if (r.timedOut) return json(res, 504, { ok: false, error: "ENGINE_TIMEOUT" });
-    if (r.code !== 0 || !r.out) {
+    if (r.code !== 0 || !r.codeText) {
       return json(res, 500, { ok: false, error: "ENGINE_FAIL", detail: r.err.trim().split("\n").slice(-3).join(" | ") });
     }
-    const code = r.out;
+    const code = r.codeText;
     const elapsedMs = Date.now() - t0;
     log.push({ level: "info", text: `[2/4] Rust 引擎执行完成 · rc=0 · ${elapsedMs} ms` });
     log.push({ level: "info", text: `保护通道：${appliedNames(options).join(" · ")}` });
@@ -707,11 +798,52 @@ const server = createServer(async (req, res) => {
     });
   }
 
-  json(res, 404, { ok: false, error: "NOT_FOUND" });
+  if (req.url.startsWith("/api/")) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+  return serveStatic(req, res);
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`[engine-server] obsucvim backend on http://127.0.0.1:${PORT}`);
-  console.log(`[engine-server] binary: ${BIN} (${existsSync(BIN) ? "found" : "MISSING"})`);
-  console.log(`[engine-server] luau-compile: ${LUAUC} (${existsSync(LUAUC) ? "found" : "missing"})`);
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
+  ".json": "application/json; charset=utf-8",
+  ".wasm": "application/wasm",
+};
+
+function serveStatic(req, res) {
+  if (req.method !== "GET" && req.method !== "HEAD") return json(res, 405, { ok: false, error: "METHOD_NOT_ALLOWED" });
+  if (!existsSync(WEB_ROOT)) return json(res, 503, { ok: false, error: "WEB_DIST_MISSING", detail: WEB_ROOT });
+  let pathname;
+  try { pathname = decodeURIComponent(new URL(req.url, "http://localhost").pathname); }
+  catch { return json(res, 400, { ok: false, error: "BAD_PATH" }); }
+  const root = path.resolve(WEB_ROOT);
+  const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  let file = path.resolve(root, relative);
+  if (!file.startsWith(root + path.sep)) {
+    return json(res, 403, { ok: false, error: "FORBIDDEN" });
+  }
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    // SPA route fallback only for extensionless paths
+    if (path.extname(pathname)) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+    file = path.join(root, "index.html");
+  }
+  const ext = path.extname(file).toLowerCase();
+  res.writeHead(200, {
+    "content-type": MIME[ext] || "application/octet-stream",
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "cache-control": ext === ".html" ? "no-cache" : "public, max-age=3600",
+  });
+  if (req.method === "HEAD") return res.end();
+  createReadStream(file).pipe(res);
+}
+
+server.listen(PORT, HOST, () => {
+  console.log(`[engine-server] obsucvim web+engine on http://${HOST}:${PORT}`);
+  console.log(`[engine-server] engine mode: ${engineMode()} (native: ${existsSync(BIN) ? "found" : "missing"}; WASI: ${existsSync(WASM_BIN) ? "found" : "missing"})`);
+  console.log(`[engine-server] web dist: ${WEB_ROOT} (${existsSync(path.join(WEB_ROOT, "index.html")) ? "found" : "MISSING"})`);
+  console.log(`[engine-server] smtp: ${demoMail ? "demo fallback" : "configured"}`);
 });
