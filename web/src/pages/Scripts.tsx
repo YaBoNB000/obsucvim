@@ -2,8 +2,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { useI18n, type TKey } from "../lib/i18n";
 import {
+  createFolder,
   createScript,
+  exportLicensesCsv,
   issueLicense,
+  issueLicenseBatch,
+  listFolders,
+  updateFolder,
+  type Folder,
   listLicenses,
   listReleases,
   listScripts,
@@ -25,6 +31,10 @@ const ERROR_KEY: Record<ApiError, TKey> = {
   bad_input: "scripts.errBadInput",
   bad_expiry: "scripts.errBadExpiry",
   bad_key_days: "scripts.errBadKeyDays",
+  folder_limit: "scripts.errFolderLimit",
+  folder_not_found: "scripts.errFolderNotFound",
+  bad_count: "scripts.errBadCount",
+  bad_webhook: "scripts.errBadWebhook",
   bad_source: "scripts.errBadSource",
   quota: "scripts.errQuota",
   engine_busy: "scripts.errEngineBusy",
@@ -46,6 +56,15 @@ function when(ts: number | null) {
 
 export function Scripts() {
   const { t } = useI18n();
+  const [folders, setFolders] = useState<Folder[]>([]);
+  const [folderId, setFolderId] = useState<string | null>(null);
+  const [newFolder, setNewFolder] = useState("");
+  const [creatingFolder, setCreatingFolder] = useState(false);
+  const [batch, setBatch] = useState("1");
+  const [batchKeys, setBatchKeys] = useState<string[]>([]);
+  const [logHook, setLogHook] = useState("");
+  const [alertHook, setAlertHook] = useState("");
+  const [savingHooks, setSavingHooks] = useState(false);
   const [projects, setProjects] = useState<ScriptProject[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [tab, setTab] = useState<"licenses" | "releases">("licenses");
@@ -77,6 +96,14 @@ export function Scripts() {
     [projects, selected],
   );
 
+  const refreshFolders = useCallback(async () => {
+    const res = await listFolders();
+    if (res.ok && res.data?.length) {
+      setFolders(res.data);
+      setFolderId((prev) => prev ?? res.data![0].folderId);
+    }
+  }, []);
+
   const refreshProjects = useCallback(async () => {
     const res = await listScripts();
     if (!res.ok || !res.data) {
@@ -97,8 +124,9 @@ export function Scripts() {
   }, []);
 
   useEffect(() => {
+    void refreshFolders();
     void refreshProjects();
-  }, [refreshProjects]);
+  }, [refreshFolders, refreshProjects]);
 
   useEffect(() => {
     if (!selected) return;
@@ -111,7 +139,11 @@ export function Scripts() {
     if (newName.trim().length < 2 || busy) return;
     setBusy(true);
     setError(null);
-    const res = await createScript(newName.trim(), newDesc.trim());
+    const res = await createScript(
+      newName.trim(),
+      newDesc.trim(),
+      folderId ?? undefined,
+    );
     setBusy(false);
     if (!res.ok || !res.data) {
       setError(ERROR_KEY[res.error ?? "unknown"]);
@@ -122,6 +154,64 @@ export function Scripts() {
     setNewName("");
     setNewDesc("");
     setCreating(false);
+  };
+
+  const handleCreateFolder = async () => {
+    if (newFolder.trim().length < 2 || busy) return;
+    setBusy(true);
+    setError(null);
+    const res = await createFolder(newFolder.trim());
+    setBusy(false);
+    if (!res.ok || !res.data) {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      return;
+    }
+    setFolders((prev) => [...prev, res.data as Folder]);
+    setFolderId(res.data.folderId);
+    setNewFolder("");
+    setCreatingFolder(false);
+  };
+
+  const handleSaveWebhooks = async () => {
+    if (!folderId || savingHooks) return;
+    setSavingHooks(true);
+    setError(null);
+    const res = await updateFolder(folderId, {
+      ...(logHook ? { logWebhook: logHook } : {}),
+      ...(alertHook ? { alertWebhook: alertHook } : {}),
+    });
+    setSavingHooks(false);
+    if (!res.ok || !res.data) {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      return;
+    }
+    setFolders((prev) => prev.map((f) => (f.folderId === folderId ? (res.data as Folder) : f)));
+    setLogHook("");
+    setAlertHook("");
+  };
+
+  const handleBatch = async () => {
+    if (!folderId || busy) return;
+    const count = Math.max(1, Math.min(100, Number(batch) || 1));
+    setBusy(true);
+    setError(null);
+    setBatchKeys([]);
+    const keyDays = expiryMode === "days" ? Number(days) : null;
+    const expiresAt = expiryMode === "date" && expiry ? new Date(expiry).toISOString() : null;
+    const res = await issueLicenseBatch(folderId, {
+      label: label.trim(),
+      count,
+      keyDays: keyDays && Number.isInteger(keyDays) && keyDays > 0 ? keyDays : null,
+      expiresAt,
+    });
+    setBusy(false);
+    if (!res.ok || !res.data) {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      return;
+    }
+    setBatchKeys(res.data.map((entry) => entry.licenseKey));
+    setLicenses((prev) => [...res.data!.map((entry) => entry.license), ...prev]);
+    setLabel("");
   };
 
   const handleIssue = async () => {
@@ -225,8 +315,105 @@ export function Scripts() {
 
   const activeLicenses = licenses.filter((l) => !l.revokedAt).length;
 
+  const currentFolder = folders.find((f) => f.folderId === folderId) ?? null;
+
   return (
-    <div className="grid items-start gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+    <div className="grid gap-4">
+      {/* ---------------- 项目文件夹 ---------------- */}
+      <GlassCard className="p-4">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Icon name="layers" className="h-4 w-4 text-aqua-300" />
+          <h2 className="text-[13px] font-semibold text-slate-100">{t("scripts.folders")}</h2>
+
+          <div className="flex flex-wrap items-center gap-1">
+            {folders.map((f) => (
+              <button
+                key={f.folderId}
+                onClick={() => setFolderId(f.folderId)}
+                className={
+                  "cursor-pointer rounded-xl border px-2.5 py-1 text-[11.5px] transition " +
+                  (f.folderId === folderId
+                    ? "border-aqua-300/35 bg-aqua-400/[0.12] text-aqua-100"
+                    : "border-white/[0.08] text-slate-400 hover:border-aqua-300/25 hover:text-aqua-100")
+                }
+              >
+                {f.name}
+              </button>
+            ))}
+          </div>
+
+          {creatingFolder ? (
+            <div className="flex items-center gap-2">
+              <input
+                className={INPUT + " w-40 py-1.5 text-[12px]"}
+                value={newFolder}
+                onChange={(e) => setNewFolder(e.target.value)}
+                placeholder={t("scripts.folderNamePh")}
+                maxLength={60}
+                autoFocus
+              />
+              <Button className="px-3 py-1.5" disabled={busy || newFolder.trim().length < 2} onClick={handleCreateFolder}>
+                {t("scripts.save")}
+              </Button>
+              <Button variant="ghost" className="px-2 py-1.5" onClick={() => setCreatingFolder(false)}>
+                {t("common.cancel")}
+              </Button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setCreatingFolder(true)}
+              className="cursor-pointer rounded-xl border border-white/10 px-2.5 py-1 text-[11px] text-slate-300 transition hover:border-aqua-300/40 hover:text-aqua-100"
+            >
+              + {t("scripts.newFolder")}
+            </button>
+          )}
+
+          <div className="ml-auto flex items-center gap-2">
+            {currentFolder && (
+              <span className="hidden font-mono text-[10.5px] text-slate-500 sm:inline">
+                {currentFolder.logWebhook && t("scripts.logWebhook")}
+                {currentFolder.logWebhook && currentFolder.alertWebhook && " · "}
+                {currentFolder.alertWebhook && t("scripts.alertWebhook")}
+              </span>
+            )}
+            <button
+              disabled={!folderId}
+              onClick={() => folderId && exportLicensesCsv(folderId)}
+              className="cursor-pointer rounded-xl border border-white/10 px-2.5 py-1 text-[11px] text-slate-300 transition hover:border-aqua-300/40 hover:text-aqua-100 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t("scripts.exportCsv")}
+            </button>
+          </div>
+        </div>
+
+        {currentFolder && (
+          <div className="mt-3 grid gap-2 border-t border-white/[0.06] pt-3 sm:grid-cols-[1fr_1fr_auto]">
+            <input
+              className={INPUT + " py-1.5 text-[12px]"}
+              value={logHook}
+              onChange={(e) => setLogHook(e.target.value)}
+              placeholder={`${t("scripts.logWebhook")} · ${t("scripts.webhookPh")}`}
+            />
+            <input
+              className={INPUT + " py-1.5 text-[12px]"}
+              value={alertHook}
+              onChange={(e) => setAlertHook(e.target.value)}
+              placeholder={`${t("scripts.alertWebhook")} · ${t("scripts.webhookPh")}`}
+            />
+            <Button
+              variant="outline"
+              className="px-3 py-1.5 text-[12px]"
+              disabled={savingHooks || (!logHook && !alertHook)}
+              onClick={handleSaveWebhooks}
+            >
+              {savingHooks ? t("scripts.working") : t("scripts.saveWebhooks")}
+            </Button>
+            <p className="text-[10.5px] leading-relaxed text-slate-500 sm:col-span-3">{t("scripts.webhookHint")}</p>
+          </div>
+        )}
+      </GlassCard>
+
+      <div className="grid items-start gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
       {/* ---------------- 项目列表 ---------------- */}
       <div className="grid content-start gap-4">
         <GlassCard className="p-5">
@@ -428,6 +615,50 @@ export function Scripts() {
                   <p className="mt-2 text-[10.5px] text-slate-500">
                     {expiryMode === "days" ? t("scripts.daysHint") : t("scripts.expiryHint")}
                   </p>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-white/[0.06] pt-3">
+                    <span className="text-[11px] text-slate-400">{t("scripts.batchCount")}</span>
+                    <input
+                      className={INPUT + " w-20 py-1.5 text-[12px]"}
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={batch}
+                      onChange={(e) => setBatch(e.target.value)}
+                    />
+                    <span className="text-[10.5px] text-slate-500">{t("scripts.batchHint")}</span>
+                    <Button
+                      variant="outline"
+                      className="ml-auto px-3 py-1.5 text-[12px]"
+                      disabled={busy || !folderId}
+                      onClick={handleBatch}
+                    >
+                      {busy ? t("scripts.working") : t("scripts.issueAction")}
+                    </Button>
+                  </div>
+
+                  {batchKeys.length > 0 && (
+                    <div className="mt-3 rounded-2xl border border-amber-300/25 bg-amber-400/[0.07] p-3.5">
+                      <div className="flex items-center gap-2">
+                        <p className="text-[11px] font-semibold text-amber-100">
+                          {t("scripts.batchIssued", { n: batchKeys.length })}
+                        </p>
+                        <Button
+                          variant="outline"
+                          className="ml-auto px-2.5 py-1"
+                          onClick={() => copyKey(batchKeys.join("\n"))}
+                        >
+                          <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                      <textarea
+                        readOnly
+                        value={batchKeys.join("\n")}
+                        className="mt-2 h-24 w-full resize-y rounded-lg bg-black/40 p-2 font-mono text-[11px] text-amber-100"
+                      />
+                      <p className="mt-1.5 text-[10.5px] text-amber-100/70">{t("scripts.keyOnceHint")}</p>
+                    </div>
+                  )}
 
                   {issuedKey && (
                     <div className="mt-3 rounded-2xl border border-amber-300/25 bg-amber-400/[0.07] p-3.5">
@@ -654,6 +885,7 @@ export function Scripts() {
             )}
           </>
         )}
+      </div>
       </div>
     </div>
   );

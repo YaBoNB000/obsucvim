@@ -15,6 +15,9 @@ The bundle includes Node.js 22.22.3 x64, the Rust/WASI engine, the single-file U
 - Web console now has a Hosting page: create projects, issue/revoke licence keys, reset device binding, and publish releases with per-version SHA-256.
 - One-click pipeline: upload raw source in the console and the server injects the licence guard, obfuscates with v15 and stores the artifact. The raw source is never persisted.
 - Key expiry has three modes: forever, fixed date, or `keyDays` counted from first activation (so keys can be stocked before sale).
+- Project folders: a key belongs to a folder and unlocks every script inside it, so one key can cover a whole hub.
+- Batch issue up to 100 keys per call, plus CSV export that contains metadata only — raw keys are never re-readable because only HMAC digests are stored.
+- Optional execution-log and alert webhooks, restricted to https Discord hosts and rate limited so they cannot be abused as an SSRF relay.
 - HWID is client-supplied and spoofable; treat binding as friction, not hardware attestation.
 
 The sandbox tests covered the key issue/validate/revoke/HWID flow and package integrity. Real Cloudflare Siteverify, physical Windows Server 2019, and external 163 SMTP were not tested here.

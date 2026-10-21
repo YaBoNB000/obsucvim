@@ -170,6 +170,8 @@ const AUTH_BODY_LIMIT = 32 * 1024;
 const MAX_ACCOUNTS = 1000;      // 演示环境账户上限
 const EMAIL_MAX = 100;          // 邮箱长度上限（防长邮箱膨胀状态文件）
 const MAX_PENDING_REG = 200;    // 同时待验证的注册草稿上限
+const MAX_FOLDERS_PER_ACCOUNT = 10;
+const MAX_BATCH_KEYS = 100;
 const MAX_SCRIPTS_PER_ACCOUNT = 50;
 const MAX_LICENSES_PER_SCRIPT = 2000;
 const LICENSE_VERIFY_LIMIT = 60;
@@ -193,7 +195,8 @@ let state = {
   pendingRegistrations: {}, // email -> { nickname, salt, hash, expires }
   registeredIps: {}, // HMAC(IP) -> { email, created }; lifetime one-account-per-IP index
   registrationIpHashKey: "", // stable per-install key; raw client IPs are never persisted
-  scripts: {}, // scriptId -> { ownerEmail, name, createdAt, active }
+  folders: {}, // folderId -> { ownerEmail, name, createdAt, logWebhookUrl, alertWebhookUrl }
+  scripts: {}, // scriptId -> { ownerEmail, folderId, name, createdAt, active }
   licenseKeys: {}, // licenseId -> hashed key metadata; raw keys are never stored
   licenseKeyIndex: {}, // SHA-256(key) -> licenseId
   licenseHwidHashKey: "", // stable server-only HMAC key; raw device IDs are never stored
@@ -245,14 +248,46 @@ function loadState() {
     state.licenseKeyHashKey = randomBytes(32).toString("hex");
     changed = true;
   }
-  for (const key of ["licenseNonces", "licenseSessions", "licenseAttempts", "releases"]) {
+  for (const key of ["folders", "licenseNonces", "licenseSessions", "licenseAttempts", "releases"]) {
     if (!state[key] || typeof state[key] !== "object" || Array.isArray(state[key])) {
       state[key] = {};
       changed = true;
     }
   }
+  // Legacy records predate project folders. Give each owner one folder so their
+  // existing scripts and keys keep working without a manual migration step.
+  for (const script of Object.values(state.scripts)) {
+    if (script.folderId && state.folders[script.folderId]) continue;
+    const folder = ensureDefaultFolder(script.ownerEmail);
+    script.folderId = folder.folderId;
+    changed = true;
+  }
+  for (const license of Object.values(state.licenseKeys)) {
+    if (license.folderId) continue;
+    const script = state.scripts[license.scriptId];
+    if (script?.folderId) {
+      license.folderId = script.folderId;
+      changed = true;
+    }
+  }
   if (changed) saveState();
 }
+
+function ensureDefaultFolder(ownerEmail) {
+  const existing = Object.values(state.folders).find((folder) => folder.ownerEmail === ownerEmail);
+  if (existing) return existing;
+  const folderId = "fld_" + randomBytes(12).toString("hex");
+  state.folders[folderId] = {
+    folderId,
+    ownerEmail,
+    name: "Default",
+    createdAt: Date.now(),
+    logWebhookUrl: "",
+    alertWebhookUrl: "",
+  };
+  return state.folders[folderId];
+}
+
 function saveState() {
   try {
     writeFileSync(STATE_FILE, JSON.stringify(state));
@@ -440,6 +475,7 @@ function clearLicenseFailures(attemptKey) {
 function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   const script = state.scripts[scriptId];
   if (!script || !script.active) return { ok: false, status: 403, error: "LICENSE_INVALID" };
+  const folder = state.folders[script.folderId] ?? null;
 
   const attemptKey = licenseAttemptKey(scriptId, ip || "unknown");
   const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
@@ -451,19 +487,24 @@ function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   const blocked = keyMatches ? 0 : licenseBlockRemaining(attemptKey);
   if (blocked > 0) return { ok: false, status: 429, error: "LICENSE_LOCKED", retryAfter: blocked };
 
-  if (!license || !keyMatches || license.scriptId !== scriptId) {
+  // Keys belong to a project folder, so one key unlocks every script inside it.
+  const folderMatches = Boolean(
+    license && keyMatches &&
+    (license.folderId ? license.folderId === script.folderId : license.scriptId === scriptId),
+  );
+  if (!license || !keyMatches || !folderMatches) {
     noteLicenseFailure(attemptKey);
-    return { ok: false, status: 403, error: "LICENSE_INVALID" };
+    return { ok: false, status: 403, error: "LICENSE_INVALID", folder, script };
   }
   if (license.revokedAt || (license.expiresAt && now() >= license.expiresAt)) {
     noteLicenseFailure(attemptKey);
-    return { ok: false, status: 403, error: "LICENSE_INVALID" };
+    return { ok: false, status: 403, error: "LICENSE_INVALID", folder, script };
   }
 
   const hwidHash = licenseHwidDigest(hwid);
   if (license.hwidHash && !digestsEqual(license.hwidHash, hwidHash)) {
     // Not counted as abuse: the caller already holds the key.
-    return { ok: false, status: 403, error: "DEVICE_MISMATCH" };
+    return { ok: false, status: 403, error: "DEVICE_MISMATCH", folder, script };
   }
 
   const nonceKey = `${licenseId}:${licenseNonceDigest(nonce)}`;
@@ -481,7 +522,7 @@ function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   license.lastUsedAt = now();
   state.licenseNonces[nonceKey] = now() + LICENSE_NONCE_TTL_MS;
   clearLicenseFailures(attemptKey);
-  return { ok: true, license, script };
+  return { ok: true, license, script, folder };
 }
 
 function issueLicenseSession(license) {
@@ -494,9 +535,57 @@ function issueLicenseSession(license) {
   };
   return token;
 }
+/* Webhook URLs are operator supplied, so treat them as untrusted input: only
+ * https, only Discord's own hosts, and never carry a raw key or HWID. */
+const WEBHOOK_HOST_SUFFIXES = ["discord.com", "discordapp.com"];
+const webhookCooldown = new Map();
+
+function normalizeWebhookUrl(value) {
+  if (value === undefined || value === null || value === "") return "";
+  if (typeof value !== "string" || value.length > 512) return null;
+  let url;
+  try { url = new URL(value); } catch { return null; }
+  if (url.protocol !== "https:") return null;
+  const host = url.hostname.toLowerCase();
+  if (!WEBHOOK_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith("." + suffix))) return null;
+  return url.toString();
+}
+
+function dispatchWebhook(folder, kind, fields) {
+  const target = kind === "alert" ? folder.alertWebhookUrl : folder.logWebhookUrl;
+  if (!target) return;
+  const cooldownKey = `${folder.folderId}:${kind}`;
+  const last = webhookCooldown.get(cooldownKey) ?? 0;
+  if (now() - last < 5000) return; // at most one event per 5s per folder+kind
+  webhookCooldown.set(cooldownKey, now());
+  const payload = JSON.stringify({
+    username: "Obsucvim",
+    embeds: [{
+      title: kind === "alert" ? "Licence rejected" : "Licence accepted",
+      color: kind === "alert" ? 15158332 : 3066993,
+      fields: fields.map(([name, value]) => ({ name, value: String(value).slice(0, 200), inline: true })),
+      timestamp: new Date().toISOString(),
+    }],
+  });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  fetch(target, { method: "POST", headers: { "content-type": "application/json" }, body: payload, signal: controller.signal })
+    .catch(() => { /* webhook delivery is best effort */ })
+    .finally(() => clearTimeout(timer));
+}
+
+const folderPublic = (folder) => ({
+  folderId: folder.folderId,
+  name: folder.name,
+  createdAt: folder.createdAt,
+  logWebhook: Boolean(folder.logWebhookUrl),
+  alertWebhook: Boolean(folder.alertWebhookUrl),
+});
+
 const licensePublic = (license) => ({
   licenseId: license.licenseId,
   scriptId: license.scriptId,
+  folderId: license.folderId ?? null,
   label: license.label,
   createdAt: license.createdAt,
   expiresAt: license.expiresAt,
@@ -1065,6 +1154,27 @@ setInterval(() => {
   for (const [ip, h] of authRateHits) if (n > h.reset) authRateHits.delete(ip);
 }, AUTH_RATE_WINDOW_MS).unref?.();
 
+/* Authenticated dashboard traffic gets its own, looser bucket: a single page
+ * load legitimately fires several management calls, while anonymous login and
+ * registration stay on the strict bucket. */
+const AUTHED_RATE_LIMIT = 90;
+const authedRateHits = new Map();
+setInterval(() => {
+  const n = Date.now();
+  for (const [ip, h] of authedRateHits) if (n > h.reset) authedRateHits.delete(ip);
+}, AUTH_RATE_WINDOW_MS).unref?.();
+
+function authedRateLimited(ip) {
+  const n = Date.now();
+  const h = authedRateHits.get(ip);
+  if (!h || n > h.reset) {
+    authedRateHits.set(ip, { n: 1, reset: n + AUTH_RATE_WINDOW_MS });
+    return false;
+  }
+  h.n += 1;
+  return h.n > AUTHED_RATE_LIMIT;
+}
+
 function authRateLimited(ip) {
   const n = Date.now();
   const h = authRateHits.get(ip);
@@ -1174,7 +1284,10 @@ const server = createServer(async (req, res) => {
 
   /* ================= 认证端点 ================= */
   const handleAuth = async () => {
-    if (authRateLimited(clientIp(req))) {
+    const ip = clientIp(req);
+    const alreadyAuthed = Boolean(authUser(req));
+    const limited = alreadyAuthed ? authedRateLimited(ip) : authRateLimited(ip);
+    if (limited) {
       return json(res, 429, { ok: false, error: "RATE_LIMITED" });
     }
     let body = {};
@@ -1207,29 +1320,91 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, ...challenge });
     }
 
+    if (req.method === "GET" && req.url === "/api/auth/folders") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      ensureDefaultFolder(owner.email);
+      saveState();
+      const folders = Object.values(state.folders)
+        .filter((folder) => folder.ownerEmail === owner.email)
+        .map(folderPublic);
+      return json(res, 200, { ok: true, folders });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/folders") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { name } = body;
+      if (typeof name !== "string" || name.trim().length < 2 || name.trim().length > 60) {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      const owned = Object.values(state.folders).filter((folder) => folder.ownerEmail === owner.email);
+      if (owned.length >= MAX_FOLDERS_PER_ACCOUNT) return json(res, 409, { ok: false, error: "FOLDER_LIMIT" });
+      const folderId = "fld_" + randomBytes(12).toString("hex");
+      state.folders[folderId] = {
+        folderId,
+        ownerEmail: owner.email,
+        name: name.trim(),
+        createdAt: now(),
+        logWebhookUrl: "",
+        alertWebhookUrl: "",
+      };
+      saveState();
+      return json(res, 201, { ok: true, folder: folderPublic(state.folders[folderId]) });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/folders/update") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const folder = typeof body.folderId === "string" ? state.folders[body.folderId] : null;
+      if (!folder || folder.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      if (body.name !== undefined) {
+        if (typeof body.name !== "string" || body.name.trim().length < 2 || body.name.trim().length > 60) {
+          return json(res, 400, { ok: false, error: "BAD_INPUT" });
+        }
+        folder.name = body.name.trim();
+      }
+      for (const [field, errorCode] of [["logWebhook", "BAD_WEBHOOK"], ["alertWebhook", "BAD_WEBHOOK"]]) {
+        if (body[field] === undefined) continue;
+        const normalized = normalizeWebhookUrl(body[field]);
+        if (normalized === null) return json(res, 400, { ok: false, error: errorCode });
+        if (field === "logWebhook") folder.logWebhookUrl = normalized;
+        else folder.alertWebhookUrl = normalized;
+      }
+      saveState();
+      return json(res, 200, { ok: true, folder: folderPublic(folder) });
+    }
+
     if (req.method === "GET" && req.url === "/api/auth/scripts") {
       const owner = authUser(req);
       if (!owner) return unauthorized(res, req);
       const scripts = Object.values(state.scripts)
         .filter((script) => script.ownerEmail === owner.email)
-        .map(({ scriptId, name, description, createdAt, active }) => ({ scriptId, name, description, createdAt, active }));
+        .map(({ scriptId, folderId, name, description, createdAt, active }) => ({ scriptId, folderId, name, description, createdAt, active }));
       return json(res, 200, { ok: true, scripts });
     }
 
     if (req.method === "POST" && req.url === "/api/auth/scripts") {
       const owner = authUser(req);
       if (!owner) return unauthorized(res, req);
-      const { name, description } = body;
+      const { name, description, folderId } = body;
       if (
         typeof name !== "string" || name.trim().length < 2 || name.trim().length > 80 ||
         (description !== undefined && (typeof description !== "string" || description.length > 500))
       ) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      const targetFolder = typeof folderId === "string" && folderId
+        ? state.folders[folderId]
+        : ensureDefaultFolder(owner.email);
+      if (!targetFolder || targetFolder.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "FOLDER_NOT_FOUND" });
+      }
       const owned = Object.values(state.scripts).filter((script) => script.ownerEmail === owner.email);
       if (owned.length >= MAX_SCRIPTS_PER_ACCOUNT) return json(res, 409, { ok: false, error: "SCRIPT_LIMIT" });
       const scriptId = SCRIPT_ID_PREFIX + randomBytes(12).toString("hex");
       const script = {
         scriptId,
         ownerEmail: owner.email,
+        folderId: targetFolder.folderId,
         name: name.trim(),
         description: typeof description === "string" ? description.trim() : "",
         createdAt: now(),
@@ -1237,7 +1412,17 @@ const server = createServer(async (req, res) => {
       };
       state.scripts[scriptId] = script;
       saveState();
-      return json(res, 201, { ok: true, script: { scriptId, name: script.name, description: script.description, createdAt: script.createdAt, active: true } });
+      return json(res, 201, {
+        ok: true,
+        script: {
+          scriptId,
+          folderId: script.folderId,
+          name: script.name,
+          description: script.description,
+          createdAt: script.createdAt,
+          active: true,
+        },
+      });
     }
 
     if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/licenses") {
@@ -1245,31 +1430,100 @@ const server = createServer(async (req, res) => {
       if (!owner) return unauthorized(res, req);
       const url = new URL(req.url, "http://localhost");
       const scriptId = url.searchParams.get("scriptId");
+      const folderId = url.searchParams.get("folderId");
       if (scriptId && state.scripts[scriptId]?.ownerEmail !== owner.email) {
         return json(res, 404, { ok: false, error: "NOT_FOUND" });
       }
+      if (folderId && state.folders[folderId]?.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
       const licenses = Object.values(state.licenseKeys)
-        .filter((license) => license.ownerEmail === owner.email && (!scriptId || license.scriptId === scriptId))
+        .filter((license) => {
+          if (license.ownerEmail !== owner.email) return false;
+          if (folderId) return license.folderId === folderId;
+          return !scriptId || license.scriptId === scriptId;
+        })
         .map(licensePublic);
       return json(res, 200, { ok: true, licenses });
+    }
+
+    if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/licenses/export") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const url = new URL(req.url, "http://localhost");
+      const folderId = url.searchParams.get("folderId");
+      const scriptId = url.searchParams.get("scriptId");
+      if (folderId && state.folders[folderId]?.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
+      if (scriptId && state.scripts[scriptId]?.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
+      const rows = Object.values(state.licenseKeys).filter((license) => {
+        if (license.ownerEmail !== owner.email) return false;
+        if (folderId) return license.folderId === folderId;
+        return !scriptId || license.scriptId === scriptId;
+      });
+      // Keys are stored as hashes, so an export can never leak a usable key.
+      const header = "licenseId,label,scriptId,folderId,state,createdAt,expiresAt,durationDays,deviceBound,firstActivatedAt,lastUsedAt";
+      const csvCell = (value) => {
+        const text = value === null || value === undefined ? "" : String(value);
+        return /[",\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+      };
+      const body = rows.map((license) => {
+        const stateLabel = license.revokedAt
+          ? "revoked"
+          : license.expiresAt && now() >= license.expiresAt ? "expired" : "active";
+        return [
+          license.licenseId, license.label, license.scriptId, license.folderId ?? "",
+          stateLabel, new Date(license.createdAt).toISOString(),
+          license.expiresAt ? new Date(license.expiresAt).toISOString() : "",
+          license.durationDays ?? "",
+          license.hwidHash ? "yes" : "no",
+          license.firstActivatedAt ? new Date(license.firstActivatedAt).toISOString() : "",
+          license.lastUsedAt ? new Date(license.lastUsedAt).toISOString() : "",
+        ].map(csvCell).join(",");
+      });
+      const csv = [header, ...body].join("\n") + "\n";
+      res.writeHead(200, {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="obsucvim-licenses-${now()}.csv"`,
+        "cache-control": "no-store",
+      });
+      return res.end(csv);
     }
 
     if (req.method === "POST" && req.url === "/api/auth/licenses") {
       const owner = authUser(req);
       if (!owner) return unauthorized(res, req);
-      const { scriptId, label, expiresAt, keyDays } = body;
-      const script = typeof scriptId === "string" ? state.scripts[scriptId] : null;
-      if (!script || script.ownerEmail !== owner.email || !script.active) {
+      const { scriptId, folderId, label, expiresAt, keyDays, count } = body;
+
+      // Keys live on a project folder so one key covers every script inside it.
+      let folder = null;
+      if (typeof folderId === "string" && folderId) {
+        folder = state.folders[folderId] ?? null;
+      } else if (typeof scriptId === "string") {
+        const script = state.scripts[scriptId];
+        if (script?.ownerEmail === owner.email) folder = state.folders[script.folderId] ?? null;
+      }
+      if (!folder || folder.ownerEmail !== owner.email) {
         return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
       }
+
       if (label !== undefined && (typeof label !== "string" || label.length > 80)) {
         return json(res, 400, { ok: false, error: "BAD_INPUT" });
       }
+      let batch = 1;
+      if (count !== undefined && count !== null) {
+        batch = Number(count);
+        if (!Number.isInteger(batch) || batch < 1 || batch > MAX_BATCH_KEYS) {
+          return json(res, 400, { ok: false, error: "BAD_COUNT" });
+        }
+      }
+
       let expiry = null;
       let durationDays = null;
       if (keyDays !== undefined && keyDays !== null && keyDays !== "") {
-        // Relative expiry: the clock starts on first successful activation, so
-        // keys can be stocked and sold before their time starts ticking.
         const days = Number(keyDays);
         if (!Number.isInteger(days) || days < 1 || days > 3650) {
           return json(res, 400, { ok: false, error: "BAD_KEY_DAYS" });
@@ -1283,35 +1537,47 @@ const server = createServer(async (req, res) => {
         expiry = Date.parse(expiresAt);
         if (!Number.isFinite(expiry) || expiry <= now()) return json(res, 400, { ok: false, error: "BAD_EXPIRY" });
       }
-      const scriptLicenses = Object.values(state.licenseKeys).filter((license) => license.scriptId === scriptId);
-      if (scriptLicenses.length >= MAX_LICENSES_PER_SCRIPT) {
+
+      const folderLicenses = Object.values(state.licenseKeys).filter((license) => license.folderId === folder.folderId);
+      if (folderLicenses.length + batch > MAX_LICENSES_PER_SCRIPT) {
         return json(res, 409, { ok: false, error: "LICENSE_LIMIT" });
       }
-      const licenseId = "lic_" + randomBytes(12).toString("hex");
-      const licenseKey = LICENSE_KEY_PREFIX + randomBytes(32).toString("hex");
-      const keyHash = licenseKeyDigest(licenseKey);
-      const license = {
-        licenseId,
-        keyHash,
-        ownerEmail: owner.email,
-        scriptId,
-        label: typeof label === "string" ? label.trim() : "",
-        createdAt: now(),
-        expiresAt: expiry,
-        durationDays,
-        revokedAt: null,
-        hwidHash: null,
-        firstActivatedAt: null,
-        lastUsedAt: null,
-      };
-      state.licenseKeys[licenseId] = license;
-      state.licenseKeyIndex[keyHash] = licenseId;
+
+      // The first script in the folder is recorded for display/CSV only; the key
+      // itself is folder scoped and works for every script in it.
+      const anchorScript = typeof scriptId === "string" && state.scripts[scriptId]?.folderId === folder.folderId
+        ? scriptId
+        : Object.values(state.scripts).find((script) => script.folderId === folder.folderId)?.scriptId ?? null;
+
+      const issued = [];
+      for (let i = 0; i < batch; i++) {
+        const licenseId = "lic_" + randomBytes(12).toString("hex");
+        const licenseKey = LICENSE_KEY_PREFIX + randomBytes(32).toString("hex");
+        const keyHash = licenseKeyDigest(licenseKey);
+        const license = {
+          licenseId,
+          keyHash,
+          ownerEmail: owner.email,
+          folderId: folder.folderId,
+          scriptId: anchorScript,
+          label: typeof label === "string" ? label.trim() : "",
+          createdAt: now(),
+          expiresAt: expiry,
+          durationDays,
+          revokedAt: null,
+          hwidHash: null,
+          firstActivatedAt: null,
+          lastUsedAt: null,
+        };
+        state.licenseKeys[licenseId] = license;
+        state.licenseKeyIndex[keyHash] = licenseId;
+        issued.push({ licenseKey, license: licensePublic(license) });
+      }
       saveState();
-      return json(res, 201, {
-        ok: true,
-        licenseKey, // raw key is returned once; only its hash is persisted
-        license: licensePublic(license),
-      });
+      if (batch === 1) {
+        return json(res, 201, { ok: true, licenseKey: issued[0].licenseKey, license: issued[0].license });
+      }
+      return json(res, 201, { ok: true, count: batch, licenses: issued });
     }
 
     if (req.method === "POST" && req.url === "/api/auth/licenses/revoke") {
@@ -1593,6 +1859,13 @@ const server = createServer(async (req, res) => {
     const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
     saveState();
     if (!verdict.ok) {
+      if (verdict.folder) {
+        dispatchWebhook(verdict.folder, "alert", [
+          ["Script", verdict.script?.name ?? scriptId],
+          ["Reason", verdict.error],
+          ["Client IP", clientIp(req)],
+        ]);
+      }
       if (verdict.retryAfter) res.setHeader("retry-after", String(verdict.retryAfter));
       return json(res, verdict.status, {
         ok: false,
@@ -1603,6 +1876,13 @@ const server = createServer(async (req, res) => {
     }
     const token = issueLicenseSession(verdict.license);
     saveState();
+    if (verdict.folder) {
+      dispatchWebhook(verdict.folder, "log", [
+        ["Script", verdict.script?.name ?? scriptId],
+        ["Licence", verdict.license.label || verdict.license.licenseId],
+        ["Expires", verdict.license.expiresAt ? new Date(verdict.license.expiresAt).toISOString() : "never"],
+      ]);
+    }
     return json(res, 200, {
       ok: true,
       valid: true,

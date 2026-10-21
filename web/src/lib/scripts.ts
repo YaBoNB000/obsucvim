@@ -3,8 +3,17 @@
  * 会话由 HttpOnly Cookie 承载，这里只发同源请求，不接触任何令牌。
  */
 
+export interface Folder {
+  folderId: string;
+  name: string;
+  createdAt: number;
+  logWebhook: boolean;
+  alertWebhook: boolean;
+}
+
 export interface ScriptProject {
   scriptId: string;
+  folderId: string | null;
   name: string;
   description: string;
   createdAt: number;
@@ -44,6 +53,10 @@ export type ApiError =
   | "engine_timeout"
   | "engine_fail"
   | "script_limit"
+  | "folder_limit"
+  | "folder_not_found"
+  | "bad_count"
+  | "bad_webhook"
   | "license_limit"
   | "release_limit"
   | "release_too_large"
@@ -61,6 +74,9 @@ interface Envelope {
   licenseKey?: string;
   releases?: ReleaseRecord[];
   release?: ReleaseRecord;
+  folders?: Folder[];
+  folder?: Folder;
+  count?: number;
 }
 
 const ERROR_MAP: Record<string, ApiError> = {
@@ -76,6 +92,10 @@ const ERROR_MAP: Record<string, ApiError> = {
   ENGINE_TIMEOUT: "engine_timeout",
   ENGINE_FAIL: "engine_fail",
   SCRIPT_LIMIT: "script_limit",
+  FOLDER_LIMIT: "folder_limit",
+  FOLDER_NOT_FOUND: "folder_not_found",
+  BAD_COUNT: "bad_count",
+  BAD_WEBHOOK: "bad_webhook",
   LICENSE_LIMIT: "license_limit",
   RELEASE_LIMIT: "release_limit",
   RELEASE_TOO_LARGE: "release_too_large",
@@ -117,10 +137,11 @@ export async function listScripts(): Promise<Result<ScriptProject[]>> {
 export async function createScript(
   name: string,
   description: string,
+  folderId?: string,
 ): Promise<Result<ScriptProject>> {
   const res = await request<Envelope>("/api/auth/scripts", {
     method: "POST",
-    body: { name, description },
+    body: { name, description, ...(folderId ? { folderId } : {}) },
   });
   return res.ok && res.data?.script ? { ok: true, data: res.data.script } : { ok: false, error: res.error ?? "unknown" };
 }
@@ -211,4 +232,70 @@ export async function publishFromSource(
   } catch {
     return { ok: false, error: "network" };
   }
+}
+
+export async function listFolders(): Promise<Result<Folder[]>> {
+  const res = await request<Envelope>("/api/auth/folders");
+  return res.ok ? { ok: true, data: res.data?.folders ?? [] } : { ok: false, error: res.error };
+}
+
+export async function createFolder(name: string): Promise<Result<Folder>> {
+  const res = await request<Envelope>("/api/auth/folders", { method: "POST", body: { name } });
+  return res.ok && res.data?.folder ? { ok: true, data: res.data.folder } : { ok: false, error: res.error ?? "unknown" };
+}
+
+export async function updateFolder(
+  folderId: string,
+  patch: { name?: string; logWebhook?: string; alertWebhook?: string },
+): Promise<Result<Folder>> {
+  const res = await request<Envelope>("/api/auth/folders/update", {
+    method: "POST",
+    body: { folderId, ...patch },
+  });
+  return res.ok && res.data?.folder ? { ok: true, data: res.data.folder } : { ok: false, error: res.error ?? "unknown" };
+}
+
+/** Batch issue: one call, up to 100 keys. */
+export async function issueLicenseBatch(
+  folderId: string,
+  opts: { label: string; count: number; keyDays: number | null; expiresAt: string | null },
+): Promise<Result<{ license: LicenseRecord; licenseKey: string }[]>> {
+  interface BatchPayload {
+    ok?: boolean;
+    error?: string;
+    count?: number;
+    licenses?: { licenseKey: string; license: LicenseRecord }[];
+    licenseKey?: string;
+    license?: LicenseRecord;
+  }
+  try {
+    const res = await fetch("/api/auth/licenses", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        folderId,
+        label: opts.label,
+        count: opts.count,
+        keyDays: opts.keyDays,
+        expiresAt: opts.keyDays ? null : opts.expiresAt,
+      }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as BatchPayload;
+    if (!res.ok || !payload.ok) {
+      return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
+    }
+    if (Array.isArray(payload.licenses)) return { ok: true, data: payload.licenses };
+    if (payload.license && payload.licenseKey) {
+      return { ok: true, data: [{ license: payload.license, licenseKey: payload.licenseKey }] };
+    }
+    return { ok: false, error: "unknown" };
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
+/** CSV export never contains raw keys, only metadata. */
+export function exportLicensesCsv(folderId: string) {
+  window.location.href = `/api/auth/licenses/export?folderId=${encodeURIComponent(folderId)}`;
 }

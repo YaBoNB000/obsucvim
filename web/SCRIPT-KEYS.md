@@ -187,6 +187,19 @@ print("License accepted")
 
 ## 路线图与已定决策
 
+### P1 接口
+
+- `GET /api/auth/folders` / `POST /api/auth/folders` / `POST /api/auth/folders/update`
+  - `update` 可改 `name`、`logWebhook`、`alertWebhook`
+  - Webhook **只接受 https 且主机为 discord.com / discordapp.com**，防止被当作 SSRF 跳板
+  - 日志与告警各自 5 秒最多一条，投递失败静默忽略，不影响验证
+- 项目归属：`POST /api/auth/scripts` 增加 `folderId`；旧数据自动迁移到每个账户的 Default 文件夹
+- 签发：`POST /api/auth/licenses` 支持 `folderId` + `count`（1–100）
+  - 单个：返回 `{ licenseKey, license }`
+  - 批量：返回 `{ count, licenses: [{ licenseKey, license }] }`
+- 导出：`GET /api/auth/licenses/export?folderId=` 返回 text/csv 附件
+- 验证：Key 现在按**文件夹**判定，同一文件夹内所有脚本共用一把 Key，跨文件夹无效
+
 已完成：
 
 - P0-1 一条龙发布：网页端上传源码 → 服务端注入 guard → v15 混淆 → 存盘；原稿不落盘。端点 `POST /api/publish`。
@@ -196,9 +209,9 @@ print("License accepted")
 
 | 优先级 | 项目 | 说明 |
 |---|---|---|
-| P1 | 项目文件夹 | 一个文件夹含多个脚本，Key 在文件夹内共享（hub 场景） |
-| P1 | 批量生成 Key + CSV 导出 | 卖卡密必需 |
-| P1 | 执行日志 / 告警 Webhook | 推送到运营方自己的 webhook |
+| ✅ | 项目文件夹 | 已完成：Key 属于文件夹，一个 Key 解锁文件夹内所有脚本 |
+| ✅ | 批量生成 Key + CSV 导出 | 已完成：单次最多 100 个；CSV 只含元数据，永远不含明文 Key |
+| ✅ | 执行日志 / 告警 Webhook | 已完成：仅接受 https 的 Discord webhook |
 | P2 | 用户自助页 | 查 Key 状态、自助重置 HWID |
 | P2 | 运行时变量 | 脚本内读取 note / 到期 / 是否 premium |
 | P2 | Key Check API | 执行前查询 Key 详情 |
