@@ -6,10 +6,11 @@ import { useAuth } from "../lib/store";
 import { ENGINE, MAX_SOURCE_BYTES } from "../lib/engine";
 import { cn } from "../utils/cn";
 
-export type PageId = "workspace" | "history" | "docs" | "account";
+export type PageId = "workspace" | "scripts" | "history" | "docs" | "account";
 
 const NAV: { id: PageId; label: TKey; icon: IconName; group: "tool" | "info" }[] = [
   { id: "workspace", label: "nav.workspace", icon: "bolt", group: "tool" },
+  { id: "scripts", label: "nav.scripts", icon: "layers", group: "tool" },
   { id: "history", label: "nav.history", icon: "clock", group: "tool" },
   { id: "docs", label: "nav.docs", icon: "terminal", group: "info" },
   { id: "account", label: "nav.account", icon: "shield", group: "info" },

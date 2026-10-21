@@ -5,6 +5,7 @@ import { Sidebar, TopBar, type PageId } from "./components/Shell";
 import { LoginScreen } from "./components/LoginScreen";
 import { Workspace } from "./pages/Workspace";
 import { History } from "./pages/History";
+import { Scripts } from "./pages/Scripts";
 import { Docs } from "./pages/Docs";
 import { Account } from "./pages/Account";
 import { I18nProvider, useI18n, type TKey } from "./lib/i18n";
@@ -12,6 +13,7 @@ import { AuthProvider, HistoryProvider, useAuth } from "./lib/store";
 
 const TITLES: Record<PageId, { title: TKey; subtitle: TKey }> = {
   workspace: { title: "ws.title", subtitle: "ws.subtitle" },
+  scripts: { title: "scripts.title", subtitle: "scripts.subtitle" },
   history: { title: "history.title", subtitle: "history.subtitle" },
   docs: { title: "docs.title", subtitle: "docs.subtitle" },
   account: { title: "account.title", subtitle: "account.subtitle" },
@@ -36,6 +38,7 @@ function Console() {
       <main className="px-4 py-5 sm:px-6 sm:py-6">
         <div key={page} className="animate-rise">
           {page === "workspace" && <Workspace />}
+          {page === "scripts" && <Scripts />}
           {page === "history" && <History />}
           {page === "docs" && <Docs />}
           {page === "account" && <Account />}
