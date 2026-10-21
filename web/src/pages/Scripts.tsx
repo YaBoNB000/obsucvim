@@ -7,6 +7,7 @@ import {
   listLicenses,
   listReleases,
   listScripts,
+  publishFromSource,
   publishRelease,
   resetLicenseHwid,
   revokeLicense,
@@ -23,6 +24,12 @@ const ERROR_KEY: Record<ApiError, TKey> = {
   not_found: "scripts.errNotFound",
   bad_input: "scripts.errBadInput",
   bad_expiry: "scripts.errBadExpiry",
+  bad_key_days: "scripts.errBadKeyDays",
+  bad_source: "scripts.errBadSource",
+  quota: "scripts.errQuota",
+  engine_busy: "scripts.errEngineBusy",
+  engine_timeout: "scripts.errEngineTimeout",
+  engine_fail: "scripts.errEngineFail",
   script_limit: "scripts.errScriptLimit",
   license_limit: "scripts.errLicenseLimit",
   release_limit: "scripts.errReleaseLimit",
@@ -54,7 +61,13 @@ export function Scripts() {
   const [releases, setReleases] = useState<ReleaseRecord[]>([]);
   const [issuedKey, setIssuedKey] = useState<{ key: string; label: string } | null>(null);
   const [label, setLabel] = useState("");
+  const [expiryMode, setExpiryMode] = useState<"forever" | "days" | "date">("forever");
   const [expiry, setExpiry] = useState("");
+  const [days, setDays] = useState("7");
+  const [sourceMode, setSourceMode] = useState<"pipeline" | "manual">("pipeline");
+  const [rawSource, setRawSource] = useState("");
+  const [pipelineBusy, setPipelineBusy] = useState(false);
+  const [pipelineNote, setPipelineNote] = useState<string | null>(null);
   const [version, setVersion] = useState("v1");
   const [artifact, setArtifact] = useState("");
   const [copied, setCopied] = useState(false);
@@ -115,7 +128,13 @@ export function Scripts() {
     if (!selected || busy) return;
     setBusy(true);
     setError(null);
-    const res = await issueLicense(selected, label.trim(), expiry ? new Date(expiry).toISOString() : null);
+    const keyDays = expiryMode === "days" ? Number(days) : null;
+    const expiresAt =
+      expiryMode === "date" && expiry ? new Date(expiry).toISOString() : null;
+    const res = await issueLicense(selected, label.trim(), {
+      expiresAt,
+      keyDays: keyDays && Number.isInteger(keyDays) && keyDays > 0 ? keyDays : null,
+    });
     setBusy(false);
     if (!res.ok || !res.data) {
       setError(ERROR_KEY[res.error ?? "unknown"]);
@@ -160,6 +179,38 @@ export function Scripts() {
     }
     setReleases((prev) => [res.data as ReleaseRecord, ...prev]);
     setArtifact("");
+  };
+
+  const handlePipeline = async () => {
+    if (!selected || pipelineBusy || !rawSource.trim()) return;
+    setPipelineBusy(true);
+    setError(null);
+    setPipelineNote(null);
+    const res = await publishFromSource(selected, version.trim(), rawSource);
+    setPipelineBusy(false);
+    if (!res.ok || !res.data) {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      return;
+    }
+    setReleases((prev) => [res.data as ReleaseRecord, ...prev]);
+    setPipelineNote(
+      t("scripts.pipelineDone", {
+        v: res.data.version,
+        size: (res.data.size / 1024).toFixed(1),
+      }),
+    );
+    setRawSource("");
+  };
+
+  const readSourceFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setRawSource(text);
+      setError(null);
+    } catch {
+      setError("scripts.errBadSource");
+    }
   };
 
   const copyKey = async (text: string) => {
@@ -318,7 +369,7 @@ export function Scripts() {
                     <Icon name="lock" className="h-4 w-4 text-aqua-300" />
                     <h3 className="text-[13px] font-semibold text-slate-100">{t("scripts.issue")}</h3>
                   </div>
-                  <div className="grid gap-2.5 sm:grid-cols-[1fr_180px_auto]">
+                  <div className="grid gap-2.5 sm:grid-cols-[1fr_auto]">
                     <input
                       className={INPUT}
                       value={label}
@@ -326,18 +377,57 @@ export function Scripts() {
                       placeholder={t("scripts.labelPh")}
                       maxLength={80}
                     />
-                    <input
-                      className={INPUT}
-                      type="date"
-                      value={expiry}
-                      onChange={(e) => setExpiry(e.target.value)}
-                      title={t("scripts.expiry")}
-                    />
                     <Button className="px-4 py-2.5" disabled={busy} onClick={handleIssue}>
                       {busy ? t("scripts.working") : t("scripts.issueAction")}
                     </Button>
                   </div>
-                  <p className="mt-2 text-[10.5px] text-slate-500">{t("scripts.expiryHint")}</p>
+
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                    <div className="glass-soft inline-flex items-center gap-0.5 rounded-xl border border-white/[0.08] p-0.5">
+                      {([
+                        ["forever", "scripts.modeForever"],
+                        ["days", "scripts.modeDays"],
+                        ["date", "scripts.modeDate"],
+                      ] as const).map(([id, key]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setExpiryMode(id)}
+                          className={
+                            "cursor-pointer rounded-lg px-2.5 py-1 text-[11px] font-medium transition " +
+                            (expiryMode === id
+                              ? "bg-aqua-400/20 text-aqua-100"
+                              : "text-slate-400 hover:text-aqua-100")
+                          }
+                        >
+                          {t(key)}
+                        </button>
+                      ))}
+                    </div>
+                    {expiryMode === "days" && (
+                      <input
+                        className={INPUT + " w-24 py-1.5 text-[12px]"}
+                        type="number"
+                        min={1}
+                        max={3650}
+                        value={days}
+                        onChange={(e) => setDays(e.target.value)}
+                        placeholder={t("scripts.daysPh")}
+                      />
+                    )}
+                    {expiryMode === "date" && (
+                      <input
+                        className={INPUT + " w-auto py-1.5 text-[12px]"}
+                        type="date"
+                        value={expiry}
+                        onChange={(e) => setExpiry(e.target.value)}
+                        title={t("scripts.expiry")}
+                      />
+                    )}
+                  </div>
+                  <p className="mt-2 text-[10.5px] text-slate-500">
+                    {expiryMode === "days" ? t("scripts.daysHint") : t("scripts.expiryHint")}
+                  </p>
 
                   {issuedKey && (
                     <div className="mt-3 rounded-2xl border border-amber-300/25 bg-amber-400/[0.07] p-3.5">
@@ -424,10 +514,31 @@ export function Scripts() {
             ) : (
               <>
                 <GlassCard className="p-5">
-                  <div className="mb-3 flex items-center gap-2.5">
+                  <div className="mb-3 flex flex-wrap items-center gap-2.5">
                     <Icon name="upload" className="h-4 w-4 text-aqua-300" />
                     <h3 className="text-[13px] font-semibold text-slate-100">{t("scripts.publish")}</h3>
+                    <div className="glass-soft ml-auto inline-flex items-center gap-0.5 rounded-xl border border-white/[0.08] p-0.5">
+                      {([
+                        ["pipeline", "scripts.tabPipeline"],
+                        ["manual", "scripts.tabManual"],
+                      ] as const).map(([id, key]) => (
+                        <button
+                          key={id}
+                          type="button"
+                          onClick={() => setSourceMode(id)}
+                          className={
+                            "cursor-pointer rounded-lg px-2.5 py-1 text-[11px] font-medium transition " +
+                            (sourceMode === id
+                              ? "bg-aqua-400/20 text-aqua-100"
+                              : "text-slate-400 hover:text-aqua-100")
+                          }
+                        >
+                          {t(key)}
+                        </button>
+                      ))}
+                    </div>
                   </div>
+
                   <div className="grid gap-2.5">
                     <div className="grid gap-2.5 sm:grid-cols-[180px_1fr]">
                       <input
@@ -437,27 +548,74 @@ export function Scripts() {
                         placeholder="v1"
                         maxLength={32}
                       />
-                      <p className="self-center text-[10.5px] leading-relaxed text-slate-500">{t("scripts.publishHint")}</p>
+                      <p className="self-center text-[10.5px] leading-relaxed text-slate-500">
+                        {sourceMode === "pipeline" ? t("scripts.pipelineHint") : t("scripts.publishHint")}
+                      </p>
                     </div>
-                    <textarea
-                      className={INPUT + " min-h-[150px] resize-y font-mono text-[11.5px] leading-relaxed"}
-                      value={artifact}
-                      onChange={(e) => setArtifact(e.target.value)}
-                      placeholder={t("scripts.artifactPh")}
-                      spellCheck={false}
-                    />
-                    <div className="flex items-center gap-2">
-                      <span className="font-mono text-[10.5px] text-slate-500">
-                        {new TextEncoder().encode(artifact).length} / 4194304 B
-                      </span>
-                      <Button
-                        className="ml-auto px-4 py-2"
-                        disabled={busy || !artifact.trim() || !version.trim()}
-                        onClick={handlePublish}
-                      >
-                        {busy ? t("scripts.working") : t("scripts.publishAction")}
-                      </Button>
-                    </div>
+
+                    {sourceMode === "pipeline" ? (
+                      <>
+                        <textarea
+                          className={INPUT + " min-h-[150px] resize-y font-mono text-[11.5px] leading-relaxed"}
+                          value={rawSource}
+                          onChange={(e) => setRawSource(e.target.value)}
+                          placeholder={t("scripts.sourcePh")}
+                          spellCheck={false}
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="cursor-pointer rounded-xl border border-white/10 px-3 py-1.5 text-[11px] text-slate-300 transition hover:border-aqua-300/40 hover:text-aqua-100">
+                            {t("scripts.pickFile")}
+                            <input
+                              type="file"
+                              accept=".lua,.luau,text/plain"
+                              className="hidden"
+                              onChange={(e) => {
+                                void readSourceFile(e.target.files?.[0]);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+                          <span className="font-mono text-[10.5px] text-slate-500">
+                            {new TextEncoder().encode(rawSource).length} / 1048576 B
+                          </span>
+                          <Button
+                            className="ml-auto px-4 py-2"
+                            disabled={pipelineBusy || !rawSource.trim() || !version.trim()}
+                            onClick={handlePipeline}
+                          >
+                            {pipelineBusy ? t("scripts.working") : t("scripts.publishPipeline")}
+                          </Button>
+                        </div>
+                        {pipelineNote && (
+                          <div className="flex items-center gap-2 rounded-xl border border-emerald-300/25 bg-emerald-400/[0.07] px-3 py-2 text-[11.5px] text-emerald-200">
+                            <Icon name="check" className="h-3.5 w-3.5" />
+                            {pipelineNote}
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <textarea
+                          className={INPUT + " min-h-[150px] resize-y font-mono text-[11.5px] leading-relaxed"}
+                          value={artifact}
+                          onChange={(e) => setArtifact(e.target.value)}
+                          placeholder={t("scripts.artifactPh")}
+                          spellCheck={false}
+                        />
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[10.5px] text-slate-500">
+                            {new TextEncoder().encode(artifact).length} / 4194304 B
+                          </span>
+                          <Button
+                            className="ml-auto px-4 py-2"
+                            disabled={busy || !artifact.trim() || !version.trim()}
+                            onClick={handlePublish}
+                          >
+                            {busy ? t("scripts.working") : t("scripts.publishAction")}
+                          </Button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </GlassCard>
 

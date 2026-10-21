@@ -36,7 +36,17 @@
 }
 ```
 
-`expiresAt` 可省略或设为 `null` 表示不过期。响应中的 `licenseKey` 只显示这一次；请安全交付给客户并要求客户在自己的环境中设置 `getgenv().key`，不要把同一把 Key 写进公共脚本。
+有效期有两种模式，二选一：
+
+- `keyDays: 7` —— **相对到期**，首次成功激活才开始计时（可先囤货后出售）
+- `expiresAt: "2027-01-01T00:00:00.000Z"` —— 绝对到期时间
+- 两者都省略表示永久有效
+
+```json
+{ "scriptId": "scr_<id>", "label": "stock", "keyDays": 7 }
+```
+
+同时传 `keyDays` 和 `expiresAt` 会返回 `BAD_EXPIRY`。响应中的 `licenseKey` 只显示这一次；请安全交付给客户并要求客户在自己的环境中设置 `getgenv().key`，不要把同一把 Key 写进公共脚本。
 
 ### 列出、撤销、重置设备绑定
 
@@ -77,6 +87,22 @@
 ## 受授权保护的发布与下载
 
 真实防盗版的关键在这里：**混淆产物只在授权通过后才下发**。
+
+### 一条龙发布（上传源码 → 注入 → 混淆 → 存储）
+
+`POST /api/publish`（项目拥有者，登录 Cookie）
+
+```json
+{ "scriptId": "scr_<id>", "version": "v2", "source": "<原始 Luau 源码>" }
+```
+
+服务端会：注入卡密校验 → 用 v15 全保护混淆 → 校验产物 → 写入 `data/releases/<id>/<version>.lua`。
+**原始源码只存在于内存和引擎临时目录，不落盘、不进状态文件，请求结束即删除。** 每次消耗 1 次每日额度。
+
+返回 `{ release: { version, sha256, size, sourceBytes, guardedBytes }, elapsedMs, seed, quota }`。
+错误码：`BAD_SOURCE`、`RELEASE_TOO_LARGE`、`ENGINE_BUSY`、`ENGINE_TIMEOUT`、`ENGINE_FAIL`、`QUOTA_EXCEEDED`。
+
+### 直接上传已混淆产物
 
 `POST /api/auth/releases`（项目拥有者，登录 Cookie）
 

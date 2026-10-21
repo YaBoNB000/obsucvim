@@ -60,7 +60,8 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
 - Key 原文仅在签发响应出现一次，服务器只保存摘要；首次验证绑定 executor 提供的 HWID 摘要，拥有者可撤销 Key 或重置绑定。
 - `tools/inject-license.mjs` 会把 `tools/license-guard.luau` 插到用户源码首部，再从 `getgenv().key` 读取 Key 做服务端验证；混淆时检查逻辑与用户代码一起被保护。
-- 用法：`node tools/inject-license.mjs --source user.lua --script-id scr_<id> --out guarded.lua`，然后把 `guarded.lua` 交给混淆器。
+- 网页端「脚本托管 → 发布版本 → 上传源码」可一键完成注入+混淆+发布，原稿不落盘；命令行等价用法：`node tools/inject-license.mjs --source user.lua --script-id scr_<id> --out guarded.lua`。
+- 卡密支持三种有效期：永久、指定日期、首次激活后 N 天计时。
 - 尚未包含网页端上传/发布流水线和受授权保护的脚本下载端点；HWID 由客户端提供，可伪造，仅作尽力绑定。
 
 接口、注入说明与 Luau 示例见 `SCRIPT-KEYS.md`。

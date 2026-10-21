@@ -263,6 +263,63 @@ function saveState() {
 
 const DATA_DIR = process.env.OBSUCVIM_DATA_DIR || path.dirname(STATE_FILE);
 const RELEASE_DIR = path.join(DATA_DIR, "releases");
+const GUARD_TEMPLATE_FILE = path.join(__dirname, "license-guard.luau");
+
+let cachedGuardTemplate = null;
+function guardTemplate() {
+  if (cachedGuardTemplate === null) cachedGuardTemplate = readFileSync(GUARD_TEMPLATE_FILE, "utf8");
+  return cachedGuardTemplate;
+}
+
+/* Prepends the licence guard so the check runs before any user code, then the
+ * whole file is obfuscated as one unit. Only the public project id is embedded. */
+function buildGuardedSource(source, scriptId, endpoint) {
+  const template = guardTemplate()
+    .replaceAll("__OBSUCVIM_SCRIPT_ID__", scriptId)
+    .replaceAll("__OBSUCVIM_ENDPOINT__", endpoint);
+  return `-- Injected by Obsucvim license guard v2 (runs before user code)\n${template}\n${source}`;
+}
+
+/* Absolute origin used inside generated guards. Prefers an explicit setting so a
+ * spoofed Host header cannot redirect licence checks to another server. */
+function publicOrigin(req) {
+  const configured = (process.env.OBSUCVIM_PUBLIC_ORIGIN || "").trim().replace(/\/+$/, "");
+  if (/^https:\/\/[A-Za-z0-9.-]+(:\d+)?$/.test(configured)) return configured;
+  const host = req.headers.host;
+  if (typeof host === "string" && /^[A-Za-z0-9.-]+(:\d+)?$/.test(host)) {
+    const loopback = /^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host);
+    return `${loopback ? "http" : "https"}://${host}`;
+  }
+  return "https://obsucvim.l2.ink";
+}
+
+const DEFAULT_OBFUSCATION_OPTIONS = {
+  minify: true, mangle: true, strings: true, flatten: true,
+  junk: true, numbers: true, body: true, vmSealStrings: true, seed: "",
+};
+
+/* Runs the engine on in-memory source. The caller owns quota accounting. */
+async function obfuscateSource(source, options) {
+  if (!trySlot()) return { ok: false, status: 503, error: "ENGINE_BUSY" };
+  const workDir = mkdtempSync(path.join(tmpdir(), `obsucvim-job-${process.pid}-`));
+  try {
+    writeFileSync(path.join(workDir, "input.lua"), source, "utf8");
+    const job = await runEngine(buildCliArgs(options), workDir, ENGINE_TIMEOUT_MS);
+    if (job.timedOut) return { ok: false, status: 504, error: "ENGINE_TIMEOUT" };
+    if (job.code !== 0 || !job.codeText) {
+      return {
+        ok: false,
+        status: 500,
+        error: "ENGINE_FAIL",
+        detail: job.err.trim().split("\n").slice(-3).join(" | "),
+      };
+    }
+    return { ok: true, code: job.codeText };
+  } finally {
+    releaseSlot();
+    try { rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
 
 function saveReleaseFile(scriptId, version, code) {
   const dir = path.join(RELEASE_DIR, scriptId);
@@ -417,6 +474,9 @@ function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   if (!license.hwidHash) {
     license.hwidHash = hwidHash;
     license.firstActivatedAt = now();
+    if (license.durationDays && !license.expiresAt) {
+      license.expiresAt = now() + license.durationDays * 86400000;
+    }
   }
   license.lastUsedAt = now();
   state.licenseNonces[nonceKey] = now() + LICENSE_NONCE_TTL_MS;
@@ -444,6 +504,8 @@ const licensePublic = (license) => ({
   hwidBound: Boolean(license.hwidHash),
   firstActivatedAt: license.firstActivatedAt,
   lastUsedAt: license.lastUsedAt,
+  durationDays: license.durationDays ?? null,
+  activated: Boolean(license.firstActivatedAt),
 });
 
 function apiKeyUser(key) {
@@ -1195,7 +1257,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/auth/licenses") {
       const owner = authUser(req);
       if (!owner) return unauthorized(res, req);
-      const { scriptId, label, expiresAt } = body;
+      const { scriptId, label, expiresAt, keyDays } = body;
       const script = typeof scriptId === "string" ? state.scripts[scriptId] : null;
       if (!script || script.ownerEmail !== owner.email || !script.active) {
         return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
@@ -1204,7 +1266,19 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { ok: false, error: "BAD_INPUT" });
       }
       let expiry = null;
-      if (expiresAt !== undefined && expiresAt !== null && expiresAt !== "") {
+      let durationDays = null;
+      if (keyDays !== undefined && keyDays !== null && keyDays !== "") {
+        // Relative expiry: the clock starts on first successful activation, so
+        // keys can be stocked and sold before their time starts ticking.
+        const days = Number(keyDays);
+        if (!Number.isInteger(days) || days < 1 || days > 3650) {
+          return json(res, 400, { ok: false, error: "BAD_KEY_DAYS" });
+        }
+        if (expiresAt !== undefined && expiresAt !== null && expiresAt !== "") {
+          return json(res, 400, { ok: false, error: "BAD_EXPIRY" });
+        }
+        durationDays = days;
+      } else if (expiresAt !== undefined && expiresAt !== null && expiresAt !== "") {
         if (typeof expiresAt !== "string") return json(res, 400, { ok: false, error: "BAD_INPUT" });
         expiry = Date.parse(expiresAt);
         if (!Number.isFinite(expiry) || expiry <= now()) return json(res, 400, { ok: false, error: "BAD_EXPIRY" });
@@ -1224,6 +1298,7 @@ const server = createServer(async (req, res) => {
         label: typeof label === "string" ? label.trim() : "",
         createdAt: now(),
         expiresAt: expiry,
+        durationDays,
         revokedAt: null,
         hwidHash: null,
         firstActivatedAt: null,
@@ -1611,6 +1686,104 @@ const server = createServer(async (req, res) => {
     const u = authUser(req);
     if (!u) return unauthorized(res, req);
     return json(res, 200, { ok: true, user: userPublic(u), quota: quotaJson(u.email) });
+  }
+
+  if (req.method === "POST" && req.url === "/api/publish") {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req, MAX_SOURCE_BYTES * 2 + 65536));
+    } catch (e) {
+      if (e instanceof Error && e.message === "BODY_TOO_LARGE") {
+        json(res, 413, { ok: false, error: "BODY_TOO_LARGE" });
+        req.destroy();
+        return;
+      }
+      return json(res, 400, { ok: false, error: "BAD_JSON" });
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return json(res, 400, { ok: false, error: "BAD_REQUEST" });
+    }
+    if (rateLimited(clientIp(req))) return json(res, 429, { ok: false, error: "RATE_LIMITED" });
+    const owner = authUser(req);
+    if (!owner) return unauthorized(res, req);
+
+    const { scriptId, version, source, options } = body;
+    const script = typeof scriptId === "string" ? state.scripts[scriptId] : null;
+    if (!script || script.ownerEmail !== owner.email || !script.active) {
+      return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
+    }
+    if (typeof version !== "string" || !/^[A-Za-z0-9._-]{1,32}$/.test(version)) {
+      return json(res, 400, { ok: false, error: "BAD_VERSION" });
+    }
+    if (typeof source !== "string" || !source.trim()) return json(res, 400, { ok: false, error: "BAD_SOURCE" });
+    const sourceBytes = Buffer.byteLength(source, "utf8");
+    if (sourceBytes > MAX_SOURCE_BYTES) return json(res, 413, { ok: false, error: "SOURCE_TOO_LARGE" });
+
+    const key = `${scriptId}:${version}`;
+    const existing = Object.keys(state.releases).filter((k) => k.startsWith(`${scriptId}:`));
+    if (existing.length >= MAX_RELEASES_PER_SCRIPT && !state.releases[key]) {
+      return json(res, 409, { ok: false, error: "RELEASE_LIMIT" });
+    }
+
+    const mergedOptions = { ...DEFAULT_OBFUSCATION_OPTIONS, ...(options && typeof options === "object" && !Array.isArray(options) ? options : {}) };
+    const optErr = validateOptions(mergedOptions);
+    if (optErr) return json(res, 400, { ok: false, error: optErr });
+    if (engineMode() === "missing") return json(res, 503, { ok: false, error: "ENGINE_MISSING" });
+
+    const q = quotaOf(owner.email);
+    if (q.used >= 5) return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(owner.email) });
+
+    let guarded;
+    try {
+      guarded = buildGuardedSource(source, scriptId, `${publicOrigin(req)}/api/licenses/validate`);
+    } catch {
+      return json(res, 500, { ok: false, error: "GUARD_TEMPLATE_MISSING" });
+    }
+
+    const started = Date.now();
+    const job = await obfuscateSource(guarded, mergedOptions);
+    if (!job.ok) {
+      return json(res, job.status ?? 500, {
+        ok: false,
+        error: job.error,
+        ...(job.detail ? { detail: job.detail } : {}),
+      });
+    }
+    const code = job.code;
+    const bytes = Buffer.byteLength(code, "utf8");
+    if (bytes > MAX_RELEASE_BYTES) return json(res, 413, { ok: false, error: "RELEASE_TOO_LARGE" });
+
+    const file = saveReleaseFile(scriptId, version, code);
+    state.releases[key] = {
+      scriptId,
+      ownerEmail: owner.email,
+      version,
+      sha256: createHash("sha256").update(code).digest("hex"),
+      size: bytes,
+      createdAt: now(),
+      file,
+      pipeline: true,
+    };
+    q.used += 1;
+    state.quotas[owner.email] = q;
+    saveState();
+
+    // The raw source only ever lived in memory and the temporary engine workdir,
+    // which obfuscateSource deletes. Nothing about it is persisted.
+    return json(res, 201, {
+      ok: true,
+      release: {
+        scriptId,
+        version,
+        sha256: state.releases[key].sha256,
+        size: bytes,
+        sourceBytes,
+        guardedBytes: Buffer.byteLength(guarded, "utf8"),
+      },
+      elapsedMs: Date.now() - started,
+      seed: normalizeSeed(mergedOptions.seed),
+      quota: quotaJson(owner.email),
+    });
   }
 
   if (req.method === "POST" && req.url === "/api/obfuscate") {

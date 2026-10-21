@@ -18,6 +18,8 @@ export interface LicenseRecord {
   createdAt: number;
   expiresAt: number | null;
   revokedAt: number | null;
+  durationDays: number | null;
+  activated: boolean;
   hwidBound: boolean;
   firstActivatedAt: number | null;
   lastUsedAt: number | null;
@@ -35,6 +37,12 @@ export type ApiError =
   | "not_found"
   | "bad_input"
   | "bad_expiry"
+  | "bad_key_days"
+  | "bad_source"
+  | "quota"
+  | "engine_busy"
+  | "engine_timeout"
+  | "engine_fail"
   | "script_limit"
   | "license_limit"
   | "release_limit"
@@ -61,6 +69,12 @@ const ERROR_MAP: Record<string, ApiError> = {
   BAD_INPUT: "bad_input",
   BAD_VERSION: "bad_version",
   BAD_EXPIRY: "bad_expiry",
+  BAD_KEY_DAYS: "bad_key_days",
+  BAD_SOURCE: "bad_source",
+  QUOTA_EXCEEDED: "quota",
+  ENGINE_BUSY: "engine_busy",
+  ENGINE_TIMEOUT: "engine_timeout",
+  ENGINE_FAIL: "engine_fail",
   SCRIPT_LIMIT: "script_limit",
   LICENSE_LIMIT: "license_limit",
   RELEASE_LIMIT: "release_limit",
@@ -119,11 +133,16 @@ export async function listLicenses(scriptId: string): Promise<Result<LicenseReco
 export async function issueLicense(
   scriptId: string,
   label: string,
-  expiresAt: string | null,
+  expiry: { expiresAt: string | null; keyDays?: number | null },
 ): Promise<Result<{ license: LicenseRecord; licenseKey: string }>> {
   const res = await request<Envelope>("/api/auth/licenses", {
     method: "POST",
-    body: { scriptId, label, expiresAt },
+    body: {
+      scriptId,
+      label,
+      expiresAt: expiry.keyDays ? null : expiry.expiresAt,
+      ...(expiry.keyDays ? { keyDays: expiry.keyDays } : {}),
+    },
   });
   if (!res.ok || !res.data?.license || !res.data.licenseKey) {
     return { ok: false, error: res.error ?? "unknown" };
@@ -162,4 +181,34 @@ export async function publishRelease(
     body: { scriptId, version, code },
   });
   return res.ok && res.data?.release ? { ok: true, data: res.data.release } : { ok: false, error: res.error ?? "unknown" };
+}
+
+export interface PipelineRelease extends ReleaseRecord {
+  sourceBytes: number;
+  guardedBytes: number;
+}
+
+/** Upload source -> server injects the guard -> obfuscates -> stores the release. */
+export async function publishFromSource(
+  scriptId: string,
+  version: string,
+  source: string,
+): Promise<Result<PipelineRelease>> {
+  try {
+    const res = await fetch("/api/publish", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ scriptId, version, source }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as Envelope & {
+      release?: PipelineRelease;
+    };
+    if (!res.ok || !payload.ok || !payload.release) {
+      return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
+    }
+    return { ok: true, data: payload.release };
+  } catch {
+    return { ok: false, error: "network" };
+  }
 }
