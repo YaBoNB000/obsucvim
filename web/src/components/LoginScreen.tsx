@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { BlackHoleSVG, Logo, LangSwitch } from "./Brand";
+import { Logo, LangSwitch } from "./Brand";
 import { Button, Icon } from "./ui";
 import { Captcha } from "./Captcha";
 import { useI18n, type TKey } from "../lib/i18n";
@@ -216,96 +216,115 @@ export function LoginScreen() {
     refreshCaptcha();
   };
 
-  const field =
-    "w-full rounded-xl border border-white/[0.09] bg-black/30 px-3 py-2.5 text-[13px] text-aqua-100 placeholder:text-slate-600 focus:border-aqua-300/45 focus:outline-none";
+  const field = "auth-input";
 
   const inCodeStep = mode === "register" && regStep === "code";
   const locked = lockLeft > 0;
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center px-5 py-10">
-      <div className="absolute top-5 right-5 z-10">
-        <LangSwitch size="md" />
+    <main className="auth-stage relative flex min-h-screen items-center justify-center px-4 py-10 sm:px-6 sm:py-14">
+      <div className="auth-ambience pointer-events-none fixed inset-0 overflow-hidden" aria-hidden="true">
+        <div className="auth-glow auth-glow-cyan" />
+        <div className="auth-glow auth-glow-violet" />
+        <div className="auth-orbit auth-orbit-large"><span /></div>
+        <div className="auth-orbit auth-orbit-small"><span /></div>
+        <div className="auth-star auth-star-one" />
+        <div className="auth-star auth-star-two" />
+        <div className="auth-star auth-star-three" />
       </div>
 
-      <div className="grid w-full max-w-4xl gap-6 lg:grid-cols-[1fr_1.05fr]">
-        {/* 视觉侧 */}
-        <div className="glass specular relative hidden flex-col justify-between overflow-hidden rounded-3xl p-8 lg:flex">
-          <Logo />
-          <div className="relative my-6 flex items-center justify-center">
-            <div className="animate-drift-slow absolute h-64 w-64 rounded-full bg-[radial-gradient(circle,rgba(34,226,213,0.35),transparent_66%)] blur-2xl" />
-            <img
-              src="/blackhole.png"
-              alt=""
-              className="animate-floaty relative h-52 w-52 rounded-full object-cover opacity-90"
-              draggable={false}
-            />
-          </div>
-          <BlackHoleSVG />
-        </div>
+      <section className="auth-card glass specular relative z-10 w-full max-w-[520px] overflow-hidden rounded-[30px] p-5 sm:rounded-[34px] sm:p-8 lg:p-9">
+        <div className="auth-card-grid pointer-events-none absolute inset-0" aria-hidden="true" />
+        <div className="auth-card-sheen pointer-events-none absolute inset-y-0 left-[-55%] w-[45%]" aria-hidden="true" />
 
-        {/* 表单侧 */}
-        <div className="glass flex flex-col justify-center rounded-3xl p-7 sm:p-9">
-          <div className="mb-6 lg:hidden">
+        <div className="relative z-10">
+          <header className="flex items-center justify-between gap-4">
             <Logo />
-          </div>
+            <LangSwitch size="sm" />
+          </header>
 
-          {!inCodeStep && (
-            <div className="mb-5 flex items-center gap-1 rounded-xl border border-white/[0.08] bg-black/25 p-1">
-              {(["login", "register"] as const).map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  onClick={() => switchMode(m)}
-                  className={
-                    "flex-1 cursor-pointer rounded-lg px-3 py-2 text-[13px] font-medium transition " +
-                    (mode === m
-                      ? "bg-aqua-400/20 text-aqua-100 shadow-[0_0_24px_-10px_rgba(34,226,213,0.95)_inset]"
-                      : "text-slate-400 hover:text-aqua-100")
-                  }
-                >
-                  {m === "login" ? t("common.login") : t("common.register")}
-                </button>
-              ))}
+          {!inCodeStep ? (
+            <>
+              <div className="auth-heading mt-8 text-center sm:mt-9">
+                <div className="auth-kicker mx-auto">
+                  <span className="auth-kicker-dot" />
+                  <span>{t("login.portal")}</span>
+                  <span className="auth-kicker-divider" />
+                  <span className="auth-kicker-product">{t("login.badge")}</span>
+                </div>
+                <h1 className="mt-4 text-[27px] font-semibold tracking-[-0.04em] text-slate-50 sm:text-[32px]">
+                  {mode === "login" ? t("login.title") : t("login.registerTitle")}
+                </h1>
+                <p className="mx-auto mt-2 max-w-[390px] text-[12px] leading-relaxed text-slate-400/85 sm:text-[13px]">
+                  {t("login.subtitle")}
+                </p>
+              </div>
+
+              <div className="auth-mode-switch relative mt-7 grid grid-cols-2 rounded-2xl p-1" role="tablist" aria-label={t("login.portal")}>
+                <span className={`auth-mode-indicator ${mode === "register" ? "is-register" : ""}`} aria-hidden="true" />
+                {(["login", "register"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    role="tab"
+                    aria-selected={mode === m}
+                    onClick={() => switchMode(m)}
+                    className={`auth-mode-tab relative z-10 rounded-xl px-3 py-3 text-[13px] font-semibold transition-colors duration-300 ${mode === m ? "is-active" : ""}`}
+                  >
+                    {m === "login" ? t("common.login") : t("common.register")}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="auth-verify-heading mt-8 sm:mt-9">
+              <div className="auth-verify-icon">
+                <Icon name="shield" className="h-6 w-6" />
+              </div>
+              <div className="min-w-0">
+                <p className="auth-step-label">EMAIL VERIFICATION · 02</p>
+                <h1 className="mt-1 text-[23px] font-semibold tracking-tight text-slate-50 sm:text-[27px]">
+                  {t("verify.title")}
+                </h1>
+                <p className="mt-1.5 text-[12px] leading-relaxed text-slate-400/85">
+                  {t("verify.sent", { email })}
+                </p>
+              </div>
             </div>
           )}
 
-          <form onSubmit={submit} className="grid gap-3.5">
+          <form onSubmit={submit} className="auth-form-enter mt-6 grid gap-4">
             {inCodeStep ? (
               <>
-                <div className="flex items-center gap-2.5">
-                  <Icon name="shield" className="h-4 w-4 text-aqua-300" />
-                  <h2 className="text-[14px] font-semibold text-slate-100">{t("verify.title")}</h2>
-                </div>
-                <p className="text-[12px] leading-relaxed text-slate-400/85">{t("verify.sent", { email })}</p>
                 {demoCode && (
-                  <div className="rounded-xl border border-amber-300/25 bg-amber-400/[0.07] px-3 py-2.5 font-mono text-[12.5px] tracking-[0.3em] text-amber-200">
+                  <div className="auth-demo-code rounded-2xl px-4 py-3 font-mono text-[13px] tracking-[0.26em] text-amber-100">
                     {t("verify.demo", { code: demoCode })}
                   </div>
                 )}
-                <label className="block">
-                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("verify.code")}</span>
+                <label className="auth-field-group block">
+                  <span className="auth-field-label">{t("verify.code")}</span>
                   <input
                     value={codeInput}
                     onChange={(e) => setCodeInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
                     placeholder={t("verify.codePh")}
                     inputMode="numeric"
                     autoFocus
-                    className={field + " text-center font-mono text-[18px] tracking-[0.5em]"}
+                    className={`${field} text-center font-mono text-[19px] tracking-[0.48em]`}
                     disabled={busy}
                     autoComplete="one-time-code"
                   />
                 </label>
                 {err && (
-                  <div className="flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-500/[0.08] px-3 py-2.5 text-[12px] text-rose-200">
-                    <Icon name="sparkle" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    {err}
+                  <div className="auth-alert auth-alert-error" role="alert">
+                    <Icon name="sparkle" className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{err}</span>
                   </div>
                 )}
-                <Button type="submit" disabled={busy || codeInput.length !== 6} className="mt-1 w-full py-2.5">
+                <Button type="submit" disabled={busy || codeInput.length !== 6} className="auth-submit-button mt-1 w-full py-3.5">
+                  {busy ? <span className="auth-spinner" /> : <Icon name="shield" className="h-4 w-4" />}
                   {busy ? t("login.working") : t("verify.verify")}
                 </Button>
-                <div className="flex items-center justify-between text-[11px]">
+                <div className="flex items-center justify-between pt-1 text-[11.5px]">
                   <button
                     type="button"
                     onClick={() => {
@@ -316,7 +335,7 @@ export function LoginScreen() {
                       refreshCaptcha();
                       setCaptchaInput("");
                     }}
-                    className="cursor-pointer text-slate-500 transition hover:text-aqua-200"
+                    className="auth-text-link"
                   >
                     ← {t("verify.back")}
                   </button>
@@ -324,10 +343,7 @@ export function LoginScreen() {
                     type="button"
                     onClick={doResend}
                     disabled={cooldown > 0 || busy}
-                    className={
-                      "cursor-pointer transition " +
-                      (cooldown > 0 ? "text-slate-600" : "text-slate-500 hover:text-aqua-200")
-                    }
+                    className="auth-text-link disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     {cooldown > 0 ? t("verify.resendIn", { s: cooldown }) : t("verify.resend")}
                   </button>
@@ -335,8 +351,8 @@ export function LoginScreen() {
               </>
             ) : (
               <>
-                <label className="block">
-                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.email")}</span>
+                <label className="auth-field-group block">
+                  <span className="auth-field-label">{t("login.email")}</span>
                   <input
                     type="email"
                     autoComplete="email"
@@ -349,8 +365,8 @@ export function LoginScreen() {
                 </label>
 
                 {mode === "register" && (
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.nickname")}</span>
+                  <label className="auth-field-group auth-field-reveal block">
+                    <span className="auth-field-label">{t("login.nickname")}</span>
                     <input
                       value={nickname}
                       onChange={(e) => setNickname(e.target.value)}
@@ -362,8 +378,8 @@ export function LoginScreen() {
                   </label>
                 )}
 
-                <label className="block">
-                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.password")}</span>
+                <label className="auth-field-group block">
+                  <span className="auth-field-label">{t("login.password")}</span>
                   <input
                     type="password"
                     autoComplete={mode === "login" ? "current-password" : "new-password"}
@@ -376,8 +392,8 @@ export function LoginScreen() {
                 </label>
 
                 {mode === "register" && (
-                  <label className="block">
-                    <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.confirmPwd")}</span>
+                  <label className="auth-field-group auth-field-reveal block">
+                    <span className="auth-field-label">{t("login.confirmPwd")}</span>
                     <input
                       type="password"
                       autoComplete="new-password"
@@ -390,30 +406,30 @@ export function LoginScreen() {
                   </label>
                 )}
 
-                <div>
-                  <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.captcha")}</span>
+                <div className="auth-captcha-block">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="auth-field-label !mb-0">{t("login.captcha")}</span>
+                    <button type="button" onClick={refreshCaptcha} className="auth-text-link !text-[10.5px]">
+                      {t("login.refresh")}
+                    </button>
+                  </div>
                   <Captcha
                     challenge={captcha}
                     onAnswerChange={setCaptchaInput}
                     disabled={locked}
+                    className="mx-auto"
                   />
-                  <button
-                    type="button"
-                    onClick={refreshCaptcha}
-                    className="mt-1.5 cursor-pointer text-[10.5px] text-slate-500 transition hover:text-aqua-200"
-                  >
-                    {t("login.refresh")}
-                  </button>
                 </div>
 
                 {err && (
-                  <div className="flex items-start gap-2 rounded-xl border border-rose-400/25 bg-rose-500/[0.08] px-3 py-2.5 text-[12px] text-rose-200">
-                    <Icon name="sparkle" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    {locked ? t("login.locked", { s: lockLeft }) : err}
+                  <div className="auth-alert auth-alert-error" role="alert">
+                    <Icon name="sparkle" className="mt-0.5 h-4 w-4 shrink-0" />
+                    <span>{locked ? t("login.locked", { s: lockLeft }) : err}</span>
                   </div>
                 )}
 
-                <Button type="submit" disabled={busy || locked} className="mt-1 w-full py-2.5">
+                <Button type="submit" disabled={busy || locked} className="auth-submit-button mt-1 w-full py-3.5">
+                  {busy ? <span className="auth-spinner" /> : <Icon name={mode === "login" ? "lock" : "bolt"} className="h-4 w-4" />}
                   {busy ? (
                     <span className="animate-pulse">{t("login.working")}</span>
                   ) : locked ? (
@@ -423,14 +439,22 @@ export function LoginScreen() {
                   ) : (
                     t("verify.send")
                   )}
+                  {!busy && !locked && <Icon name="chevron" className="ml-1 h-4 w-4 -rotate-90" />}
                 </Button>
               </>
             )}
           </form>
 
-          {!inCodeStep && <p className="mt-5 text-[10.5px] leading-relaxed text-slate-500">{t("login.secureNote")}</p>}
+          {!inCodeStep && (
+            <footer className="auth-footer mt-6 border-t border-white/[0.07] pt-4">
+              <div className="flex items-start gap-2.5">
+                <Icon name="shield" className="mt-0.5 h-4 w-4 shrink-0 text-aqua-300/80" />
+                <p className="text-[10.5px] leading-relaxed text-slate-400/75">{t("login.secureNote")}</p>
+              </div>
+            </footer>
+          )}
         </div>
-      </div>
-    </div>
+      </section>
+    </main>
   );
 }

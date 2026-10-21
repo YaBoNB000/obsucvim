@@ -4,6 +4,8 @@ Download `Obsucvim-Web-Windows-x64.zip`, verify it with the adjacent `.sha256`, 
 
 The bundle contains Node.js 22.22.3 x64, the Rust/WASI engine, a single-file UI, Nodemailer and PowerShell startup scripts. SMTP defaults to `smtp.163.com:465`, sender `obsucvim@163.com`; configure `SMTP_PASS` as the 163 client authorization code in a private server environment to enable real email. Without it, the UI stays in clearly labeled demo-mail mode. See the included `EMAIL-SETUP.md` and `README-Windows.md`.
 
+The login and registration screen uses a single centered panel with responsive motion effects; reduced-motion preferences are respected.
+
 ## Registration and CAPTCHA
 
 - Email addresses are normalized to lowercase and can register one account only.
