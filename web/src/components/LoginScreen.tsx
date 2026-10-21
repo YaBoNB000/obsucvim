@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { BlackHoleSVG, Logo, LangSwitch } from "./Brand";
 import { Button, Icon } from "./ui";
 import { Captcha } from "./Captcha";
@@ -25,8 +25,14 @@ export function LoginScreen() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const captchaRequest = useRef(0);
   const refreshCaptcha = useCallback(() => {
-    void fetchCaptcha().then((c) => setCaptcha(c));
+    const requestId = ++captchaRequest.current;
+    setCaptcha(null);
+    setCaptchaInput("");
+    void fetchCaptcha().then((c) => {
+      if (requestId === captchaRequest.current) setCaptcha(c);
+    });
   }, [fetchCaptcha]);
 
   useEffect(() => {
@@ -75,12 +81,17 @@ export function LoginScreen() {
               res.error === "code_expired" ? "verify.expired"
                 : res.error === "code_exhausted" ? "verify.exhausted"
                   : res.error === "email_taken" ? "login.emailTaken"
-                    : res.error === "register_expired" ? "verify.expired"
-                      : "verify.wrong";
+                    : res.error === "ip_taken" ? "login.ipTaken"
+                      : res.error === "register_expired" ? "verify.expired"
+                        : "verify.wrong";
             errText(key);
             setCodeInput("");
-            if (res.error === "code_expired" || res.error === "code_exhausted" || res.error === "register_expired") {
+            if (
+              res.error === "code_expired" || res.error === "code_exhausted" ||
+              res.error === "register_expired" || res.error === "ip_taken" || res.error === "email_taken"
+            ) {
               setRegStep("form");
+              setDemoCode(null);
               refreshCaptcha();
               setCaptchaInput("");
             }
@@ -113,10 +124,11 @@ export function LoginScreen() {
         if (!res.ok) {
           const key: TKey =
             res.error === "email_taken" ? "login.emailTaken"
-              : res.error === "captcha_fail" ? "login.captchaFail"
-                : res.error === "rate_limited" ? "login.busy"
-                  : res.error === "resend_cooldown" ? "verify.resendIn"
-                    : "login.invalid";
+              : res.error === "ip_taken" ? "login.ipTaken"
+                : res.error === "captcha_fail" ? "login.captchaFail"
+                  : res.error === "rate_limited" ? "login.busy"
+                    : res.error === "resend_cooldown" ? "verify.resendIn"
+                      : "login.invalid";
           errText(key, res.retryAfter ? { s: res.retryAfter } : undefined);
           return;
         }
@@ -170,6 +182,19 @@ export function LoginScreen() {
       const res = await resendCode(email.trim());
       if (!res.ok) {
         if (res.error === "resend_cooldown" && res.retryAfter) setCooldown(res.retryAfter);
+        else if (res.error === "ip_taken") {
+          errText("login.ipTaken");
+          setRegStep("form");
+          setDemoCode(null);
+          refreshCaptcha();
+          setCaptchaInput("");
+        } else if (res.error === "email_taken") {
+          errText("login.emailTaken");
+          setRegStep("form");
+          setDemoCode(null);
+          refreshCaptcha();
+          setCaptchaInput("");
+        }
         return;
       }
       setDemoCode(res.demoCode ?? null);
@@ -367,18 +392,11 @@ export function LoginScreen() {
 
                 <div>
                   <span className="mb-1.5 block text-[11.5px] text-slate-400/80">{t("login.captcha")}</span>
-                  <div className="flex items-center gap-2.5">
-                    <input
-                      value={captchaInput}
-                      onChange={(e) => setCaptchaInput(e.target.value.replace(/[^\d-]/g, "").slice(0, 6))}
-                      placeholder={t("login.captchaPh")}
-                      inputMode="numeric"
-                      className={field + " font-mono tracking-[0.2em]"}
-                      disabled={locked}
-                      autoComplete="off"
-                    />
-                    <Captcha question={captcha?.question ?? null} onRefresh={refreshCaptcha} />
-                  </div>
+                  <Captcha
+                    challenge={captcha}
+                    onAnswerChange={setCaptchaInput}
+                    disabled={locked}
+                  />
                   <button
                     type="button"
                     onClick={refreshCaptcha}

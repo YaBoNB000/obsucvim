@@ -38,13 +38,15 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
 ## 3. 确认配置生效
 
-访问 `http://localhost:8787/api/health`，应看到 `"mail":"smtp"`。若是 `demo`，服务进程没有读到 SMTP_USER/SMTP_PASS，检查环境变量并重启。
+不提供公开的 health/debug API。启动服务的 PowerShell 窗口会打印邮件状态：`smtp: configured` 表示 SMTP 已启用；`smtp: demo fallback` 表示进程没有读到 SMTP_USER/SMTP_PASS，检查私密环境变量后重启。
 
 用一个**尚未注册**的测试邮箱注册：真实邮件模式下页面不会显示演示码；验证码应送达邮箱，输入后即可完成注册。当前沙箱不能连接外部 163 SMTP，故我无法替你发送真实邮件或验证授权码；已通过本地 SMTP 模拟器验证真实发送代码路径和验证码确认逻辑。
 
-## 4. 额度与服务器安全
+## 4. 账户限制与服务器安全
 
+- 每个邮箱（不区分大小写）只能注册一个账户；每个 IP 只能完成一个新账户注册。IP 记录以服务端 HMAC 索引持久化，不存原始 IP。
+- 此 IP 限制适用于更新后完成注册的账户；已有账户没有历史注册 IP，无法追溯补录。
 - 每个账号每天 **5 次**，后端强制，按服务器本地时区午夜重置。
-- 状态文件 `data\state.json` 保留用户、会话、额度；请定期备份并限制 Windows 文件 ACL。
-- 单机状态文件适合单实例部署；多实例/高并发时迁移到数据库。
-- 公网部署请放在 HTTPS 反向代理之后，并在 Windows/云防火墙中只开放需要的端口。
+- 状态文件 `data\state.json` 保留用户、会话、额度和 IP 限制索引；请定期备份并限制 Windows 文件 ACL。删除/重置状态文件会同时清除这些注册记录。
+- 单机状态文件适合单实例部署；多实例/高并发时迁移到共享数据库。
+- 直连时按 TCP 对端地址判断 IP，不信任任意 `X-Forwarded-For`。若 HTTPS 反向代理在本机（例如 IIS/ARR），启动服务前设置 `OBSUCVIM_TRUSTED_PROXY_IPS` 为代理连接 Node 的精确 IP（例如 `127.0.0.1,::1`），并确认代理覆盖或在 `X-Forwarded-For` 末尾追加真实客户端 IP；未配置时所有访客会被视为同一个代理 IP。公网部署请使用 HTTPS，并只开放需要的端口。

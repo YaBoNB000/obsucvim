@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /**
- * Obsucvim 本地引擎后端（开发用，使用 Nodemailer 发送验证邮件）。
- * 包装真实 obsucvim CLI（Rust），给 web 控制台提供 /api/*：
- *   GET  /api/health     → { ok, engine, bin }
- *   POST /api/obfuscate  → { ok, result: { code, log, stats } }
+ * Obsucvim Web + 引擎服务（使用 Nodemailer 发送验证邮件）。
+ * 为控制台提供账户认证、混淆等产品 API；不公开健康检查或调试端点。
+ * POST /api/obfuscate → { ok, result: { code, log, stats } }
  *
  * 选项映射与前端 buildCliArgs() 一致（产品形态固定 v15）。
  * 环境变量：
@@ -19,7 +18,9 @@ import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSyn
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
+import { deflateSync } from "node:zlib";
 import nodemailer from "nodemailer";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -151,6 +152,8 @@ function json(res, status, body) {
 const STATE_FILE = process.env.OBSUCVIM_STATE_FILE || path.join(__dirname, ".state.json");
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 const CODE_TTL_MS = 10 * 60_000;
+const CAPTCHA_TTL_MS = 3 * 60_000;
+const CAPTCHA_MIN_AGE_MS = 700;
 const CODE_RESEND_MS = 60_000;
 const CODE_MAX_FAILS = 5;
 const LOGIN_MAX_FAILS = 5;
@@ -166,9 +169,11 @@ let state = {
   quotas: {},     // email -> { date, used }
   fails: {},      // email -> { fails, until }
   codes: {},      // email -> { code, expires, sentAt, fails }
-  captchas: {},   // id -> { answer, expires }
+  captchas: {},   // id -> { targetX, issuedAt, expires }; answer never leaves server
   apiKeys: {},    // key -> { email, created }
   pendingRegistrations: {}, // email -> { nickname, salt, hash, expires }
+  registeredIps: {}, // HMAC(IP) -> { email, created }; lifetime one-account-per-IP index
+  registrationIpHashKey: "", // stable per-install key; raw client IPs are never persisted
 };
 
 function loadState() {
@@ -179,6 +184,16 @@ function loadState() {
   } catch {
     /* first run */
   }
+  let changed = false;
+  if (!state.registeredIps || typeof state.registeredIps !== "object" || Array.isArray(state.registeredIps)) {
+    state.registeredIps = {};
+    changed = true;
+  }
+  if (typeof state.registrationIpHashKey !== "string" || !/^[\da-f]{64}$/i.test(state.registrationIpHashKey)) {
+    state.registrationIpHashKey = randomBytes(32).toString("hex");
+    changed = true;
+  }
+  if (changed) saveState();
 }
 function saveState() {
   try {
@@ -205,6 +220,9 @@ const todayStr = () => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const normalizeEmail = (email) => email.trim().toLowerCase();
+const registrationIpHash = (ip) =>
+  createHmac("sha256", state.registrationIpHashKey).update(ip).digest("hex");
 
 function hashPw(password, salt) {
   return scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString("hex");
@@ -260,28 +278,234 @@ function quotaJson(email) {
   return { usedToday: q.used, remaining: Math.max(0, 5 - q.used), limit: 5 };
 }
 
-/* 服务端人机验证：算式问答——答案永不下发客户端（题面可见无妨） */
+/* 服务端生成 PNG 拼图验证码。答案坐标只保存在状态文件中；PNG 响应不含答案字段。
+ * 使用内置 PNG 编码器，避免引入本地图片处理二进制或第三方 CAPTCHA SDK。 */
+const CAPTCHA_WIDTH = 320;
+const CAPTCHA_HEIGHT = 128;
+const CAPTCHA_PIECE_SIZE = 56;
+const CAPTCHA_MAX_OFFSET = CAPTCHA_WIDTH - CAPTCHA_PIECE_SIZE;
+const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+const PNG_CRC_TABLE = (() => {
+  const table = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c >>> 0;
+  }
+  return table;
+})();
+
+function pngCrc32(bytes) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) crc = PNG_CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const typeBytes = Buffer.from(type, "ascii");
+  const body = Buffer.concat([typeBytes, data]);
+  const length = Buffer.alloc(4);
+  const checksum = Buffer.alloc(4);
+  length.writeUInt32BE(data.length, 0);
+  checksum.writeUInt32BE(pngCrc32(body), 0);
+  return Buffer.concat([length, body, checksum]);
+}
+
+function encodeCaptchaPng(width, height, pixels) {
+  const rowBytes = width * 4;
+  const raw = Buffer.alloc((rowBytes + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const row = y * (rowBytes + 1);
+    raw[row] = 0; // PNG filter: None
+    Buffer.from(pixels.buffer, pixels.byteOffset + y * rowBytes, rowBytes).copy(raw, row + 1);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8; // bit depth
+  header[9] = 6; // RGBA
+  header[10] = 0;
+  header[11] = 0;
+  header[12] = 0;
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(raw, { level: 6 })),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+function captchaBlend(pixels, width, height, x, y, color, opacity = 1) {
+  x = Math.round(x);
+  y = Math.round(y);
+  if (x < 0 || y < 0 || x >= width || y >= height) return;
+  const i = (y * width + x) * 4;
+  const keep = 1 - opacity;
+  pixels[i] = Math.round(pixels[i] * keep + color[0] * opacity);
+  pixels[i + 1] = Math.round(pixels[i + 1] * keep + color[1] * opacity);
+  pixels[i + 2] = Math.round(pixels[i + 2] * keep + color[2] * opacity);
+  pixels[i + 3] = 255;
+}
+
+function captchaLine(pixels, width, height, x0, y0, x1, y1, color, opacity, thickness = 1) {
+  x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+  const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  let error = dx + dy;
+  const radius = Math.max(0, Math.floor(thickness / 2));
+  while (true) {
+    for (let oy = -radius; oy <= radius; oy++) {
+      for (let ox = -radius; ox <= radius; ox++) {
+        captchaBlend(pixels, width, height, x0 + ox, y0 + oy, color, opacity);
+      }
+    }
+    if (x0 === x1 && y0 === y1) break;
+    const twice = 2 * error;
+    if (twice >= dy) { error += dy; x0 += sx; }
+    if (twice <= dx) { error += dx; y0 += sy; }
+  }
+}
+
+function captchaCircle(pixels, width, height, cx, cy, radius, color, opacity, filled = false, thickness = 1) {
+  const r = Math.max(1, Math.ceil(radius));
+  const outer = radius * radius;
+  const inner = Math.max(0, radius - thickness) ** 2;
+  for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+    for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
+      const d2 = (x - cx) ** 2 + (y - cy) ** 2;
+      if (d2 <= outer && (filled || d2 >= inner)) captchaBlend(pixels, width, height, x, y, color, opacity);
+    }
+  }
+}
+
+function captchaRandom(seed) {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function createCaptchaArtwork(seed) {
+  const pixels = new Uint8Array(CAPTCHA_WIDTH * CAPTCHA_HEIGHT * 4);
+  for (let y = 0; y < CAPTCHA_HEIGHT; y++) {
+    for (let x = 0; x < CAPTCHA_WIDTH; x++) {
+      const t = x / (CAPTCHA_WIDTH - 1);
+      const wave = Math.sin((x + y * 1.7) / 27);
+      const i = (y * CAPTCHA_WIDTH + x) * 4;
+      pixels[i] = Math.round(5 + 13 * t + Math.max(0, wave) * 9);
+      pixels[i + 1] = Math.round(25 + 30 * (1 - t) + Math.max(0, -wave) * 17);
+      pixels[i + 2] = Math.round(46 + 50 * t + Math.max(0, wave) * 18);
+      pixels[i + 3] = 255;
+    }
+  }
+  const random = captchaRandom(seed);
+  const colors = [[40, 220, 220], [88, 183, 255], [125, 244, 213], [182, 137, 255], [255, 189, 97]];
+  for (let x = 14; x < CAPTCHA_WIDTH; x += 22) {
+    captchaLine(pixels, CAPTCHA_WIDTH, CAPTCHA_HEIGHT, x, 0, x, CAPTCHA_HEIGHT - 1, [110, 220, 245], 0.055);
+  }
+  for (let y = 12; y < CAPTCHA_HEIGHT; y += 20) {
+    captchaLine(pixels, CAPTCHA_WIDTH, CAPTCHA_HEIGHT, 0, y, CAPTCHA_WIDTH - 1, y, [110, 220, 245], 0.05);
+  }
+  for (let i = 0; i < 18; i++) {
+    const x = random() * CAPTCHA_WIDTH;
+    const y = random() * CAPTCHA_HEIGHT;
+    const color = colors[Math.floor(random() * colors.length)];
+    captchaCircle(pixels, CAPTCHA_WIDTH, CAPTCHA_HEIGHT, x, y, 3 + random() * 13, color, 0.12 + random() * 0.22, random() > 0.5, 1 + random() * 2);
+  }
+  for (let i = 0; i < 13; i++) {
+    const color = colors[Math.floor(random() * colors.length)];
+    captchaLine(
+      pixels, CAPTCHA_WIDTH, CAPTCHA_HEIGHT,
+      random() * CAPTCHA_WIDTH, random() * CAPTCHA_HEIGHT,
+      random() * CAPTCHA_WIDTH, random() * CAPTCHA_HEIGHT,
+      color, 0.18 + random() * 0.24, 1 + Math.floor(random() * 2),
+    );
+  }
+  for (let i = 0; i < 90; i++) {
+    captchaBlend(pixels, CAPTCHA_WIDTH, CAPTCHA_HEIGHT, random() * CAPTCHA_WIDTH, random() * CAPTCHA_HEIGHT, [190, 245, 255], 0.12 + random() * 0.3);
+  }
+  return pixels;
+}
+
+function captchaPieceContains(x, y) {
+  const base = x >= 7 && x <= 49 && y >= 7 && y <= 49;
+  const topKnob = (x - 28) ** 2 + (y - 7) ** 2 <= 9 ** 2;
+  const bottomKnob = (x - 28) ** 2 + (y - 49) ** 2 <= 9 ** 2;
+  const leftNotch = (x - 7) ** 2 + (y - 28) ** 2 < 8 ** 2;
+  const rightNotch = (x - 49) ** 2 + (y - 28) ** 2 < 8 ** 2;
+  return (base || topKnob || bottomKnob) && !leftNotch && !rightNotch;
+}
+
+function captchaPieceEdge(x, y) {
+  return captchaPieceContains(x, y) && (
+    !captchaPieceContains(x - 1, y) || !captchaPieceContains(x + 1, y) ||
+    !captchaPieceContains(x, y - 1) || !captchaPieceContains(x, y + 1)
+  );
+}
+
+function createCaptchaImages(targetX, pieceY, seed) {
+  const board = createCaptchaArtwork(seed);
+  const original = board.slice();
+  const piece = new Uint8Array(CAPTCHA_PIECE_SIZE * CAPTCHA_PIECE_SIZE * 4);
+  for (let y = 0; y < CAPTCHA_PIECE_SIZE; y++) {
+    for (let x = 0; x < CAPTCHA_PIECE_SIZE; x++) {
+      if (!captchaPieceContains(x, y)) continue;
+      const source = ((pieceY + y) * CAPTCHA_WIDTH + targetX + x) * 4;
+      const dest = (y * CAPTCHA_PIECE_SIZE + x) * 4;
+      piece[dest] = original[source];
+      piece[dest + 1] = original[source + 1];
+      piece[dest + 2] = original[source + 2];
+      piece[dest + 3] = 255;
+      if (captchaPieceEdge(x, y)) captchaBlend(piece, CAPTCHA_PIECE_SIZE, CAPTCHA_PIECE_SIZE, x, y, [185, 250, 255], 0.82);
+
+      if (captchaPieceEdge(x, y)) {
+        captchaBlend(board, CAPTCHA_WIDTH, CAPTCHA_HEIGHT, targetX + x, pieceY + y, [161, 244, 255], 0.92);
+      } else {
+        captchaBlend(board, CAPTCHA_WIDTH, CAPTCHA_HEIGHT, targetX + x, pieceY + y, [1, 8, 17], 0.78);
+      }
+    }
+  }
+  const backgroundUrl = `data:image/png;base64,${encodeCaptchaPng(CAPTCHA_WIDTH, CAPTCHA_HEIGHT, board).toString("base64")}`;
+  const pieceUrl = `data:image/png;base64,${encodeCaptchaPng(CAPTCHA_PIECE_SIZE, CAPTCHA_PIECE_SIZE, piece).toString("base64")}`;
+  return { backgroundUrl, pieceUrl };
+}
+
 function issueCaptcha() {
-  const a = 2 + Math.floor(Math.random() * 19);
-  const b = 2 + Math.floor(Math.random() * 19);
-  const ops = [
-    ["+", (x, y) => x + y],
-    ["-", (x, y) => x - y],
-    ["×", (x, y) => x * y],
-  ];
-  const [sym, fn] = ops[Math.floor(Math.random() * ops.length)];
-  const id = randomBytes(12).toString("hex");
-  state.captchas[id] = { answer: String(fn(a, b)), expires: now() + 5 * 60_000 };
+  const id = randomBytes(16).toString("hex");
+  const targetX = randomInt(36, CAPTCHA_MAX_OFFSET - 35);
+  const pieceY = randomInt(24, CAPTCHA_HEIGHT - CAPTCHA_PIECE_SIZE - 24);
+  const seed = randomBytes(4).readUInt32BE(0);
+  const images = createCaptchaImages(targetX, pieceY, seed);
+  state.captchas[id] = { targetX, issuedAt: now(), expires: now() + CAPTCHA_TTL_MS };
   saveState();
-  return { captchaId: id, question: `${a} ${sym} ${b}` };
+  return {
+    captchaId: id,
+    ...images,
+    width: CAPTCHA_WIDTH,
+    height: CAPTCHA_HEIGHT,
+    pieceSize: CAPTCHA_PIECE_SIZE,
+    pieceY,
+    maxOffset: CAPTCHA_MAX_OFFSET,
+  };
 }
 
 function consumeCaptcha(id, answer) {
+  if (typeof id !== "string" || !/^[\da-f]{32}$/.test(id)) return false;
   const c = state.captchas[id];
+  if (!c) return false;
   delete state.captchas[id];
   saveState();
-  if (!c || now() > c.expires) return false;
-  return String(answer ?? "").trim() === c.answer;
+  if (
+    !Number.isFinite(c.targetX) || !Number.isFinite(c.issuedAt) ||
+    now() > c.expires || now() - c.issuedAt < CAPTCHA_MIN_AGE_MS
+  ) return false;
+  if (typeof answer !== "string" || !/^\d{1,3}$/.test(answer)) return false;
+  const guess = Number(answer);
+  return Math.abs(guess - c.targetX) <= 5;
 }
 
 /* 邮箱验证码：签发/校验/冷却/尝试上限全在服务端。
@@ -402,12 +626,56 @@ setInterval(() => {
   for (const [ip, h] of rateHits) if (now > h.reset) rateHits.delete(ip);
 }, RATE_WINDOW_MS).unref?.();
 
-/* 安全（2026-10-11 红队自测修复）：不信任 X-Forwarded-For——
- * 攻击者可每个请求伪造一个新 XFF 无限绕过限流（实测 40 连发全 200）。
- * 一律按 socket 地址计数：经 Vite 代理的所有流量共享一个桶（保守方向，
- * 无法伪造）。直连 127.0.0.1 的本机流量同桶。 */
+/* 默认只信 TCP 对端地址，忽略客户端可伪造的 X-Forwarded-For。
+ * 只有当 TCP 对端命中 OBSUCVIM_TRUSTED_PROXY_IPS 时，才从 XFF 链中由右向左
+ * 跳过已信任代理，取第一个非代理地址。代理必须覆盖或在末尾追加真实客户端 IP。 */
+function normalizeIpAddress(value) {
+  if (typeof value !== "string") return null;
+  let address = value.trim().toLowerCase();
+  if (!address) return null;
+  const bracketed = address.match(/^\[([^\]]+)\](?::\d+)?$/);
+  if (bracketed) address = bracketed[1];
+  if (address.includes("%")) address = address.split("%", 1)[0];
+  if (isIP(address) === 4) return address;
+  if (isIP(address) !== 6) return null;
+
+  let canonical;
+  try {
+    canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  } catch {
+    return null;
+  }
+  if (canonical.startsWith("::ffff:")) {
+    const mapped = canonical.slice(7);
+    if (isIP(mapped) === 4) return mapped;
+    const words = mapped.match(/^([\da-f]{1,4}):([\da-f]{1,4})$/);
+    if (words) {
+      const high = Number.parseInt(words[1], 16);
+      const low = Number.parseInt(words[2], 16);
+      return `${high >> 8}.${high & 255}.${low >> 8}.${low & 255}`;
+    }
+  }
+  return canonical;
+}
+
+const TRUSTED_PROXY_IPS = new Set(
+  (process.env.OBSUCVIM_TRUSTED_PROXY_IPS || "")
+    .split(",")
+    .map(normalizeIpAddress)
+    .filter((ip) => ip !== null),
+);
+
 function clientIp(req) {
-  return req.socket?.remoteAddress ?? "unknown";
+  const socketIp = normalizeIpAddress(req.socket?.remoteAddress) || "unknown";
+  if (!TRUSTED_PROXY_IPS.has(socketIp)) return socketIp;
+  const header = req.headers["x-forwarded-for"];
+  if (typeof header !== "string") return socketIp;
+  const forwarded = header.split(",").map(normalizeIpAddress).filter((ip) => ip !== null);
+  let address = socketIp;
+  for (let i = forwarded.length - 1; i >= 0 && TRUSTED_PROXY_IPS.has(address); i--) {
+    address = forwarded[i];
+  }
+  return address;
 }
 
 /* auth 专用限流（独立桶，比引擎更严格：防垃圾注册同时不影响混淆使用） */
@@ -429,8 +697,6 @@ function authRateLimited(ip) {
   h.n += 1;
   return h.n > AUTH_RATE_LIMIT;
 }
-
-let cachedVersion; // obsucvim --version，启动后首次 health 探测并缓存
 
 function rateLimited(ip) {
   const now = Date.now();
@@ -489,28 +755,6 @@ function releaseSlot() {
 const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") return json(res, 204, {});
 
-  if (req.method === "GET" && req.url === "/api/health") {
-    /* 安全修复：health 也纳入限流（此前无限流 + 每请求 spawn 一次
-     * obsucvim --version = 无限进程洪泛 DoS，实测 50 连发 0.64s）；
-     * 版本改为启动时探测一次并缓存。 */
-    if (rateLimited(clientIp(req))) {
-      return json(res, 429, { ok: false, error: "RATE_LIMITED" });
-    }
-    const mode = engineMode();
-    if (cachedVersion === undefined) {
-      cachedVersion = mode === "native"
-        ? (await run(BIN, ["--version"], { timeoutMs: 5000 })).out.trim() || "obsucvim native"
-        : mode === "wasi" ? "obsucvim 0.2.0 (WASI)" : null;
-    }
-    return json(res, 200, {
-      ok: mode !== "missing",
-      engine: cachedVersion || "obsucvim (engine missing)",
-      engineMode: mode,
-      mail: demoMail ? "demo" : "smtp",
-      quotaPerDay: 5,
-    });
-  }
-
   /* ================= 认证端点 ================= */
   const handleAuth = async () => {
     if (authRateLimited(clientIp(req))) {
@@ -536,7 +780,7 @@ const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/api/auth/register") {
       const { email, nickname, password, captchaId, captchaAnswer } = body;
       if (
-        typeof email !== "string" || email.length > EMAIL_MAX || !EMAIL_RE.test(email) ||
+        typeof email !== "string" || email.trim().length > EMAIL_MAX || !EMAIL_RE.test(normalizeEmail(email)) ||
         typeof password !== "string" || password.length < 8 || password.length > 128 ||
         (nickname !== undefined && (typeof nickname !== "string" || nickname.length > 24))
       ) return json(res, 400, { ok: false, error: "BAD_INPUT" });
@@ -547,8 +791,10 @@ const server = createServer(async (req, res) => {
         return json(res, 503, { ok: false, error: "SERVICE_FULL" });
       }
       if (!consumeCaptcha(captchaId, captchaAnswer)) return json(res, 400, { ok: false, error: "CAPTCHA_FAIL" });
-      const key = email.trim().toLowerCase();
+      const key = normalizeEmail(email);
       if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
+      const ipHash = registrationIpHash(clientIp(req));
+      if (state.registeredIps[ipHash]) return json(res, 409, { ok: false, error: "IP_ALREADY_REGISTERED" });
       const issued = issueEmailCode(key);
       if (!issued.ok) return json(res, 429, { ok: false, error: issued.error, retryAfter: issued.retryAfter });
       const salt = randomBytes(16).toString("hex");
@@ -575,13 +821,15 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/auth/register/confirm") {
       const { email, code } = body;
-      if (typeof email !== "string" || !EMAIL_RE.test(email) || typeof code !== "string") {
+      if (typeof email !== "string" || typeof code !== "string" || !EMAIL_RE.test(normalizeEmail(email))) {
         return json(res, 400, { ok: false, error: "BAD_INPUT" });
       }
-      const key = email.trim().toLowerCase();
+      const key = normalizeEmail(email);
+      if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
+      const ipHash = registrationIpHash(clientIp(req));
+      if (state.registeredIps[ipHash]) return json(res, 409, { ok: false, error: "IP_ALREADY_REGISTERED" });
       const v = checkEmailCode(key, code);
       if (!v.ok) return json(res, 400, { ok: false, error: v.error });
-      if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
       const draft = pendingRegistrations[key];
       if (!draft || now() > draft.expires) return json(res, 400, { ok: false, error: "REGISTER_EXPIRED" });
       delete pendingRegistrations[key];
@@ -592,6 +840,7 @@ const server = createServer(async (req, res) => {
         hash: draft.hash,
         created: now(),
       };
+      state.registeredIps[ipHash] = { email: key, created: now() };
       saveState();
       const token = sessionFor(key);
       return json(res, 200, { ok: true, token, user: userPublic(state.users[key]) });
@@ -599,9 +848,13 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/auth/resend") {
       const { email } = body;
-      if (typeof email !== "string" || !EMAIL_RE.test(email)) return json(res, 400, { ok: false, error: "BAD_INPUT" });
-      const key = email.trim().toLowerCase();
+      if (typeof email !== "string" || !EMAIL_RE.test(normalizeEmail(email))) {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      const key = normalizeEmail(email);
       if (state.users[key]) return json(res, 409, { ok: false, error: "EMAIL_TAKEN" });
+      const ipHash = registrationIpHash(clientIp(req));
+      if (state.registeredIps[ipHash]) return json(res, 409, { ok: false, error: "IP_ALREADY_REGISTERED" });
       const issued = issueEmailCode(key);
       if (!issued.ok) return json(res, 429, { ok: false, error: issued.error, retryAfter: issued.retryAfter });
       const sent = await deliverVerificationCode(key, issued.code);

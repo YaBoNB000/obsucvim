@@ -3,22 +3,19 @@ import { GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { InlineCode } from "../components/CodeArea";
 import { ENGINE, MAX_SOURCE_BYTES, ENGINE_TIMEOUT_MS, DAILY_FREE_QUOTA } from "../lib/engine";
 
-const TS_SNIPPET = `// 前端唯一需要改的地方：src/lib/engine.ts
-import init, { obfuscate } from "../wasm/obsucvim_core.js";
+const TS_SNIPPET = `// src/lib/engine.ts · authenticated same-origin API
+import { authHeaders } from "./token";
 
-let ready: Promise<void> | null = null;
-const load = () => (ready ??= init());
-
-export const ENGINE: ObfuscatorEngine = {
-  name: "Obsucvim Core",
-  runtime: "wasm",
-  async obfuscate(source, options) {
-    await load();
-    const raw = obfuscate(source, JSON.stringify(options));
-    const parsed = JSON.parse(raw) as { code: string; log?: LogLine[] };
-    return { code: parsed.code, log: parsed.log ?? [] };
-  },
-};`;
+export async function obfuscate(source: string, options: ObfuscationOptions) {
+  const response = await fetch("/api/obfuscate", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...authHeaders() },
+    body: JSON.stringify({ source, options }),
+  });
+  const payload = await response.json();
+  if (!response.ok || !payload.ok) throw new Error(payload.error ?? "ENGINE_FAILED");
+  return payload.result;
+}`;
 
 export function Docs() {
   const { t } = useI18n();

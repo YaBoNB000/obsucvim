@@ -29,12 +29,19 @@ export interface QuotaInfo {
 
 export interface CaptchaChallenge {
   captchaId: string;
-  question: string;
+  backgroundUrl: string;
+  pieceUrl: string;
+  width: number;
+  height: number;
+  pieceSize: number;
+  pieceY: number;
+  maxOffset: number;
 }
 
 export type AuthError =
   | "bad_input"
   | "email_taken"
+  | "ip_taken"
   | "no_user"
   | "bad_password"
   | "locked"
@@ -76,6 +83,7 @@ const AuthContext = createContext<AuthValue | null>(null);
 const ERROR_MAP: Record<string, AuthError> = {
   BAD_INPUT: "bad_input",
   EMAIL_TAKEN: "email_taken",
+  IP_ALREADY_REGISTERED: "ip_taken",
   NO_USER: "no_user",
   BAD_PASSWORD: "bad_password",
   LOCKED: "locked",
@@ -107,7 +115,13 @@ interface ApiEnvelope {
   user?: User;
   quota?: QuotaInfo;
   captchaId?: string;
-  question?: string;
+  backgroundUrl?: string;
+  pieceUrl?: string;
+  width?: number;
+  height?: number;
+  pieceSize?: number;
+  pieceY?: number;
+  maxOffset?: number;
 }
 
 function mapError(d: ApiEnvelope, status: number): AuthError {
@@ -153,7 +167,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const fetchCaptcha = useCallback(async (): Promise<CaptchaChallenge | null> => {
     try {
       const { data } = await apiPost<ApiEnvelope>("/api/auth/captcha", {});
-      return data.ok && data.captchaId && data.question ? { captchaId: data.captchaId, question: data.question } : null;
+      if (
+        !data.ok || !data.captchaId || !data.backgroundUrl || !data.pieceUrl ||
+        !Number.isInteger(data.width) || !Number.isInteger(data.height) ||
+        !Number.isInteger(data.pieceSize) || !Number.isInteger(data.pieceY) ||
+        !Number.isInteger(data.maxOffset)
+      ) return null;
+      return {
+        captchaId: data.captchaId,
+        backgroundUrl: data.backgroundUrl,
+        pieceUrl: data.pieceUrl,
+        width: data.width!,
+        height: data.height!,
+        pieceSize: data.pieceSize!,
+        pieceY: data.pieceY!,
+        maxOffset: data.maxOffset!,
+      };
     } catch {
       return null;
     }
