@@ -56,7 +56,14 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 
 ## 授权 Key 验证原型
 
-当前版本新增项目与客户授权 Key 的服务端 API：Key 原文仅在签发响应出现一次，服务器只保存摘要；首次验证绑定 executor 提供的 HWID 摘要，拥有者可撤销 Key 或重置绑定。接口和 Luau 调用示意见 `SCRIPT-KEYS.md`。此阶段还没有源码上传、混淆发布和远程脚本下载/执行 loader；HWID 由客户端提供，可伪造，仅作尽力绑定。
+当前版本包含项目与客户授权 Key 的服务端 API，以及注入到用户源码的授权检查：
+
+- Key 原文仅在签发响应出现一次，服务器只保存摘要；首次验证绑定 executor 提供的 HWID 摘要，拥有者可撤销 Key 或重置绑定。
+- `tools/inject-license.mjs` 会把 `tools/license-guard.luau` 插到用户源码首部，再从 `getgenv().key` 读取 Key 做服务端验证；混淆时检查逻辑与用户代码一起被保护。
+- 用法：`node tools/inject-license.mjs --source user.lua --script-id scr_<id> --out guarded.lua`，然后把 `guarded.lua` 交给混淆器。
+- 尚未包含网页端上传/发布流水线和受授权保护的脚本下载端点；HWID 由客户端提供，可伪造，仅作尽力绑定。
+
+接口、注入说明与 Luau 示例见 `SCRIPT-KEYS.md`。
 
 ## Cloudflare Turnstile（可选，启用托管人机验证）
 

@@ -1332,11 +1332,12 @@ const server = createServer(async (req, res) => {
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
     }
-    const { scriptId, key, hwid } = body;
+    const { scriptId, key, hwid, nonce } = body;
     if (
       typeof scriptId !== "string" || !/^scr_[\da-f]{24}$/i.test(scriptId) ||
       typeof key !== "string" || !/^osk_[\da-f]{64}$/i.test(key) ||
-      typeof hwid !== "string" || hwid.trim().length < 8 || hwid.trim().length > 256
+      typeof hwid !== "string" || hwid.trim().length < 8 || hwid.trim().length > 256 ||
+      (nonce !== undefined && (typeof nonce !== "string" || !/^[\da-z]{16,64}$/i.test(nonce)))
     ) return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
 
     const script = state.scripts[scriptId];
@@ -1364,6 +1365,7 @@ const server = createServer(async (req, res) => {
       licenseId,
       expiresAt: license.expiresAt,
       deviceBound: true,
+      ...(nonce === undefined ? {} : { nonce }),
     });
   }
 

@@ -59,9 +59,34 @@
 
 有效响应为 `{ "ok": true, "valid": true, ... }`。Key 错误、已撤销、过期或项目不匹配会统一返回 `LICENSE_INVALID`；同一 Key 换设备会返回 `DEVICE_MISMATCH`。验证端点按 IP 限流 60 次/分钟。
 
-## Luau loader 验证示意
+## 注入到用户源码的授权检查（已实现）
 
-此示意只执行授权检查，不下载或执行远端代码；后续要接入托管发布时，再让一个受保护的版本下载端点重复验证授权。
+`tools/license-guard.luau` 是注入模板，`tools/inject-license.mjs` 负责填入项目 ID 与验证地址：
+
+```bash
+node tools/inject-license.mjs --source user.lua --script-id scr_<24 hex> --out guarded.lua
+```
+
+产物首部是授权检查，后面接用户原始代码；再把这个文件交给 v15 混淆，检查逻辑会与用户代码一起被保护。
+
+注入后的行为：
+
+- 从 `getgenv().key`（缺失时用 `_G.key`）读取客户 Key，缺失则立即报错退出。
+- 用 `gethwid`/`syn.get_hwid` 取 HWID，取不到则拒绝运行。
+- 使用 `request` / `http_request` / `http.request` / `syn.request` 发 POST 请求；不支持时拒绝运行，不会退回 GET。
+- 请求带随机 nonce，响应必须同时满足：HTTP 200、`valid = true`、`scriptId` 一致、`nonce` 一致，否则报错。
+- 只嵌入公开的 `scriptId` 和验证 URL；服务器 Secret、HMAC 密钥、Turnstile Secret 都不进入脚本。
+- 通过后写入 `env.__obsucvim_license = { valid, expiresAt, checkedAt }`，供脚本后续判断。
+
+限制与说明：
+
+- 授权检查在脚本加载时执行一次。用户可在客户端改内存绕过本地检查；真正防止盗版仍要靠服务端在下载/发布端再次验证，这属于下一阶段。
+- 模板保持较紧凑（约 2.7 KB）。早期约 6 KB 版本会让当前 WASI 混淆器崩溃（node 段错误）；当前版本已用完整 v15 参数混淆验证通过。
+- HWID 由 executor 提供，可伪造、可变化；绑定只提高滥用成本。
+
+## Luau loader 验证示意（旧版参考）
+
+此示意只执行授权检查，不下载或执行远端代码；注入版已在上面实现，可直接使用。
 
 ```lua
 local shared = (type(getgenv) == "function" and getgenv()) or _G
