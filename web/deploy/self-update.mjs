@@ -14,13 +14,18 @@
  *   - 解压前校验包内 SHA256SUMS.txt，任何文件被改过都中止；
  *   - 只覆盖白名单内的相对路径，遇到 ../ 之类越界路径直接拒绝；
  *   - 永不写入 data/，升级前后账户与卡密不受影响。
+ *   - 覆盖 runtime\node.exe（正在运行的自身）时先改名再写入，避免 Windows 文件占用导致半截更新。
  */
 import { createHash } from "node:crypto";
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { get } from "node:https";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { inflateRawSync } from "node:zlib";
+
+const REPO_BRANCH = "arena/01a038eb-luraph";
+const RAW_BASE = `https://raw.githubusercontent.com/YaBoNB000/obsucvim/${REPO_BRANCH}`;
+const DEFAULT_URL = `${RAW_BASE}/release-assets/obsucvim-web-win64/Obsucvim-Web-Windows-x64.zip`;
 
 const EOCD_SIG = 0x06054b50;
 const CD_SIG = 0x02014b50;
@@ -46,8 +51,9 @@ function parseArgs(argv) {
 function usage(message) {
   if (message) console.error(`error: ${message}\n`);
   console.error(
-    "usage: node self-update.mjs --dir <install dir> (--url <https zip> | --zip <local zip>) " +
-    "[--sha256 <expected zip hash>] [--dry-run]",
+    "usage: node self-update.mjs --dir <install dir> [--url <https zip> | --zip <local zip>] " +
+    "[--sha256 <expected zip hash>] [--dry-run]\n" +
+    `       with no --url/--zip the official build is used: ${DEFAULT_URL}`,
   );
   process.exit(1);
 }
@@ -165,8 +171,11 @@ function verifyManifest(extractedRoot) {
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.dir) usage("--dir is required");
-if (!args.url && !args.zip) usage("provide either --url or --zip");
 if (args.url && args.zip) usage("use only one of --url / --zip");
+if (!args.url && !args.zip) {
+  args.url = process.env.OBSUCVIM_UPDATE_URL || DEFAULT_URL;
+  console.log(`未指定下载地址，使用官方版本：${args.url}`);
+}
 
 const installDir = path.resolve(String(args.dir));
 if (!existsSync(installDir)) usage(`install dir not found: ${installDir}`);
@@ -195,6 +204,23 @@ try {
 
   console.log(`[2/6] 校验安装包 SHA-256`);
   const actual = sha256(zipBuffer);
+  // 没有手填哈希时，尝试取同目录的同名 .sha256 旁车文件（官方发布页就是这么放的）
+  if (!args.sha256 && args.url) {
+    const sidecar = path.join(staging, "package.zip.sha256");
+    try {
+      await download(`${String(args.url)}.sha256`, sidecar);
+      const text = readFileSync(sidecar, "utf8");
+      const match = text.match(/\b([0-9a-f]{64})\b/i);
+      if (match) {
+        args.sha256 = match[1].toLowerCase();
+        console.log(`     取自发布页的同名 .sha256 文件`);
+      } else {
+        console.log(`     发布页的 .sha256 文件里没有哈希，改用包内清单校验`);
+      }
+    } catch {
+      console.log(`     取不到 .sha256 文件，改用包内清单校验`);
+    }
+  }
   if (args.sha256) {
     const expected = String(args.sha256).trim().toLowerCase();
     if (expected !== actual) {
@@ -237,6 +263,11 @@ try {
   const verified = verifyManifest(extractedRoot);
   console.log(`     ${verified} 个文件哈希一致`);
 
+  if (args["dry-run"]) {
+    console.log("");
+    console.log("--dry-run：下载、解压与校验都通过；按 --dry-run 要求没有覆盖任何文件。");
+  } else {
+
   console.log(`[5/6] 备份现有 data/ 与旧版本清单`);
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   const backupDir = path.join(installDir, "backup", stamp);
@@ -261,8 +292,47 @@ try {
   if (existsSync(oldInfo)) writeFileSync(path.join(backupDir, "BUILD-INFO.old.txt"), readFileSync(oldInfo));
 
   console.log(`[6/6] 覆盖程序文件（保留 data/）`);
+  const selfExe = (() => {
+    try { return realpathSync(process.execPath).toLowerCase(); } catch { return String(process.execPath).toLowerCase(); }
+  })();
   const replaced = [];
   const skipped = [];
+  const renamed = [];
+  const failures = [];
+
+  // 清掉上一次升级留下的 node.exe.old-* / .new（改名后就能删了）
+  const runtimeDir = path.join(installDir, "runtime");
+  if (existsSync(runtimeDir)) {
+    for (const name of readdirSync(runtimeDir)) {
+      if (/^node(\.exe)?\.(old-.*|new)$/i.test(name)) {
+        try { rmSync(path.join(runtimeDir, name), { force: true }); } catch { /* 仍被占用，下次再说 */ }
+      }
+    }
+  }
+
+  const copyInto = (from, target, relative) => {
+    const buffer = readFileSync(from);
+    let existingKey = target.toLowerCase();
+    if (existsSync(target)) {
+      try { existingKey = realpathSync(target).toLowerCase(); } catch { /* 用字面路径比较 */ }
+    }
+    // 正在运行的 runtime\node.exe：Windows 不允许改写，只允许改名。
+    // 先把它改名让开，再写入新文件，避免升级失败留下半截文件。
+    if (existsSync(target) && existingKey === selfExe) {
+      const aside = `${target}.old-${stamp}`;
+      try {
+        renameSync(target, aside);
+        writeFileSync(target, buffer);
+        renamed.push(`${relative}（旧文件改名 ${path.basename(aside)}）`);
+        return;
+      } catch (error) {
+        failures.push(`${relative}: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+    writeFileSync(target, buffer);
+  };
+
   const walk = (dir, base = "") => {
     for (const name of readdirSync(dir)) {
       const full = path.join(dir, name);
@@ -278,17 +348,30 @@ try {
       }
       const target = path.join(installDir, relative);
       mkdirSync(path.dirname(target), { recursive: true });
-      writeFileSync(target, readFileSync(full));
+      copyInto(full, target, relative);
       replaced.push(relative);
     }
   };
   walk(extractedRoot);
 
   console.log(`     更新 ${replaced.length} 个文件${skipped.length ? `，跳过 ${skipped.length} 个数据文件` : ""}`);
+  for (const note of renamed) console.log(`     运行中被占用的文件已换新：${note}`);
+  if (failures.length) {
+    console.error("");
+    console.error(`有 ${failures.length} 个文件写入失败（其余已更新）：`);
+    for (const line of failures) console.error(`  - ${line}`);
+    console.error("通常是程序正在运行。请先关闭 Obsucvim 窗口再重跑同一条命令。");
+    process.exitCode = 1;
+  }
   console.log("");
-  console.log("升级完成。请重启 Obsucvim 服务，例如：");
-  console.log("  .\\Start-Obsucvim.ps1 -LocalOnly");
+  if (failures.length) {
+    console.log("升级未完成：处理上面的占用问题后重跑同一条命令即可，已更新的文件不会回退。");
+  } else {
+    console.log("升级完成。请重启 Obsucvim 服务，例如：");
+    console.log("  .\\Start-Obsucvim.bat  (或菜单里重新启动)");
+  }
   console.log(`如出现问题，可从 ${backupDir} 恢复 data/。`);
+  }
 } catch (error) {
   console.error("");
   console.error(`升级失败：${error instanceof Error ? error.message : String(error)}`);

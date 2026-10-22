@@ -412,15 +412,17 @@ goto :done
 if not exist "%UPDATER%" goto :noupdater
 cls
 echo.
-echo   Updating. Program files are replaced, data\ is kept and backed up.
+echo   Updating from the official build. data\ is kept and backed up first.
+echo   (Set OBSUCVIM_UPDATE_URL to use your own mirror.)
 echo.
 "%NODE%" "%UPDATER%" --dir "%ROOT%"
 set "RC=!ERRORLEVEL!"
 echo.
 if not "!RC!"=="0" (
-  echo   Update failed, nothing was changed. See the message above.
+  echo   Update failed or files were busy. Nothing partial was left behind.
+  echo   Close the other Obsucvim window and run this menu item again.
 ) else (
-  echo   Update finished. Restart with Start-Obsucvim.bat
+  echo   Update finished. Start it again with menu item 1 or 2.
 )
 echo.
 if "%SKIPMENU%"=="0" pause
