@@ -22,6 +22,10 @@ The bundle includes Node.js 22.22.3 x64, the Rust/WASI engine, the single-file U
 - Published guards inject `OBS_IsPremium`, `OBS_UserNote`, `OBS_ScriptName`, `OBS_SecondsLeft` and `OBS_TotalExecutions` for UI gating. These are client-side values and can be tampered with, so never use them for security decisions.
 - HWID is client-supplied and spoofable; treat binding as friction, not hardware attestation.
 
+## Starting
+
+Extract, then double-click `Start-Obsucvim.bat`. It shows a menu (local only / network / 163 mail / self-check / update / open folders) and accepts unattended flags: `/local`, `/public`, `/smtp`, `/check`, `/update`, `/open`, plus an optional port such as `/local 9090`. `Start-Obsucvim.cmd` forwards to the same launcher; `Start-Obsucvim.ps1` only adds firewall rules.
+
 ## Upgrading
 
 Run `Update-Obsucvim.ps1 -Sha256 "<hash>"` inside the install directory (or `runtime\node.exe tools\self-update.mjs --dir . --url <zip> --sha256 <hash>`). It verifies the zip hash and the internal manifest, backs up `data/`, replaces program files only, and leaves accounts/keys/releases untouched. See `README-UPDATE.md`.

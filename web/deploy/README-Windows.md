@@ -3,9 +3,49 @@
 ## 启动
 
 1. 解压 ZIP 到一个有写权限的目录（例如 `C:\Obsucvim`）。
-2. 双击 `Start-Obsucvim.cmd`。
+2. 双击 **`Start-Obsucvim.bat`**。
 3. 在服务器上先打开 `http://localhost:8787` 测试。
-4. 从其他电脑访问 `http://<服务器内网或公网 IP>:8787`。若要从公网访问，请先配置 HTTPS 反向代理（IIS/ARR 等），**不要把明文 HTTP 登录直接暴露到公网**。
+4. 从其他电脑访问时，请先配置 HTTPS 反向代理（Caddy/IIS/ARR），**不要把明文 HTTP 登录直接暴露到公网**。
+
+`Start-Obsucvim.cmd` 仍然可用，它会转交给 `.bat`。
+
+### 菜单选项
+
+双击 `.bat` 会出现菜单：
+
+| 选项 | 作用 |
+|---|---|
+| 1 | 仅本机启动，绑定 `127.0.0.1`，适合首次测试 |
+| 2 | 允许网络访问（`0.0.0.0`），仅配合 HTTPS 反向代理使用 |
+| 3 | 启动前用隐藏输入读取 163 客户端授权码，启用真实邮件 |
+| 4 | 只做自检：文件是否齐全、端口是否被占用、数据与邮件状态 |
+| 5 | 运行带校验的自更新 |
+| 6 | 打开 `data` 目录 |
+| 7 | 打开安装目录 |
+| 8 | 退出 |
+
+### 命令行参数
+
+```bat
+Start-Obsucvim.bat /local          仅本机
+Start-Obsucvim.bat /public         允许网络访问
+Start-Obsucvim.bat /smtp           提示输入授权码后启动
+Start-Obsucvim.bat /check          只自检，不启动
+Start-Obsucvim.bat /update         运行自更新
+Start-Obsucvim.bat /open           启动后自动打开浏览器
+Start-Obsucvim.bat /local 9090     指定端口
+```
+
+自检失败或端口被占用时会给出明确提示，不会静默退出。
+
+### 启动器自己做了什么
+
+- 校验 `runtime\node.exe`、`tools\engine-server.mjs`、`tools\obsucvim.wasm`、`dist\index.html` 是否存在，缺什么列什么
+- 自动创建 `data\`（首次运行）
+- 启动前检测端口占用，并提示占用进程 PID
+- 设置全部运行时环境变量（引擎路径、数据目录、代理信任、SMTP 默认值）
+- 只在你输入授权码时设置 `SMTP_PASS`，且不写盘
+- 服务退出后显示退出码并保留窗口，方便看错误
 
 服务由内置 Node.js 22.22.3 x64 启动，Rust 引擎以 WASI Preview 1 在 Node 内运行；无需安装 Rust、Visual Studio、MSVC、Python 或额外的运行时。Web 静态文件与 `/api/*` 同源提供。登录会话使用 `HttpOnly; SameSite=Strict` Cookie，JavaScript 不再读取会话令牌；旧版可读会话升级后会失效一次，用户需重新登录。公开部署必须使用 HTTPS，HTTPS 请求会启用 Secure Cookie 与 HSTS。页面响应还包含哈希白名单 CSP、`frame-ancestors 'none'` 和 `X-Frame-Options: DENY`。
 
@@ -28,6 +68,8 @@ Caddy/IIS 在本机终止 TLS 时，启动脚本默认信任 loopback 代理 (`1
 ```powershell
 .\Start-Obsucvim.ps1 -LocalOnly
 ```
+
+`Start-Obsucvim.ps1` 只是一层薄包装：负责可选的防火墙规则，然后把参数转交 `Start-Obsucvim.bat`，启动逻辑只有一处实现。
 
 停止服务按 Ctrl+C。
 
