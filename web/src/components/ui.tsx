@@ -169,7 +169,7 @@ export function Pill({ children, className }: { children: ReactNode; className?:
 }
 
 /* ------------------------------ 统计块 ------------------------------ */
-export function Stat({ label, value, unit }: { label: string; value: string; unit?: string }) {
+export function Stat({ label, value, unit }: { label: string; value: ReactNode; unit?: string }) {
   return (
     <div className="glass-soft rounded-2xl border border-white/[0.07] px-4 py-3">
       <div className="text-[10px] tracking-[0.18em] text-slate-400/70 uppercase">{label}</div>

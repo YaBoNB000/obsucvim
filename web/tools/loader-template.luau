@@ -10,6 +10,10 @@
 local SCRIPT_ID = "__SCRIPT_ID__"
 local BASE = "__BASE_URL__"
 
+-- Filled in from the project's script settings.
+local HEARTBEAT = __HEARTBEAT__
+local SILENT = __SILENT__
+
 local env = _G
 if type(getgenv) == "function" then
 	local ok, value = pcall(getgenv)
@@ -130,6 +134,12 @@ if type(release) ~= "table" or type(release.code) ~= "string" or #release.code <
 	fail((release and (release.code or release.error)) or "release unavailable")
 end
 
+local function notify(message)
+	if SILENT then return end
+	local printer = rawget(_G, "warn") or rawget(_G, "print")
+	if type(printer) == "function" then pcall(printer, "[Obsucvim] " .. tostring(message)) end
+end
+
 local runtime = verdict.runtime
 if type(runtime) ~= "table" then runtime = {} end
 env.__obsucvim_license = {
@@ -142,6 +152,85 @@ env.__obsucvim_license = {
 	executions = tonumber(runtime.totalExecutions) or 0,
 	version = release.version,
 }
+
+local licence = env.__obsucvim_license
+env.OBS_License = licence
+env.OBS_IsPremium = licence.premium
+env.OBS_UserNote = licence.note
+env.OBS_ScriptName = licence.scriptName
+env.OBS_FolderName = licence.folderName
+env.OBS_SecondsLeft = licence.secondsLeft
+env.OBS_TotalExecutions = licence.executions
+env.OBS_ScriptVersion = licence.version
+
+--[[ Heartbeat: re-check the licence in the background so a revoked or banned
+  key does not keep running forever. A client cannot reliably kill threads it
+  did not create, so this only marks the licence invalid, calls the optional
+  obsucvim_on_heartbeat_fail hook and warns; long-running scripts should check
+  OBS_License.valid themselves.
+  Free for All runs have no key, so there is nothing to re-check. ]]
+if HEARTBEAT and key ~= "" then
+	local sleeper
+	if type(task) == "table" and type(task.wait) == "function" then
+		sleeper = task.wait
+	elseif type(wait) == "function" then
+		sleeper = wait
+	elseif type(env.task) == "table" and type(env.task.wait) == "function" then
+		sleeper = env.task.wait
+	end
+
+	local function heartbeatTick()
+		local again = select(1, post("/api/licenses/validate", {
+			scriptId = SCRIPT_ID, key = key, hwid = hwid, nonce = nonce(),
+		}))
+		local licence = env.__obsucvim_license
+		if type(again) == "table" and again.valid == true then
+			local fresh = again.runtime
+			if type(fresh) == "table" and type(licence) == "table" then
+				licence.premium = fresh.premium == true
+				licence.secondsLeft = tonumber(fresh.secondsLeft) or licence.secondsLeft
+				licence.executions = tonumber(fresh.totalExecutions) or licence.executions
+				env.OBS_SecondsLeft = licence.secondsLeft
+				env.OBS_TotalExecutions = licence.executions
+			end
+			return true
+		end
+		local code = "HEARTBEAT_FAILED"
+		if type(again) == "table" then code = tostring(again.code or again.error or code) end
+		if type(licence) == "table" then
+			licence.valid = false
+			licence.reason = code
+		end
+		env.OBS_License = licence
+		local hook = env.obsucvim_on_heartbeat_fail
+		if type(hook) == "function" then pcall(hook, code) end
+		notify("licence heartbeat failed: " .. tostring(code))
+		return false
+	end
+
+	local function heartbeatLoop()
+		while true do
+			local slept, sleepError = pcall(sleeper, 90)
+			if not slept then return end -- the host stopped yielding; stop quietly
+			local licence = env.__obsucvim_license
+			if type(licence) == "table" and licence.valid == false then return end
+			if not heartbeatTick() then return end
+		end
+	end
+
+	if sleeper then
+		if type(task) == "table" and type(task.spawn) == "function" then
+			pcall(task.spawn, heartbeatLoop)
+		elseif type(env.task) == "table" and type(env.task.spawn) == "function" then
+			pcall(env.task.spawn, heartbeatLoop)
+		elseif type(coroutine) == "table" and type(coroutine.create) == "function" then
+			pcall(function()
+				local co = coroutine.create(heartbeatLoop)
+				coroutine.resume(co)
+			end)
+		end
+	end
+end
 
 local chunk, compileError = loadstring(release.code)
 if type(chunk) ~= "function" then

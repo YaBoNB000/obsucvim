@@ -11,6 +11,7 @@ import { Account } from "./pages/Account";
 import { KeyStatusPage } from "./pages/KeyStatus";
 import { I18nProvider, useI18n, type TKey } from "./lib/i18n";
 import { AuthProvider, HistoryProvider, useAuth } from "./lib/store";
+import { ToastProvider } from "./components/Feedback";
 
 const TITLES: Record<PageId, { title: TKey; subtitle: TKey }> = {
   workspace: { title: "ws.title", subtitle: "ws.subtitle" },
@@ -34,13 +35,14 @@ function Console() {
   const meta = TITLES[page];
 
   return (
+    <ToastProvider>
     <div className="min-h-screen lg:pl-[272px]">
       <Sidebar page={page} setPage={setPage} mobileOpen={mobileOpen} setMobileOpen={setMobileOpen} />
 
       <TopBar title={t(meta.title)} subtitle={t(meta.subtitle)} onMenu={() => setMobileOpen(true)} />
 
       <main className="px-4 py-5 sm:px-6 sm:py-6">
-        <div key={page} className="animate-rise">
+        <div key={page} className="anim-enter">
           {page === "workspace" && <Workspace />}
           {page === "scripts" && <Scripts />}
           {page === "history" && <History />}
@@ -62,6 +64,7 @@ function Console() {
         </footer>
       </main>
     </div>
+    </ToastProvider>
   );
 }
 

@@ -99,8 +99,20 @@
 服务端会：注入卡密校验 → 用 v15 全保护混淆 → 校验产物 → 写入 `data/releases/<id>/<version>.lua`。
 **原始源码只存在于内存和引擎临时目录，不落盘、不进状态文件，请求结束即删除。** 每次消耗 1 次每日额度。
 
-返回 `{ release: { version, sha256, size, sourceBytes, guardedBytes }, elapsedMs, seed, quota }`。
-错误码：`BAD_SOURCE`、`RELEASE_TOO_LARGE`、`ENGINE_BUSY`、`ENGINE_TIMEOUT`、`ENGINE_FAIL`、`QUOTA_EXCEEDED`。
+**异步作业模型**（v2）：提交立刻返回 `202 { jobId, stage, progress, quota }`，混淆在后台继续；
+前端轮询 `GET /api/publish/<jobId>`（需要登录，且只能查自己的作业）：
+
+```json
+{ "ok": true, "status": "processing|completed|failed", "stage": "queued|injecting|obfuscating|storing|completed",
+  "progress": 0, "elapsedMs": 1234, "result": { "version", "sha256", "size" }, "error": "ENGINE_FAIL" }
+```
+
+- 额度在提交时**预留**，失败自动退还，不会出现「报错还扣次数」
+- 同账号最多 2 个并发作业，超出返回 `409 PUBLISH_BUSY`
+- 作业只在内存中，10 分钟后过期；服务重启后轮询会得到 `404 JOB_NOT_FOUND`，提示重试即可
+- 作业不存在 / 不是自己的，一律返回同一个 404，避免撞库探测
+
+错误码：`BAD_SOURCE`、`BAD_VERSION`、`RELEASE_LIMIT`、`RELEASE_TOO_LARGE`、`ENGINE_BUSY`、`ENGINE_TIMEOUT`、`ENGINE_FAIL`、`QUOTA_EXCEEDED`、`PUBLISH_BUSY`、`JOB_NOT_FOUND`。
 
 ### 直接上传已混淆产物
 
@@ -225,6 +237,29 @@ loadstring(game:HttpGet("https://obsucvim.l2.ink/files/<scriptId>.lua"))()
 - 开启后 `validate` 允许空 key，返回 `{ valid: true, free: true }`
 - `runtime.premium = false`，脚本内可用 `OBS_IsPremium` 区分免费/付费功能
 - 无 key 调用不绑定设备、不累计执行次数
+
+**心跳复核（heartbeat）**
+
+`POST /api/auth/scripts/update` → `{ "scriptId": "scr_...", "heartbeat": true }`
+
+- 服务端把开关写进 loader（`local HEARTBEAT = true`），下次请求 `/files/<id>.lua` 即生效
+- 开启后 loader 每 ~90 秒用同一把 key 重新校验一次，成功则刷新 `OBS_SecondsLeft` / `OBS_TotalExecutions`
+- 复核失败（撤销/封禁/过期）：把 `OBS_License.valid` 置 `false`、写 `OBS_License.reason`，
+  调用可选的 `getgenv().obsucvim_on_heartbeat_fail(code)`，并在控制台 `warn`（`silent` 时不 warn）
+- **边界**：客户端无法可靠杀死不是自己创建的线程，所以心跳只能「通知 + 让脚本自行退出」。
+  长驻脚本应自己检查 `OBS_License.valid`
+- FFA（无 key）没有可复核的对象，心跳自动跳过
+
+**静默模式（silent）**
+
+字段保留（`silent` 会传给 loader），但我们的 loader 本身不打印任何内容，**没有可静默的输出**，
+因此控制台不提供这个开关（Luarmor 的 silent 是针对它自己的控制台输出）。这一点在 UI 里有明确说明。
+
+**卡密迁移**
+
+- `GET /api/auth/licenses/export.json?folderId=` → 元数据（`licenseId`、备注、到期、设备绑定、封禁、执行数），**永不含卡密原文**（服务端只存 HMAC 摘要）
+- `POST /api/auth/licenses/import` → `{ folderId, entries: [{ label, keyDays|expiresAt }] }`，一次最多 100 条，
+  只生成**新卡密**并明文返回一次；任一条不合法则整批拒绝，不做半批导入
 
 **封禁（完整版）**
 

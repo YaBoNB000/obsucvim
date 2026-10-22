@@ -182,6 +182,7 @@ const LICENSE_MAX_FAILS = 10;
 const LICENSE_LOCK_MS = 10 * 60_000;
 const MAX_RELEASE_BYTES = 4 * 1024 * 1024;
 const MAX_RELEASES_PER_SCRIPT = 20;
+const DAILY_QUOTA = 5;
 
 let state = {
   users: {},      // email -> { email, nickname, salt, hash, created }
@@ -311,10 +312,12 @@ function loaderTemplate() {
 }
 
 /** Stable public loader: same URL forever, contents swapped on each publish. */
-function buildLoaderSource(scriptId, origin) {
+function buildLoaderSource(script, origin) {
   return loaderTemplate()
-    .replaceAll("__SCRIPT_ID__", scriptId)
-    .replaceAll("__BASE_URL__", origin);
+    .replaceAll("__SCRIPT_ID__", script.scriptId)
+    .replaceAll("__BASE_URL__", origin)
+    .replaceAll("__HEARTBEAT__", script.heartbeat ? "true" : "false")
+    .replaceAll("__SILENT__", script.silent ? "true" : "false");
 }
 
 let cachedGuardTemplate = null;
@@ -380,6 +383,133 @@ function saveReleaseFile(scriptId, version, code) {
   writeFileSync(file, code, "utf8");
   return file;
 }
+
+/* ---------------- 异步发布作业 ----------------
+ * 混淆是 1–3 秒的 CPU 活，同步等会顶到反代的超时。改成作业：
+ * 提交立刻返回 jobId，前端轮询进度。额度在提交时预留，失败即退还，
+ * 所以「失败扣额度」这种坑不会出现。作业只在内存里，进程重启即丢——
+ * 这时前端会拿到 404 JOB_NOT_FOUND，提示重试即可。 */
+const PUBLISH_STAGES = {
+  queued: 5,
+  injecting: 20,
+  obfuscating: 65,
+  storing: 90,
+  completed: 100,
+};
+const MAX_ACTIVE_JOBS_PER_ACCOUNT = 2;
+const PUBLISH_JOB_TTL_MS = 10 * 60_000;
+const publishJobs = new Map();
+
+function publishJobJson(job) {
+  return {
+    jobId: job.id,
+    status: job.status,
+    stage: job.stage,
+    progress: job.progress,
+    startedAt: job.startedAt,
+    elapsedMs: (job.finishedAt ?? Date.now()) - job.startedAt,
+    ...(job.result ? { result: job.result } : {}),
+    ...(job.error ? { error: job.error, detail: job.detail } : {}),
+  };
+}
+
+function activeJobsFor(email) {
+  return [...publishJobs.values()].filter(
+    (job) => job.ownerEmail === email && job.status === "processing",
+  );
+}
+
+function setJobStage(job, stage) {
+  job.stage = stage;
+  job.progress = PUBLISH_STAGES[stage] ?? job.progress;
+}
+
+function refundQuota(email, job) {
+  if (!job.quotaCharged) return;
+  const q = quotaOf(email);
+  if (q.date === job.quotaDate) {
+    q.used = Math.max(0, q.used - 1);
+    state.quotas[email] = q;
+    job.quotaCharged = false;
+  }
+}
+
+function failJob(job, error, detail) {
+  job.status = "failed";
+  job.stage = "failed";
+  job.error = error;
+  if (detail) job.detail = String(detail).slice(0, 300);
+  job.finishedAt = now();
+  refundQuota(job.ownerEmail, job);
+  job.source = null;
+  saveState();
+}
+
+function sweepPublishJobs() {
+  const t = now();
+  for (const [id, job] of publishJobs) {
+    if (job.status === "processing" && t - job.startedAt > PUBLISH_JOB_TTL_MS) {
+      failJob(job, "JOB_EXPIRED");
+    } else if (job.status !== "processing" && job.finishedAt && t - job.finishedAt > PUBLISH_JOB_TTL_MS) {
+      publishJobs.delete(id);
+    }
+  }
+}
+
+/* 真正的流水线。调用方已经校验过入参与额度。 */
+async function runPublishJob(job, { source, version, options, origin }) {
+  try {
+    setJobStage(job, "injecting");
+    let guarded;
+    try {
+      guarded = buildGuardedSource(source, job.scriptId, `${origin}/api/licenses/validate`);
+    } catch {
+      return failJob(job, "GUARD_TEMPLATE_MISSING");
+    }
+    job.source = null; // 注入后立刻丢掉原始源码引用
+
+    if (engineMode() === "missing") return failJob(job, "ENGINE_MISSING");
+    setJobStage(job, "obfuscating");
+    const started = Date.now();
+    const out = await obfuscateSource(guarded, options);
+    if (!out.ok) return failJob(job, out.error, out.detail);
+
+    const code = out.code;
+    const bytes = Buffer.byteLength(code, "utf8");
+    if (bytes > MAX_RELEASE_BYTES) return failJob(job, "RELEASE_TOO_LARGE");
+
+    setJobStage(job, "storing");
+    const key = `${job.scriptId}:${version}`;
+    const file = saveReleaseFile(job.scriptId, version, code);
+    const sha256 = createHash("sha256").update(code).digest("hex");
+    state.releases[key] = {
+      scriptId: job.scriptId,
+      ownerEmail: job.ownerEmail,
+      version,
+      sha256,
+      size: bytes,
+      createdAt: now(),
+      file,
+      pipeline: true,
+    };
+    saveState();
+
+    job.result = {
+      scriptId: job.scriptId,
+      version,
+      sha256,
+      size: bytes,
+      sourceBytes: job.sourceBytes,
+      guardedBytes: Buffer.byteLength(guarded, "utf8"),
+      elapsedMs: Date.now() - started,
+    };
+    job.status = "completed";
+    setJobStage(job, "completed");
+    job.finishedAt = now();
+  } catch (error) {
+    failJob(job, "ENGINE_FAIL", error instanceof Error ? error.message : String(error));
+  }
+}
 loadState();
 
 // 过期清扫（captchas / codes / sessions）
@@ -391,6 +521,7 @@ setInterval(() => {
   for (const [k, d] of Object.entries(state.pendingRegistrations)) if (n > d.expires) delete state.pendingRegistrations[k];
   for (const [k, expires] of Object.entries(state.licenseNonces)) if (n > expires) delete state.licenseNonces[k];
   for (const [k, session] of Object.entries(state.licenseSessions)) if (n > session.expires) delete state.licenseSessions[k];
+  sweepPublishJobs();
   saveState();
 }, 300_000).unref?.();
 
@@ -701,7 +832,7 @@ function quotaOf(email) {
 
 function quotaJson(email) {
   const q = quotaOf(email);
-  return { usedToday: q.used, remaining: Math.max(0, 5 - q.used), limit: 5 };
+  return { usedToday: q.used, remaining: Math.max(0, DAILY_QUOTA - q.used), limit: DAILY_QUOTA };
 }
 
 /* 服务端生成 PNG 拼图验证码。答案坐标只保存在状态文件中；PNG 响应不含答案字段。
@@ -1484,9 +1615,9 @@ const server = createServer(async (req, res) => {
       if (!owner) return unauthorized(res, req);
       const scripts = Object.values(state.scripts)
         .filter((script) => script.ownerEmail === owner.email)
-        .map(({ scriptId, folderId, name, description, createdAt, active, ffa, silent }) => ({
+        .map(({ scriptId, folderId, name, description, createdAt, active, ffa, silent, heartbeat }) => ({
           scriptId, folderId, name, description, createdAt, active,
-          ffa: Boolean(ffa), silent: Boolean(silent),
+          ffa: Boolean(ffa), silent: Boolean(silent), heartbeat: Boolean(heartbeat),
         }));
       return json(res, 200, { ok: true, scripts });
     }
@@ -1543,7 +1674,7 @@ const server = createServer(async (req, res) => {
         }
         script.name = body.name.trim();
       }
-      for (const flag of ["ffa", "silent"]) {
+      for (const flag of ["ffa", "silent", "heartbeat"]) {
         if (body[flag] === undefined) continue;
         if (typeof body[flag] !== "boolean") return json(res, 400, { ok: false, error: "BAD_INPUT" });
         script[flag] = body[flag];
@@ -1559,6 +1690,7 @@ const server = createServer(async (req, res) => {
           scriptId: script.scriptId, folderId: script.folderId, name: script.name,
           description: script.description, createdAt: script.createdAt,
           active: script.active, ffa: Boolean(script.ffa), silent: Boolean(script.silent),
+          heartbeat: Boolean(script.heartbeat),
         },
       });
     }
@@ -1656,6 +1788,128 @@ const server = createServer(async (req, res) => {
         "cache-control": "no-store",
       });
       return res.end(csv);
+    }
+
+    if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/licenses/export.json") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const url = new URL(req.url, "http://localhost");
+      const folderId = url.searchParams.get("folderId");
+      const scriptId = url.searchParams.get("scriptId");
+      if (folderId && state.folders[folderId]?.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
+      if (scriptId && state.scripts[scriptId]?.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      }
+      const rows = Object.values(state.licenseKeys).filter((license) => {
+        if (license.ownerEmail !== owner.email) return false;
+        if (folderId) return license.folderId === folderId;
+        return !scriptId || license.scriptId === scriptId;
+      });
+      // 只导出元数据。卡密原文根本没存（只有 HMAC 摘要），所以这里不可能泄密。
+      const licenses = rows.map((license) => {
+        const ban = activeLicenseBan(license);
+        return {
+          licenseId: license.licenseId,
+          label: license.label || "",
+          folderId: license.folderId,
+          scriptId: license.scriptId ?? null,
+          createdAt: license.createdAt,
+          expiresAt: license.expiresAt ?? null,
+          durationDays: license.durationDays ?? null,
+          revokedAt: license.revokedAt ?? null,
+          deviceBound: Boolean(license.hwidHash),
+          firstActivatedAt: license.firstActivatedAt ?? null,
+          lastUsedAt: license.lastUsedAt ?? null,
+          executions: license.executions ?? 0,
+          ban: ban ? { reason: ban.reason || "", expiresAt: ban.expiresAt ?? null } : null,
+        };
+      });
+      return json(res, 200, {
+        ok: true,
+        exportedAt: new Date(now()).toISOString(),
+        folderId: folderId || null,
+        count: licenses.length,
+        note: "Keys themselves are only shown once at issuance; this export carries metadata only.",
+        licenses,
+      });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/licenses/import") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { folderId, entries } = body;
+      const folder = typeof folderId === "string" ? state.folders[folderId] : null;
+      if (!folder || folder.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "FOLDER_NOT_FOUND" });
+      }
+      if (!Array.isArray(entries) || entries.length === 0) {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      if (entries.length > MAX_BATCH_KEYS) {
+        return json(res, 400, { ok: false, error: "BAD_COUNT" });
+      }
+      const existing = Object.values(state.licenseKeys).filter((license) => license.folderId === folder.folderId);
+      if (existing.length + entries.length > MAX_LICENSES_PER_SCRIPT) {
+        return json(res, 409, { ok: false, error: "LICENSE_LIMIT" });
+      }
+      const anchorScript = Object.values(state.scripts).find((script) => script.folderId === folder.folderId)?.scriptId ?? null;
+
+      // 先把所有条目校验一遍，任何一条不合法就整批拒绝：不做半批导入。
+      const parsed = [];
+      for (const [index, entry] of entries.entries()) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+          return json(res, 400, { ok: false, error: "BAD_INPUT", index });
+        }
+        const label = entry.label === undefined ? "" : entry.label;
+        if (typeof label !== "string" || label.length > 80) {
+          return json(res, 400, { ok: false, error: "BAD_INPUT", index });
+        }
+        let expiresAt = null;
+        let durationDays = null;
+        if (entry.keyDays !== undefined && entry.keyDays !== null && entry.keyDays !== "") {
+          const days = Number(entry.keyDays);
+          if (!Number.isInteger(days) || days < 1 || days > 3650) {
+            return json(res, 400, { ok: false, error: "BAD_KEY_DAYS", index });
+          }
+          durationDays = days;
+        } else if (entry.expiresAt !== undefined && entry.expiresAt !== null && entry.expiresAt !== "") {
+          const parsedMs = typeof entry.expiresAt === "number" ? entry.expiresAt : Date.parse(String(entry.expiresAt));
+          if (!Number.isFinite(parsedMs) || parsedMs <= now()) {
+            return json(res, 400, { ok: false, error: "BAD_EXPIRY", index });
+          }
+          expiresAt = parsedMs;
+        }
+        parsed.push({ label: label.trim(), expiresAt, durationDays });
+      }
+
+      const issued = parsed.map(({ label, expiresAt, durationDays }) => {
+        const licenseId = "lic_" + randomBytes(12).toString("hex");
+        const licenseKey = LICENSE_KEY_PREFIX + randomBytes(32).toString("hex");
+        const keyHash = licenseKeyDigest(licenseKey);
+        const license = {
+          licenseId,
+          keyHash,
+          ownerEmail: owner.email,
+          folderId: folder.folderId,
+          scriptId: anchorScript,
+          label,
+          createdAt: now(),
+          expiresAt,
+          durationDays,
+          revokedAt: null,
+          hwidHash: null,
+          firstActivatedAt: null,
+          lastUsedAt: null,
+          importedFrom: "json",
+        };
+        state.licenseKeys[licenseId] = license;
+        state.licenseKeyIndex[keyHash] = licenseId;
+        return { licenseKey, license: licensePublic(license) };
+      });
+      saveState();
+      return json(res, 201, { ok: true, count: issued.length, licenses: issued });
     }
 
     if (req.method === "POST" && req.url === "/api/auth/licenses") {
@@ -2050,6 +2304,19 @@ const server = createServer(async (req, res) => {
     return json(res, 404, { ok: false, error: "NOT_FOUND" });
   };
 
+  if (req.method === "GET" && req.url.startsWith("/api/publish/")) {
+    const owner = authUser(req);
+    if (!owner) return unauthorized(res, req);
+    sweepPublishJobs();
+    const jobId = new URL(req.url, "http://localhost").pathname.slice("/api/publish/".length);
+    const job = publishJobs.get(jobId);
+    // 别人的作业与不存在的作业返回同一个结果，避免撞库探测。
+    if (!job || job.ownerEmail !== owner.email) {
+      return json(res, 404, { ok: false, error: "JOB_NOT_FOUND" });
+    }
+    return json(res, 200, { ok: true, ...publishJobJson(job), quota: quotaJson(owner.email) });
+  }
+
   if (req.url.startsWith("/api/auth/")) return await handleAuth();
 
   if (req.method === "POST" && req.url === "/api/licenses/validate") {
@@ -2428,58 +2695,44 @@ const server = createServer(async (req, res) => {
     if (optErr) return json(res, 400, { ok: false, error: optErr });
     if (engineMode() === "missing") return json(res, 503, { ok: false, error: "ENGINE_MISSING" });
 
+    if (activeJobsFor(owner.email).length >= MAX_ACTIVE_JOBS_PER_ACCOUNT) {
+      return json(res, 409, { ok: false, error: "PUBLISH_BUSY" });
+    }
+
     const q = quotaOf(owner.email);
-    if (q.used >= 5) return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(owner.email) });
-
-    let guarded;
-    try {
-      guarded = buildGuardedSource(source, scriptId, `${publicOrigin(req)}/api/licenses/validate`);
-    } catch {
-      return json(res, 500, { ok: false, error: "GUARD_TEMPLATE_MISSING" });
+    if (q.used >= DAILY_QUOTA) {
+      return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(owner.email) });
     }
-
-    const started = Date.now();
-    const job = await obfuscateSource(guarded, mergedOptions);
-    if (!job.ok) {
-      return json(res, job.status ?? 500, {
-        ok: false,
-        error: job.error,
-        ...(job.detail ? { detail: job.detail } : {}),
-      });
-    }
-    const code = job.code;
-    const bytes = Buffer.byteLength(code, "utf8");
-    if (bytes > MAX_RELEASE_BYTES) return json(res, 413, { ok: false, error: "RELEASE_TOO_LARGE" });
-
-    const file = saveReleaseFile(scriptId, version, code);
-    state.releases[key] = {
-      scriptId,
-      ownerEmail: owner.email,
-      version,
-      sha256: createHash("sha256").update(code).digest("hex"),
-      size: bytes,
-      createdAt: now(),
-      file,
-      pipeline: true,
-    };
+    // 预留额度：失败由 failJob 退还，成功才真正消耗。
     q.used += 1;
     state.quotas[owner.email] = q;
     saveState();
 
-    // The raw source only ever lived in memory and the temporary engine workdir,
-    // which obfuscateSource deletes. Nothing about it is persisted.
-    return json(res, 201, {
+    const job = {
+      id: `pub_${randomBytes(9).toString("hex")}`,
+      ownerEmail: owner.email,
+      scriptId,
+      version,
+      source,
+      sourceBytes,
+      status: "processing",
+      stage: "queued",
+      progress: PUBLISH_STAGES.queued,
+      startedAt: now(),
+      quotaCharged: true,
+      quotaDate: q.date,
+    };
+    publishJobs.set(job.id, job);
+
+    const origin = publicOrigin(req);
+    // 不 await：先把 jobId 还给前端，混淆在后台继续。
+    void runPublishJob(job, { source, version, options: mergedOptions, origin });
+
+    return json(res, 202, {
       ok: true,
-      release: {
-        scriptId,
-        version,
-        sha256: state.releases[key].sha256,
-        size: bytes,
-        sourceBytes,
-        guardedBytes: Buffer.byteLength(guarded, "utf8"),
-      },
-      elapsedMs: Date.now() - started,
-      seed: normalizeSeed(mergedOptions.seed),
+      jobId: job.id,
+      stage: job.stage,
+      progress: job.progress,
       quota: quotaJson(owner.email),
     });
   }
@@ -2601,7 +2854,7 @@ const server = createServer(async (req, res) => {
     }
     const target = state.scripts[loaderMatch[1].toLowerCase()];
     if (!target || !target.active) return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
-    const body = buildLoaderSource(target.scriptId, publicOrigin(req));
+    const body = buildLoaderSource(target, publicOrigin(req));
     res.writeHead(200, {
       "content-type": "text/plain; charset=utf-8",
       "cache-control": "no-store",

@@ -20,6 +20,7 @@ export interface ScriptProject {
   active: boolean;
   ffa?: boolean;
   silent?: boolean;
+  heartbeat?: boolean;
 }
 
 export interface LicenseRecord {
@@ -70,6 +71,9 @@ export type ApiError =
   | "release_limit"
   | "release_too_large"
   | "bad_version"
+  | "publish_busy"
+  | "job_not_found"
+  | "job_expired"
   | "network"
   | "unknown";
 
@@ -112,6 +116,9 @@ const ERROR_MAP: Record<string, ApiError> = {
   LICENSE_LIMIT: "license_limit",
   RELEASE_LIMIT: "release_limit",
   RELEASE_TOO_LARGE: "release_too_large",
+  PUBLISH_BUSY: "publish_busy",
+  JOB_NOT_FOUND: "job_not_found",
+  JOB_EXPIRED: "job_expired",
 };
 
 export interface Result<T> {
@@ -246,12 +253,39 @@ export interface PipelineRelease extends ReleaseRecord {
   guardedBytes: number;
 }
 
-/** Upload source -> server injects the guard -> obfuscates -> stores the release. */
-export async function publishFromSource(
+/* ---------------- 异步发布作业 ---------------- */
+
+export type PublishStage = "queued" | "injecting" | "obfuscating" | "storing" | "completed" | "failed";
+
+export interface PublishJob {
+  jobId: string;
+  status: "processing" | "completed" | "failed";
+  stage: PublishStage;
+  progress: number;
+  elapsedMs: number;
+  result?: PipelineRelease;
+  error?: string;
+  detail?: string;
+}
+
+interface JobEnvelope {
+  ok?: boolean;
+  error?: string;
+  jobId?: string;
+  status?: PublishJob["status"];
+  stage?: PublishStage;
+  progress?: number;
+  elapsedMs?: number;
+  result?: PipelineRelease;
+  detail?: string;
+}
+
+/** 提交一个发布作业；服务端立刻返回 jobId，混淆在后台继续。 */
+export async function startPublish(
   scriptId: string,
   version: string,
   source: string,
-): Promise<Result<PipelineRelease>> {
+): Promise<Result<{ jobId: string; stage: PublishStage; progress: number }>> {
   try {
     const res = await fetch("/api/publish", {
       method: "POST",
@@ -259,16 +293,75 @@ export async function publishFromSource(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ scriptId, version, source }),
     });
-    const payload = (await res.json().catch(() => ({}))) as Envelope & {
-      release?: PipelineRelease;
-    };
-    if (!res.ok || !payload.ok || !payload.release) {
+    const payload = (await res.json().catch(() => ({}))) as JobEnvelope;
+    if (!res.ok || !payload.ok || !payload.jobId) {
       return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
     }
-    return { ok: true, data: payload.release };
+    return {
+      ok: true,
+      data: {
+        jobId: payload.jobId,
+        stage: payload.stage ?? "queued",
+        progress: payload.progress ?? 5,
+      },
+    };
   } catch {
     return { ok: false, error: "network" };
   }
+}
+
+/** 轮询作业状态。作业不存在（服务重启）时返回 job_not_found，调用方应提示重试。 */
+export async function pollPublish(jobId: string): Promise<Result<PublishJob>> {
+  try {
+    const res = await fetch(`/api/publish/${encodeURIComponent(jobId)}`, { credentials: "same-origin" });
+    const payload = (await res.json().catch(() => ({}))) as JobEnvelope;
+    if (!res.ok || !payload.ok) {
+      return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
+    }
+    return {
+      ok: true,
+      data: {
+        jobId,
+        status: payload.status ?? "processing",
+        stage: payload.stage ?? "queued",
+        progress: payload.progress ?? 0,
+        elapsedMs: payload.elapsedMs ?? 0,
+        result: payload.result,
+        error: payload.error,
+        detail: payload.detail,
+      },
+    };
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
+/** 一次性发布（提交 + 轮询到结束），保留了旧调用方的语义。 */
+export async function publishFromSource(
+  scriptId: string,
+  version: string,
+  source: string,
+  onProgress?: (job: PublishJob) => void,
+): Promise<Result<PipelineRelease>> {
+  const started = await startPublish(scriptId, version, source);
+  if (!started.ok || !started.data) return { ok: false, error: started.error ?? "unknown" };
+  const { jobId } = started.data;
+  const deadline = Date.now() + 120_000;
+  let delay = 250;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    delay = Math.min(1200, Math.round(delay * 1.35));
+    const poll = await pollPublish(jobId);
+    if (!poll.ok || !poll.data) return { ok: false, error: poll.error ?? "unknown" };
+    onProgress?.(poll.data);
+    if (poll.data.status === "completed" && poll.data.result) {
+      return { ok: true, data: poll.data.result };
+    }
+    if (poll.data.status === "failed") {
+      return { ok: false, error: ERROR_MAP[poll.data.error ?? ""] ?? "engine_fail" };
+    }
+  }
+  return { ok: false, error: "engine_timeout" };
 }
 
 export async function listFolders(): Promise<Result<Folder[]>> {
@@ -337,6 +430,43 @@ export function exportLicensesCsv(folderId: string) {
   window.location.href = `/api/auth/licenses/export?folderId=${encodeURIComponent(folderId)}`;
 }
 
+/** JSON export (metadata only) — used for migrations and backups. */
+export function exportLicensesJson(folderId: string) {
+  window.location.href = `/api/auth/licenses/export.json?folderId=${encodeURIComponent(folderId)}`;
+}
+
+export interface ImportedLicense {
+  licenseKey: string;
+  license: LicenseRecord;
+}
+
+/** 导入只生成新卡密；不会恢复任何旧卡密（服务端也没存明文）。 */
+export async function importLicenses(
+  folderId: string,
+  entries: { label?: string; keyDays?: number | null; expiresAt?: string | null }[],
+): Promise<Result<ImportedLicense[]>> {
+  interface ImportPayload {
+    ok?: boolean;
+    error?: string;
+    licenses?: ImportedLicense[];
+  }
+  try {
+    const res = await fetch("/api/auth/licenses/import", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folderId, entries }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as ImportPayload;
+    if (!res.ok || !payload.ok || !Array.isArray(payload.licenses)) {
+      return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
+    }
+    return { ok: true, data: payload.licenses };
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
 export async function banLicense(
   licenseId: string,
   opts: { reason: string; banDays: number | null },
@@ -368,7 +498,7 @@ export async function unbanLicense(licenseId: string): Promise<Result<LicenseRec
 
 export async function updateScript(
   scriptId: string,
-  patch: { ffa?: boolean; silent?: boolean; active?: boolean; name?: string },
+  patch: { ffa?: boolean; silent?: boolean; heartbeat?: boolean; active?: boolean; name?: string },
 ): Promise<Result<ScriptProject>> {
   const res = await request<Envelope>("/api/auth/scripts/update", {
     method: "POST",

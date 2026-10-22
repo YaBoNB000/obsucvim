@@ -44,9 +44,12 @@ PKG="$WORK/$PKG_DIR_NAME"
 echo "[2/5] 覆盖当前程序文件"
 cp "$WEB/dist/index.html" "$PKG/dist/index.html"
 for f in "$WEB"/tools/*.mjs "$WEB"/tools/*.luau "$WEB"/tools/obsucvim.wasm; do
-  [ -f "$f" ] && cp "$f" "$PKG/tools/$(basename "$f")"
+  [ -f "$f" ] || continue
+  case "$(basename "$f")" in test-*) continue ;; esac   # 测试脚本不随包发布
+  cp "$f" "$PKG/tools/$(basename "$f")"
 done
 cp "$WEB/SCRIPT-KEYS.md" "$PKG/SCRIPT-KEYS.md"
+cp "$WEB/docs/HOSTING-V2-PLAN.md" "$PKG/HOSTING-V2-PLAN.md"
 cp "$WEB/deploy/README-Windows.md" "$PKG/README-Windows.md"
 cp "$WEB/deploy/README-UPDATE.md" "$PKG/README-UPDATE.md"
 cp "$WEB/deploy/Start-Obsucvim.bat" "$WEB/deploy/Start-Obsucvim.cmd" "$WEB/deploy/Start-Obsucvim.ps1" "$PKG/"

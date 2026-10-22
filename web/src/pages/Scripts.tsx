@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
+import { AnimatedNumber, Skeleton, SkeletonRows, StepProgress, useToast } from "../components/Feedback";
 import { useI18n, type TKey } from "../lib/i18n";
 import {
   banLicense,
@@ -11,7 +12,11 @@ import {
   createFolder,
   createScript,
   exportLicensesCsv,
+  exportLicensesJson,
   issueLicense,
+  pollPublish,
+  startPublish,
+  type PublishJob,
   issueLicenseBatch,
   listFolders,
   updateFolder,
@@ -19,7 +24,6 @@ import {
   listLicenses,
   listReleases,
   listScripts,
-  publishFromSource,
   publishRelease,
   resetLicenseHwid,
   revokeLicense,
@@ -51,6 +55,9 @@ const ERROR_KEY: Record<ApiError, TKey> = {
   license_limit: "scripts.errLicenseLimit",
   release_limit: "scripts.errReleaseLimit",
   release_too_large: "scripts.errReleaseTooLarge",
+  publish_busy: "scripts.errPublishBusy",
+  job_not_found: "scripts.errJobNotFound",
+  job_expired: "scripts.errJobExpired",
   bad_version: "scripts.errBadVersion",
   network: "scripts.errNetwork",
   unknown: "scripts.errUnknown",
@@ -81,7 +88,7 @@ function CopyField({
           {value}
         </code>
         <Button variant="outline" className="shrink-0 px-2.5 py-2" onClick={onCopy} title={label}>
-          <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+          <Icon name={copied ? "check" : "copy"} className={copied ? "anim-pop h-3.5 w-3.5" : "h-3.5 w-3.5"} />
         </Button>
       </div>
     </div>
@@ -90,6 +97,7 @@ function CopyField({
 
 export function Scripts() {
   const { t } = useI18n();
+  const toast = useToast();
   const [folders, setFolders] = useState<Folder[]>([]);
   const [folderId, setFolderId] = useState<string | null>(null);
   const [newFolder, setNewFolder] = useState("");
@@ -128,6 +136,7 @@ export function Scripts() {
   const [sourceMode, setSourceMode] = useState<"pipeline" | "manual">("pipeline");
   const [rawSource, setRawSource] = useState("");
   const [pipelineBusy, setPipelineBusy] = useState(false);
+  const [publishJob, setPublishJob] = useState<PublishJob | null>(null);
   const [publishResult, setPublishResult] = useState<{ version: string; size: number; scriptId: string } | null>(null);
   const [version, setVersion] = useState("v1");
   const [artifact, setArtifact] = useState("");
@@ -273,6 +282,7 @@ export function Scripts() {
     }
     setBatchKeys(res.data.map((entry) => entry.licenseKey));
     setLabel("");
+    toast.push({ kind: "success", title: t("scripts.batchIssued", { n: res.data.length }) });
     applyFilter(0);
   };
 
@@ -294,6 +304,7 @@ export function Scripts() {
     }
     setIssuedKey({ key: res.data.licenseKey, label: res.data.license.label });
     setLabel("");
+    toast.push({ kind: "success", title: t("scripts.toastIssued") });
     applyFilter(0);
   };
 
@@ -334,19 +345,70 @@ export function Scripts() {
     setArtifact("");
   };
 
+  /* 提交作业 -> 轮询进度。轮询失败（服务重启）时明确提示重试，而不是卡住转圈。 */
   const handlePipeline = async () => {
     if (!selected || pipelineBusy || !rawSource.trim()) return;
+    const scriptId = selected;
     setPipelineBusy(true);
     setError(null);
-    const res = await publishFromSource(selected, version.trim(), rawSource);
-    setPipelineBusy(false);
-    if (!res.ok || !res.data) {
-      setError(ERROR_KEY[res.error ?? "unknown"]);
+    setPublishJob({ jobId: "", status: "processing", stage: "queued", progress: 5, elapsedMs: 0 });
+
+    const started = await startPublish(scriptId, version.trim(), rawSource);
+    if (!started.ok || !started.data) {
+      setPipelineBusy(false);
+      setPublishJob(null);
+      setError(ERROR_KEY[started.error ?? "unknown"]);
+      toast.push({ kind: "error", title: t(ERROR_KEY[started.error ?? "unknown"]) });
       return;
     }
-    setReleases((prev) => [res.data as ReleaseRecord, ...prev]);
-    setPublishResult({ version: res.data.version, size: res.data.size, scriptId: selected });
+
+    const deadline = Date.now() + 120_000;
+    let delay = 260;
+    let final: PublishJob | null = null;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      delay = Math.min(1200, Math.round(delay * 1.35));
+      const poll = await pollPublish(started.data.jobId);
+      if (!poll.ok || !poll.data) {
+        setPipelineBusy(false);
+        setPublishJob(null);
+        setError(ERROR_KEY[poll.error ?? "unknown"]);
+        toast.push({ kind: "error", title: t(ERROR_KEY[poll.error ?? "unknown"]) });
+        return;
+      }
+      setPublishJob(poll.data);
+      if (poll.data.status !== "processing") {
+        final = poll.data;
+        break;
+      }
+    }
+
+    setPipelineBusy(false);
+    if (!final) {
+      setPublishJob(null);
+      setError("scripts.errEngineTimeout");
+      toast.push({ kind: "error", title: t("scripts.errEngineTimeout") });
+      return;
+    }
+    if (final.status === "failed" || !final.result) {
+      setError(ERROR_KEY[(final.error ?? "engine_fail") as keyof typeof ERROR_KEY] ?? "scripts.errUnknown");
+      toast.push({
+        kind: "error",
+        title: t(ERROR_KEY[(final.error ?? "engine_fail") as keyof typeof ERROR_KEY] ?? "scripts.errUnknown"),
+      });
+      return;
+    }
+    setReleases((prev) => [final!.result as ReleaseRecord, ...prev]);
+    setPublishResult({ version: final.result.version, size: final.result.size, scriptId });
     setRawSource("");
+    toast.push({
+      kind: "success",
+      title: t("scripts.pipelineDone", {
+        v: final.result.version,
+        size: (final.result.size / 1024).toFixed(1),
+      }),
+      detail: t("scripts.toastPublished"),
+    });
   };
 
   const readSourceFile = async (file: File | undefined) => {
@@ -375,6 +437,7 @@ export function Scripts() {
       return;
     }
     setUnbanToken(res.data.unbanToken);
+    toast.push({ kind: "success", title: t("scripts.toastBanned") });
     setLicenses((prev) => prev.map((l) => (l.licenseId === res.data!.license.licenseId ? res.data!.license : l)));
     setBanTarget(null);
     setBanReason("");
@@ -389,6 +452,20 @@ export function Scripts() {
       setLicenses((prev) => prev.map((l) => (l.licenseId === licenseId ? res.data! : l)));
     } else {
       setError(ERROR_KEY[res.error ?? "unknown"]);
+    }
+  };
+
+  const toggleHeartbeat = async (next: boolean) => {
+    if (!selected || busy) return;
+    setBusy(true);
+    const res = await updateScript(selected, { heartbeat: next });
+    setBusy(false);
+    if (res.ok && res.data) {
+      setProjects((prev) => prev.map((p) => (p.scriptId === selected ? { ...p, ...res.data! } : p)));
+      toast.push({ kind: "success", title: t(next ? "scripts.heartbeatOn" : "scripts.heartbeatOff") });
+    } else {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      toast.push({ kind: "error", title: t(ERROR_KEY[res.error ?? "unknown"]) });
     }
   };
 
@@ -509,6 +586,13 @@ export function Scripts() {
             >
               {t("scripts.exportCsv")}
             </button>
+            <button
+              disabled={!folderId}
+              onClick={() => folderId && exportLicensesJson(folderId)}
+              className="cursor-pointer rounded-xl border border-white/10 px-2.5 py-1 text-[11px] text-slate-300 transition hover:border-aqua-300/40 hover:text-aqua-100 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {t("scripts.exportJson")}
+            </button>
           </div>
         </div>
 
@@ -585,8 +669,13 @@ export function Scripts() {
 
         <div className="grid gap-2">
           {loading && (
-            <div className="glass-soft rounded-2xl border border-white/[0.07] px-4 py-6 text-center text-[12px] text-slate-500">
-              {t("scripts.loading")}
+            <div className="grid gap-2">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="glass-soft rounded-2xl border border-white/[0.07] px-4 py-3.5">
+                  <Skeleton className="h-3" style={{ width: `${120 + i * 34}px` }} />
+                  <Skeleton className="mt-2 h-2.5 w-24" />
+                </div>
+              ))}
             </div>
           )}
           {!loading && projects.length === 0 && (
@@ -595,14 +684,15 @@ export function Scripts() {
               <p className="mt-1 text-[11px] text-slate-500">{t("scripts.emptyHint")}</p>
             </div>
           )}
-          {projects.map((p) => {
+          {projects.map((p, index) => {
             const active = p.scriptId === selected;
             return (
               <button
                 key={p.scriptId}
                 onClick={() => setSelected(p.scriptId)}
+                style={{ "--i": index } as CSSProperties}
                 className={
-                  "group w-full cursor-pointer rounded-2xl border px-4 py-3 text-left transition-all duration-300 " +
+                  "anim-stagger anim-lift group w-full cursor-pointer rounded-2xl border px-4 py-3 text-left transition-all duration-300 " +
                   (active
                     ? "border-aqua-300/30 bg-aqua-400/[0.09] text-aqua-50 shadow-[0_0_30px_-18px_rgba(34,226,213,0.9)_inset]"
                     : "border-white/[0.07] bg-white/[0.02] text-slate-300 hover:border-aqua-300/20 hover:bg-white/[0.04]")
@@ -649,9 +739,9 @@ export function Scripts() {
                 </div>
               </div>
               <div className="mt-4 grid grid-cols-3 gap-2.5">
-                <Stat label={t("scripts.licenses")} value={String(licenseTotal || licenses.length)} />
-                <Stat label={t("scripts.active")} value={String(activeLicenses)} />
-                <Stat label={t("scripts.releases")} value={String(releases.length)} />
+                <Stat label={t("scripts.licenses")} value={<AnimatedNumber value={licenseTotal || licenses.length} />} />
+                <Stat label={t("scripts.active")} value={<AnimatedNumber value={activeLicenses} />} />
+                <Stat label={t("scripts.releases")} value={<AnimatedNumber value={releases.length} />} />
               </div>
             </GlassCard>
 
@@ -691,6 +781,20 @@ export function Scripts() {
                   <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">{t("scripts.ffaHint")}</span>
                 </span>
               </label>
+              <label className="mt-2 flex items-start gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-3.5 w-3.5 accent-[#22e2d5]"
+                  checked={Boolean(current.heartbeat)}
+                  disabled={busy}
+                  onChange={(e) => void toggleHeartbeat(e.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block text-[12px] text-slate-200">{t("scripts.heartbeat")}</span>
+                  <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">{t("scripts.heartbeatHint")}</span>
+                </span>
+              </label>
+              <p className="mt-2 text-[10.5px] leading-relaxed text-slate-500">{t("scripts.silentNote")}</p>
             </GlassCard>
 
             <div className="glass-soft inline-flex w-fit items-center gap-1 rounded-xl border border-white/[0.08] p-1">
@@ -876,7 +980,9 @@ export function Scripts() {
                       </Button>
                     </div>
                   </div>
-                  {licenses.length === 0 ? (
+                  {licenses.length === 0 && busy ? (
+                    <SkeletonRows rows={4} className="px-3 py-3" />
+                  ) : licenses.length === 0 ? (
                     <p className="px-5 py-8 text-center text-[12px] text-slate-500">{t("scripts.noLicenses")}</p>
                   ) : (
                     <div className="overflow-x-auto">
@@ -891,7 +997,7 @@ export function Scripts() {
                           </tr>
                         </thead>
                         <tbody>
-                          {licenses.map((l) => {
+                          {licenses.map((l, rowIndex) => {
                             const expired = l.expiresAt !== null && l.expiresAt <= Date.now();
                             const state = l.banned
                               ? { key: "scripts.stateBanned" as TKey, tone: "text-rose-400" }
@@ -901,7 +1007,11 @@ export function Scripts() {
                                   ? { key: "scripts.stateExpired" as TKey, tone: "text-amber-300" }
                                   : { key: "scripts.stateActive" as TKey, tone: "text-emerald-300" };
                             return (
-                              <tr key={l.licenseId} className="border-t border-white/[0.05]">
+                              <tr
+                                key={l.licenseId}
+                                style={{ "--i": Math.min(rowIndex, 12) } as CSSProperties}
+                                className="anim-stagger border-t border-white/[0.05]"
+                              >
                                 <td className="px-5 py-2.5">
                                   <span className="block truncate text-slate-200">{l.label || "—"}</span>
                                   <span className="block font-mono text-[10px] text-slate-500">{l.licenseId}</span>
@@ -1011,8 +1121,8 @@ export function Scripts() {
                 )}
 
                 {banTarget && (
-                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
-                    <GlassCard className="w-full max-w-[420px] p-5">
+                  <div className="anim-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+                    <GlassCard className="anim-modal w-full max-w-[420px] p-5">
                       <h3 className="text-[14px] font-semibold text-slate-100">{t("scripts.banTitle")}</h3>
                       <p className="mt-1 text-[11px] text-slate-500">{banTarget.label || banTarget.licenseId}</p>
                       <div className="mt-3 grid gap-2.5">
@@ -1120,6 +1230,25 @@ export function Scripts() {
                             {pipelineBusy ? t("scripts.working") : t("scripts.publishPipeline")}
                           </Button>
                         </div>
+                        {publishJob && (
+                          <div className="anim-enter rounded-2xl border border-white/[0.07] bg-black/25 px-3.5 py-3">
+                            <StepProgress
+                              steps={[
+                                { key: "queued", label: t("scripts.stageQueued") },
+                                { key: "injecting", label: t("scripts.stageInjecting") },
+                                { key: "obfuscating", label: t("scripts.stageObfuscating") },
+                                { key: "storing", label: t("scripts.stageStoring") },
+                                { key: "completed", label: t("scripts.stageCompleted") },
+                              ]}
+                              activeKey={publishJob.stage}
+                              progress={publishJob.progress}
+                              failed={publishJob.status === "failed"}
+                            />
+                            <p className="mt-2 text-[10.5px] text-slate-500">
+                              {t("scripts.stageElapsed", { s: (publishJob.elapsedMs / 1000).toFixed(1) })}
+                            </p>
+                          </div>
+                        )}
                       </>
                     ) : (
                       <>

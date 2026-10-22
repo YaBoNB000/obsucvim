@@ -74,14 +74,17 @@ def use_table_game():
 lua.execute("""
 SERVER_RESPONSES = {}
 LAST_REQUEST = {}
+REQ_COUNT = 0
 function http_request(req)
+  REQ_COUNT = REQ_COUNT + 1
   local body = req.Body or ""
   LAST_REQUEST[#LAST_REQUEST + 1] = body
   local path = string.match(req.Url, "/api/[%w/-]+")
   local names = { ["/api/licenses/validate"] = "validate", ["/api/releases/fetch"] = "fetch" }
   local key = names[path] or path
   local entry = SERVER_RESPONSES[key]
-  if not entry then return { StatusCode = 404, Body = '{"code":"NOT_FOUND"}' } end
+  if type(entry) == "function" then entry = entry() end
+  if type(entry) ~= "string" then return { StatusCode = 404, Body = '{"code":"NOT_FOUND"}' } end
   -- the real server echoes the nonce and the script id it validated
   local nonce = string.match(body, '"nonce"%s*:%s*"([^"]*)"') or ""
   local scriptId = string.match(body, '"scriptId"%s*:%s*"([^"]*)"') or ""
@@ -92,6 +95,21 @@ end
 """)
 g.request = g.http_request
 g.loadstring = lua.eval("load")
+
+# A stable getgenv() table: executors hand out the same table every call, and the
+# loader writes OBS_* into it. It must be a real Lua function (a Python callable
+# shows up as userdata, and `type(getgenv) == "function"` would be false).
+lua.execute("GENV = {}; function getgenv() return GENV end")
+GENV = g.GENV
+
+
+def set_genv(mapping):
+    for key in list(GENV.keys()):
+        GENV[key] = None
+    for key, value in mapping.items():
+        GENV[key] = value
+    return GENV
+
 
 RUN = lua.eval("""
 function(src)
@@ -111,13 +129,15 @@ def run(src):
     return RUN(src)
 
 
-def fill(template, script_id=SCRIPT_ID, endpoint=BASE):
+def fill(template, script_id=SCRIPT_ID, endpoint=BASE, heartbeat=False, silent=False):
     """Fill both placeholder styles: the loader's __SCRIPT_ID__/__BASE_URL__ and
     the guard's __OBSUCVIM_SCRIPT_ID__/__OBSUCVIM_ENDPOINT__."""
     for token in ("__SCRIPT_ID__", "__OBSUCVIM_SCRIPT_ID__"):
         template = template.replace(token, script_id)
     for token in ("__BASE_URL__", "__OBSUCVIM_ENDPOINT__"):
         template = template.replace(token, endpoint)
+    template = template.replace("__HEARTBEAT__", "true" if heartbeat else "false")
+    template = template.replace("__SILENT__", "true" if silent else "false")
     return template
 
 
@@ -143,7 +163,7 @@ FETCH = {"version": "v7", "code": "return 'ARTIFACT-RAN-1234567890'"}
 
 # 1-2. executor-style userdata `game`: the case that used to fail outright
 use_userdata_game()
-g.getgenv = lambda: lua.table_from({
+set_genv({
     "key": "OBS-TEST-KEY",
     "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
 })
@@ -171,7 +191,7 @@ ok, out = run(fill(LOADER))
 check("banned licence reports its reason", (not ok) and "licence banned" in out and "chargeback" in out, out)
 
 # 6. missing key message
-g.getgenv = lambda: lua.table_from({})
+set_genv({})
 set_responses({"validate": json.dumps({
     "valid": False, "scriptId": "__SCRIPTID__", "nonce": "__NONCE__", "code": "KEY_MISSING",
 })})
@@ -179,7 +199,7 @@ ok, out = run(fill(LOADER))
 check("missing key tells the user what to set", (not ok) and "set getgenv().key" in out, out)
 
 # 7. the on_missing_key hook can supply a key
-g.getgenv = lambda: lua.table_from({
+set_genv({
     "obsucvim_on_missing_key": lua.eval("function() getgenv().key = 'HOOK-KEY' end"),
 })
 set_responses({
@@ -191,7 +211,7 @@ check("obsucvim_on_missing_key can supply the key", ok and "HOOKED-1234567890" i
 
 # 8. injected guard accepts a userdata game too
 guard_endpoint = BASE + "/api/licenses/validate"
-g.getgenv = lambda: lua.table_from({
+set_genv({
     "key": "OBS-TEST-KEY",
     "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
 })
@@ -200,7 +220,7 @@ ok, out = run(fill(GUARD, endpoint=guard_endpoint) + "\nreturn 'GUARD-PASSED'")
 check("guard accepts a userdata game object", ok and "GUARD-PASSED" in out, out)
 
 # 9. guard refuses to run without a key
-g.getgenv = lambda: lua.table_from({})
+set_genv({})
 set_responses({"validate": json.dumps({
     "valid": False, "scriptId": "__SCRIPTID__", "nonce": "__NONCE__", "code": "KEY_MISSING",
 })})
@@ -209,7 +229,7 @@ check("guard refuses to run without a key", (not ok) and "set getgenv().key" in 
 
 # 10. FFA: no token, fetch still released
 use_userdata_game()
-g.getgenv = lambda: lua.table_from({})
+set_genv({})
 set_responses({
     "validate": json.dumps({
         "valid": True, "nonce": "__NONCE__", "scriptId": "__SCRIPTID__", "runtime": {"premium": False},
@@ -218,6 +238,44 @@ set_responses({
 })
 ok, out = run(fill(LOADER))
 check("FFA fetches and runs without a token", ok and "FFA-RAN-1234567890" in out, out)
+
+# 11. heartbeat: second check happens, revocation marks the licence invalid
+use_userdata_game()
+set_genv({
+    "key": "OBS-TEST-KEY",
+    "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
+    "obsucvim_on_heartbeat_fail": lua.eval("function(code) getgenv().HB_CODE = code end"),
+})
+g.wait = lua.eval("function() return true end")
+lua.execute("""
+HB_CALLS = 0
+function hb_validate()
+  HB_CALLS = HB_CALLS + 1
+  if HB_CALLS == 1 then
+    return '{"valid":true,"nonce":"__NONCE__","scriptId":"__SCRIPTID__","token":"lst_hb","runtime":{"premium":true,"secondsLeft":600}}'
+  end
+  return '{"valid":false,"code":"KEY_REVOKED"}'
+end
+""")
+set_responses({"validate": lua.eval("hb_validate"), "fetch": json.dumps({"version": "v7", "code": "return 'HB-ARTIFACT-1234567890'" * 1})})
+ok, out = run(fill(LOADER, heartbeat=True))
+valid_flag = lua.eval("tostring(getgenv().__obsucvim_license and getgenv().__obsucvim_license.valid)")
+reason = lua.eval("tostring(getgenv().__obsucvim_license and getgenv().__obsucvim_license.reason)")
+hook_code = lua.eval("tostring(getgenv().HB_CODE)")
+check("heartbeat re-checks the licence", ok and "HB-ARTIFACT-1234567890" in out and lua.eval("HB_CALLS") >= 2, out)
+check("heartbeat marks the licence invalid on revoke", valid_flag == "false" and reason == "KEY_REVOKED", f"valid={valid_flag} reason={reason}")
+check("heartbeat calls obsucvim_on_heartbeat_fail", hook_code == "KEY_REVOKED", f"hook={hook_code}")
+
+# 12. heartbeat disabled -> exactly one validate call
+use_userdata_game()
+set_genv({
+    "key": "OBS-TEST-KEY",
+    "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
+})
+set_responses({"validate": json.dumps(VALID), "fetch": json.dumps(FETCH)})
+lua.execute("REQ_COUNT = 0")
+ok, out = run(fill(LOADER, heartbeat=False))
+check("heartbeat off means a single validate call", ok and lua.eval("REQ_COUNT") == 2, f"requests={lua.eval('REQ_COUNT')}")  # validate + fetch
 
 failed = [name for name, ok in results if not ok]
 print()
