@@ -17,19 +17,21 @@
 |---|---|
 | 1 | 仅本机启动，绑定 `127.0.0.1`，适合首次测试 |
 | 2 | 允许网络访问（`0.0.0.0`），仅配合 HTTPS 反向代理使用 |
-| 3 | 启动前用隐藏输入读取 163 客户端授权码，启用真实邮件 |
-| 4 | 只做自检：文件是否齐全、端口是否被占用、数据与邮件状态 |
-| 5 | 运行带校验的自更新 |
-| 6 | 打开 `data` 目录 |
-| 7 | 打开安装目录 |
-| 8 | 退出 |
+| 3 | 隐藏输入 163 客户端授权码，启用真实邮件 |
+| 4 | 输入 Cloudflare Turnstile 的 Site Key / Secret Key |
+| 5 | 只做自检：文件是否齐全、端口是否被占用、数据/邮件/CAPTCHA 状态 |
+| 6 | 运行带校验的自更新 |
+| 7 | 打开 `data` 目录 |
+| 8 | 打开安装目录 |
+| 9 | 退出 |
 
 ### 命令行参数
 
 ```bat
 Start-Obsucvim.bat /local          仅本机
 Start-Obsucvim.bat /public         允许网络访问
-Start-Obsucvim.bat /smtp           提示输入授权码后启动
+Start-Obsucvim.bat /smtp           提示输入 163 授权码后启动
+Start-Obsucvim.bat /turnstile      提示输入 Turnstile 密钥后启动
 Start-Obsucvim.bat /check          只自检，不启动
 Start-Obsucvim.bat /update         运行自更新
 Start-Obsucvim.bat /open           启动后自动打开浏览器
@@ -44,7 +46,8 @@ Start-Obsucvim.bat /local 9090     指定端口
 - 自动创建 `data\`（首次运行）
 - 启动前检测端口占用，并提示占用进程 PID
 - 设置全部运行时环境变量（引擎路径、数据目录、代理信任、SMTP 默认值）
-- 只在你输入授权码时设置 `SMTP_PASS`，且不写盘
+- **所有密钥都通过隐藏输入**，只存在于当前进程环境，不写盘、不进日志
+- 启动横幅会显示当前邮件模式与本机 CAPTCHA 模式（本地滑块 / Turnstile / 配置错误）
 - 服务退出后显示退出码并保留窗口，方便看错误
 
 服务由内置 Node.js 22.22.3 x64 启动，Rust 引擎以 WASI Preview 1 在 Node 内运行；无需安装 Rust、Visual Studio、MSVC、Python 或额外的运行时。Web 静态文件与 `/api/*` 同源提供。登录会话使用 `HttpOnly; SameSite=Strict` Cookie，JavaScript 不再读取会话令牌；旧版可读会话升级后会失效一次，用户需重新登录。公开部署必须使用 HTTPS，HTTPS 请求会启用 Secure Cookie 与 HSTS。页面响应还包含哈希白名单 CSP、`frame-ancestors 'none'` 和 `X-Frame-Options: DENY`。
@@ -119,6 +122,8 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 ## Cloudflare Turnstile（可选，启用托管人机验证）
 
 1. 在 Cloudflare Turnstile 控制台为 `obsucvim.l2.ink` 创建 Widget，推荐 Managed 模式，取 Site Key 与 Secret Key。
+
+   **最简做法**：双击 `Start-Obsucvim.bat` → 选 `[4]`，粘贴 Site Key、隐藏输入 Secret Key，服务会带着这两个值启动。下面是手工设置环境变量的等价做法。
 2. 测试时在启动服务的 PowerShell 窗口设置（Site Key 是公开值；Secret 仅在本机私密输入）：
 
    ```powershell
