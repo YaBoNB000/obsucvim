@@ -5,7 +5,9 @@ import {
   banLicense,
   unbanLicense,
   updateScript,
+  keySnippet,
   loadstringSnippet,
+  loaderUrl,
   createFolder,
   createScript,
   exportLicensesCsv,
@@ -59,6 +61,33 @@ function when(ts: number | null) {
   return new Date(ts).toLocaleString();
 }
 
+/** 一行代码 + 复制按钮，复制成功后按钮变成对勾 */
+function CopyField({
+  label,
+  value,
+  copied,
+  onCopy,
+}: {
+  label: string;
+  value: string;
+  copied: boolean;
+  onCopy: () => void;
+}) {
+  return (
+    <div>
+      <p className="mb-1 text-[10.5px] text-slate-500">{label}</p>
+      <div className="flex items-start gap-2">
+        <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-xl border border-white/[0.07] bg-black/40 px-3 py-2.5 font-mono text-[11px] leading-relaxed text-aqua-100">
+          {value}
+        </code>
+        <Button variant="outline" className="shrink-0 px-2.5 py-2" onClick={onCopy} title={label}>
+          <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function Scripts() {
   const { t } = useI18n();
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -99,10 +128,11 @@ export function Scripts() {
   const [sourceMode, setSourceMode] = useState<"pipeline" | "manual">("pipeline");
   const [rawSource, setRawSource] = useState("");
   const [pipelineBusy, setPipelineBusy] = useState(false);
-  const [pipelineNote, setPipelineNote] = useState<string | null>(null);
+  const [publishResult, setPublishResult] = useState<{ version: string; size: number; scriptId: string } | null>(null);
   const [version, setVersion] = useState("v1");
   const [artifact, setArtifact] = useState("");
-  const [copied, setCopied] = useState(false);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copyFailed, setCopyFailed] = useState(false);
 
   const current = useMemo(
     () => projects.find((p) => p.scriptId === selected) ?? null,
@@ -300,6 +330,7 @@ export function Scripts() {
       return;
     }
     setReleases((prev) => [res.data as ReleaseRecord, ...prev]);
+    setPublishResult({ version: res.data.version, size: res.data.size, scriptId: selected });
     setArtifact("");
   };
 
@@ -307,7 +338,6 @@ export function Scripts() {
     if (!selected || pipelineBusy || !rawSource.trim()) return;
     setPipelineBusy(true);
     setError(null);
-    setPipelineNote(null);
     const res = await publishFromSource(selected, version.trim(), rawSource);
     setPipelineBusy(false);
     if (!res.ok || !res.data) {
@@ -315,12 +345,7 @@ export function Scripts() {
       return;
     }
     setReleases((prev) => [res.data as ReleaseRecord, ...prev]);
-    setPipelineNote(
-      t("scripts.pipelineDone", {
-        v: res.data.version,
-        size: (res.data.size / 1024).toFixed(1),
-      }),
-    );
+    setPublishResult({ version: res.data.version, size: res.data.size, scriptId: selected });
     setRawSource("");
   };
 
@@ -384,14 +409,34 @@ export function Scripts() {
     void refreshDetail(selected, { from: nextFrom, search: nextSearch, status: nextStatus });
   };
 
-  const copyKey = async (text: string) => {
+  // 剪贴板 API 在无权限的 iframe（预览环境）里会静默失败，退回 execCommand；
+  // 仍失败就如实提示，而不是假装复制成功。
+  const copyKey = async (text: string, id = "generic") => {
+    let ok = false;
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1600);
+      ok = true;
     } catch {
-      setCopied(false);
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ok = document.execCommand("copy");
+        ta.remove();
+      } catch {
+        ok = false;
+      }
     }
+    setCopiedId(ok ? id : null);
+    setCopyFailed(!ok);
+    window.setTimeout(() => {
+      setCopiedId(null);
+      setCopyFailed(false);
+    }, 1800);
   };
 
   const activeLicenses = licenses.filter((l) => !l.revokedAt).length;
@@ -616,18 +661,23 @@ export function Scripts() {
                 <h3 className="text-[13px] font-semibold text-slate-100">{t("scripts.loaderUrl")}</h3>
                 <span className="ml-auto text-[10.5px] text-slate-500">{t("scripts.loaderHint")}</span>
               </div>
-              <div className="flex items-start gap-2">
-                <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-xl border border-white/[0.07] bg-black/40 px-3 py-2.5 font-mono text-[11px] text-aqua-100">
-                  {loadstringSnippet(current.scriptId)}
-                </code>
-                <Button
-                  variant="outline"
-                  className="shrink-0 px-2.5 py-2"
-                  onClick={() => copyKey(loadstringSnippet(current.scriptId))}
-                >
-                  <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
-                </Button>
+              <div className="grid gap-2.5">
+                <CopyField
+                  label={t("scripts.loaderCode")}
+                  value={loadstringSnippet(current.scriptId)}
+                  copied={copiedId === "loader-code"}
+                  onCopy={() => void copyKey(loadstringSnippet(current.scriptId), "loader-code")}
+                />
+                <CopyField
+                  label={t("scripts.directUrl")}
+                  value={loaderUrl(current.scriptId)}
+                  copied={copiedId === "loader-url"}
+                  onCopy={() => void copyKey(loaderUrl(current.scriptId), "loader-url")}
+                />
               </div>
+              {copyFailed && (
+                <p className="mt-2 text-[10.5px] text-rose-200">{t("scripts.copyFailed")}</p>
+              )}
               <label className="mt-3 flex items-start gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
                 <input
                   type="checkbox"
@@ -760,9 +810,9 @@ export function Scripts() {
                         <Button
                           variant="outline"
                           className="ml-auto px-2.5 py-1"
-                          onClick={() => copyKey(batchKeys.join("\n"))}
+                          onClick={() => void copyKey(batchKeys.join("\n"), "batch")}
                         >
-                          <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+                          <Icon name={copiedId === "batch" ? "check" : "copy"} className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                       <textarea
@@ -781,8 +831,12 @@ export function Scripts() {
                         <code className="min-w-0 flex-1 truncate rounded-lg bg-black/40 px-2.5 py-2 font-mono text-[11.5px] text-amber-100">
                           {issuedKey.key}
                         </code>
-                        <Button variant="outline" className="px-2.5 py-1.5" onClick={() => copyKey(issuedKey.key)}>
-                          <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+                        <Button
+                          variant="outline"
+                          className="px-2.5 py-1.5"
+                          onClick={() => void copyKey(issuedKey.key, "issued")}
+                        >
+                          <Icon name={copiedId === "issued" ? "check" : "copy"} className="h-3.5 w-3.5" />
                         </Button>
                       </div>
                       <p className="mt-1.5 text-[10.5px] text-amber-100/70">{t("scripts.keyOnceHint")}</p>
@@ -942,8 +996,12 @@ export function Scripts() {
                       <code className="min-w-0 flex-1 truncate rounded-lg bg-black/40 px-2.5 py-2 font-mono text-[11px] text-emerald-100">
                         {unbanToken}
                       </code>
-                      <Button variant="outline" className="px-2.5 py-1.5" onClick={() => copyKey(unbanToken)}>
-                        <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+                      <Button
+                        variant="outline"
+                        className="px-2.5 py-1.5"
+                        onClick={() => void copyKey(unbanToken, "unban")}
+                      >
+                        <Icon name={copiedId === "unban" ? "check" : "copy"} className="h-3.5 w-3.5" />
                       </Button>
                       <Button variant="ghost" className="px-2 py-1.5" onClick={() => setUnbanToken(null)}>
                         {t("common.close")}
@@ -1062,12 +1120,6 @@ export function Scripts() {
                             {pipelineBusy ? t("scripts.working") : t("scripts.publishPipeline")}
                           </Button>
                         </div>
-                        {pipelineNote && (
-                          <div className="flex items-center gap-2 rounded-xl border border-emerald-300/25 bg-emerald-400/[0.07] px-3 py-2 text-[11.5px] text-emerald-200">
-                            <Icon name="check" className="h-3.5 w-3.5" />
-                            {pipelineNote}
-                          </div>
-                        )}
                       </>
                     ) : (
                       <>
@@ -1094,6 +1146,75 @@ export function Scripts() {
                     )}
                   </div>
                 </GlassCard>
+
+                {publishResult && publishResult.scriptId === current.scriptId && (
+                  <GlassCard className="border-emerald-300/25 bg-emerald-400/[0.05] p-5">
+                    <div className="flex flex-wrap items-center gap-2.5">
+                      <span className="flex h-7 w-7 items-center justify-center rounded-full border border-emerald-300/30 bg-emerald-400/10">
+                        <Icon name="check" className="h-3.5 w-3.5 text-emerald-200" />
+                      </span>
+                      <div className="min-w-0">
+                        <h3 className="text-[13px] font-semibold text-emerald-50">
+                          {t("scripts.pipelineDone", {
+                            v: publishResult.version,
+                            size: (publishResult.size / 1024).toFixed(1),
+                          })}
+                        </h3>
+                        <p className="mt-0.5 text-[10.5px] text-emerald-100/70">{t("scripts.publishReady")}</p>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        className="ml-auto px-2 py-1 text-[11px]"
+                        onClick={() => setPublishResult(null)}
+                      >
+                        {t("common.close")}
+                      </Button>
+                    </div>
+
+                    <div className="mt-3 grid gap-2.5">
+                      <CopyField
+                        label={t("scripts.loaderCode")}
+                        value={loadstringSnippet(publishResult.scriptId)}
+                        copied={copiedId === "pub-code"}
+                        onCopy={() => void copyKey(loadstringSnippet(publishResult.scriptId), "pub-code")}
+                      />
+                      <CopyField
+                        label={t("scripts.directUrl")}
+                        value={loaderUrl(publishResult.scriptId)}
+                        copied={copiedId === "pub-url"}
+                        onCopy={() => void copyKey(loaderUrl(publishResult.scriptId), "pub-url")}
+                      />
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <Button
+                        variant="outline"
+                        className="px-3 py-1.5 text-[11.5px]"
+                        onClick={() => void copyKey(keySnippet(publishResult.scriptId), "pub-full")}
+                      >
+                        <Icon
+                          name={copiedId === "pub-full" ? "check" : "copy"}
+                          className="mr-1.5 h-3.5 w-3.5"
+                        />
+                        {t("scripts.copyWithKey")}
+                      </Button>
+                      <a
+                        className="rounded-xl border border-white/10 px-3 py-1.5 text-[11.5px] text-slate-300 transition hover:border-aqua-300/40 hover:text-aqua-100"
+                        href={loaderUrl(publishResult.scriptId)}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {t("scripts.openLoader")}
+                      </a>
+                      <span className="text-[10.5px] leading-relaxed text-slate-500">
+                        {t("scripts.copyWithKeyHint")}
+                      </span>
+                    </div>
+                    {copyFailed && (
+                      <p className="mt-2 text-[10.5px] text-rose-200">{t("scripts.copyFailed")}</p>
+                    )}
+                  </GlassCard>
+                )}
 
                 <GlassCard className="overflow-hidden p-0">
                   <div className="flex items-center gap-2.5 border-b border-white/[0.06] px-5 py-3.5">

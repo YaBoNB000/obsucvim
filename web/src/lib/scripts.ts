@@ -387,3 +387,8 @@ export function loaderUrl(scriptId: string): string {
 export function loadstringSnippet(scriptId: string): string {
   return `loadstring(game:HttpGet("${loaderUrl(scriptId)}"))()`;
 }
+
+/** Ready-to-send snippet: sets the key first, then runs the stable loader. */
+export function keySnippet(scriptId: string): string {
+  return `getgenv().key = "在这里填入卡密"\n${loadstringSnippet(scriptId)}`;
+}
