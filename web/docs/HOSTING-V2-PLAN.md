@@ -267,6 +267,32 @@ web/tools/test-loader.py     13/13 passed
 
 **未验证**：真实浏览器里的点击与动画（沙箱无浏览器），仅做构建 + 静态断言（CSP 哈希、类名存在）。
 
+### 2026-10-22 · Phase 2–6（本轮）
+
+| 阶段 | 交付 | 验证 |
+| --- | --- | --- |
+| **2 多脚本运营** | `GET /api/auth/scripts` 返回 `releaseCount / latestVersion / lastPublishedAt / licenseCount`；`POST /api/auth/publish/batch`（同文件夹最多 5 个脚本，每脚本独立作业、独立扣额度）；`POST /api/auth/licenses/batch`（ban/unban/reset-hwid/revoke，≤100 条）；`GET /api/auth/audit`（500 条环形日志，IP 只存 HMAC 前 16 位） | 矩阵统计、批量封禁/解封/重置、越权 id 拒绝、审计含 `licenses.ban`、批量发布落版本 |
+| **3 运行时与状态码** | `runtime` 增加 `expiresAt / scriptVersion`；`POST /api/key/check` 按 Luarmor 语义返回 13 种 code + `message`，`KEY_VALID` 带 `{auth_expire,note,total_executions}`（`dryRun`，不绑定设备不计数）；`GET /library.lua` 与 `web/tools/key-check-library.luau` 提供 `script_id / check_key / load_script / purge_cache` | `check_key` 的 KEY_VALID/KEY_INVALID/SCRIPT_ID_INCORRECT/INVALID_EXECUTOR；库在 lupa 里真实执行并回传状态、`load_script` 命中稳定 URL |
+| **4 通知与指标** | webhook 带 `X-Obsucvim-Signature: sha256=…`（每文件夹独立 secret）、3 次退避重试、`GET /api/auth/webhooks/deliveries`；`state.metrics` 按天聚合（验证/拒绝/执行/独立设备），`GET /api/auth/metrics?days=` | 端到端 502（沙箱不能连 Discord）仍写投递日志；今日指标 `validations>=1` |
+| **5 Webhook 保护** | `POST/GET /api/auth/webhooks`、`/delete`（URL 只存服务端，返回体不回显）；`POST /api/webhooks/send`（凭 `lst_` 会话，同文件夹校验、正则白名单脱敏、`{{var}}` + `%SERVER_VAR%` 渲染、30 req/min/IP、3 embeds、7000 字节） | 创建成功且 URL 不回显、非 Discord 域拒绝、非法正则拒绝、恶意值 `SANITIZE_FAILED`、未知会话 401 |
+| **6 规模化与外部 API** | `saveState()` 改**原子写**（tmp + rename，崩溃不留半截 JSON）；`GET /external/sync`、`GET /external/check_key?by=&key=`（HMAC-SHA256 + clienttime 时钟窗 + 双端签名）、`POST/GET/DELETE /api/auth/external-apps`（密钥只展示一次） | 正常验卡 KEY_VALID 且返回签名、错签名 SECURITY_ERROR、过期时间 TIME_ERROR、未知 app 拒绝 |
+
+**实测**
+
+```
+web/tools/test-hosting.mjs   57/57 passed
+web/tools/test-loader.py     19/19 passed
+```
+
+### 仍未完成（诚实清单）
+
+1. **Webhook 保护 / 外部验卡应用的前端界面**：接口与文档已就绪，控制台暂未提供图形化配置（需要者可用文档里的 curl 示例）。
+2. **真正的数据库迁移**：当前仍是单文档 JSON（已改原子写）。多实例、并发写、百万级卡密仍需要 Postgres/SQLite 关系化，这是独立工程。
+3. **对象存储**：产物仍落本地 `data/releases/`。
+4. **多节点**：`/external/sync` 目前只回一个节点。
+5. **告警规则的自动升级**（如 5 分钟内拒绝激增自动临时封 IP 段）未做，仍只有每文件夹 5 秒节流的告警推送。
+6. **源码保险箱**按产品决策不做（默认不留原文）。
+
 ### 后续
 
-- Phase 2–6 按 §4 顺序推进；每阶段结束同步 `SCRIPT-KEYS.md` 与本文档。
+- 下一轮优先级建议：关系化存储 → 外部验收 API 的前端 → 告警规则 → 多节点。

@@ -14,7 +14,7 @@
  */
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, rmSync, createReadStream, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, mkdtempSync, renameSync, rmSync, createReadStream, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -207,6 +207,11 @@ let state = {
   licenseAttempts: {}, // `${scriptId}:${ipHash}` -> { fails, until }; per-client abuse throttle
   releases: {}, // scriptId -> { version, sha256, size, createdAt, file }
   deviceBans: {}, // HMAC(hwid) -> { reason, expireAt, bannedAt }
+  auditLog: [],   // [{ at, email, action, target, ip, meta }] newest last, capped
+  metrics: {},    // "YYYY-MM-DD" -> { validations, rejected, executions, devices: {hash: 1} }
+  webhooks: {},   // webhookId -> { folderId, ownerEmail, name, url, template, sanitizers, secret }
+  webhookLog: [], // [{ at, webhookId, folderId, status, detail }] capped
+  externalApps: {}, // appId -> { ownerEmail, name, secret, createdAt }
 };
 
 function loadState() {
@@ -250,9 +255,15 @@ function loadState() {
     state.licenseKeyHashKey = randomBytes(32).toString("hex");
     changed = true;
   }
-  for (const key of ["folders", "licenseNonces", "licenseSessions", "licenseAttempts", "releases", "deviceBans"]) {
+  for (const key of ["folders", "licenseNonces", "licenseSessions", "licenseAttempts", "releases", "deviceBans", "metrics", "webhooks", "externalApps"]) {
     if (!state[key] || typeof state[key] !== "object" || Array.isArray(state[key])) {
       state[key] = {};
+      changed = true;
+    }
+  }
+  for (const key of ["auditLog", "webhookLog"]) {
+    if (!Array.isArray(state[key])) {
+      state[key] = [];
       changed = true;
     }
   }
@@ -292,11 +303,20 @@ function ensureDefaultFolder(ownerEmail) {
   return state.folders[folderId];
 }
 
+/* 原子写：先写临时文件再 rename。断电/崩溃只会留下旧文件，不会留下半截 JSON。
+ * 单实例下足够；多实例部署仍需要真正的数据库（见 docs/HOSTING-V2-PLAN.md Phase 6）。 */
 function saveState() {
+  const payload = JSON.stringify(state);
+  const tmp = `${STATE_FILE}.${process.pid}.tmp`;
   try {
-    writeFileSync(STATE_FILE, JSON.stringify(state));
+    writeFileSync(tmp, payload);
+    renameSync(tmp, STATE_FILE);
   } catch {
-    /* ignore */
+    try {
+      writeFileSync(STATE_FILE, payload);
+    } catch {
+      /* 只读介质：忽略 */
+    }
   }
 }
 
@@ -645,7 +665,15 @@ function activeDeviceBan(hwidHash) {
 /* Decide whether a license request is acceptable. Failures are counted per
  * client+script so a thief only throttles themselves; legitimate users are not
  * locked out by someone replaying their traffic. */
-function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
+/** 脚本最新版本号，供 runtime.scriptVersion 使用。 */
+function latestReleaseVersion(scriptId) {
+  const releases = Object.values(state.releases).filter((release) => release.scriptId === scriptId);
+  if (releases.length === 0) return null;
+  releases.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
+  return releases[0].version;
+}
+
+function evaluateLicense({ scriptId, key, hwid, nonce, ip, dryRun = false }) {
   const script = state.scripts[scriptId];
   if (!script || !script.active) {
     return { ok: false, status: 404, error: "LICENSE_INVALID", code: "SCRIPT_NOT_FOUND" };
@@ -721,9 +749,12 @@ function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   }
 
   const nonceKey = `${licenseId}:${licenseNonceDigest(nonce)}`;
-  if (state.licenseNonces[nonceKey] && state.licenseNonces[nonceKey] > now()) {
+  if (!dryRun && state.licenseNonces[nonceKey] && state.licenseNonces[nonceKey] > now()) {
     return { ok: false, status: 409, error: "NONCE_REPLAY", code: "NONCE_REPLAY", folder, script };
   }
+
+  // dryRun 供 check_key 使用：只回报状态，不绑定设备、不计数、不消耗 nonce。
+  if (dryRun) return { ok: true, license, script, folder, dryRun: true };
 
   if (!license.hwidHash) {
     license.hwidHash = hwidHash;
@@ -765,6 +796,119 @@ function normalizeWebhookUrl(value) {
   return url.toString();
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/* ---------------- 审计日志（Phase 2） ---------------- */
+
+const AUDIT_LIMIT = 500;
+
+function recordAudit(ownerEmail, action, target, ip, meta) {
+  state.auditLog.push({
+    at: now(),
+    email: ownerEmail,
+    action,
+    target: target ?? "",
+    ip: typeof ip === "string" && ip ? registrationIpHash(ip).slice(0, 16) : "",
+    meta: meta && typeof meta === "object" ? meta : undefined,
+  });
+  if (state.auditLog.length > AUDIT_LIMIT) state.auditLog.splice(0, state.auditLog.length - AUDIT_LIMIT);
+}
+
+function auditPublic(entry) {
+  return {
+    at: entry.at,
+    action: entry.action,
+    target: entry.target,
+    ipHash: entry.ip,
+    meta: entry.meta,
+  };
+}
+
+/* ---------------- 指标（Phase 4） ---------------- */
+
+const METRIC_DEVICE_CAP = 5000;
+
+function bumpMetric(field, deviceHash) {
+  const day = todayStr();
+  const bucket = state.metrics[day] ?? (state.metrics[day] = { validations: 0, rejected: 0, executions: 0, devices: {} });
+  if (field === "devices") {
+    if (deviceHash && Object.keys(bucket.devices).length < METRIC_DEVICE_CAP) bucket.devices[deviceHash] = 1;
+    return;
+  }
+  bucket[field] = (bucket[field] ?? 0) + 1;
+}
+
+function metricsSnapshot(days) {
+  const out = [];
+  const today = new Date();
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * 86400000);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const bucket = state.metrics[key] ?? { validations: 0, rejected: 0, executions: 0, devices: {} };
+    out.push({
+      date: key,
+      validations: bucket.validations ?? 0,
+      rejected: bucket.rejected ?? 0,
+      executions: bucket.executions ?? 0,
+      devices: Object.keys(bucket.devices ?? {}).length,
+    });
+  }
+  return out;
+}
+
+/* ---------------- Webhook 投递（Phase 4） ---------------- */
+
+const WEBHOOK_LOG_LIMIT = 200;
+
+function webhookSecretFor(folder) {
+  if (!folder.webhookSecret) {
+    folder.webhookSecret = randomBytes(24).toString("hex");
+    saveState();
+  }
+  return folder.webhookSecret;
+}
+
+function logWebhookDelivery(entry) {
+  state.webhookLog.push({ at: now(), ...entry });
+  if (state.webhookLog.length > WEBHOOK_LOG_LIMIT) {
+    state.webhookLog.splice(0, state.webhookLog.length - WEBHOOK_LOG_LIMIT);
+  }
+}
+
+/** 单次投递：带 HMAC-SHA256 签名，接收方可以用同一密钥验签。 */
+async function postWebhook(url, payload, secret) {
+  const body = JSON.stringify(payload);
+  const headers = { "content-type": "application/json" };
+  if (secret) headers["x-obsucvim-signature"] = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(url, { method: "POST", headers, body, signal: controller.signal });
+    return { ok: res.ok, status: res.status };
+  } catch (error) {
+    return { ok: false, status: 0, detail: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 最多 3 次尝试，250/500/1000ms 退避；每次都写一条投递日志。 */
+async function deliverWebhook(url, payload, secret, meta = {}) {
+  let last = { ok: false, status: 0 };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    last = await postWebhook(url, payload, secret);
+    if (last.ok) break;
+    if (attempt < 2) await sleep(250 * 2 ** attempt);
+  }
+  logWebhookDelivery({
+    ...meta,
+    status: last.ok ? "delivered" : "failed",
+    httpStatus: last.status,
+    detail: last.detail ? String(last.detail).slice(0, 160) : undefined,
+  });
+  return last;
+}
+
 function dispatchWebhook(folder, kind, fields) {
   const target = kind === "alert" ? folder.alertWebhookUrl : folder.logWebhookUrl;
   if (!target) return;
@@ -772,7 +916,7 @@ function dispatchWebhook(folder, kind, fields) {
   const last = webhookCooldown.get(cooldownKey) ?? 0;
   if (now() - last < 5000) return; // at most one event per 5s per folder+kind
   webhookCooldown.set(cooldownKey, now());
-  const payload = JSON.stringify({
+  const payload = {
     username: "Obsucvim",
     embeds: [{
       title: kind === "alert" ? "Licence rejected" : "Licence accepted",
@@ -780,12 +924,136 @@ function dispatchWebhook(folder, kind, fields) {
       fields: fields.map(([name, value]) => ({ name, value: String(value).slice(0, 200), inline: true })),
       timestamp: new Date().toISOString(),
     }],
+  };
+  // Fire and forget: 投递失败绝不影响验卡。
+  void deliverWebhook(target, payload, webhookSecretFor(folder), {
+    kind, folderId: folder.folderId, target: kind,
   });
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5000);
-  fetch(target, { method: "POST", headers: { "content-type": "application/json" }, body: payload, signal: controller.signal })
-    .catch(() => { /* webhook delivery is best effort */ })
-    .finally(() => clearTimeout(timer));
+}
+
+/* ---------------- Key Check 状态码（Phase 3，对齐 Luarmor） ---------------- */
+
+const KEY_CHECK_MESSAGES = {
+  KEY_VALID: "The provided key is valid.",
+  KEY_EXPIRED: "The provided key has expired.",
+  KEY_BANNED: "The provided key is blacklisted.",
+  KEY_HWID_LOCKED: "The provided key has been locked to a different HWID. Reset your HWID to access it.",
+  KEY_INCORRECT: "The provided key is incorrect / it does not exist.",
+  KEY_INVALID: "The provided key is in an invalid format.",
+  KEY_LOCKED: "Too many failed attempts, try again later.",
+  SCRIPT_ID_INVALID: "The provided script ID is in an invalid format.",
+  SCRIPT_ID_INCORRECT: "The provided script ID is incorrect / it does not exist.",
+  INVALID_EXECUTOR: "HWID header contains invalid data. Executor might not be supported.",
+  SECURITY_ERROR: "Request can not be validated by the server.",
+  TIME_ERROR: "Client time is invalid.",
+  UNKNOWN_ERROR: "Unknown server error.",
+};
+
+const KEY_CHECK_MAP = {
+  SCRIPT_NOT_FOUND: "SCRIPT_ID_INCORRECT",
+  HWID_MISSING: "INVALID_EXECUTOR",
+  KEY_MISSING: "KEY_INVALID",
+  KEY_LOCKED: "KEY_LOCKED",
+  NONCE_REPLAY: "SECURITY_ERROR",
+};
+
+function toKeyCheckCode(code) {
+  return KEY_CHECK_MAP[code] ?? code;
+}
+
+/* ---------------- 受保护的 webhook 模板（Phase 5） ---------------- */
+
+const WEBHOOK_TEMPLATE_MAX = 4000;
+const WEBHOOK_PAYLOAD_MAX = 7000;
+const WEBHOOK_VALUE_MAX = 200;
+const WEBHOOK_SEND_LIMIT = 30;
+const WEBHOOK_SEND_WINDOW_MS = 60_000;
+
+function normalizeSanitizers(input) {
+  if (input === undefined || input === null) return {};
+  if (typeof input !== "object" || Array.isArray(input)) return null;
+  const keys = Object.keys(input);
+  if (keys.length > 10) return null;
+  const out = {};
+  for (const name of keys) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,31}$/.test(name)) return null;
+    const pattern = input[name];
+    if (typeof pattern !== "string" || pattern.length === 0 || pattern.length > 200) return null;
+    try {
+      // 服务端自己加锚点，模板里不要写 ^ $。
+      new RegExp(`^(?:${pattern})$`);
+    } catch {
+      return null;
+    }
+    out[name] = pattern;
+  }
+  return out;
+}
+
+function sanitizeValue(value, pattern) {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const text = String(value).slice(0, WEBHOOK_VALUE_MAX);
+  if (!new RegExp(`^(?:${pattern})$`).test(text)) return null;
+  return text;
+}
+
+/** 只替换白名单占位符：{{var}} 与 %SERVER_VAR%，其余原样保留。 */
+function renderTemplate(template, values, serverVars) {
+  let out = template;
+  for (const [name, value] of Object.entries(values)) {
+    out = out.split(`{{${name}}}`).join(JSON.stringify(value).slice(1, -1));
+  }
+  for (const [name, value] of Object.entries(serverVars)) {
+    out = out.split(`%${name}%`).join(JSON.stringify(value).slice(1, -1));
+  }
+  return out;
+}
+
+/* ---------------- 外部验卡 API（Phase 6） ---------------- */
+
+const EXTERNAL_CLOCK_SKEW_MS = 5 * 60_000;
+
+function externalSignature(secret, ...parts) {
+  return createHmac("sha256", secret).update(parts.join("|")).digest("hex");
+}
+
+/* ---------------- 批量操作（Phase 2） ---------------- */
+
+const MAX_BATCH_TARGETS = 100;
+
+function makeRateLimit(limit, windowMs) {
+  const hits = new Map();
+  setInterval(() => {
+    const n = Date.now();
+    for (const [key, hit] of hits) if (n > hit.reset) hits.delete(key);
+  }, windowMs).unref?.();
+  return (key) => {
+    const n = Date.now();
+    const hit = hits.get(key);
+    if (!hit || n > hit.reset) {
+      hits.set(key, { n: 1, reset: n + windowMs });
+      return 0;
+    }
+    if (hit.n >= limit) return Math.max(1, Math.ceil((hit.reset - n) / 1000));
+    hit.n += 1;
+    return 0;
+  };
+}
+
+const webhookSendLimited = makeRateLimit(WEBHOOK_SEND_LIMIT, WEBHOOK_SEND_WINDOW_MS);
+const externalCheckLimited = makeRateLimit(60, 60_000);
+const keyCheckLimited = makeRateLimit(60, 60_000);
+
+function ownedLicenses(ownerEmail, licenseIds) {
+  if (!Array.isArray(licenseIds) || licenseIds.length === 0 || licenseIds.length > MAX_BATCH_TARGETS) return null;
+  const found = [];
+  for (const id of licenseIds) {
+    if (typeof id !== "string") return null;
+    const license = state.licenseKeys[id];
+    if (!license || license.ownerEmail !== ownerEmail) return null;
+    found.push(license);
+  }
+  return found;
 }
 
 const folderPublic = (folder) => ({
@@ -1613,12 +1881,26 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/api/auth/scripts") {
       const owner = authUser(req);
       if (!owner) return unauthorized(res, req);
+      // 每个脚本带上「最新版本 / 版本数 / 文件夹卡密数」，前端不用再逐个请求。
+      const folderLicenseCounts = {};
+      for (const license of Object.values(state.licenseKeys)) {
+        if (license.ownerEmail !== owner.email) continue;
+        folderLicenseCounts[license.folderId] = (folderLicenseCounts[license.folderId] ?? 0) + 1;
+      }
       const scripts = Object.values(state.scripts)
         .filter((script) => script.ownerEmail === owner.email)
-        .map(({ scriptId, folderId, name, description, createdAt, active, ffa, silent, heartbeat }) => ({
-          scriptId, folderId, name, description, createdAt, active,
-          ffa: Boolean(ffa), silent: Boolean(silent), heartbeat: Boolean(heartbeat),
-        }));
+        .map(({ scriptId, folderId, name, description, createdAt, active, ffa, silent, heartbeat }) => {
+          const releases = Object.values(state.releases).filter((release) => release.scriptId === scriptId);
+          const latest = releases.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0] ?? null;
+          return {
+            scriptId, folderId, name, description, createdAt, active,
+            ffa: Boolean(ffa), silent: Boolean(silent), heartbeat: Boolean(heartbeat),
+            releaseCount: releases.length,
+            latestVersion: latest?.version ?? null,
+            lastPublishedAt: latest?.createdAt ?? null,
+            licenseCount: folderId ? (folderLicenseCounts[folderId] ?? 0) : 0,
+          };
+        });
       return json(res, 200, { ok: true, scripts });
     }
 
@@ -2301,6 +2583,288 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
 
+    /* ---------------- Phase 2: 批量发布 ---------------- */
+
+    if (req.method === "POST" && req.url === "/api/auth/publish/batch") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { folderId, version, source, scriptIds } = body;
+      const folder = typeof folderId === "string" ? state.folders[folderId] : null;
+      if (!folder || folder.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "FOLDER_NOT_FOUND" });
+      }
+      if (typeof version !== "string" || !/^[A-Za-z0-9._-]{1,32}$/.test(version)) {
+        return json(res, 400, { ok: false, error: "BAD_VERSION" });
+      }
+      if (typeof source !== "string" || !source.trim()) return json(res, 400, { ok: false, error: "BAD_SOURCE" });
+      if (Buffer.byteLength(source, "utf8") > MAX_SOURCE_BYTES) {
+        return json(res, 413, { ok: false, error: "SOURCE_TOO_LARGE" });
+      }
+      const inFolder = Object.values(state.scripts).filter(
+        (script) => script.ownerEmail === owner.email && script.folderId === folder.folderId && script.active,
+      );
+      const targets = Array.isArray(scriptIds) && scriptIds.length
+        ? inFolder.filter((script) => scriptIds.includes(script.scriptId))
+        : inFolder;
+      if (targets.length === 0) return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
+      if (targets.length > 5) return json(res, 400, { ok: false, error: "BATCH_TOO_LARGE" });
+      if (engineMode() === "missing") return json(res, 503, { ok: false, error: "ENGINE_MISSING" });
+
+      const q = quotaOf(owner.email);
+      if (q.used + targets.length > DAILY_QUOTA) {
+        return json(res, 429, { ok: false, error: "QUOTA_EXCEEDED", quota: quotaJson(owner.email) });
+      }
+      const active = activeJobsFor(owner.email).length;
+      if (active + targets.length > MAX_ACTIVE_JOBS_PER_ACCOUNT) {
+        return json(res, 409, { ok: false, error: "PUBLISH_BUSY" });
+      }
+
+      const options = { ...DEFAULT_OBFUSCATION_OPTIONS };
+      const origin = publicOrigin(req);
+      const jobs = [];
+      for (const script of targets) {
+        q.used += 1;
+        const job = {
+          id: `pub_${randomBytes(9).toString("hex")}`,
+          ownerEmail: owner.email,
+          scriptId: script.scriptId,
+          version,
+          source,
+          sourceBytes: Buffer.byteLength(source, "utf8"),
+          status: "processing",
+          stage: "queued",
+          progress: PUBLISH_STAGES.queued,
+          startedAt: now(),
+          quotaCharged: true,
+          quotaDate: q.date,
+        };
+        publishJobs.set(job.id, job);
+        jobs.push({ jobId: job.id, scriptId: script.scriptId, name: script.name });
+        void runPublishJob(job, { source, version, options, origin });
+      }
+      state.quotas[owner.email] = q;
+      saveState();
+      recordAudit(owner.email, "publish.batch", `${targets.length} scripts`, clientIp(req), { version });
+      return json(res, 202, {
+        ok: true,
+        count: jobs.length,
+        jobs,
+        quota: quotaJson(owner.email),
+      });
+    }
+
+    /* ---------------- Phase 2: 审计日志 / 批量操作 ---------------- */
+
+    if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/audit") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const limit = Math.min(200, Math.max(1, Number(new URL(req.url, "http://localhost").searchParams.get("limit")) || 50));
+      const entries = state.auditLog.filter((entry) => entry.email === owner.email).slice(-limit).reverse();
+      return json(res, 200, { ok: true, entries: entries.map(auditPublic) });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/licenses/batch") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { action, licenseIds } = body;
+      const targets = ownedLicenses(owner.email, licenseIds);
+      if (!targets) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      if (!["revoke", "unban", "reset-hwid", "ban"].includes(action)) {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+
+      if (action === "ban") {
+        const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
+        let banExpireAt = null;
+        if (body.banDays !== undefined && body.banDays !== null && body.banDays !== "") {
+          const days = Number(body.banDays);
+          if (!Number.isInteger(days) || days < 1 || days > 3650) {
+            return json(res, 400, { ok: false, error: "BAD_BAN_DAYS" });
+          }
+          banExpireAt = now() + days * 86400000;
+        }
+        for (const license of targets) {
+          // 与单个封禁保持同一套字段，licensePublic / evaluateLicense 才能识别。
+          license.bannedAt = now();
+          license.banReason = reason;
+          license.banExpireAt = banExpireAt;
+          license.unbanToken = randomBytes(UNBAN_TOKEN_BYTES).toString("hex");
+          if (license.hwidHash) {
+            state.deviceBans[license.hwidHash] = {
+              reason,
+              expireAt: banExpireAt,
+              bannedAt: now(),
+              licenseId: license.licenseId,
+              ownerEmail: owner.email,
+            };
+          }
+        }
+      } else if (action === "unban") {
+        for (const license of targets) {
+          if (license.hwidHash) delete state.deviceBans[license.hwidHash];
+          license.bannedAt = null;
+          license.banReason = "";
+          license.banExpireAt = null;
+          license.unbanToken = null;
+        }
+      } else if (action === "reset-hwid") {
+        for (const license of targets) {
+          license.hwidHash = null;
+          license.firstActivatedAt = null;
+          license.lastResetAt = now();
+          license.totalResets = (license.totalResets ?? 0) + 1;
+        }
+      } else {
+        for (const license of targets) {
+          license.revokedAt = license.revokedAt || now();
+        }
+      }
+      saveState();
+      recordAudit(owner.email, `licenses.${action}`, `${targets.length} keys`, clientIp(req), { count: targets.length });
+      return json(res, 200, {
+        ok: true,
+        action,
+        count: targets.length,
+        licenses: targets.map(licensePublic),
+      });
+    }
+
+    /* ---------------- Phase 4: 指标 / webhook 投递日志 ---------------- */
+
+    if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/metrics") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const days = Math.min(30, Math.max(1, Number(new URL(req.url, "http://localhost").searchParams.get("days")) || 7));
+      return json(res, 200, { ok: true, days: metricsSnapshot(days) });
+    }
+
+    if (req.method === "GET" && req.url === "/api/auth/webhooks/deliveries") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const owned = new Set(
+        Object.values(state.folders).filter((f) => f.ownerEmail === owner.email).map((f) => f.folderId),
+      );
+      const entries = state.webhookLog
+        .filter((entry) => owned.has(entry.folderId))
+        .slice(-80)
+        .reverse();
+      return json(res, 200, { ok: true, entries });
+    }
+
+    /* ---------------- Phase 5: 受保护的 webhook ---------------- */
+
+    if (req.method === "GET" && req.url === "/api/auth/webhooks") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const list = Object.values(state.webhooks)
+        .filter((hook) => hook.ownerEmail === owner.email)
+        .map((hook) => ({
+          webhookId: hook.webhookId,
+          folderId: hook.folderId,
+          name: hook.name,
+          urlHost: (() => { try { return new URL(hook.url).host; } catch { return "invalid"; } })(),
+          variables: Object.keys(hook.sanitizers ?? {}),
+          createdAt: hook.createdAt,
+        }));
+      return json(res, 200, { ok: true, webhooks: list });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/webhooks") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const { folderId, name, url, template, sanitizers } = body;
+      const folder = typeof folderId === "string" ? state.folders[folderId] : null;
+      if (!folder || folder.ownerEmail !== owner.email) {
+        return json(res, 404, { ok: false, error: "FOLDER_NOT_FOUND" });
+      }
+      if (typeof name !== "string" || name.trim().length < 2 || name.trim().length > 60) {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      const normalizedUrl = normalizeWebhookUrl(url);
+      if (!normalizedUrl) return json(res, 400, { ok: false, error: "BAD_WEBHOOK" });
+      if (typeof template !== "string" || template.length === 0 || template.length > WEBHOOK_TEMPLATE_MAX) {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      const clean = normalizeSanitizers(sanitizers);
+      if (!clean) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      try {
+        JSON.parse(template);
+      } catch {
+        return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      }
+      if (Object.values(state.webhooks).filter((h) => h.ownerEmail === owner.email).length >= 20) {
+        return json(res, 409, { ok: false, error: "WEBHOOK_LIMIT" });
+      }
+      const webhookId = "whk_" + randomBytes(9).toString("hex");
+      // URL 只存在服务端，客户端永远拿不到，也就无法删除/刷屏你的 webhook。
+      state.webhooks[webhookId] = {
+        webhookId,
+        ownerEmail: owner.email,
+        folderId: folder.folderId,
+        name: name.trim(),
+        url: normalizedUrl,
+        template,
+        sanitizers: clean,
+        createdAt: now(),
+      };
+      saveState();
+      recordAudit(owner.email, "webhook.create", webhookId, clientIp(req), { folderId: folder.folderId });
+      return json(res, 201, {
+        ok: true,
+        webhook: { webhookId, name: state.webhooks[webhookId].name, folderId: folder.folderId, variables: Object.keys(clean) },
+      });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/webhooks/delete") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const hook = typeof body.webhookId === "string" ? state.webhooks[body.webhookId] : null;
+      if (!hook || hook.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      delete state.webhooks[hook.webhookId];
+      saveState();
+      recordAudit(owner.email, "webhook.delete", hook.webhookId, clientIp(req));
+      return json(res, 200, { ok: true });
+    }
+
+    /* ---------------- Phase 6: 外部验卡应用 ---------------- */
+
+    if (req.method === "GET" && req.url === "/api/auth/external-apps") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const apps = Object.values(state.externalApps)
+        .filter((app) => app.ownerEmail === owner.email)
+        .map((app) => ({ appId: app.appId, name: app.name, createdAt: app.createdAt }));
+      return json(res, 200, { ok: true, apps });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/external-apps") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const name = typeof body.name === "string" ? body.name.trim() : "";
+      if (name.length < 2 || name.length > 60) return json(res, 400, { ok: false, error: "BAD_INPUT" });
+      if (Object.values(state.externalApps).filter((app) => app.ownerEmail === owner.email).length >= 10) {
+        return json(res, 409, { ok: false, error: "APP_LIMIT" });
+      }
+      const appId = "app_" + randomBytes(8).toString("hex");
+      const secret = randomBytes(24).toString("hex");
+      state.externalApps[appId] = { appId, ownerEmail: owner.email, name, secret, createdAt: now() };
+      saveState();
+      recordAudit(owner.email, "external-app.create", appId, clientIp(req));
+      // 密钥只在这里出现一次。
+      return json(res, 201, { ok: true, app: { appId, name, secret } });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/external-apps/delete") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const app = typeof body.appId === "string" ? state.externalApps[body.appId] : null;
+      if (!app || app.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      delete state.externalApps[app.appId];
+      saveState();
+      recordAudit(owner.email, "external-app.delete", app.appId, clientIp(req));
+      return json(res, 200, { ok: true });
+    }
+
     return json(res, 404, { ok: false, error: "NOT_FOUND" });
   };
 
@@ -2350,6 +2914,10 @@ const server = createServer(async (req, res) => {
     ) return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST", code: "BAD_REQUEST" });
 
     const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
+    if (verdict.ok) bumpMetric("validations", typeof hwid === "string" ? licenseHwidDigest(hwid) : undefined);
+    else bumpMetric("rejected");
+    if (verdict.ok && !verdict.free) bumpMetric("executions", licenseHwidDigest(hwid));
+    if (verdict.ok) bumpMetric("devices", typeof hwid === "string" && hwid.length >= 8 ? licenseHwidDigest(hwid) : undefined);
     saveState();
     if (!verdict.ok) {
       if (verdict.folder) {
@@ -2384,7 +2952,9 @@ const server = createServer(async (req, res) => {
           note: "",
           scriptName: verdict.script?.name ?? "",
           folderName: verdict.folder?.name ?? "",
+          scriptVersion: latestReleaseVersion(scriptId),
           secondsLeft: null,
+          expiresAt: null,
           totalExecutions: 0,
           firstActivatedAt: null,
         },
@@ -2421,6 +2991,8 @@ const server = createServer(async (req, res) => {
         scriptName: verdict.script?.name ?? "",
         folderName: verdict.folder?.name ?? "",
         secondsLeft,
+        expiresAt: verdict.license.expiresAt ?? null,
+        scriptVersion: latestReleaseVersion(scriptId),
         totalExecutions: verdict.license.executions ?? 0,
         firstActivatedAt: verdict.license.firstActivatedAt ?? null,
       },
@@ -2643,6 +3215,218 @@ const server = createServer(async (req, res) => {
       ok: true,
       note: license.label || "",
       resetCooldownDays: folder.resetCooldownDays ?? 7,
+    });
+  }
+
+  /* ---------------- Phase 3: Key Check（Luarmor 兼容状态码） ---------------- */
+
+  if (req.method === "POST" && req.url === "/api/key/check") {
+    const retryAfter = keyCheckLimited(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, code: "KEY_LOCKED", message: KEY_CHECK_MESSAGES.KEY_LOCKED, retryAfter });
+    }
+    let body;
+    try {
+      body = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
+    } catch {
+      return json(res, 400, { ok: false, code: "UNKNOWN_ERROR", message: KEY_CHECK_MESSAGES.UNKNOWN_ERROR });
+    }
+    const scriptId = typeof body?.scriptId === "string" ? body.scriptId : "";
+    if (!/^scr_[\da-f]{24}$/i.test(scriptId)) {
+      return json(res, 400, { ok: false, code: "SCRIPT_ID_INVALID", message: KEY_CHECK_MESSAGES.SCRIPT_ID_INVALID });
+    }
+    const key = typeof body?.key === "string" ? body.key : "";
+    if (!/^osk_[\da-f]{64}$/i.test(key)) {
+      return json(res, 400, { ok: false, code: "KEY_INVALID", message: KEY_CHECK_MESSAGES.KEY_INVALID });
+    }
+    const hwid = typeof body?.hwid === "string"
+      ? body.hwid
+      : typeof req.headers["clienthwid"] === "string" ? req.headers["clienthwid"] : "";
+    if (hwid.trim().length < 8 || hwid.trim().length > 256) {
+      return json(res, 400, { ok: false, code: "INVALID_EXECUTOR", message: KEY_CHECK_MESSAGES.INVALID_EXECUTOR });
+    }
+    const script = state.scripts[scriptId];
+    if (!script || !script.active) {
+      return json(res, 404, { ok: false, code: "SCRIPT_ID_INCORRECT", message: KEY_CHECK_MESSAGES.SCRIPT_ID_INCORRECT });
+    }
+    const verdict = evaluateLicense({
+      scriptId, key, hwid, ip: clientIp(req),
+      nonce: randomBytes(16).toString("hex"), dryRun: true,
+    });
+    saveState();
+    if (!verdict.ok) {
+      const code = toKeyCheckCode(verdict.code ?? "UNKNOWN_ERROR");
+      return json(res, verdict.status === 200 ? 400 : verdict.status, {
+        ok: false,
+        code,
+        message: KEY_CHECK_MESSAGES[code] ?? KEY_CHECK_MESSAGES.UNKNOWN_ERROR,
+        ...(verdict.retryAfter ? { retryAfter: verdict.retryAfter } : {}),
+      });
+    }
+    return json(res, 200, {
+      ok: true,
+      code: "KEY_VALID",
+      message: KEY_CHECK_MESSAGES.KEY_VALID,
+      data: {
+        auth_expire: verdict.license.expiresAt ?? -1,
+        note: verdict.license.label || "Not specified",
+        total_executions: verdict.license.executions ?? 0,
+      },
+    });
+  }
+
+  /* 供脚本内 loadstring 的轻量库：check_key / load_script / purge_cache */
+  if ((req.method === "GET" || req.method === "HEAD") && req.url === "/library.lua") {
+    const library = readFileSync(path.join(__dirname, "key-check-library.luau"), "utf8")
+      .replaceAll("__BASE_URL__", publicOrigin(req));
+    res.writeHead(200, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    });
+    return res.end(req.method === "HEAD" ? undefined : library);
+  }
+
+  /* ---------------- Phase 5: 受保护的 webhook 发送 ---------------- */
+
+  if (req.method === "POST" && req.url === "/api/webhooks/send") {
+    const retryAfter = webhookSendLimited(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, error: "RATE_LIMITED", retryAfter });
+    }
+    let body;
+    try {
+      body = JSON.parse(await readBody(req, 32 * 1024));
+    } catch {
+      return json(res, 400, { ok: false, error: "BAD_JSON" });
+    }
+    const token = typeof body?.token === "string" ? body.token : "";
+    const session = state.licenseSessions[token];
+    if (!session || session.expires < now()) {
+      return json(res, 401, { ok: false, error: "INVALID_SESSION" });
+    }
+    const hook = typeof body?.webhookId === "string" ? state.webhooks[body.webhookId] : null;
+    const script = state.scripts[session.scriptId];
+    // 受保护的 webhook 只对同项目文件夹的脚本开放。
+    if (!hook || !script || hook.folderId !== script.folderId) {
+      return json(res, 404, { ok: false, error: "NOT_FOUND" });
+    }
+    const license = state.licenseKeys[session.licenseId];
+    const values = body?.values && typeof body.values === "object" && !Array.isArray(body.values) ? body.values : {};
+    const sanitized = {};
+    for (const [name, pattern] of Object.entries(hook.sanitizers ?? {})) {
+      if (values[name] === undefined) continue;
+      const clean = sanitizeValue(values[name], pattern);
+      if (clean === null) {
+        return json(res, 400, { ok: false, error: "SANITIZE_FAILED", variable: name });
+      }
+      sanitized[name] = clean;
+    }
+    const serverVars = {
+      CLIENT_IP: clientIp(req),
+      SCRIPT_NAME: script.name ?? "",
+      SCRIPT_ID: script.scriptId,
+      USER_NOTE: license?.label || "Not specified",
+      LICENSE_ID: license?.licenseId ?? "",
+      TOTAL_EXECUTIONS: String(license?.executions ?? 0),
+      COUNTRY_CODE: (req.headers["cf-ipcountry"] || req.headers["x-country-code"] || "").toString().slice(0, 2).toLowerCase(),
+    };
+    const rendered = renderTemplate(hook.template, sanitized, serverVars);
+    if (rendered.length > WEBHOOK_PAYLOAD_MAX) {
+      return json(res, 413, { ok: false, error: "PAYLOAD_TOO_LARGE" });
+    }
+    let payload;
+    try {
+      payload = JSON.parse(rendered);
+    } catch {
+      return json(res, 400, { ok: false, error: "BAD_TEMPLATE" });
+    }
+    if (Array.isArray(payload.embeds) && payload.embeds.length > 3) {
+      return json(res, 400, { ok: false, error: "TOO_MANY_EMBEDS" });
+    }
+    const result = await deliverWebhook(hook.url, payload, null, {
+      webhookId: hook.webhookId, folderId: hook.folderId, kind: "protected", target: hook.name,
+    });
+    saveState();
+    return json(res, result.ok ? 200 : 502, { ok: result.ok, delivered: result.ok, status: result.status });
+  }
+
+  /* ---------------- Phase 6: 外部验卡 API ---------------- */
+
+  if (req.method === "GET" && req.url.startsWith("/external/sync")) {
+    return json(res, 200, {
+      ok: true,
+      st: now(),
+      algorithm: "hmac-sha256",
+      nodes: [publicOrigin(req)],
+      version: 1,
+    });
+  }
+
+  if (req.method === "GET" && req.url.startsWith("/external/check_key")) {
+    const retryAfter = externalCheckLimited(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, code: "KEY_LOCKED" });
+    }
+    const url = new URL(req.url, "http://localhost");
+    const appId = (url.searchParams.get("by") || "").trim();
+    const key = (url.searchParams.get("key") || "").trim();
+    const app = state.externalApps[appId];
+    if (!app) return json(res, 403, { ok: false, code: "SECURITY_ERROR" });
+
+    const header = (name) => {
+      const value = req.headers[name];
+      return typeof value === "string" ? value : "";
+    };
+    const clientNonce = header("clientnonce");
+    const clientTime = header("clienttime");
+    const clientHwid = header("clienthwid");
+    const signature = header("externalsignature");
+    if (!clientNonce || !clientTime || !signature) {
+      return json(res, 400, { ok: false, code: "SECURITY_ERROR" });
+    }
+    const sentAt = Number(clientTime);
+    if (!Number.isFinite(sentAt) || Math.abs(now() - sentAt) > EXTERNAL_CLOCK_SKEW_MS) {
+      return json(res, 409, { ok: false, code: "TIME_ERROR" });
+    }
+    const expected = externalSignature(app.secret, clientNonce, key, clientTime, clientHwid);
+    if (!digestsEqual(expected, signature.toLowerCase())) {
+      return json(res, 403, { ok: false, code: "SECURITY_ERROR" });
+    }
+
+    const sign = (code) => ({ signature: externalSignature(app.secret, clientNonce, code) });
+    if (!/^osk_[\da-f]{64}$/i.test(key)) {
+      return json(res, 400, { ok: false, code: "KEY_INVALID", ...sign("KEY_INVALID") });
+    }
+    const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
+    const license = licenseId ? state.licenseKeys[licenseId] : null;
+    if (!license || license.ownerEmail !== app.ownerEmail) {
+      return json(res, 404, { ok: false, code: "KEY_INCORRECT", ...sign("KEY_INCORRECT") });
+    }
+    if (license.revokedAt) {
+      return json(res, 403, { ok: false, code: "KEY_INCORRECT", ...sign("KEY_INCORRECT") });
+    }
+    const ban = activeLicenseBan(license);
+    if (ban) return json(res, 403, { ok: false, code: "KEY_BANNED", ...sign("KEY_BANNED") });
+    if (license.expiresAt && now() >= license.expiresAt) {
+      return json(res, 403, { ok: false, code: "KEY_EXPIRED", ...sign("KEY_EXPIRED") });
+    }
+    if (license.hwidHash && clientHwid && !digestsEqual(license.hwidHash, licenseHwidDigest(clientHwid))) {
+      return json(res, 403, { ok: false, code: "KEY_HWID_LOCKED", ...sign("KEY_HWID_LOCKED") });
+    }
+    return json(res, 200, {
+      ok: true,
+      code: "KEY_VALID",
+      data: {
+        auth_expire: license.expiresAt ?? -1,
+        note: license.label || "Not specified",
+        total_executions: license.executions ?? 0,
+        folder_id: license.folderId,
+      },
+      ...sign("KEY_VALID"),
     });
   }
 

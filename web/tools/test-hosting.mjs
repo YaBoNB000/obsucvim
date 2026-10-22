@@ -111,7 +111,7 @@ return "ok"
 `;
 
 async function main() {
-  const { child } = await startServer();
+  const { child, logs } = await startServer();
   const email = `test${Date.now()}@example.com`;
 
   try {
@@ -250,6 +250,184 @@ async function main() {
     const anon = await api("GET", `/api/publish/${jobId}`);
     check("job polling requires a session", anon.status === 401);
     cookie = saved;
+    /* ---------------- Phase 2: batch publish ---------------- */
+
+    const second = await api("POST", "/api/auth/scripts", { name: "Second script", folderId });
+    const secondId = second.data.script?.scriptId;
+    const batchPublish = await api("POST", "/api/auth/publish/batch", {
+      folderId, version: "v9", source: SOURCE, scriptIds: [secondId],
+    });
+    check("batch publish accepts a job list", batchPublish.status === 202 && batchPublish.data.count === 1,
+      `status=${batchPublish.status} ${JSON.stringify(batchPublish.data).slice(0, 100)}`);
+    if (batchPublish.status === 202) {
+      for (const entry of batchPublish.data.jobs) {
+        for (let i = 0; i < 100; i++) {
+          const poll = await api("GET", `/api/publish/${entry.jobId}`);
+          if (poll.data?.status !== "processing") break;
+          await sleep(150);
+        }
+      }
+      const rel = await api("GET", `/api/auth/releases?scriptId=${secondId}`);
+      check("batch publish stored the release", (rel.data.releases || []).some((r) => r.version === "v9"));
+    }
+
+    /* ---------------- Phase 2: matrix stats / batch ops / audit ---------------- */
+
+    const listed = await api("GET", "/api/auth/scripts");
+    const mine = (listed.data.scripts || []).find((s2) => s2.scriptId === scriptId);
+    check("script list carries stats", mine && mine.releaseCount >= 1 && Boolean(mine.latestVersion) &&
+      typeof mine.licenseCount === "number", JSON.stringify({ v: mine?.latestVersion, n: mine?.licenseCount }));
+
+    const batchLicenses = await api("POST", "/api/auth/licenses", { folderId, count: 3, label: "batch" });
+    const batchIds = (batchLicenses.data.licenses || []).map((entry) => entry.license.licenseId);
+    check("batch issue returns ids", batchIds.length === 3);
+
+    const batchBan = await api("POST", "/api/auth/licenses/batch", {
+      action: "ban", licenseIds: batchIds, reason: "chargeback", banDays: 1,
+    });
+    check("batch ban applies to every key", batchBan.status === 200 && batchBan.data.count === 3 &&
+      batchBan.data.licenses.every((l) => l.banned === true));
+
+    const batchUnban = await api("POST", "/api/auth/licenses/batch", { action: "unban", licenseIds: batchIds });
+    check("batch unban clears bans", batchUnban.status === 200 &&
+      batchUnban.data.licenses.every((l) => !l.banned));
+
+    const batchReset = await api("POST", "/api/auth/licenses/batch", { action: "reset-hwid", licenseIds: batchIds });
+    check("batch reset-hwid works", batchReset.status === 200 && batchReset.data.count === 3);
+
+    const badBatch = await api("POST", "/api/auth/licenses/batch", { action: "ban", licenseIds: ["lic_nope"] });
+    check("batch rejects foreign/unknown ids", badBatch.status === 400);
+
+    const audit = await api("GET", "/api/auth/audit?limit=20");
+    const actions = (audit.data.entries || []).map((e) => e.action);
+    check("audit log records operations", audit.status === 200 &&
+      actions.includes("licenses.ban") && actions.includes("licenses.unban"));
+
+    /* ---------------- Phase 3: check_key codes + library ---------------- */
+
+    const goodCheck = await api("POST", "/api/key/check", { scriptId, key: licenseKey, hwid: "hwid-test-0123456789" });
+    check("check_key returns KEY_VALID", goodCheck.data?.code === "KEY_VALID" &&
+      typeof goodCheck.data?.data?.total_executions === "number");
+
+    const badFormat = await api("POST", "/api/key/check", { scriptId, key: "nope", hwid: "hwid-test-0123456789" });
+    check("check_key reports KEY_INVALID", badFormat.data?.code === "KEY_INVALID");
+
+    const wrongScript = await api("POST", "/api/key/check", { scriptId: "scr_" + "0".repeat(24), key: licenseKey, hwid: "hwid-test-0123456789" });
+    check("check_key reports SCRIPT_ID_INCORRECT", wrongScript.data?.code === "SCRIPT_ID_INCORRECT");
+
+    const noHwid = await api("POST", "/api/key/check", { scriptId, key: licenseKey });
+    check("check_key reports INVALID_EXECUTOR", noHwid.data?.code === "INVALID_EXECUTOR");
+
+    const lib = await fetch(`${BASE}/library.lua`).then((r) => r.text());
+    check("library.lua served", /function api.check_key/.test(lib) && /api.script_id/.test(lib) &&
+      lib.includes("/api/key/check") && lib.includes("/files/"));
+
+    const validateRuntime = await api("POST", "/api/licenses/validate", {
+      scriptId, key: importedKey, hwid: "hwid-test-abcdef012345", nonce: "c".repeat(32),
+    });
+    check("runtime exposes expiresAt and scriptVersion",
+      validateRuntime.data?.runtime && "expiresAt" in validateRuntime.data.runtime &&
+      Boolean(validateRuntime.data.runtime.scriptVersion),
+      JSON.stringify(validateRuntime.data?.runtime ?? {}).slice(0, 120));
+
+    /* ---------------- Phase 4: metrics / webhook log ---------------- */
+
+    const metrics = await api("GET", "/api/auth/metrics?days=3");
+    const today = (metrics.data.days || []).at(-1);
+    check("metrics aggregate validations", metrics.status === 200 && today && today.validations >= 1,
+      JSON.stringify(today ?? {}));
+
+    const deliveries = await api("GET", "/api/auth/webhooks/deliveries");
+    check("delivery log endpoint responds", deliveries.status === 200 && Array.isArray(deliveries.data.entries));
+
+    /* ---------------- Phase 5: protected webhook ---------------- */
+
+    const hook = await api("POST", "/api/auth/webhooks", {
+      folderId, name: "join log", url: "https://discord.com/api/webhooks/1/abc",
+      template: JSON.stringify({ content: "player {{name}} on %SCRIPT_NAME% from %CLIENT_IP%" }),
+      sanitizers: { name: "[A-Za-z0-9_]{3,20}" },
+    });
+    const webhookId = hook.data?.webhook?.webhookId;
+    check("protected webhook created", hook.status === 201 && Boolean(webhookId));
+    check("webhook url is not echoed back", !JSON.stringify(hook.data).includes("discord.com"));
+
+    const badHookUrl = await api("POST", "/api/auth/webhooks", {
+      folderId, name: "evil", url: "http://127.0.0.1:9000/x",
+      template: "{}", sanitizers: {},
+    });
+    check("non-discord webhook url rejected", badHookUrl.status === 400);
+
+    const badRegex = await api("POST", "/api/auth/webhooks", {
+      folderId, name: "bad regex", url: "https://discord.com/api/webhooks/1/abc",
+      template: "{}", sanitizers: { name: "([a-z" },
+    });
+    check("invalid sanitizer regex rejected", badRegex.status === 400);
+
+    const sessionForHook = validateRuntime.data?.token;
+    const sent = await api("POST", "/api/webhooks/send", {
+      token: sessionForHook, webhookId, values: { name: "Player_1" },
+    });
+    check("protected send is attempted with a valid session", sent.status === 200 || sent.status === 502,
+      `${sent.status}/${JSON.stringify(sent.data).slice(0, 80)}`);
+
+    const sanitizedOut = await api("POST", "/api/webhooks/send", {
+      token: sessionForHook, webhookId, values: { name: "<script>bad" },
+    });
+    check("sanitizer blocks hostile values", sanitizedOut.status === 400 &&
+      sanitizedOut.data.error === "SANITIZE_FAILED");
+
+    const badToken = await api("POST", "/api/webhooks/send", { token: "lst_nope", webhookId, values: {} });
+    check("send rejects unknown session", badToken.status === 401);
+
+    /* ---------------- Phase 6: external check API ---------------- */
+
+    const app = await api("POST", "/api/auth/external-apps", { name: "my launcher" });
+    const appId = app.data?.app?.appId;
+    const appSecret = app.data?.app?.secret;
+    check("external app created with one-time secret", app.status === 201 && Boolean(appId) && Boolean(appSecret));
+
+    const syncRes = await fetch(`${BASE}/external/sync`).then((r) => r.json());
+    check("external sync returns server time", typeof syncRes.st === "number" && Array.isArray(syncRes.nodes));
+
+    const crypto = await import("node:crypto");
+    const sig = (nonce, key, clientTime, hwid) =>
+      crypto.createHmac("sha256", appSecret).update([nonce, key, clientTime, hwid].join("|")).digest("hex");
+    const nonce = "abcdef0123456789";
+    const clientTime = String(syncRes.st);
+    const extOk = await fetch(
+      `${BASE}/external/check_key?by=${appId}&key=${encodeURIComponent(licenseKey)}`,
+      { headers: {
+          "content-type": "application/json",
+          clienttime: clientTime,
+          clientnonce: nonce,
+          clienthwid: "hwid-test-0123456789",
+          externalsignature: sig(nonce, licenseKey, clientTime, "hwid-test-0123456789"),
+        } },
+    ).then((r) => r.json());
+    check("external check validates a good key", extOk.code === "KEY_VALID" && Boolean(extOk.signature),
+      JSON.stringify(extOk).slice(0, 120));
+
+    const extBadSig = await fetch(`${BASE}/external/check_key?by=${appId}&key=${encodeURIComponent(licenseKey)}`,
+      { headers: { clienttime: clientTime, clientnonce: nonce, clienthwid: "x", externalsignature: "deadbeef" } })
+      .then((r) => r.json());
+    check("external check rejects a bad signature", extBadSig.code === "SECURITY_ERROR");
+
+    const extStale = await fetch(`${BASE}/external/check_key?by=${appId}&key=${encodeURIComponent(licenseKey)}`,
+      { headers: {
+          clienttime: String(Number(syncRes.st) - 3_600_000), clientnonce: nonce, clienthwid: "x",
+          externalsignature: sig(nonce, licenseKey, String(Number(syncRes.st) - 3_600_000), "x"),
+        } })
+      .then((r) => r.json());
+    check("external check rejects stale client time", extStale.code === "TIME_ERROR");
+
+    const extWrongApp = await fetch(`${BASE}/external/check_key?by=app_nope&key=${encodeURIComponent(licenseKey)}`)
+      .then((r) => r.json());
+    check("unknown external app is refused", extWrongApp.code === "SECURITY_ERROR");
+
+  } catch (error) {
+    console.error("--- server log tail ---");
+    console.error(logs.slice(-40).join(""));
+    throw error;
   } finally {
     child.kill("SIGKILL");
     rmSync(WORK, { recursive: true, force: true });

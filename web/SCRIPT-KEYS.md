@@ -349,3 +349,80 @@ end
 
 - 当前为单机 JSON 状态文件 + 本地文件目录；正式多实例部署应迁移到事务型数据库和对象存储。
 - 客户端始终可能被改内存绕过；能守住的边界是“没有有效授权就拿不到产物”，而不是“客户端一定诚实执行检查”。
+
+
+## 托管 v2 新增接口（Phase 2–6）
+
+### 批量与审计
+
+```text
+POST /api/auth/publish/batch      { folderId, version, source, scriptIds? }   # ≤5 个脚本，每个独立 jobId
+POST /api/auth/licenses/batch     { action: ban|unban|reset-hwid|revoke, licenseIds[], reason?, banDays? }
+GET  /api/auth/audit?limit=50     # 最近操作（IP 只存 HMAC 前 16 位）
+GET  /api/auth/scripts            # 现在额外返回 releaseCount / latestVersion / lastPublishedAt / licenseCount
+```
+
+### Key Check（Luarmor 兼容）
+
+```text
+POST /api/key/check               { scriptId, key, hwid }  → { code, message, data? }
+GET  /library.lua                 → { script_id, check_key, load_script, purge_cache }
+```
+
+状态码：`KEY_VALID` `KEY_EXPIRED` `KEY_BANNED` `KEY_HWID_LOCKED` `KEY_INCORRECT` `KEY_INVALID`
+`KEY_LOCKED` `SCRIPT_ID_INVALID` `SCRIPT_ID_INCORRECT` `INVALID_EXECUTOR` `SECURITY_ERROR`
+`TIME_ERROR` `UNKNOWN_ERROR`。`check_key` 是只读的（不绑定设备、不累计执行次数）。
+
+```lua
+local api = loadstring(game:HttpGet("https://obsucvim.l2.ink/library.lua"))()
+api.script_id = "scr_..."
+local status = api.check_key(getgenv().key)
+if status.code == "KEY_VALID" then
+	print("剩余秒数", status.data.auth_expire - os.time())
+	api.load_script()
+else
+	print(status.code, status.message)
+end
+```
+
+### 指标与投递日志
+
+```text
+GET /api/auth/metrics?days=7          # [{ date, validations, rejected, executions, devices }]
+GET /api/auth/webhooks/deliveries     # 最近 80 条投递结果（含失败原因）
+```
+
+Webhook 现在带签名与重试：
+
+```text
+POST <你的 discord webhook>
+X-Obsucvim-Signature: sha256=<HMAC-SHA256(文件夹 secret, 原始 body)>
+```
+
+失败按 250/500ms 退避重试 3 次，结果写入投递日志。
+
+### 受保护的 webhook（脚本内发送）
+
+```text
+POST /api/auth/webhooks        { folderId, name, url, template, sanitizers: { name: "[A-Za-z0-9_]{3,20}" } }
+GET  /api/auth/webhooks        # 只回 host 与变量名，URL 永不回显
+POST /api/auth/webhooks/delete { webhookId }
+POST /api/webhooks/send        { token: "lst_...", webhookId, values: { name: "Player_1" } }
+```
+
+模板里可用 `{{name}}`（客户端传入，必须匹配该变量的正则）与
+`%SCRIPT_NAME%` `%SCRIPT_ID%` `%CLIENT_IP%` `%USER_NOTE%` `%LICENSE_ID%` `%TOTAL_EXECUTIONS%` `%COUNTRY_CODE%`（服务端渲染，客户端改不了）。
+限制：30 req/min/IP、最多 3 个 embeds、渲染后 ≤7000 字节。
+
+### 外部验卡（第三方应用）
+
+```text
+GET /api/auth/external-apps        POST { name } → { appId, secret }（secret 仅此一次）
+GET /external/sync                 → { st, nodes, algorithm: "hmac-sha256" }
+GET /external/check_key?by=<appId>&key=<卡密>
+    headers: clienttime, clientnonce, clienthwid, externalsignature
+    externalsignature = HMAC-SHA256(secret, clientnonce|key|clienttime|clienthwid) 的 hex
+```
+
+与 Luarmor 的 SHA-1 方案相比这里用 HMAC-SHA256，并且响应同样带
+`signature = HMAC-SHA256(secret, clientnonce|code)`，客户端可验签防篡改。`clienttime` 与服务器相差超过 5 分钟返回 `TIME_ERROR`。

@@ -245,7 +245,8 @@ export type IconName =
   | "terminal"
   | "chevron"
   | "github"
-  | "layers";
+  | "layers"
+  | "activity";
 
 const ICONS: Record<IconName, ReactNode> = {
   shield: <path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z" />,
@@ -340,6 +341,11 @@ const ICONS: Record<IconName, ReactNode> = {
       <path d="M12 3.5l8 4.3-8 4.3-8-4.3 8-4.3z" />
       <path d="M4 12.5l8 4.3 8-4.3" />
       <path d="M4 16.8l8 4.2 8-4.2" />
+    </>
+  ),
+  activity: (
+    <>
+      <path d="M3 12h3.5L9 5.5l4 13 2.5-6.5H21" />
     </>
   ),
 };

@@ -1,12 +1,23 @@
+import { useEffect, useState } from "react";
 import { useI18n } from "../lib/i18n";
 import { useAuth } from "../lib/store";
 import { ENGINE, DAILY_FREE_QUOTA } from "../lib/engine";
 import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { LangSwitch } from "../components/Brand";
+import { SkeletonRows } from "../components/Feedback";
+import { listAudit, type AuditEntry } from "../lib/scripts";
 
 export function Account() {
   const { t, lang } = useI18n();
   const { user, usedToday, limit, remaining, logout } = useAuth();
+  const [audit, setAudit] = useState<AuditEntry[] | null>(null);
+
+  useEffect(() => {
+    if (!user) return;
+    void listAudit(20).then((res) => {
+      setAudit(res.ok && res.data ? res.data : []);
+    });
+  }, [user]);
 
   return (
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1.2fr)_minmax(320px,1fr)]">
@@ -41,6 +52,34 @@ export function Account() {
           <p className="mt-4 text-[11px] leading-relaxed text-slate-500">{t("account.loginNote")}</p>
         </GlassCard>
 
+        <GlassCard className="p-6">
+          <div className="mb-4 flex items-center gap-3">
+            <Icon name="activity" className="h-4 w-4 text-aqua-300" />
+            <h2 className="text-[13.5px] font-semibold text-slate-100">{t("scripts.auditTitle")}</h2>
+          </div>
+          {audit === null ? (
+            <SkeletonRows rows={3} />
+          ) : audit.length === 0 ? (
+            <p className="text-[12px] text-slate-500">{t("scripts.auditEmpty")}</p>
+          ) : (
+            <ul className="grid gap-1.5">
+              {audit.map((entry, index) => (
+                <li
+                  key={`${entry.at}-${index}`}
+                  style={{ "--i": Math.min(index, 10) } as React.CSSProperties}
+                  className="anim-stagger flex items-center gap-2 rounded-lg px-2 py-1.5 text-[11.5px] transition hover:bg-white/[0.03]"
+                >
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-aqua-300/70" />
+                  <span className="font-mono text-aqua-100/90">{entry.action}</span>
+                  <span className="truncate text-slate-500">{entry.target}</span>
+                  <span className="ml-auto shrink-0 text-[10.5px] text-slate-600">
+                    {new Date(entry.at).toLocaleTimeString()}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </GlassCard>
       </div>
 
       <div className="grid content-start gap-5">

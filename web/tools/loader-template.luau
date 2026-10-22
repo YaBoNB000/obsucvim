@@ -150,6 +150,7 @@ env.__obsucvim_license = {
 	folderName = tostring(runtime.folderName or ""),
 	secondsLeft = tonumber(runtime.secondsLeft) or math.huge,
 	executions = tonumber(runtime.totalExecutions) or 0,
+	expiresAt = tonumber(runtime.expiresAt) or nil,
 	version = release.version,
 }
 
@@ -162,6 +163,7 @@ env.OBS_FolderName = licence.folderName
 env.OBS_SecondsLeft = licence.secondsLeft
 env.OBS_TotalExecutions = licence.executions
 env.OBS_ScriptVersion = licence.version
+env.OBS_ExpiresAt = licence.expiresAt
 
 --[[ Heartbeat: re-check the licence in the background so a revoked or banned
   key does not keep running forever. A client cannot reliably kill threads it

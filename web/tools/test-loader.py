@@ -58,12 +58,24 @@ class HttpService:
 class Game:
     """Stands in for the Roblox DataModel: lupa hands this to Lua as userdata."""
 
+    def __init__(self):
+        self.http_gets = []
+
     def GetService(self, name):
         return HttpService()
 
+    def HttpGet(self, url):
+        self.http_gets.append(url)
+        return "return 'LIB-LOADED-1234567890'"
+
+
+LAST_GAME = None
+
 
 def use_userdata_game():
-    g.game = Game()
+    global LAST_GAME
+    LAST_GAME = Game()
+    g.game = LAST_GAME
 
 
 def use_table_game():
@@ -142,6 +154,7 @@ def fill(template, script_id=SCRIPT_ID, endpoint=BASE, heartbeat=False, silent=F
 
 
 LOADER = (TOOLS / "loader-template.luau").read_text(encoding="utf-8")
+LIBRARY = (TOOLS / "key-check-library.luau").read_text(encoding="utf-8")
 GUARD = (TOOLS / "license-guard.luau").read_text(encoding="utf-8")
 
 results = []
@@ -276,6 +289,68 @@ set_responses({"validate": json.dumps(VALID), "fetch": json.dumps(FETCH)})
 lua.execute("REQ_COUNT = 0")
 ok, out = run(fill(LOADER, heartbeat=False))
 check("heartbeat off means a single validate call", ok and lua.eval("REQ_COUNT") == 2, f"requests={lua.eval('REQ_COUNT')}")  # validate + fetch
+
+# 14-16. key-check library: check_key maps codes, load_script uses the stable URL
+use_userdata_game()
+set_genv({"gethwid": lua.eval("function() return 'hwid-abc-123456' end")})
+set_responses({
+    "validate": json.dumps(VALID),
+    "fetch": json.dumps({"version": "v7", "code": "return 1"}),
+})
+lua.execute("""
+LIB_CHECK_RESPONSES = {}
+function lib_request(req)
+  local path = string.match(req.Url, "/api/[%w/-]+")
+  if path == "/api/key/check" then
+    local entry = LIB_CHECK_RESPONSES.check
+    if type(entry) == "function" then entry = entry() end
+    return { StatusCode = 200, Body = entry or '{"ok":false,"code":"UNKNOWN_ERROR"}' }
+  end
+  return { StatusCode = 404, Body = "{}" }
+end
+""")
+g.request = lua.eval("lib_request")
+lib_api = lua.eval("(function(src) local f = assert(load(src, 'library')); return f() end)")(
+    LIBRARY.replace("__BASE_URL__", BASE)
+)
+check("library returns a table", type(lib_api).__name__ in ("table", "_LuaTable"))
+
+lua.execute("""
+LIB_CHECK_RESPONSES.check = '{"ok":true,"code":"KEY_VALID","message":"ok","data":{"auth_expire":-1,"note":"n","total_executions":2}}'
+""")
+lib_api["script_id"] = SCRIPT_ID
+status = lib_api["check_key"]("osk_" + "a" * 64)
+check("library check_key returns KEY_VALID", status["code"] == "KEY_VALID" and status["data"]["total_executions"] == 2,
+      str(lua.eval("tostring(1)")))
+
+lua.execute("""
+LIB_CHECK_RESPONSES.check = '{"ok":false,"code":"KEY_HWID_LOCKED","message":"locked"}'
+""")
+status2 = lib_api["check_key"]("osk_" + "b" * 64)
+check("library passes through rejection codes", status2["code"] == "KEY_HWID_LOCKED")
+
+status3 = lib_api["check_key"]("")
+check("library rejects an empty key locally", status3["code"] == "KEY_INVALID")
+
+ok, out = run("""
+local ok, res = pcall(function() return LIB_API.load_script() end)
+return tostring(ok) .. "|" .. tostring(res)
+""".replace("LIB_API", "LIB_PLACEHOLDER")) if False else (None, None)
+lua.execute("LIB_API = nil")
+# 用 Lua 全局暴露库对象，走真实的 load_script 路径
+lua.execute("function _set_lib(t) LIB_API = t end")
+lua.eval("_set_lib")(lib_api)
+LIBRUN = lua.eval("""
+function()
+  local ok, res = pcall(function() return LIB_API.load_script() end)
+  return tostring(ok) .. "|" .. tostring(res)
+end
+""")
+result = LIBRUN()
+check("library load_script runs the stable loader", result.startswith("true|LIB-LOADED-1234567890"), str(result))
+gets = LAST_GAME.http_gets if LAST_GAME else []
+check("library load_script uses the stable loader URL",
+      bool(gets) and gets[-1].endswith(f"/files/{SCRIPT_ID}.lua"), str(gets[-1] if gets else None))
 
 failed = [name for name, ok in results if not ok]
 print()

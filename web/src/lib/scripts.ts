@@ -21,6 +21,10 @@ export interface ScriptProject {
   ffa?: boolean;
   silent?: boolean;
   heartbeat?: boolean;
+  releaseCount?: number;
+  latestVersion?: string | null;
+  lastPublishedAt?: number | null;
+  licenseCount?: number;
 }
 
 export interface LicenseRecord {
@@ -72,6 +76,9 @@ export type ApiError =
   | "release_too_large"
   | "bad_version"
   | "publish_busy"
+  | "batch_too_large"
+  | "webhook_limit"
+  | "app_limit"
   | "job_not_found"
   | "job_expired"
   | "network"
@@ -117,6 +124,9 @@ const ERROR_MAP: Record<string, ApiError> = {
   RELEASE_LIMIT: "release_limit",
   RELEASE_TOO_LARGE: "release_too_large",
   PUBLISH_BUSY: "publish_busy",
+  BATCH_TOO_LARGE: "batch_too_large",
+  WEBHOOK_LIMIT: "webhook_limit",
+  APP_LIMIT: "app_limit",
   JOB_NOT_FOUND: "job_not_found",
   JOB_EXPIRED: "job_expired",
 };
@@ -521,4 +531,87 @@ export function loadstringSnippet(scriptId: string): string {
 /** Ready-to-send snippet: sets the key first, then runs the stable loader. */
 export function keySnippet(scriptId: string): string {
   return `getgenv().key = "在这里填入卡密"\n${loadstringSnippet(scriptId)}`;
+}
+
+/* ---------------- Phase 2: 批量操作 / 审计 ---------------- */
+
+export type BatchAction = "ban" | "unban" | "reset-hwid" | "revoke";
+
+export async function batchLicenses(
+  action: BatchAction,
+  licenseIds: string[],
+  opts: { reason?: string; banDays?: number | null } = {},
+): Promise<Result<LicenseRecord[]>> {
+  interface BatchPayload { ok?: boolean; error?: string; count?: number; licenses?: LicenseRecord[] }
+  try {
+    const res = await fetch("/api/auth/licenses/batch", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ action, licenseIds, ...opts }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as BatchPayload;
+    if (!res.ok || !payload.ok || !Array.isArray(payload.licenses)) {
+      return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
+    }
+    return { ok: true, data: payload.licenses };
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
+export async function batchPublish(
+  folderId: string,
+  version: string,
+  source: string,
+  scriptIds?: string[],
+): Promise<Result<{ jobs: { jobId: string; scriptId: string; name: string }[] }>> {
+  interface BatchPayload {
+    ok?: boolean;
+    error?: string;
+    jobs?: { jobId: string; scriptId: string; name: string }[];
+  }
+  try {
+    const res = await fetch("/api/auth/publish/batch", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ folderId, version, source, scriptIds }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as BatchPayload;
+    if (!res.ok || !payload.ok || !Array.isArray(payload.jobs)) {
+      return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
+    }
+    return { ok: true, data: { jobs: payload.jobs } };
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
+export interface AuditEntry {
+  at: number;
+  action: string;
+  target: string;
+  ipHash: string;
+  meta?: Record<string, unknown>;
+}
+
+export async function listAudit(limit = 50): Promise<Result<AuditEntry[]>> {
+  const res = await request<{ ok?: boolean; entries?: AuditEntry[] }>(`/api/auth/audit?limit=${limit}`);
+  return res.ok && res.data?.entries ? { ok: true, data: res.data.entries } : { ok: false, error: res.error ?? "unknown" };
+}
+
+/* ---------------- Phase 4: 指标 ---------------- */
+
+export interface MetricDay {
+  date: string;
+  validations: number;
+  rejected: number;
+  executions: number;
+  devices: number;
+}
+
+export async function listMetrics(days = 7): Promise<Result<MetricDay[]>> {
+  const res = await request<{ ok?: boolean; days?: MetricDay[] }>(`/api/auth/metrics?days=${days}`);
+  return res.ok && res.data?.days ? { ok: true, data: res.data.days } : { ok: false, error: res.error ?? "unknown" };
 }

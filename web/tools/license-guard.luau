@@ -124,6 +124,8 @@ do
 		folderName = tostring(runtime.folderName or ""),
 		secondsLeft = tonumber(runtime.secondsLeft) or math.huge,
 		executions = tonumber(runtime.totalExecutions) or 0,
+		expiresAt = tonumber(runtime.expiresAt) or nil,
+		version = tostring(runtime.scriptVersion or ""),
 	}
 	env.__obsucvim_license = license
 	env.OBS_License = license
@@ -132,4 +134,6 @@ do
 	env.OBS_ScriptName = license.scriptName
 	env.OBS_SecondsLeft = license.secondsLeft
 	env.OBS_TotalExecutions = license.executions
+	env.OBS_ExpiresAt = license.expiresAt
+	env.OBS_ScriptVersion = license.version
 end

@@ -3,6 +3,9 @@ import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { AnimatedNumber, Skeleton, SkeletonRows, StepProgress, useToast } from "../components/Feedback";
 import { useI18n, type TKey } from "../lib/i18n";
 import {
+  batchLicenses,
+  batchPublish,
+  listMetrics,
   banLicense,
   unbanLicense,
   updateScript,
@@ -16,6 +19,7 @@ import {
   issueLicense,
   pollPublish,
   startPublish,
+  type MetricDay,
   type PublishJob,
   issueLicenseBatch,
   listFolders,
@@ -58,6 +62,9 @@ const ERROR_KEY: Record<ApiError, TKey> = {
   publish_busy: "scripts.errPublishBusy",
   job_not_found: "scripts.errJobNotFound",
   job_expired: "scripts.errJobExpired",
+  batch_too_large: "scripts.errBatchTooLarge",
+  webhook_limit: "scripts.errWebhookLimit",
+  app_limit: "scripts.errAppLimit",
   bad_version: "scripts.errBadVersion",
   network: "scripts.errNetwork",
   unknown: "scripts.errUnknown",
@@ -137,6 +144,8 @@ export function Scripts() {
   const [rawSource, setRawSource] = useState("");
   const [pipelineBusy, setPipelineBusy] = useState(false);
   const [publishJob, setPublishJob] = useState<PublishJob | null>(null);
+  const [metrics, setMetrics] = useState<MetricDay[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [publishResult, setPublishResult] = useState<{ version: string; size: number; scriptId: string } | null>(null);
   const [version, setVersion] = useState("v1");
   const [artifact, setArtifact] = useState("");
@@ -197,6 +206,9 @@ export function Scripts() {
   useEffect(() => {
     void refreshFolders();
     void refreshProjects();
+    void listMetrics(7).then((res) => {
+      if (res.ok && res.data) setMetrics(res.data);
+    });
   }, [refreshFolders, refreshProjects]);
 
   useEffect(() => {
@@ -455,6 +467,54 @@ export function Scripts() {
     }
   };
 
+  const runBatch = async (action: "ban" | "unban" | "reset-hwid" | "revoke") => {
+    if (busy || selectedIds.length === 0) return;
+    setBusy(true);
+    setError(null);
+    const res = await batchLicenses(action, selectedIds, action === "ban" ? { reason: "batch ban" } : {});
+    setBusy(false);
+    if (!res.ok || !res.data) {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      toast.push({ kind: "error", title: t(ERROR_KEY[res.error ?? "unknown"]) });
+      return;
+    }
+    const byId = new Map(res.data.map((license) => [license.licenseId, license]));
+    setLicenses((prev) => prev.map((license) => byId.get(license.licenseId) ?? license));
+    setSelectedIds([]);
+    toast.push({ kind: "success", title: t("scripts.batchSelected", { n: res.data.length }) });
+    applyFilter(pageFrom);
+  };
+
+  const handleBatchPublish = async () => {
+    if (!folderId || pipelineBusy || !rawSource.trim()) return;
+    setPipelineBusy(true);
+    setError(null);
+    const res = await batchPublish(folderId, version.trim(), rawSource);
+    if (!res.ok || !res.data) {
+      setPipelineBusy(false);
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      toast.push({ kind: "error", title: t(ERROR_KEY[res.error ?? "unknown"]) });
+      return;
+    }
+    let done = 0;
+    for (const entry of res.data.jobs) {
+      let delay = 260;
+      for (let i = 0; i < 60; i++) {
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        delay = Math.min(1200, Math.round(delay * 1.35));
+        const poll = await pollPublish(entry.jobId);
+        if (!poll.ok || !poll.data || poll.data.status !== "processing") break;
+      }
+      done += 1;
+      setPublishJob({ jobId: "", status: "processing", stage: "completed", progress: (done / res.data.jobs.length) * 100, elapsedMs: 0 });
+    }
+    setPipelineBusy(false);
+    setPublishJob(null);
+    setRawSource("");
+    toast.push({ kind: "success", title: t("scripts.batchIssued", { n: done }) });
+    if (selected) void refreshDetail(selected);
+  };
+
   const toggleHeartbeat = async (next: boolean) => {
     if (!selected || busy) return;
     setBusy(true);
@@ -633,6 +693,33 @@ export function Scripts() {
             <span className="ml-auto font-mono text-[11px] text-slate-500">{projects.length}</span>
           </div>
 
+          {metrics.length > 0 && (
+            <div className="mb-4 rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3">
+              <div className="mb-2 flex items-center gap-2">
+                <Icon name="activity" className="h-3.5 w-3.5 text-aqua-300" />
+                <span className="text-[10.5px] tracking-[0.16em] text-slate-400/70 uppercase">
+                  {t("scripts.metricsTitle")}
+                </span>
+                <span className="ml-auto font-mono text-[10px] text-slate-600">{metrics[metrics.length - 1]?.date}</span>
+              </div>
+              <div className="grid grid-cols-4 gap-1.5 text-center">
+                {[
+                  ["scripts.metricValidations", metrics[metrics.length - 1]?.validations ?? 0, "text-emerald-300"],
+                  ["scripts.metricRejected", metrics[metrics.length - 1]?.rejected ?? 0, "text-rose-300"],
+                  ["scripts.metricExecutions", metrics[metrics.length - 1]?.executions ?? 0, "text-aqua-200"],
+                  ["scripts.metricDevices", metrics[metrics.length - 1]?.devices ?? 0, "text-slate-300"],
+                ].map(([key, value, tone], index) => (
+                  <div key={String(key)} style={{ "--i": index } as CSSProperties} className="anim-stagger">
+                    <div className={`font-mono text-[15px] ${tone as string}`}>
+                      <AnimatedNumber value={Number(value)} />
+                    </div>
+                    <div className="mt-0.5 text-[9.5px] leading-tight text-slate-500">{t(key as TKey)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {!creating ? (
             <Button variant="outline" className="w-full py-2.5" onClick={() => setCreating(true)}>
               <Icon name="sparkle" className="h-4 w-4" />
@@ -702,7 +789,17 @@ export function Scripts() {
                   <span className={"h-1.5 w-1.5 shrink-0 rounded-full " + (p.active ? "bg-emerald-300" : "bg-slate-600")} />
                   <span className="truncate text-[13px] font-medium">{p.name}</span>
                 </span>
-                <span className="mt-1 block truncate font-mono text-[10.5px] text-slate-500">{p.scriptId}</span>
+                <span className="mt-1 flex items-center gap-1.5 truncate font-mono text-[10.5px] text-slate-500">
+                  {p.scriptId}
+                  {p.latestVersion && (
+                    <span className="rounded-md border border-aqua-300/20 bg-aqua-400/[0.08] px-1 py-px text-[9.5px] text-aqua-100/90">
+                      {p.latestVersion}
+                    </span>
+                  )}
+                  {typeof p.licenseCount === "number" && (
+                    <span className="text-[9.5px] text-slate-600">{p.licenseCount} keys</span>
+                  )}
+                </span>
               </button>
             );
           })}
@@ -948,6 +1045,37 @@ export function Scripts() {
                   )}
                 </GlassCard>
 
+                {selectedIds.length > 0 && (
+                  <div className="anim-enter flex flex-wrap items-center gap-2 rounded-2xl border border-aqua-300/25 bg-aqua-400/[0.07] px-3.5 py-2.5">
+                    <span className="text-[11.5px] text-aqua-100">
+                      {t("scripts.batchSelected", { n: selectedIds.length })}
+                    </span>
+                    <div className="ml-auto flex flex-wrap gap-1.5">
+                      {([
+                        ["ban", "scripts.batchBan"],
+                        ["unban", "scripts.batchUnban"],
+                        ["reset-hwid", "scripts.batchReset"],
+                        ["revoke", "scripts.batchRevoke"],
+                      ] as const).map(([action, key]) => (
+                        <button
+                          key={action}
+                          disabled={busy}
+                          onClick={() => void runBatch(action)}
+                          className="cursor-pointer rounded-lg border border-white/12 px-2 py-1 text-[10.5px] text-slate-200 transition hover:border-aqua-300/40 hover:text-aqua-100 disabled:opacity-40"
+                        >
+                          {t(key)}
+                        </button>
+                      ))}
+                      <button
+                        onClick={() => setSelectedIds([])}
+                        className="cursor-pointer rounded-lg px-2 py-1 text-[10.5px] text-slate-400 transition hover:text-aqua-100"
+                      >
+                        {t("scripts.batchClear")}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <GlassCard className="overflow-hidden p-0">
                   <div className="flex flex-wrap items-center gap-2.5 border-b border-white/[0.06] px-5 py-3">
                     <Icon name="shield" className="h-4 w-4 text-aqua-300" />
@@ -989,7 +1117,23 @@ export function Scripts() {
                       <table className="w-full min-w-[620px] text-left text-[11.5px]">
                         <thead>
                           <tr className="text-[10px] tracking-[0.14em] text-slate-500 uppercase">
-                            <th className="px-5 py-2.5 font-medium">{t("scripts.colLabel")}</th>
+                            <th className="w-9 py-2.5 pl-4 font-medium">
+                              <input
+                                type="checkbox"
+                                aria-label={t("scripts.selectAll")}
+                                className="h-3.5 w-3.5 accent-[#22e2d5]"
+                                checked={licenses.length > 0 && licenses.every((l) => selectedIds.includes(l.licenseId))}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedIds((prev) => [...new Set([...prev, ...licenses.map((l) => l.licenseId)])]);
+                                  } else {
+                                    const pageIds = new Set(licenses.map((l) => l.licenseId));
+                                    setSelectedIds((prev) => prev.filter((id) => !pageIds.has(id)));
+                                  }
+                                }}
+                              />
+                            </th>
+                            <th className="px-3 py-2.5 font-medium">{t("scripts.colLabel")}</th>
                             <th className="px-3 py-2.5 font-medium">{t("scripts.colState")}</th>
                             <th className="px-3 py-2.5 font-medium">{t("scripts.colDevice")}</th>
                             <th className="px-3 py-2.5 font-medium">{t("scripts.colLastUsed")}</th>
@@ -1012,7 +1156,22 @@ export function Scripts() {
                                 style={{ "--i": Math.min(rowIndex, 12) } as CSSProperties}
                                 className="anim-stagger border-t border-white/[0.05]"
                               >
-                                <td className="px-5 py-2.5">
+                                <td className="w-9 py-2.5 pl-4">
+                                  <input
+                                    type="checkbox"
+                                    aria-label={l.licenseId}
+                                    className="h-3.5 w-3.5 accent-[#22e2d5]"
+                                    checked={selectedIds.includes(l.licenseId)}
+                                    onChange={(e) =>
+                                      setSelectedIds((prev) =>
+                                        e.target.checked
+                                          ? [...new Set([...prev, l.licenseId])]
+                                          : prev.filter((id) => id !== l.licenseId),
+                                      )
+                                    }
+                                  />
+                                </td>
+                                <td className="px-3 py-2.5">
                                   <span className="block truncate text-slate-200">{l.label || "—"}</span>
                                   <span className="block font-mono text-[10px] text-slate-500">{l.licenseId}</span>
                                 </td>
@@ -1229,6 +1388,18 @@ export function Scripts() {
                           >
                             {pipelineBusy ? t("scripts.working") : t("scripts.publishPipeline")}
                           </Button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="outline"
+                            className="px-3 py-1.5 text-[11.5px]"
+                            disabled={pipelineBusy || !rawSource.trim() || !version.trim() || !folderId}
+                            onClick={() => void handleBatchPublish()}
+                          >
+                            <Icon name="layers" className="h-3.5 w-3.5" />
+                            {t("scripts.batchPublish")}
+                          </Button>
+                          <span className="text-[10.5px] text-slate-500">{t("scripts.batchPublishHint")}</span>
                         </div>
                         {publishJob && (
                           <div className="anim-enter rounded-2xl border border-white/[0.07] bg-black/25 px-3.5 py-3">
