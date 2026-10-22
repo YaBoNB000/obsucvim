@@ -284,7 +284,7 @@ const zh = {
   "scripts.daysPh": "天数",
   "scripts.daysHint": "首次激活后才开始计时，可以先囤货后出售。",
   "scripts.pipeline": "上传源码自动发布",
-  "scripts.pipelineHint": "服务端自动注入卡密校验并用 v15 混淆，成功后立即删除原始源码，只保留混淆产物。每次消耗 1 次额度。",
+  "scripts.pipelineHint": "服务端自动注入卡密校验并用 v15 混淆，成功后立即删除原始源码，只保留混淆产物。每次消耗 1 次额度。默认不绑定执行器（兼容所有执行器）。",
   "scripts.pickFile": "选择 .lua / .luau",
   "scripts.sourcePh": "-- 粘贴原始 Luau 源码（1 MB 以内）",
   "scripts.publishPipeline": "注入并混淆发布",

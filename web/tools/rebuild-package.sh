@@ -45,7 +45,9 @@ echo "[2/5] 覆盖当前程序文件"
 cp "$WEB/dist/index.html" "$PKG/dist/index.html"
 for f in "$WEB"/tools/*.mjs "$WEB"/tools/*.luau "$WEB"/tools/obsucvim.wasm; do
   [ -f "$f" ] || continue
-  case "$(basename "$f")" in test-*) continue ;; esac   # 测试脚本不随包发布
+  case "$(basename "$f")" in
+    test-*|luau-roblox-prelude.luau) continue ;;   # 测试/开发用资产不随包发布
+  esac
   cp "$f" "$PKG/tools/$(basename "$f")"
 done
 cp "$WEB/SCRIPT-KEYS.md" "$PKG/SCRIPT-KEYS.md"

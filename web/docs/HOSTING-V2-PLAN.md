@@ -305,6 +305,39 @@ web/tools/test-engine-retry.mjs   9/9    引擎崩溃重试 / 永久崩溃 / 语
 `test-live-loader.py` 起真服务、真注册、真发布、抓 `/files/<id>.lua`，再用会发真实 HTTP 的假执行器跑这段 loader：
 证明「发布产物 sha256 一致」「手工上传的纯 Lua 版本确实被执行」「大小写/空白的卡密可用」「32 位卡密、licence id、缺 key、错设备都给出可读错误」。
 
+### 2026-10-23 · 事故：产物在执行器里全线崩溃（attempt to call a nil value）
+
+**现象**：用户在 Delta 里跑任何已发布产物都报 `attempt to call a nil value`，报错位置指向产物第 3 行，和用户源码毫无关系。
+
+**根因**：发布流水线固定带 `--env-check --bind-executor --bind-env roblox`。
+
+- `--bind-env roblox` 把 `Vector3.new / Vector2.new / task.defer / typeof` 当作**原语槽**，启动时分类这些值是不是「真 C 函数」；
+- `--bind-executor` 进一步要求 `debug.getconstants / getupvalues / setupvalue / getproto(s)`、`identifyexecutor / checkcaller / iscclosure / newcclosure` 全部存在且形状一致；
+- 任何一项对不上，代码**不是跳过校验，而是自我投毒**（`TRIP()` 把状态打成 `POISONV`）。之后 VM 在随机位置炸掉，报错与真实原因无关。
+
+**证据（沙箱内真实执行）**：
+
+| 配置 | 裸 Luau | Roblox/执行器模拟宿主 |
+| --- | --- | --- |
+| `--bind-executor --bind-env roblox`（旧默认） | ✗ | ✗ |
+| `--bind-env roblox`（去掉执行器绑定） | ✗ | ✗ |
+| `--env-check --no-bind-executor`（新默认） | ✓ `suda` | ✓ `suda` |
+| 无 `--env-check` | ✓ | ✓ |
+
+注意最后一行说明：**引擎默认值是「绑定执行器」**，只删 `--bind-env` 不够，必须显式 `--no-bind-executor`。
+
+**修复**：
+
+1. `buildCliArgs()` 默认改为 `--preset v15 --env-check --no-bind-executor`；
+2. 两层绑定改成显式 opt-in：`OBSUCVIM_ENGINE_HARDEN=1` 或发布请求 `hardening: true`；
+3. 前端 `web/src/lib/engine.ts` 同步；
+4. 新增 `web/tools/test-artifact-runtime.py`：对 6 个种子分别做「裸 Luau」与「Roblox/执行器宿主」两遍真实执行，断言输出为 `suda`，并**反向断言 hardening 会失败**；
+5. 新增 `web/tools/luau-roblox-prelude.luau`（Vector3/task/typeof/debug/getgenv/gethwid 等宿主桩）。
+
+**影响与善后**：故障期间发布的所有版本都是坏产物，**必须重新发布**；`/files/<id>.lua` 的 loader 本身没问题，用户无需改 loadstring。
+
+**留下的教训**：编译通过 ≠ 能跑。只有把产物放进真实解释器执行才算验证；这类「自我投毒」型失败在静态检查里完全看不出来。
+
 ### 仍未完成（诚实清单）
 
 1. **Webhook 保护 / 外部验卡应用的前端界面**：接口与文档已就绪，控制台暂未提供图形化配置（需要者可用文档里的 curl 示例）。

@@ -5,8 +5,7 @@
 | 文件 | 说明 |
 | --- | --- |
 | `suda.lua` | 原始源码，两行 |
-| `suda.portable.luau` | **已在真 Luau 上跑通**，打印 `suda`（关闭 executor 绑定） |
-| `suda.executor.luau` | 服务端默认参数产物，绑定 executor/Roblox 环境，只能在执行器里跑 |
+| `suda.luau` | **服务端默认参数产物**，已在真 Luau 与「Roblox/执行器模拟宿主」上跑通，打印 `suda` |
 
 ## 原始源码
 
@@ -17,58 +16,72 @@ print("suda")
 
 ## 复现命令
 
-两个产物都是用仓库里的 WASI 引擎（`web/tools/obsucvim.wasm`）生成的，参数就是服务端发布流水线用的那一套，只是绑定开关不同。
+用仓库里的 WASI 引擎生成，参数与服务端发布流水线当前默认值一致：
 
 ```bash
-# 1) 可移植版：可以在任何 Luau 解释器里直接跑（STDOUT 输出 suda）
 node -e 'const cfg={wasmPath:"web/tools/obsucvim.wasm",workDir:"/tmp",args:[
-  "--preset","v15","--no-bind-executor","--dialect","luau",
-  "--seed","20261022","--minify","--vm-seal-strings",
-  "/work/input.lua","/work/output.lua"]};
-  require("fs").writeFileSync("/tmp/cfg.json",JSON.stringify(cfg));'
-node web/tools/wasi-runner.mjs "$(cat /tmp/cfg.json)"
-
-# 2) 执行器版：服务端 /api/publish 默认参数（含 --bind-executor --bind-env roblox --env-check）
-node -e 'const cfg={wasmPath:"web/tools/obsucvim.wasm",workDir:"/tmp",args:[
-  "--preset","v15","--env-check","--bind-executor","--bind-env","roblox",
+  "--preset","v15","--env-check","--no-bind-executor",
   "--seed","20261022","--minify","--vm-seal-strings",
   "/work/input.lua","/work/output.lua"]};
   require("fs").writeFileSync("/tmp/cfg.json",JSON.stringify(cfg));'
 node web/tools/wasi-runner.mjs "$(cat /tmp/cfg.json)"
 ```
 
-## 验证结果（真实执行，2026-10-22）
+`--no-bind-executor` 不能省：引擎的默认值是**绑定执行器**，那一层要求宿主提供
+`debug.getconstants` / `getupvalues` / `setupvalue` / `getproto(s)` 等一整套 API，
+任何一项缺失都会让产物自我投毒、直接崩掉（见下方 2026-10-23 事故）。
 
-用从源码编译的 Luau（`luau-lang/luau` master）直接跑可移植版：
+## 验证结果（真实执行，2026-10-23 更新）
+
+用从源码编译的 Luau（`luau-lang/luau` master）直接跑：
 
 ```console
-$ luau samples/obsucvim/suda/suda.portable.luau
+$ luau samples/obsucvim/suda/suda.luau
+suda
+
+$ cat web/tools/luau-roblox-prelude.luau samples/obsucvim/suda/suda.luau > /tmp/exec.luau
+$ luau /tmp/exec.luau        # 模拟 Roblox + Delta 宿主（Vector3/task/typeof/debug…）
 suda
 ```
 
-- 连跑 3 次输出一致；换 3 个种子（20261022 / 20261023 / 20261024）生成的产物都能正确打印
-- 源码里的字符串 `suda` 不再以明文出现（`grep -c suda` = 0，`--vm-seal-strings` 生效）
-- 全文只有 2 行（第 3 行是数百 KB 的单行 VM）
+- 6 个种子（1 / 2 / 3 / 20261022 / 424242 / 987654）全部通过，两种宿主都是 `suda`
+- 源码里的字符串 `suda` 不再以明文出现（`--vm-seal-strings` 生效）
+- 全文只有 3 行（第 3 行是数百 KB 的单行 VM）
 
-**未验证**：`suda.executor.luau` 在真实执行器（Delta / Synapse 等）里的运行。它按设计用到了
-`loadstring`、`warn`、`identifyexecutor`、`checkcaller`、`newcclosure` 等执行器 API 与
-`Vector3` / `task` 绑定，脱离了执行器环境会直接报错——这正是 `--bind-executor` 的目的。
+回归入口（需要 Luau 二进制）：
+
+```bash
+LUAU_BIN=/path/to/luau python3 web/tools/test-artifact-runtime.py
+```
+
+它会对每个种子跑「裸 Luau」与「Roblox/执行器宿主」两遍，并顺带断言
+`hardening`（`--bind-executor --bind-env roblox`）**确实会失败**——这条断言就是
+2026-10-23 事故的护栏。
+
+## 2026-10-23 事故记录
+
+线上执行器（Delta）里跑任何产物都报 `attempt to call a nil value`，根因是发布流水线
+默认带上了 `--bind-executor`（以及 `--bind-env roblox`）。这两层在启动时逐项核验宿主
+API，**任何一项对不上不是跳过校验，而是自我投毒**：状态被污染后，脚本在 VM 里随机位置
+炸掉，报错看起来和用户代码毫无关系。
+
+修复：默认改为 `--env-check --no-bind-executor`（`env-check` 只比较运行期前后取到的
+函数是否同一个，加载前被 hook 不误伤）；两层绑定改成显式 opt-in
+（`OBSUCVIM_ENGINE_HARDEN=1` 或发布请求里 `hardening: true`）。
 
 ## 体积
 
 | 产物 | 大小 | 相对源码 |
 | --- | --- | --- |
-| `suda.portable.luau` | 167,195 B | ×3800 |
-| `suda.executor.luau` | 231,031 B | ×5251 |
+| `suda.luau` | 171,707 B | ×3900 |
 
-体积主要来自固定的 VM 解释器与常量池，和源码长度基本无关：**2 行的脚本和 2 千行的脚本，产物都在 150–300 KB 量级**。混淆不是压缩。
+体积主要来自固定的 VM 解释器与常量池，和源码长度基本无关：**2 行的脚本和 2 千行的脚本，产物都在 170–300 KB 量级**。混淆不是压缩。
 
 ## SHA-256
 
 ```
 91dbd065c12b3766437382f113f4f2c67e8fdd7c14a0f9c6b99f1524f0e07914  suda.lua
-9ea282c22b2d338389a65a603ac9ddfa0886a5460d17410ba6e0932ae907c845  suda.portable.luau
-ff4bb545fa483315b43a3c361c851b944d80ca7a58f37ea3d82910ffcc4681f7  suda.executor.luau
+ad716ea153a131ec89ff932dacd4246f09bc38403fd2e2e50305bf2889b1c8e1  suda.luau
 ```
 
 复现时同种子应得到同样大小与内容；不同引擎版本（`obsucvim.wasm`）会不同。

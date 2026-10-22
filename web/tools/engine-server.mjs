@@ -41,9 +41,34 @@ function engineMode() {
 const MAX_SOURCE_BYTES = 1024 * 1024;
 const ENGINE_TIMEOUT_MS = 60_000;
 
-/* ---------------- 选项 → CLI 参数（与前端 buildCliArgs 对齐） ---------------- */
+/* ---------------- 选项 → CLI 参数（与前端 buildCliArgs 对齐） ----------------
+ *
+ * 默认：v15 VM + 名称混淆 + 字符串密封 + --env-check。
+ *   --env-check 只依赖纯 Luau 语义（buffer/bit32/string/元表/协程/freeze），
+ *   它在运行期对比「开局取到的函数」和「用的时候再取的函数」是否同一个，
+ *   因此执行器在加载前 hook string.char 之类不会误伤，只有运行中被替换才触发。
+ *
+ * 默认**不**开 --bind-env / --bind-executor：
+ *   这两层要求宿主（Roblox + 执行器）具备特定 API 且形状完全一致——
+ *   bind-env 要求 Vector3.new / Vector2.new / task.defer / typeof 都是真 C 函数，
+ *   bind-executor 还要求 debug.getconstants / getupvalues / setupvalue /
+ *   getproto(s) / identifyexecutor / checkcaller / iscclosure / newcclosure 齐全。
+ *   任何一项缺失或不同，产物不是「跳过校验」而是自我投毒，最终表现为
+ *   attempt to call a nil value / arithmetic on nil —— 整个脚本直接跑不起来。
+ *   实测：Delta 上带这两层的产物 100% 失败；同一份产物去掉它们后正常。
+ *
+ *   需要这几层的运营商可以用 OBSUCVIM_ENGINE_HARDEN=1，或在发布时传
+ *   hardening: true（仅当确认目标执行器是 Synapse 级别、且自己先跑过）。 */
+function hardeningEnabled(o) {
+  if (o && o.hardening === true) return true;
+  return process.env.OBSUCVIM_ENGINE_HARDEN === "1";
+}
+
 function buildCliArgs(o) {
-  const args = ["--preset", "v15", "--env-check", "--bind-executor", "--bind-env", "roblox"];
+  const args = ["--preset", "v15", "--env-check"];
+  // 引擎的默认值是「绑定执行器」，必须显式关掉，否则等于一直开着最危险的那层。
+  if (hardeningEnabled(o)) args.push("--bind-executor", "--bind-env", "roblox");
+  else args.push("--no-bind-executor");
   const seed = normalizeSeed(o.seed);
   if (seed) args.push("--seed", seed);
   args.push(o.minify ? "--minify" : "--no-minify");
@@ -1554,7 +1579,7 @@ function noteLoginFail(email) {
 /* ---------------- 安全：严格选项白名单 ---------------- */
 const ALLOWED_OPTIONS = new Set([
   "minify", "mangle", "strings", "flatten", "junk",
-  "numbers", "body", "vmSealStrings", "seed",
+  "numbers", "body", "vmSealStrings", "seed", "hardening",
 ]);
 
 function validateOptions(o) {
@@ -1562,7 +1587,7 @@ function validateOptions(o) {
   for (const k of Object.keys(o)) {
     if (!ALLOWED_OPTIONS.has(k)) return "BAD_OPTIONS";
   }
-  for (const k of ["minify", "mangle", "strings", "flatten", "junk", "numbers", "body", "vmSealStrings"]) {
+  for (const k of ["minify", "mangle", "strings", "flatten", "junk", "numbers", "body", "vmSealStrings", "hardening"]) {
     if (k in o && typeof o[k] !== "boolean") return "BAD_OPTIONS";
   }
   if ("seed" in o && (typeof o.seed !== "string" || o.seed.length > 64)) return "BAD_OPTIONS";

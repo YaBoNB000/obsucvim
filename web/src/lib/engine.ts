@@ -17,6 +17,8 @@ export interface ObfuscationOptions {
   body: boolean;
   vmSealStrings: boolean;
   seed: string;
+  /** 环境证明（env-check + bind-env + bind-executor），仅在确认执行器支持时开启。 */
+  hardening?: boolean;
 }
 
 export const DEFAULT_OPTIONS: ObfuscationOptions = {
@@ -29,10 +31,21 @@ export const DEFAULT_OPTIONS: ObfuscationOptions = {
   body: true,
   vmSealStrings: true,
   seed: "",
+  hardening: false,
 };
 
+/**
+ * 环境证明（--env-check / --bind-env / --bind-executor）默认关闭：
+ * 它们会在运行时核验 Roblox/执行器的具体 API（debug.getconstants、getupvalues、
+ * typeof(game)…），任何一项对不上不是跳过而是自我投毒，脚本会直接跑不起来。
+ * 只有确认目标执行器支持时才打开。
+ */
 export function buildCliArgs(o: ObfuscationOptions): string[] {
-  const args: string[] = ["--preset", "v15", "--env-check", "--bind-executor", "--bind-env", "roblox"];
+  const args: string[] = ["--preset", "v15", "--env-check"];
+  // 这两层要求宿主 API 形状完全一致，缺一项就会自我投毒，默认不开。
+  // 引擎默认是绑定执行器，所以必须显式 --no-bind-executor。
+  if (o.hardening) args.push("--bind-executor", "--bind-env", "roblox");
+  else args.push("--no-bind-executor");
   if (o.seed) args.push("--seed", o.seed);
   args.push(o.minify ? "--minify" : "--no-minify");
   if (!o.mangle) args.push("--no-mangle");
