@@ -11,6 +11,10 @@
 
 Caddy/IIS 在本机终止 TLS 时，启动脚本默认信任 loopback 代理 (`127.0.0.1,::1`) 并验证其 `X-Forwarded-Proto`；其他代理需将 `OBSUCVIM_TRUSTED_PROXY_IPS` 设为精确代理 IP。不要把 `X-Forwarded-For` 信任给任意来源。
 
+## 升级已部署的实例
+
+见 `README-UPDATE.md`。一句话：`cd C:\Obsucvim` 后执行 `Update-Obsucvim.ps1 -Sha256 "<版本哈希>"`，程序文件被替换、`data/` 原样保留，然后重启服务。
+
 ## Windows 防火墙
 
 默认不自动开防火墙端口。若确认需要允许 Domain/Private 网络入站，可在管理员 PowerShell 启动：

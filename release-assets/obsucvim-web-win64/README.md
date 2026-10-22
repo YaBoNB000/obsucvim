@@ -22,4 +22,8 @@ The bundle includes Node.js 22.22.3 x64, the Rust/WASI engine, the single-file U
 - Published guards inject `OBS_IsPremium`, `OBS_UserNote`, `OBS_ScriptName`, `OBS_SecondsLeft` and `OBS_TotalExecutions` for UI gating. These are client-side values and can be tampered with, so never use them for security decisions.
 - HWID is client-supplied and spoofable; treat binding as friction, not hardware attestation.
 
+## Upgrading
+
+Run `Update-Obsucvim.ps1 -Sha256 "<hash>"` inside the install directory (or `runtime\node.exe tools\self-update.mjs --dir . --url <zip> --sha256 <hash>`). It verifies the zip hash and the internal manifest, backs up `data/`, replaces program files only, and leaves accounts/keys/releases untouched. See `README-UPDATE.md`.
+
 The sandbox tests covered the key issue/validate/revoke/HWID flow and package integrity. Real Cloudflare Siteverify, physical Windows Server 2019, and external 163 SMTP were not tested here.
