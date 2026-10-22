@@ -20,11 +20,19 @@ local function fail(message)
 	error("[Obsucvim] " .. tostring(message), 0)
 end
 
+-- In Roblox `game` is a userdata (an Instance), not a table; a few executors
+-- expose a table instead. Accept both, and only insist that GetService works.
 local gameObject = rawget(_G, "game")
-if type(gameObject) ~= "table" then
+if type(gameObject) ~= "table" and type(gameObject) ~= "userdata" then gameObject = env.game end
+if type(gameObject) ~= "table" and type(gameObject) ~= "userdata" then
 	fail("game object unavailable")
 end
-local http = gameObject:GetService("HttpService")
+local okService, http = pcall(function()
+	return gameObject:GetService("HttpService")
+end)
+if not okService or type(http) ~= "table" and type(http) ~= "userdata" then
+	fail("HttpService unavailable")
+end
 
 local function post(path, payload)
 	local requestFn = env.request or env.http_request or rawget(_G, "request") or rawget(_G, "http_request")

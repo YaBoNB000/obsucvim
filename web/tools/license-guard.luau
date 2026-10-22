@@ -48,10 +48,16 @@ do
 	end
 
 	local gameObject = _G.game
-	if type(gameObject) ~= "table" then
+	if type(gameObject) ~= "table" and type(gameObject) ~= "userdata" then gameObject = env.game end
+	if type(gameObject) ~= "table" and type(gameObject) ~= "userdata" then
 		error("[Obsucvim] game object unavailable", 0)
 	end
-	local http = gameObject:GetService("HttpService")
+	local okService, http = pcall(function()
+		return gameObject:GetService("HttpService")
+	end)
+	if not okService or http == nil then
+		error("[Obsucvim] HttpService unavailable", 0)
+	end
 	local seed = tostring(os.time()) .. tostring(math.floor(os.clock() * 1000000))
 	local nonce = string.sub(seed .. string.rep("0", 32), 1, 32)
 	local payload = http:JSONEncode({
