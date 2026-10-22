@@ -18,6 +18,8 @@ export interface ScriptProject {
   description: string;
   createdAt: number;
   active: boolean;
+  ffa?: boolean;
+  silent?: boolean;
 }
 
 export interface LicenseRecord {
@@ -29,6 +31,12 @@ export interface LicenseRecord {
   revokedAt: number | null;
   durationDays: number | null;
   activated: boolean;
+  status?: "active" | "expired" | "revoked" | "banned";
+  banned?: boolean;
+  banReason?: string;
+  banExpireAt?: number | null;
+  totalResets?: number;
+  lastResetAt?: number | null;
   hwidBound: boolean;
   firstActivatedAt: number | null;
   lastUsedAt: number | null;
@@ -57,6 +65,7 @@ export type ApiError =
   | "folder_not_found"
   | "bad_count"
   | "bad_webhook"
+  | "bad_ban_days"
   | "license_limit"
   | "release_limit"
   | "release_too_large"
@@ -77,6 +86,9 @@ interface Envelope {
   folders?: Folder[];
   folder?: Folder;
   count?: number;
+  total?: number;
+  from?: number;
+  until?: number;
 }
 
 const ERROR_MAP: Record<string, ApiError> = {
@@ -96,6 +108,7 @@ const ERROR_MAP: Record<string, ApiError> = {
   FOLDER_NOT_FOUND: "folder_not_found",
   BAD_COUNT: "bad_count",
   BAD_WEBHOOK: "bad_webhook",
+  BAD_BAN_DAYS: "bad_ban_days",
   LICENSE_LIMIT: "license_limit",
   RELEASE_LIMIT: "release_limit",
   RELEASE_TOO_LARGE: "release_too_large",
@@ -146,9 +159,33 @@ export async function createScript(
   return res.ok && res.data?.script ? { ok: true, data: res.data.script } : { ok: false, error: res.error ?? "unknown" };
 }
 
-export async function listLicenses(scriptId: string): Promise<Result<LicenseRecord[]>> {
-  const res = await request<Envelope>(`/api/auth/licenses?scriptId=${encodeURIComponent(scriptId)}`);
-  return res.ok ? { ok: true, data: res.data?.licenses ?? [] } : { ok: false, error: res.error };
+export interface LicensePage {
+  licenses: LicenseRecord[];
+  total: number;
+  from: number;
+  until: number;
+}
+
+export async function listLicenses(
+  folderId: string,
+  opts: { from?: number; until?: number; search?: string; status?: string } = {},
+): Promise<Result<LicensePage>> {
+  const params = new URLSearchParams({ folderId });
+  if (opts.from !== undefined) params.set("from", String(opts.from));
+  if (opts.until !== undefined) params.set("until", String(opts.until));
+  if (opts.search) params.set("search", opts.search);
+  if (opts.status) params.set("status", opts.status);
+  const res = await request<Envelope>(`/api/auth/licenses?${params.toString()}`);
+  if (!res.ok) return { ok: false, error: res.error };
+  return {
+    ok: true,
+    data: {
+      licenses: res.data?.licenses ?? [],
+      total: res.data?.total ?? 0,
+      from: res.data?.from ?? 0,
+      until: res.data?.until ?? 0,
+    },
+  };
 }
 
 export async function issueLicense(
@@ -298,4 +335,55 @@ export async function issueLicenseBatch(
 /** CSV export never contains raw keys, only metadata. */
 export function exportLicensesCsv(folderId: string) {
   window.location.href = `/api/auth/licenses/export?folderId=${encodeURIComponent(folderId)}`;
+}
+
+export async function banLicense(
+  licenseId: string,
+  opts: { reason: string; banDays: number | null },
+): Promise<Result<{ license: LicenseRecord; unbanToken: string }>> {
+  interface BanPayload { ok?: boolean; error?: string; unbanToken?: string; license?: LicenseRecord }
+  try {
+    const res = await fetch("/api/auth/licenses/ban", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ licenseId, reason: opts.reason, banDays: opts.banDays }),
+    });
+    const payload = (await res.json().catch(() => ({}))) as BanPayload;
+    if (!res.ok || !payload.ok || !payload.license || !payload.unbanToken) {
+      return { ok: false, error: ERROR_MAP[payload.error ?? ""] ?? "unknown" };
+    }
+    return { ok: true, data: { license: payload.license, unbanToken: payload.unbanToken } };
+  } catch {
+    return { ok: false, error: "network" };
+  }
+}
+
+export async function unbanLicense(licenseId: string): Promise<Result<LicenseRecord>> {
+  const res = await request<Envelope>("/api/auth/licenses/unban", { method: "POST", body: { licenseId } });
+  return res.ok && res.data?.license
+    ? { ok: true, data: res.data.license }
+    : { ok: false, error: res.error ?? "unknown" };
+}
+
+export async function updateScript(
+  scriptId: string,
+  patch: { ffa?: boolean; silent?: boolean; active?: boolean; name?: string },
+): Promise<Result<ScriptProject>> {
+  const res = await request<Envelope>("/api/auth/scripts/update", {
+    method: "POST",
+    body: { scriptId, ...patch },
+  });
+  return res.ok && res.data?.script
+    ? { ok: true, data: res.data.script }
+    : { ok: false, error: res.error ?? "unknown" };
+}
+
+/** The URL never changes, so users can paste it once and forget it. */
+export function loaderUrl(scriptId: string): string {
+  return `${window.location.origin}/files/${scriptId}.lua`;
+}
+
+export function loadstringSnippet(scriptId: string): string {
+  return `loadstring(game:HttpGet("${loaderUrl(scriptId)}"))()`;
 }

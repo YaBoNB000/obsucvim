@@ -113,6 +113,9 @@ finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 - 卡密支持三种有效期：永久、指定日期、首次激活后 N 天计时。
 - 项目文件夹：一把 Key 解锁文件夹内全部脚本，适合做脚本 hub；支持批量签发（单次最多 100）与 CSV 导出。
 - 可配置执行日志 / 告警 Webhook（仅限 https 的 Discord 地址）。
+- 每个脚本有**稳定 loader 地址** `https://<域名>/files/<scriptId>.lua`，用户复制一次 `loadstring(game:HttpGet("..."))()` 即可，更新脚本不用改。
+- 脚本可开启**免卡密（FFA）**模式；卡密支持永久/临时**封禁**（同时拉黑设备，可用解封 token 解除）。
+- 卡密列表支持分页、搜索与状态筛选。
 - 客户可用 `#key` 公开页查询卡密状态；项目开启后支持自助重置设备（带冷却）。
 - 脚本内可读取 `OBS_IsPremium` / `OBS_UserNote` / `OBS_ScriptName` / `OBS_SecondsLeft` / `OBS_TotalExecutions` 做 UI 分层（可被客户端篡改，不可用于安全判断）。
 - 尚未包含网页端上传/发布流水线和受授权保护的脚本下载端点；HWID 由客户端提供，可伪造，仅作尽力绑定。

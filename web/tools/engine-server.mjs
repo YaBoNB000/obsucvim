@@ -205,6 +205,7 @@ let state = {
   licenseSessions: {}, // short-lived token -> { licenseId, scriptId, hwidHash, expires }
   licenseAttempts: {}, // `${scriptId}:${ipHash}` -> { fails, until }; per-client abuse throttle
   releases: {}, // scriptId -> { version, sha256, size, createdAt, file }
+  deviceBans: {}, // HMAC(hwid) -> { reason, expireAt, bannedAt }
 };
 
 function loadState() {
@@ -248,7 +249,7 @@ function loadState() {
     state.licenseKeyHashKey = randomBytes(32).toString("hex");
     changed = true;
   }
-  for (const key of ["folders", "licenseNonces", "licenseSessions", "licenseAttempts", "releases"]) {
+  for (const key of ["folders", "licenseNonces", "licenseSessions", "licenseAttempts", "releases", "deviceBans"]) {
     if (!state[key] || typeof state[key] !== "object" || Array.isArray(state[key])) {
       state[key] = {};
       changed = true;
@@ -301,6 +302,20 @@ function saveState() {
 const DATA_DIR = process.env.OBSUCVIM_DATA_DIR || path.dirname(STATE_FILE);
 const RELEASE_DIR = path.join(DATA_DIR, "releases");
 const GUARD_TEMPLATE_FILE = path.join(__dirname, "license-guard.luau");
+const LOADER_TEMPLATE_FILE = path.join(__dirname, "loader-template.luau");
+
+let cachedLoaderTemplate = null;
+function loaderTemplate() {
+  if (cachedLoaderTemplate === null) cachedLoaderTemplate = readFileSync(LOADER_TEMPLATE_FILE, "utf8");
+  return cachedLoaderTemplate;
+}
+
+/** Stable public loader: same URL forever, contents swapped on each publish. */
+function buildLoaderSource(scriptId, origin) {
+  return loaderTemplate()
+    .replaceAll("__SCRIPT_ID__", scriptId)
+    .replaceAll("__BASE_URL__", origin);
+}
 
 let cachedGuardTemplate = null;
 function guardTemplate() {
@@ -471,15 +486,65 @@ function clearLicenseFailures(attemptKey) {
   if (state.licenseAttempts[attemptKey]) delete state.licenseAttempts[attemptKey];
 }
 
+const UNBAN_TOKEN_BYTES = 24;
+
+/* A ban can be permanent (banExpireAt null) or lift on its own. Expired bans
+ * are cleared lazily so we never keep rejecting someone after their time. */
+function activeLicenseBan(license) {
+  if (!license || !license.bannedAt) return null;
+  if (license.banExpireAt && now() >= license.banExpireAt) {
+    license.bannedAt = null;
+    license.banReason = "";
+    license.banExpireAt = null;
+    return null;
+  }
+  return { reason: license.banReason || "", expireAt: license.banExpireAt ?? null };
+}
+
+function activeDeviceBan(hwidHash) {
+  const entry = state.deviceBans[hwidHash];
+  if (!entry) return null;
+  if (entry.expireAt && now() >= entry.expireAt) {
+    delete state.deviceBans[hwidHash];
+    return null;
+  }
+  return entry;
+}
+
 /* Decide whether a license request is acceptable. Failures are counted per
  * client+script so a thief only throttles themselves; legitimate users are not
  * locked out by someone replaying their traffic. */
 function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   const script = state.scripts[scriptId];
-  if (!script || !script.active) return { ok: false, status: 403, error: "LICENSE_INVALID" };
+  if (!script || !script.active) {
+    return { ok: false, status: 404, error: "LICENSE_INVALID", code: "SCRIPT_NOT_FOUND" };
+  }
   const folder = state.folders[script.folderId] ?? null;
+  const hasHwid = typeof hwid === "string" && hwid.trim().length >= 8;
+  const hwidHash = licenseHwidDigest(hasHwid ? hwid : "");
+
+  // A banned device is refused before anything else, even with a fresh key.
+  const deviceBan = hasHwid ? activeDeviceBan(hwidHash) : null;
+  if (deviceBan) {
+    return {
+      ok: false, status: 403, error: "BANNED", code: "KEY_BANNED",
+      folder, script, banReason: deviceBan.reason, banExpireAt: deviceBan.expireAt,
+    };
+  }
 
   const attemptKey = licenseAttemptKey(scriptId, ip || "unknown");
+  const blankKey = typeof key !== "string" || key === "";
+
+  // Free for All: no key required, nothing is bound and nothing is counted.
+  if (blankKey) {
+    if (script.ffa) return { ok: true, free: true, script, folder };
+    return { ok: false, status: 401, error: "LICENSE_INVALID", code: "KEY_MISSING", folder, script };
+  }
+
+  if (!hasHwid) {
+    return { ok: false, status: 400, error: "DEVICE_MISSING", code: "HWID_MISSING", folder, script };
+  }
+
   const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
   const license = licenseId ? state.licenseKeys[licenseId] : null;
   const keyMatches = Boolean(license && digestsEqual(license.keyHash, licenseKeyDigest(key)));
@@ -487,7 +552,9 @@ function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   // The guess throttle only applies to requests that do not present a valid key,
   // so correct credentials are never blocked by someone else's failed attempts.
   const blocked = keyMatches ? 0 : licenseBlockRemaining(attemptKey);
-  if (blocked > 0) return { ok: false, status: 429, error: "LICENSE_LOCKED", retryAfter: blocked };
+  if (blocked > 0) {
+    return { ok: false, status: 429, error: "LICENSE_LOCKED", code: "KEY_LOCKED", retryAfter: blocked };
+  }
 
   // Keys belong to a project folder, so one key unlocks every script inside it.
   const folderMatches = Boolean(
@@ -496,22 +563,35 @@ function evaluateLicense({ scriptId, key, hwid, nonce, ip }) {
   );
   if (!license || !keyMatches || !folderMatches) {
     noteLicenseFailure(attemptKey);
-    return { ok: false, status: 403, error: "LICENSE_INVALID", folder, script };
-  }
-  if (license.revokedAt || (license.expiresAt && now() >= license.expiresAt)) {
-    noteLicenseFailure(attemptKey);
-    return { ok: false, status: 403, error: "LICENSE_INVALID", folder, script };
+    return { ok: false, status: 403, error: "LICENSE_INVALID", code: "KEY_INCORRECT", folder, script };
   }
 
-  const hwidHash = licenseHwidDigest(hwid);
+  if (license.revokedAt) {
+    noteLicenseFailure(attemptKey);
+    return { ok: false, status: 403, error: "LICENSE_INVALID", code: "KEY_REVOKED", folder, script };
+  }
+
+  const ban = activeLicenseBan(license);
+  if (ban) {
+    return {
+      ok: false, status: 403, error: "BANNED", code: "KEY_BANNED",
+      folder, script, banReason: ban.reason, banExpireAt: ban.expireAt,
+    };
+  }
+
+  if (license.expiresAt && now() >= license.expiresAt) {
+    noteLicenseFailure(attemptKey);
+    return { ok: false, status: 403, error: "LICENSE_INVALID", code: "KEY_EXPIRED", folder, script };
+  }
+
   if (license.hwidHash && !digestsEqual(license.hwidHash, hwidHash)) {
     // Not counted as abuse: the caller already holds the key.
-    return { ok: false, status: 403, error: "DEVICE_MISMATCH", folder, script };
+    return { ok: false, status: 403, error: "DEVICE_MISMATCH", code: "KEY_HWID_LOCKED", folder, script };
   }
 
   const nonceKey = `${licenseId}:${licenseNonceDigest(nonce)}`;
   if (state.licenseNonces[nonceKey] && state.licenseNonces[nonceKey] > now()) {
-    return { ok: false, status: 409, error: "NONCE_REPLAY" };
+    return { ok: false, status: 409, error: "NONCE_REPLAY", code: "NONCE_REPLAY", folder, script };
   }
 
   if (!license.hwidHash) {
@@ -600,6 +680,12 @@ const licensePublic = (license) => ({
   lastUsedAt: license.lastUsedAt,
   durationDays: license.durationDays ?? null,
   activated: Boolean(license.firstActivatedAt),
+  bannedAt: license.bannedAt ?? null,
+  banReason: license.banReason ?? "",
+  banExpireAt: license.banExpireAt ?? null,
+  banned: Boolean(activeLicenseBan(license)),
+  totalResets: license.totalResets ?? 0,
+  lastResetAt: license.lastHwidResetAt ?? null,
 });
 
 function apiKeyUser(key) {
@@ -1398,7 +1484,10 @@ const server = createServer(async (req, res) => {
       if (!owner) return unauthorized(res, req);
       const scripts = Object.values(state.scripts)
         .filter((script) => script.ownerEmail === owner.email)
-        .map(({ scriptId, folderId, name, description, createdAt, active }) => ({ scriptId, folderId, name, description, createdAt, active }));
+        .map(({ scriptId, folderId, name, description, createdAt, active, ffa, silent }) => ({
+          scriptId, folderId, name, description, createdAt, active,
+          ffa: Boolean(ffa), silent: Boolean(silent),
+        }));
       return json(res, 200, { ok: true, scripts });
     }
 
@@ -1443,6 +1532,37 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "POST" && req.url === "/api/auth/scripts/update") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const script = typeof body.scriptId === "string" ? state.scripts[body.scriptId] : null;
+      if (!script || script.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
+      if (body.name !== undefined) {
+        if (typeof body.name !== "string" || body.name.trim().length < 2 || body.name.trim().length > 80) {
+          return json(res, 400, { ok: false, error: "BAD_INPUT" });
+        }
+        script.name = body.name.trim();
+      }
+      for (const flag of ["ffa", "silent"]) {
+        if (body[flag] === undefined) continue;
+        if (typeof body[flag] !== "boolean") return json(res, 400, { ok: false, error: "BAD_INPUT" });
+        script[flag] = body[flag];
+      }
+      if (body.active !== undefined) {
+        if (typeof body.active !== "boolean") return json(res, 400, { ok: false, error: "BAD_INPUT" });
+        script.active = body.active;
+      }
+      saveState();
+      return json(res, 200, {
+        ok: true,
+        script: {
+          scriptId: script.scriptId, folderId: script.folderId, name: script.name,
+          description: script.description, createdAt: script.createdAt,
+          active: script.active, ffa: Boolean(script.ffa), silent: Boolean(script.silent),
+        },
+      });
+    }
+
     if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/licenses") {
       const owner = authUser(req);
       if (!owner) return unauthorized(res, req);
@@ -1455,14 +1575,41 @@ const server = createServer(async (req, res) => {
       if (folderId && state.folders[folderId]?.ownerEmail !== owner.email) {
         return json(res, 404, { ok: false, error: "NOT_FOUND" });
       }
-      const licenses = Object.values(state.licenseKeys)
-        .filter((license) => {
-          if (license.ownerEmail !== owner.email) return false;
-          if (folderId) return license.folderId === folderId;
-          return !scriptId || license.scriptId === scriptId;
-        })
-        .map(licensePublic);
-      return json(res, 200, { ok: true, licenses });
+      const search = (url.searchParams.get("search") || "").trim().toLowerCase();
+      const status = (url.searchParams.get("status") || "").trim().toLowerCase();
+      const all = Object.values(state.licenseKeys).filter((license) => {
+        if (license.ownerEmail !== owner.email) return false;
+        if (folderId) return license.folderId === folderId;
+        return !scriptId || license.scriptId === scriptId;
+      });
+      const decorated = all.map((license) => {
+        const ban = activeLicenseBan(license);
+        const stateLabel = ban
+          ? "banned"
+          : license.revokedAt
+            ? "revoked"
+            : license.expiresAt && now() >= license.expiresAt
+              ? "expired"
+              : "active";
+        return { license, public: { ...licensePublic(license), status: stateLabel } };
+      });
+      const filtered = decorated.filter(({ license, public: view }) => {
+        if (status && view.status !== status) return false;
+        if (!search) return true;
+        return (
+          (license.label || "").toLowerCase().includes(search) ||
+          license.licenseId.toLowerCase().includes(search)
+        );
+      });
+      const total = filtered.length;
+      const rawFrom = Number(url.searchParams.get("from"));
+      const rawUntil = Number(url.searchParams.get("until"));
+      const from = Number.isInteger(rawFrom) && rawFrom >= 0 ? rawFrom : 0;
+      const until = Number.isInteger(rawUntil) && rawUntil > from
+        ? Math.min(rawUntil, total)
+        : total;
+      const page = filtered.slice(from, until).map((entry) => entry.public);
+      return json(res, 200, { ok: true, licenses: page, total, from, until });
     }
 
     if (req.method === "GET" && new URL(req.url, "http://localhost").pathname === "/api/auth/licenses/export") {
@@ -1608,6 +1755,63 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { ok: true, license: licensePublic(license) });
     }
 
+    if (req.method === "POST" && req.url === "/api/auth/licenses/ban") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const license = typeof body.licenseId === "string" ? state.licenseKeys[body.licenseId] : null;
+      if (!license || license.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 200) : "";
+      let expireAt = null;
+      if (body.banDays !== undefined && body.banDays !== null && body.banDays !== "") {
+        const days = Number(body.banDays);
+        if (!Number.isInteger(days) || days < 1 || days > 3650) {
+          return json(res, 400, { ok: false, error: "BAD_BAN_DAYS" });
+        }
+        expireAt = now() + days * 86400000;
+      } else if (body.banExpireAt !== undefined && body.banExpireAt !== null && body.banExpireAt !== "") {
+        const parsed = Date.parse(String(body.banExpireAt));
+        if (!Number.isFinite(parsed) || parsed <= now()) return json(res, 400, { ok: false, error: "BAD_EXPIRY" });
+        expireAt = parsed;
+      }
+      license.bannedAt = now();
+      license.banReason = reason;
+      license.banExpireAt = expireAt;
+      license.unbanToken = randomBytes(UNBAN_TOKEN_BYTES).toString("hex");
+      // Luarmor-style: the device that used this key is blocked too, so a fresh
+      // key on the same machine does not get around the ban.
+      if (license.hwidHash) {
+        state.deviceBans[license.hwidHash] = {
+          reason,
+          expireAt,
+          bannedAt: now(),
+          licenseId: license.licenseId,
+          ownerEmail: owner.email,
+        };
+      }
+      saveState();
+      return json(res, 200, {
+        ok: true,
+        unbanToken: license.unbanToken,
+        license: licensePublic(license),
+      });
+    }
+
+    if (req.method === "POST" && req.url === "/api/auth/licenses/unban") {
+      const owner = authUser(req);
+      if (!owner) return unauthorized(res, req);
+      const license = typeof body.licenseId === "string" ? state.licenseKeys[body.licenseId] : null;
+      if (!license || license.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
+      license.bannedAt = null;
+      license.banReason = "";
+      license.banExpireAt = null;
+      license.unbanToken = null;
+      if (license.hwidHash && state.deviceBans[license.hwidHash]?.licenseId === license.licenseId) {
+        delete state.deviceBans[license.hwidHash];
+      }
+      saveState();
+      return json(res, 200, { ok: true, license: licensePublic(license) });
+    }
+
     if (req.method === "POST" && req.url === "/api/auth/licenses/reset-hwid") {
       const owner = authUser(req);
       if (!owner) return unauthorized(res, req);
@@ -1615,6 +1819,8 @@ const server = createServer(async (req, res) => {
       if (!license || license.ownerEmail !== owner.email) return json(res, 404, { ok: false, error: "NOT_FOUND" });
       license.hwidHash = null;
       license.firstActivatedAt = null;
+      license.lastHwidResetAt = now();
+      license.totalResets = (license.totalResets ?? 0) + 1;
       saveState();
       return json(res, 200, { ok: true, license: licensePublic(license) });
     }
@@ -1867,12 +2073,14 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
     }
     const { scriptId, key, hwid, nonce } = body;
+    // A blank key is legitimate for Free for All scripts; the server decides.
+    const keyOk = key === "" || (typeof key === "string" && /^osk_[\da-f]{64}$/i.test(key));
     if (
       typeof scriptId !== "string" || !/^scr_[\da-f]{24}$/i.test(scriptId) ||
-      typeof key !== "string" || !/^osk_[\da-f]{64}$/i.test(key) ||
-      typeof hwid !== "string" || hwid.trim().length < 8 || hwid.trim().length > 256 ||
+      !keyOk ||
+      typeof hwid !== "string" || hwid.trim().length > 256 ||
       typeof nonce !== "string" || !/^[\da-z]{16,64}$/i.test(nonce)
-    ) return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
+    ) return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST", code: "BAD_REQUEST" });
 
     const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
     saveState();
@@ -1889,9 +2097,33 @@ const server = createServer(async (req, res) => {
         ok: false,
         valid: false,
         error: verdict.error,
+        code: verdict.code ?? verdict.error,
         ...(verdict.retryAfter ? { retryAfter: verdict.retryAfter } : {}),
+        ...(verdict.banReason ? { banReason: verdict.banReason } : {}),
+        ...(verdict.banExpireAt ? { banExpireAt: verdict.banExpireAt } : {}),
       });
     }
+
+    // Free for All: valid without a key, nothing is bound or metered.
+    if (verdict.free) {
+      return json(res, 200, {
+        ok: true,
+        valid: true,
+        free: true,
+        scriptId,
+        nonce,
+        runtime: {
+          premium: false,
+          note: "",
+          scriptName: verdict.script?.name ?? "",
+          folderName: verdict.folder?.name ?? "",
+          secondsLeft: null,
+          totalExecutions: 0,
+          firstActivatedAt: null,
+        },
+      });
+    }
+
     const token = issueLicenseSession(verdict.license);
     saveState();
     if (verdict.folder) {
@@ -1948,30 +2180,39 @@ const server = createServer(async (req, res) => {
       return json(res, 400, { ok: false, error: "BAD_REQUEST" });
     }
 
+    const target = state.scripts[scriptId];
+
     let allowed = false;
     if (typeof token === "string" && /^lst_[\da-f]{64}$/.test(token)) {
       const session = state.licenseSessions[token];
+      const licence = session ? state.licenseKeys[session.licenseId] : null;
       allowed = Boolean(
         session && session.scriptId === scriptId && now() <= session.expires &&
-        state.licenseKeys[session.licenseId] && !state.licenseKeys[session.licenseId].revokedAt,
+        licence && !licence.revokedAt && !activeLicenseBan(licence),
       );
     } else if (
       typeof key === "string" && typeof hwid === "string" && typeof nonce === "string" &&
-      /^osk_[\da-f]{64}$/i.test(key) && hwid.trim().length >= 8 && /^[\da-z]{16,64}$/i.test(nonce)
+      (key === "" || /^osk_[\da-f]{64}$/i.test(key)) &&
+      hwid.trim().length >= 8 && /^[\da-z]{16,64}$/i.test(nonce)
     ) {
       const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
       saveState();
       allowed = verdict.ok;
-      if (!verdict.ok && verdict.retryAfter) res.setHeader("retry-after", String(verdict.retryAfter));
       if (!verdict.ok) {
+        if (verdict.retryAfter) res.setHeader("retry-after", String(verdict.retryAfter));
         return json(res, verdict.status, {
           ok: false,
           error: verdict.error,
+          code: verdict.code ?? verdict.error,
           ...(verdict.retryAfter ? { retryAfter: verdict.retryAfter } : {}),
+          ...(verdict.banReason ? { banReason: verdict.banReason } : {}),
         });
       }
+    } else if (target?.ffa) {
+      // Free for All: an anonymous caller may download the latest release.
+      allowed = true;
     }
-    if (!allowed) return json(res, 403, { ok: false, error: "LICENSE_INVALID" });
+    if (!allowed) return json(res, 403, { ok: false, error: "LICENSE_INVALID", code: "KEY_MISSING" });
 
     const release = Object.values(state.releases)
       .filter((entry) => entry.scriptId === scriptId)
@@ -2060,6 +2301,44 @@ const server = createServer(async (req, res) => {
       resetCooldownDays: folder?.resetCooldownDays ?? 7,
       resetAvailableIn,
     });
+  }
+
+  if (req.method === "POST" && req.url === "/api/key/unban") {
+    const retryAfter = licenseVerifyRetryAfter(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, error: "RATE_LIMITED", retryAfter });
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(await readBody(req, AUTH_BODY_LIMIT));
+    } catch {
+      return json(res, 400, { ok: false, error: "BAD_JSON" });
+    }
+    const { key, token } = parsed ?? {};
+    if (
+      typeof key !== "string" || !/^osk_[\da-f]{64}$/i.test(key) ||
+      typeof token !== "string" || !/^[\da-f]{32,64}$/i.test(token)
+    ) return json(res, 400, { ok: false, error: "BAD_REQUEST" });
+
+    const licenseId = state.licenseKeyIndex[licenseKeyDigest(key)];
+    const license = licenseId ? state.licenseKeys[licenseId] : null;
+    const keyMatches = Boolean(license && digestsEqual(license.keyHash, licenseKeyDigest(key)));
+    // Same answer for "no such key" and "wrong token" so this is not an oracle.
+    if (!license || !keyMatches || !license.unbanToken || !digestsEqual(
+      createHmac("sha256", state.licenseHwidHashKey).update(String(license.unbanToken)).digest("hex"),
+      createHmac("sha256", state.licenseHwidHashKey).update(String(token)).digest("hex"),
+    )) return json(res, 401, { ok: false, error: "INVALID_UNBAN_TOKEN" });
+
+    license.bannedAt = null;
+    license.banReason = "";
+    license.banExpireAt = null;
+    license.unbanToken = null;
+    if (license.hwidHash && state.deviceBans[license.hwidHash]?.licenseId === license.licenseId) {
+      delete state.deviceBans[license.hwidHash];
+    }
+    saveState();
+    return json(res, 200, { ok: true, note: license.label || "" });
   }
 
   if (req.method === "POST" && req.url === "/api/key/reset-hwid") {
@@ -2308,6 +2587,27 @@ const server = createServer(async (req, res) => {
         },
       },
     });
+  }
+
+  /* Stable loader URL. Users copy one loadstring line and never change it. */
+  let loaderPath = "";
+  try { loaderPath = new URL(req.url, "http://localhost").pathname; } catch { loaderPath = ""; }
+  const loaderMatch = /^\/files\/(scr_[\da-f]{24})\.lua$/i.exec(loaderPath);
+  if (loaderMatch && (req.method === "GET" || req.method === "HEAD")) {
+    const retryAfter = licenseVerifyRetryAfter(clientIp(req));
+    if (retryAfter > 0) {
+      res.setHeader("retry-after", String(retryAfter));
+      return json(res, 429, { ok: false, error: "RATE_LIMITED", retryAfter });
+    }
+    const target = state.scripts[loaderMatch[1].toLowerCase()];
+    if (!target || !target.active) return json(res, 404, { ok: false, error: "SCRIPT_NOT_FOUND" });
+    const body = buildLoaderSource(target.scriptId, publicOrigin(req));
+    res.writeHead(200, {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    });
+    return res.end(req.method === "HEAD" ? undefined : body);
   }
 
   if (req.url.startsWith("/api/")) return json(res, 404, { ok: false, error: "NOT_FOUND" });

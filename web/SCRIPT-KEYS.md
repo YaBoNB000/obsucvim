@@ -200,6 +200,48 @@ print("License accepted")
 - 导出：`GET /api/auth/licenses/export?folderId=` 返回 text/csv 附件
 - 验证：Key 现在按**文件夹**判定，同一文件夹内所有脚本共用一把 Key，跨文件夹无效
 
+### 脚本托管（对齐 Luarmor 的核心能力）
+
+**稳定 loader URL**
+
+```
+https://obsucvim.l2.ink/files/<scriptId>.lua
+```
+
+- 地址**永远不变**：重新发布只换服务端内容，用户不用改 loadstring
+- 返回的是一个 bootstrap，里面只嵌 `scriptId` 与站点地址，不含任何密钥
+- 用户只需一行：
+
+```lua
+loadstring(game:HttpGet("https://obsucvim.l2.ink/files/<scriptId>.lua"))()
+```
+
+- 未知或已停用的脚本返回 404；该端点按 IP 限流
+
+**免卡密模式（FFA）**
+
+`POST /api/auth/scripts/update` → `{ "scriptId": "scr_...", "ffa": true }`
+
+- 开启后 `validate` 允许空 key，返回 `{ valid: true, free: true }`
+- `runtime.premium = false`，脚本内可用 `OBS_IsPremium` 区分免费/付费功能
+- 无 key 调用不绑定设备、不累计执行次数
+
+**封禁（完整版）**
+
+`POST /api/auth/licenses/ban` → `{ licenseId, reason?, banDays? | banExpireAt? }`
+
+- 不带时间 = 永久封禁；带 `banDays`（1–3650）或 `banExpireAt` = 到期自动解除
+- 同时把该卡密当前绑定的设备写入设备黑名单，**换一把新卡密在同一台机器上同样被拒**
+- 返回 `unbanToken`，用户可凭它自助解封
+- `POST /api/auth/licenses/unban`（拥有者）或 `POST /api/key/unban`（`{ key, token }`，公开）
+- 封禁会立刻让该卡密已签发的会话令牌失效
+
+**分页与筛选**
+
+`GET /api/auth/licenses?folderId=&from=&until=&search=&status=`
+
+返回 `{ licenses, total, from, until }`；`status` 支持 `active` / `expired` / `revoked` / `banned`；`search` 匹配备注与卡密 ID。
+
 ### P2 接口
 
 **Key Check API（无需登录，凭卡密本身鉴权）**
@@ -231,6 +273,16 @@ print("License accepted")
 | `OBS_SecondsLeft` | 剩余秒数，永久卡密为 `math.huge` |
 | `OBS_TotalExecutions` | 该卡密累计成功验证次数 |
 
+**Key 缺失钩子**：guard 发现 `getgenv().key` 不存在时，会先调用 `getgenv().obsucvim_on_missing_key`（如果宿主提供了），再重新读取 `key`。这样脚本作者可以做"输入卡密"的 GUI，而不是让用户直接看到报错：
+
+```lua
+getgenv().obsucvim_on_missing_key = function()
+    getgenv().key = showKeyPrompt()   -- 你自己实现的输入框
+end
+```
+
+没有提供钩子、且脚本不是 FFA 时，才会报 `set getgenv().key before running this script`。
+
 这些变量由客户端接收，**可被 hook 篡改**，只适合做 UI 分层或提示，不要用于安全判断。
 
 已完成：
@@ -245,6 +297,10 @@ print("License accepted")
 | ✅ | 项目文件夹 | 已完成：Key 属于文件夹，一个 Key 解锁文件夹内所有脚本 |
 | ✅ | 批量生成 Key + CSV 导出 | 已完成：单次最多 100 个；CSV 只含元数据，永远不含明文 Key |
 | ✅ | 执行日志 / 告警 Webhook | 已完成：仅接受 https 的 Discord webhook |
+| ✅ | 稳定 loader URL | 已完成：`GET /files/<scriptId>.lua`，地址永不变 |
+| ✅ | 免卡密模式（FFA） | 已完成：脚本级开关，keyless 可运行 |
+| ✅ | 封禁体系 | 已完成：永久/临时封禁 + 设备黑名单 + 解封 token |
+| ✅ | 卡密分页 / 搜索 | 已完成：from/until/search/status |
 | ✅ | 用户自助页 | 已完成：`#key` 公开页，查状态 + 自助重置设备 |
 | ✅ | 运行时变量 | 已完成：guard 注入 `OBS_*` 变量 |
 | ✅ | Key Check API | 已完成：`POST /api/key/status` |

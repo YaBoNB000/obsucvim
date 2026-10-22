@@ -26,6 +26,13 @@ The bundle includes Node.js 22.22.3 x64, the Rust/WASI engine, the single-file U
 
 Extract, then double-click `Start-Obsucvim.bat`. It shows a menu (local only / network / 163 mail / self-check / update / open folders) and accepts unattended flags: `/local`, `/public`, `/smtp`, `/check`, `/update`, `/open`, plus an optional port such as `/local 9090`. `Start-Obsucvim.cmd` forwards to the same launcher; `Start-Obsucvim.ps1` only adds firewall rules.
 
+## Hosting (Luarmor-style)
+
+- Every script gets a stable loader URL, `https://<your-domain>/files/<scriptId>.lua`. Users paste one `loadstring(game:HttpGet("..."))()` line and never change it; re-publishing swaps the content behind the same URL.
+- Free for All can be enabled per script; keyless runs report `premium = false` so the script can split free and paid features.
+- Licences support permanent and temporary bans. A ban also blocks the device that used the key, so a new key on the same machine is refused, and it returns an unban token the user can redeem.
+- Licence lists are paginated with search and status filters.
+
 ## Upgrading
 
 Run `Update-Obsucvim.ps1 -Sha256 "<hash>"` inside the install directory (or `runtime\node.exe tools\self-update.mjs --dir . --url <zip> --sha256 <hash>`). It verifies the zip hash and the internal manifest, backs up `data/`, replaces program files only, and leaves accounts/keys/releases untouched. See `README-UPDATE.md`.

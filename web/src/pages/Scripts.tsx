@@ -2,6 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Button, GlassCard, Icon, Pill, Stat } from "../components/ui";
 import { useI18n, type TKey } from "../lib/i18n";
 import {
+  banLicense,
+  unbanLicense,
+  updateScript,
+  loadstringSnippet,
   createFolder,
   createScript,
   exportLicensesCsv,
@@ -35,6 +39,7 @@ const ERROR_KEY: Record<ApiError, TKey> = {
   folder_not_found: "scripts.errFolderNotFound",
   bad_count: "scripts.errBadCount",
   bad_webhook: "scripts.errBadWebhook",
+  bad_ban_days: "scripts.errBadBanDays",
   bad_source: "scripts.errBadSource",
   quota: "scripts.errQuota",
   engine_busy: "scripts.errEngineBusy",
@@ -77,6 +82,14 @@ export function Scripts() {
   const [creating, setCreating] = useState(false);
 
   const [licenses, setLicenses] = useState<LicenseRecord[]>([]);
+  const [licenseTotal, setLicenseTotal] = useState(0);
+  const [pageFrom, setPageFrom] = useState(0);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [banTarget, setBanTarget] = useState<LicenseRecord | null>(null);
+  const [banReason, setBanReason] = useState("");
+  const [banDays, setBanDays] = useState("");
+  const [unbanToken, setUnbanToken] = useState<string | null>(null);
   const [releases, setReleases] = useState<ReleaseRecord[]>([]);
   const [issuedKey, setIssuedKey] = useState<{ key: string; label: string } | null>(null);
   const [label, setLabel] = useState("");
@@ -117,11 +130,30 @@ export function Scripts() {
     setLoading(false);
   }, []);
 
-  const refreshDetail = useCallback(async (scriptId: string) => {
-    const [lic, rel] = await Promise.all([listLicenses(scriptId), listReleases(scriptId)]);
-    if (lic.ok && lic.data) setLicenses(lic.data);
+  const PAGE_SIZE = 20;
+
+  const refreshDetail = useCallback(async (scriptId: string, opts?: { from?: number; search?: string; status?: string }) => {
+    const script = projects.find((p) => p.scriptId === scriptId);
+    const rel = await listReleases(scriptId);
     if (rel.ok && rel.data) setReleases(rel.data);
-  }, []);
+    if (!script?.folderId) {
+      setLicenses([]);
+      setLicenseTotal(0);
+      return;
+    }
+    const from = opts?.from ?? 0;
+    const lic = await listLicenses(script.folderId, {
+      from,
+      until: from + PAGE_SIZE,
+      search: opts?.search ?? "",
+      status: opts?.status ?? "",
+    });
+    if (lic.ok && lic.data) {
+      setLicenses(lic.data.licenses);
+      setLicenseTotal(lic.data.total);
+      setPageFrom(lic.data.from);
+    }
+  }, [projects]);
 
   useEffect(() => {
     void refreshFolders();
@@ -210,8 +242,8 @@ export function Scripts() {
       return;
     }
     setBatchKeys(res.data.map((entry) => entry.licenseKey));
-    setLicenses((prev) => [...res.data!.map((entry) => entry.license), ...prev]);
     setLabel("");
+    applyFilter(0);
   };
 
   const handleIssue = async () => {
@@ -231,8 +263,8 @@ export function Scripts() {
       return;
     }
     setIssuedKey({ key: res.data.licenseKey, label: res.data.license.label });
-    setLicenses((prev) => [res.data!.license, ...prev]);
     setLabel("");
+    applyFilter(0);
   };
 
   const handleRevoke = async (licenseId: string) => {
@@ -301,6 +333,55 @@ export function Scripts() {
     } catch {
       setError("scripts.errBadSource");
     }
+  };
+
+  const handleBan = async () => {
+    if (!banTarget || busy) return;
+    setBusy(true);
+    setError(null);
+    const days = banDays.trim() ? Number(banDays) : null;
+    const res = await banLicense(banTarget.licenseId, {
+      reason: banReason.trim(),
+      banDays: days && Number.isInteger(days) ? days : null,
+    });
+    setBusy(false);
+    if (!res.ok || !res.data) {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+      return;
+    }
+    setUnbanToken(res.data.unbanToken);
+    setLicenses((prev) => prev.map((l) => (l.licenseId === res.data!.license.licenseId ? res.data!.license : l)));
+    setBanTarget(null);
+    setBanReason("");
+    setBanDays("");
+  };
+
+  const handleUnban = async (licenseId: string) => {
+    setBusy(true);
+    const res = await unbanLicense(licenseId);
+    setBusy(false);
+    if (res.ok && res.data) {
+      setLicenses((prev) => prev.map((l) => (l.licenseId === licenseId ? res.data! : l)));
+    } else {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+    }
+  };
+
+  const toggleFfa = async (next: boolean) => {
+    if (!selected || busy) return;
+    setBusy(true);
+    const res = await updateScript(selected, { ffa: next });
+    setBusy(false);
+    if (res.ok && res.data) {
+      setProjects((prev) => prev.map((p) => (p.scriptId === selected ? { ...p, ...res.data! } : p)));
+    } else {
+      setError(ERROR_KEY[res.error ?? "unknown"]);
+    }
+  };
+
+  const applyFilter = (nextFrom: number, nextSearch = search, nextStatus = statusFilter) => {
+    if (!selected) return;
+    void refreshDetail(selected, { from: nextFrom, search: nextSearch, status: nextStatus });
   };
 
   const copyKey = async (text: string) => {
@@ -523,10 +604,43 @@ export function Scripts() {
                 </div>
               </div>
               <div className="mt-4 grid grid-cols-3 gap-2.5">
-                <Stat label={t("scripts.licenses")} value={String(licenses.length)} />
+                <Stat label={t("scripts.licenses")} value={String(licenseTotal || licenses.length)} />
                 <Stat label={t("scripts.active")} value={String(activeLicenses)} />
                 <Stat label={t("scripts.releases")} value={String(releases.length)} />
               </div>
+            </GlassCard>
+
+            <GlassCard className="p-5">
+              <div className="mb-2 flex items-center gap-2.5">
+                <Icon name="code" className="h-4 w-4 text-aqua-300" />
+                <h3 className="text-[13px] font-semibold text-slate-100">{t("scripts.loaderUrl")}</h3>
+                <span className="ml-auto text-[10.5px] text-slate-500">{t("scripts.loaderHint")}</span>
+              </div>
+              <div className="flex items-start gap-2">
+                <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre rounded-xl border border-white/[0.07] bg-black/40 px-3 py-2.5 font-mono text-[11px] text-aqua-100">
+                  {loadstringSnippet(current.scriptId)}
+                </code>
+                <Button
+                  variant="outline"
+                  className="shrink-0 px-2.5 py-2"
+                  onClick={() => copyKey(loadstringSnippet(current.scriptId))}
+                >
+                  <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <label className="mt-3 flex items-start gap-2.5 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2.5">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-3.5 w-3.5 accent-[#22e2d5]"
+                  checked={Boolean(current.ffa)}
+                  disabled={busy}
+                  onChange={(e) => void toggleFfa(e.target.checked)}
+                />
+                <span className="min-w-0">
+                  <span className="block text-[12px] text-slate-200">{t("scripts.ffa")}</span>
+                  <span className="mt-0.5 block text-[10.5px] leading-relaxed text-slate-500">{t("scripts.ffaHint")}</span>
+                </span>
+              </label>
             </GlassCard>
 
             <div className="glass-soft inline-flex w-fit items-center gap-1 rounded-xl border border-white/[0.08] p-1">
@@ -677,10 +791,36 @@ export function Scripts() {
                 </GlassCard>
 
                 <GlassCard className="overflow-hidden p-0">
-                  <div className="flex items-center gap-2.5 border-b border-white/[0.06] px-5 py-3.5">
+                  <div className="flex flex-wrap items-center gap-2.5 border-b border-white/[0.06] px-5 py-3">
                     <Icon name="shield" className="h-4 w-4 text-aqua-300" />
                     <h3 className="text-[13px] font-semibold text-slate-100">{t("scripts.licenses")}</h3>
-                    <span className="ml-auto font-mono text-[11px] text-slate-500">{licenses.length}</span>
+                    <span className="font-mono text-[11px] text-slate-500">{licenseTotal}</span>
+                    <div className="ml-auto flex flex-wrap items-center gap-2">
+                      <input
+                        className={INPUT + " w-40 py-1.5 text-[11.5px]"}
+                        value={search}
+                        onChange={(e) => setSearch(e.target.value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") applyFilter(0); }}
+                        placeholder={t("scripts.searchPh")}
+                      />
+                      <select
+                        className={INPUT + " w-auto py-1.5 text-[11.5px]"}
+                        value={statusFilter}
+                        onChange={(e) => {
+                          setStatusFilter(e.target.value);
+                          applyFilter(0, search, e.target.value);
+                        }}
+                      >
+                        <option value="">{t("scripts.filterAll")}</option>
+                        <option value="active">{t("scripts.stateActive")}</option>
+                        <option value="expired">{t("scripts.stateExpired")}</option>
+                        <option value="banned">{t("scripts.stateBanned")}</option>
+                        <option value="revoked">{t("scripts.stateRevoked")}</option>
+                      </select>
+                      <Button variant="outline" className="px-2.5 py-1.5 text-[11.5px]" onClick={() => applyFilter(0)}>
+                        {t("scripts.check")}
+                      </Button>
+                    </div>
                   </div>
                   {licenses.length === 0 ? (
                     <p className="px-5 py-8 text-center text-[12px] text-slate-500">{t("scripts.noLicenses")}</p>
@@ -699,18 +839,25 @@ export function Scripts() {
                         <tbody>
                           {licenses.map((l) => {
                             const expired = l.expiresAt !== null && l.expiresAt <= Date.now();
-                            const state = l.revokedAt
-                              ? { key: "scripts.stateRevoked" as TKey, tone: "text-rose-300" }
-                              : expired
-                                ? { key: "scripts.stateExpired" as TKey, tone: "text-amber-300" }
-                                : { key: "scripts.stateActive" as TKey, tone: "text-emerald-300" };
+                            const state = l.banned
+                              ? { key: "scripts.stateBanned" as TKey, tone: "text-rose-400" }
+                              : l.revokedAt
+                                ? { key: "scripts.stateRevoked" as TKey, tone: "text-rose-300" }
+                                : expired
+                                  ? { key: "scripts.stateExpired" as TKey, tone: "text-amber-300" }
+                                  : { key: "scripts.stateActive" as TKey, tone: "text-emerald-300" };
                             return (
                               <tr key={l.licenseId} className="border-t border-white/[0.05]">
                                 <td className="px-5 py-2.5">
                                   <span className="block truncate text-slate-200">{l.label || "—"}</span>
                                   <span className="block font-mono text-[10px] text-slate-500">{l.licenseId}</span>
                                 </td>
-                                <td className={"px-3 py-2.5 " + state.tone}>{t(state.key)}</td>
+                                <td className={"px-3 py-2.5 " + state.tone}>
+                                  {t(state.key)}
+                                  {l.banned && l.banReason ? (
+                                    <span className="mt-0.5 block truncate text-[10px] text-rose-300/70">{l.banReason}</span>
+                                  ) : null}
+                                </td>
                                 <td className="px-3 py-2.5 text-slate-400">
                                   {l.hwidBound ? t("scripts.bound") : t("scripts.unbound")}
                                 </td>
@@ -724,6 +871,23 @@ export function Scripts() {
                                     >
                                       {t("scripts.resetDevice")}
                                     </button>
+                                    {l.banned ? (
+                                      <button
+                                        disabled={busy}
+                                        onClick={() => handleUnban(l.licenseId)}
+                                        className="cursor-pointer rounded-lg border border-white/10 px-2 py-1 text-[10.5px] text-slate-300 transition hover:border-emerald-300/40 hover:text-emerald-200 disabled:cursor-not-allowed disabled:opacity-40"
+                                      >
+                                        {t("scripts.unban")}
+                                      </button>
+                                    ) : (
+                                      <button
+                                        disabled={busy || Boolean(l.revokedAt)}
+                                        onClick={() => { setBanTarget(l); setBanReason(""); setBanDays(""); }}
+                                        className="cursor-pointer rounded-lg border border-white/10 px-2 py-1 text-[10.5px] text-slate-300 transition hover:border-rose-400/40 hover:text-rose-300 disabled:cursor-not-allowed disabled:opacity-40"
+                                      >
+                                        {t("scripts.ban")}
+                                      </button>
+                                    )}
                                     <button
                                       disabled={busy || Boolean(l.revokedAt)}
                                       onClick={() => handleRevoke(l.licenseId)}
@@ -740,7 +904,88 @@ export function Scripts() {
                       </table>
                     </div>
                   )}
+                  {licenseTotal > PAGE_SIZE && (
+                    <div className="flex items-center gap-3 border-t border-white/[0.06] px-5 py-2.5 text-[11px] text-slate-500">
+                      <span>
+                        {t("scripts.pageInfo", {
+                          a: pageFrom + 1,
+                          b: Math.min(pageFrom + licenses.length, licenseTotal),
+                          t: licenseTotal,
+                        })}
+                      </span>
+                      <div className="ml-auto flex gap-2">
+                        <Button
+                          variant="outline"
+                          className="px-2.5 py-1 text-[11px]"
+                          disabled={pageFrom === 0}
+                          onClick={() => applyFilter(Math.max(0, pageFrom - PAGE_SIZE))}
+                        >
+                          {t("scripts.prev")}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          className="px-2.5 py-1 text-[11px]"
+                          disabled={pageFrom + PAGE_SIZE >= licenseTotal}
+                          onClick={() => applyFilter(pageFrom + PAGE_SIZE)}
+                        >
+                          {t("scripts.next")}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </GlassCard>
+
+                {unbanToken && (
+                  <GlassCard className="border-emerald-300/25 bg-emerald-400/[0.06] p-4">
+                    <p className="text-[11.5px] font-semibold text-emerald-100">{t("scripts.banDone")}</p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <code className="min-w-0 flex-1 truncate rounded-lg bg-black/40 px-2.5 py-2 font-mono text-[11px] text-emerald-100">
+                        {unbanToken}
+                      </code>
+                      <Button variant="outline" className="px-2.5 py-1.5" onClick={() => copyKey(unbanToken)}>
+                        <Icon name={copied ? "check" : "copy"} className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" className="px-2 py-1.5" onClick={() => setUnbanToken(null)}>
+                        {t("common.close")}
+                      </Button>
+                    </div>
+                  </GlassCard>
+                )}
+
+                {banTarget && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+                    <GlassCard className="w-full max-w-[420px] p-5">
+                      <h3 className="text-[14px] font-semibold text-slate-100">{t("scripts.banTitle")}</h3>
+                      <p className="mt-1 text-[11px] text-slate-500">{banTarget.label || banTarget.licenseId}</p>
+                      <div className="mt-3 grid gap-2.5">
+                        <input
+                          className={INPUT}
+                          value={banReason}
+                          onChange={(e) => setBanReason(e.target.value)}
+                          placeholder={t("scripts.banReasonPh")}
+                          maxLength={200}
+                        />
+                        <input
+                          className={INPUT}
+                          type="number"
+                          min={1}
+                          max={3650}
+                          value={banDays}
+                          onChange={(e) => setBanDays(e.target.value)}
+                          placeholder={t("scripts.banDaysPh")}
+                        />
+                        <div className="flex justify-end gap-2">
+                          <Button variant="ghost" className="px-3 py-2" onClick={() => setBanTarget(null)}>
+                            {t("common.cancel")}
+                          </Button>
+                          <Button className="px-3 py-2" disabled={busy} onClick={handleBan}>
+                            {busy ? t("scripts.working") : t("scripts.banConfirm")}
+                          </Button>
+                        </div>
+                      </div>
+                    </GlassCard>
+                  </div>
+                )}
               </>
             ) : (
               <>
