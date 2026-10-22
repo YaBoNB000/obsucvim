@@ -271,6 +271,36 @@ async function main() {
       check("batch publish stored the release", (rel.data.releases || []).some((r) => r.version === "v9"));
     }
 
+    /* ---------------- key hygiene on the wire ---------------- */
+
+    const padded = await api("POST", "/api/licenses/validate", {
+      scriptId, key: `  ${licenseKey}\n`, hwid: "  hwid-test-0123456789  ", nonce: "d".repeat(32),
+    });
+    check("server trims padded keys and hwids", padded.data?.valid === true,
+      JSON.stringify({ valid: padded.data?.valid, code: padded.data?.code }));
+
+    const upper = await api("POST", "/api/licenses/validate", {
+      scriptId, key: licenseKey.toUpperCase(), hwid: "hwid-test-0123456789", nonce: "e".repeat(32),
+    });
+    check("server accepts uppercase hex keys", upper.data?.valid === true,
+      JSON.stringify({ valid: upper.data?.valid, code: upper.data?.code }));
+
+    const shortKey = await api("POST", "/api/licenses/validate", {
+      scriptId, key: "BAfjuLxndwTvMBNiCyqMsXMaTcOqXpcr", hwid: "hwid-test-0123456789", nonce: "f".repeat(32),
+    });
+    check("wrong-shaped key gets KEY_INVALID, not BAD_REQUEST",
+      shortKey.status === 400 && shortKey.data?.code === "KEY_INVALID", shortKey.data?.code);
+
+    const badScript = await api("POST", "/api/licenses/validate", {
+      scriptId: "nope", key: licenseKey, hwid: "hwid-test-0123456789", nonce: "a".repeat(32),
+    });
+    check("bad script id gets SCRIPT_ID_INVALID", badScript.data?.code === "SCRIPT_ID_INVALID");
+
+    const badNonce = await api("POST", "/api/licenses/validate", {
+      scriptId, key: licenseKey, hwid: "hwid-test-0123456789", nonce: "!!",
+    });
+    check("bad nonce gets NONCE_INVALID", badNonce.data?.code === "NONCE_INVALID");
+
     /* ---------------- Phase 2: matrix stats / batch ops / audit ---------------- */
 
     const listed = await api("GET", "/api/auth/scripts");

@@ -80,6 +80,32 @@ if type(key) ~= "string" then
 	end
 end
 if type(key) ~= "string" then key = "" end
+-- Copy/paste from the dashboard often brings spaces, tabs or newlines along,
+-- and executors happily keep them. Keys never contain whitespace.
+key = (string.gsub(key, "%s+", ""))
+
+-- Catch a wrong-shaped key here instead of sending it and getting a generic
+-- server error: users paste plain 32-character keys, licence ids, or the whole
+-- `getgenv().key = "..."` line surprisingly often.
+local function keyProblem(value)
+	if value == "" then return nil end
+	local digits = string.match(value, "^[Oo][Ss][Kk]_(%x+)$")
+	if not digits then
+		if string.match(value, "^lic_") then
+			return "that looks like a licence id (lic_...), not a key (osk_...)"
+		end
+		return "a key starts with osk_ followed by 64 hex characters, but this one does not"
+	end
+	if #digits ~= 64 then
+		return "a key has 64 hex characters after osk_, but this one has " .. tostring(#digits)
+	end
+	return nil
+end
+local keyIssue = keyProblem(key)
+if keyIssue then
+	fail("key format looks wrong: " .. keyIssue)
+end
+if key ~= "" then key = string.lower(key) end
 
 local hwidFn = env.gethwid or rawget(_G, "gethwid")
 if type(hwidFn) ~= "function" and type(env.syn) == "table" then hwidFn = env.syn.get_hwid end
@@ -114,6 +140,18 @@ if not verdict or verdict.valid ~= true then
 		fail("licence expired")
 	elseif code == "KEY_INCORRECT" or code == "KEY_REVOKED" then
 		fail("licence invalid or revoked")
+	elseif code == "KEY_INVALID" then
+		fail("key format looks wrong: expected osk_ followed by 64 hex characters")
+	elseif code == "KEY_LOCKED" then
+		fail("too many failed attempts from this address, retry in a few minutes")
+	elseif code == "SCRIPT_ID_INVALID" or code == "SCRIPT_ID_INCORRECT" or code == "SCRIPT_NOT_FOUND" then
+		fail("this loader points at a script that no longer exists")
+	elseif code == "HWID_INVALID" then
+		fail("this executor returned an unusable HWID (empty or longer than 256 characters)")
+	elseif code == "NONCE_INVALID" then
+		fail("internal: the loader sent a malformed nonce, please re-run")
+	elseif code == "RATE_LIMITED" then
+		fail("too many licence checks, retry in a minute")
 	else
 		fail(code or "licence check failed")
 	end
@@ -131,7 +169,16 @@ else
 	}))
 end
 if type(release) ~= "table" or type(release.code) ~= "string" or #release.code < 16 then
-	fail((release and (release.code or release.error)) or "release unavailable")
+	local code = release and (release.error or release.code)
+	if code == "RELEASE_NOT_FOUND" then
+		fail("this script has no published version yet")
+	elseif code == "RELEASE_UNREADABLE" then
+		fail("the published file is missing on the server, ask the owner to re-publish")
+	elseif code == "LICENSE_INVALID" or code == "INVALID_SESSION" then
+		fail("licence session expired, run the script again")
+	else
+		fail(code or "release unavailable")
+	end
 end
 
 local function notify(message)

@@ -24,6 +24,13 @@ do
 		end
 	end
 	if type(licenseKey) ~= "string" then licenseKey = "" end
+	-- 复制来的卡密常带空格/换行；卡密本身不含空白字符，统一小写后发给服务端。
+	if licenseKey ~= "" then
+		licenseKey = string.lower((string.gsub(licenseKey, "%s+", "")))
+		if not string.match(licenseKey, "^osk_%x+$") then
+			error("[Obsucvim] key format is wrong: expected osk_ followed by 64 hex characters", 0)
+		end
+	end
 
 	local hwid = ""
 	local hwidFn = env.gethwid or _G.gethwid
@@ -103,8 +110,16 @@ do
 			error("[Obsucvim] too many attempts, retry shortly", 0)
 		elseif code == "NONCE_REPLAY" then
 			error("[Obsucvim] license response replayed", 0)
-		elseif code == "SCRIPT_NOT_FOUND" then
+		elseif code == "SCRIPT_NOT_FOUND" or code == "SCRIPT_ID_INCORRECT" or code == "SCRIPT_ID_INVALID" then
 			error("[Obsucvim] script is not published", 0)
+		elseif code == "KEY_INVALID" then
+			error("[Obsucvim] key format is wrong: expected osk_ followed by 64 hex characters", 0)
+		elseif code == "HWID_INVALID" then
+			error("[Obsucvim] this executor returned an unusable HWID", 0)
+		elseif code == "KEY_LOCKED" then
+			error("[Obsucvim] too many failed attempts, retry shortly", 0)
+		elseif code == "BAD_REQUEST" then
+			error("[Obsucvim] server rejected the request (update the loader or check your key)", 0)
 		end
 		error("[Obsucvim] license invalid or revoked", 0)
 	end

@@ -27,6 +27,8 @@ except ImportError:
 
 TOOLS = pathlib.Path(__file__).resolve().parent
 SCRIPT_ID = "scr_cacdb4e8aa05e2867fa40560"
+GOOD_KEY = "osk_" + "a" * 64
+ALT_KEY = "osk_" + "b" * 64
 BASE = "https://obsucvim.l2.ink"
 
 lua = lupa.LuaRuntime(unpack_returned_tuples=True)
@@ -177,7 +179,7 @@ FETCH = {"version": "v7", "code": "return 'ARTIFACT-RAN-1234567890'"}
 # 1-2. executor-style userdata `game`: the case that used to fail outright
 use_userdata_game()
 set_genv({
-    "key": "OBS-TEST-KEY",
+    "key": GOOD_KEY,
     "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
 })
 set_responses({"validate": json.dumps(VALID), "fetch": json.dumps(FETCH)})
@@ -213,7 +215,7 @@ check("missing key tells the user what to set", (not ok) and "set getgenv().key"
 
 # 7. the on_missing_key hook can supply a key
 set_genv({
-    "obsucvim_on_missing_key": lua.eval("function() getgenv().key = 'HOOK-KEY' end"),
+    "obsucvim_on_missing_key": lua.eval(f"function() getgenv().key = '{ALT_KEY}' end"),
 })
 set_responses({
     "validate": json.dumps(VALID),
@@ -225,7 +227,7 @@ check("obsucvim_on_missing_key can supply the key", ok and "HOOKED-1234567890" i
 # 8. injected guard accepts a userdata game too
 guard_endpoint = BASE + "/api/licenses/validate"
 set_genv({
-    "key": "OBS-TEST-KEY",
+    "key": GOOD_KEY,
     "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
 })
 set_responses({"validate": json.dumps(VALID)})
@@ -255,7 +257,7 @@ check("FFA fetches and runs without a token", ok and "FFA-RAN-1234567890" in out
 # 11. heartbeat: second check happens, revocation marks the licence invalid
 use_userdata_game()
 set_genv({
-    "key": "OBS-TEST-KEY",
+    "key": GOOD_KEY,
     "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
     "obsucvim_on_heartbeat_fail": lua.eval("function(code) getgenv().HB_CODE = code end"),
 })
@@ -282,7 +284,7 @@ check("heartbeat calls obsucvim_on_heartbeat_fail", hook_code == "KEY_REVOKED", 
 # 12. heartbeat disabled -> exactly one validate call
 use_userdata_game()
 set_genv({
-    "key": "OBS-TEST-KEY",
+    "key": GOOD_KEY,
     "gethwid": lua.eval("function() return 'hwid-abc-123456' end"),
 })
 set_responses({"validate": json.dumps(VALID), "fetch": json.dumps(FETCH)})
@@ -351,6 +353,39 @@ check("library load_script runs the stable loader", result.startswith("true|LIB-
 gets = LAST_GAME.http_gets if LAST_GAME else []
 check("library load_script uses the stable loader URL",
       bool(gets) and gets[-1].endswith(f"/files/{SCRIPT_ID}.lua"), str(gets[-1] if gets else None))
+
+# 20-23. key hygiene: local format check, whitespace trimming, uppercase
+# (the library tests swapped `request` for their own mock; restore the server one)
+g.request = g.http_request
+use_userdata_game()
+set_responses({"validate": json.dumps(VALID), "fetch": json.dumps(FETCH)})
+set_genv({"key": "BAfjuLxndwTvMBNiCyqMsXMaTcOqXpcr"})
+lua.execute("REQ_COUNT = 0")
+ok, out = run(fill(LOADER))
+check("wrong-shaped key is rejected locally", (not ok) and "key format looks wrong" in out and lua.eval("REQ_COUNT") == 0, out)
+
+set_genv({"key": "lic_0123456789abcdef"})
+ok, out = run(fill(LOADER))
+check("licence id pasted as key is explained", (not ok) and "licence id" in out, out)
+
+set_genv({"key": "  " + GOOD_KEY + "\n"})
+ok, out = run(fill(LOADER))
+check("whitespace around the key is trimmed", ok and "ARTIFACT-RAN-1234567890" in out, out)
+validate_req = lua.eval("""
+(function()
+  for i = #LAST_REQUEST, 1, -1 do
+    if string.find(LAST_REQUEST[i], '"key"', 1, true) then return LAST_REQUEST[i] end
+  end
+  return ""
+end)()
+""")
+check("trimmed key is what reaches the server",
+      GOOD_KEY in str(validate_req) and ("\\n" not in str(validate_req)),
+      str(validate_req)[:100])
+
+set_genv({"key": "osk_" + "A" * 64})
+ok, out = run(fill(LOADER))
+check("uppercase hex keys are accepted", ok and "ARTIFACT-RAN-1234567890" in out, out)
 
 failed = [name for name, ok in results if not ok]
 print()

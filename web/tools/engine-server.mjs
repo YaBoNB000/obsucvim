@@ -374,25 +374,65 @@ const DEFAULT_OBFUSCATION_OPTIONS = {
 };
 
 /* Runs the engine on in-memory source. The caller owns quota accounting. */
+/* WASI 引擎偶尔会段错误（rc=139 或直接没有产物），跟输入长度、内容都有关，
+ * 换一个种子重跑几乎总能成功。所以：崩溃自动重试（最多 3 次），
+ * 语法错误之类「跑完了但失败」的不重试，免得把用户的等待时间翻倍。 */
+const ENGINE_ATTEMPTS = 3;
+
+function looksLikeCrash(job) {
+  if (job.timedOut) return false;
+  if (job.codeText) return false;
+  if (job.code === 0) return true;              // 正常退出却没有产物
+  if (job.code === null) return true;            // 被信号杀掉
+  if (job.code < 0) return true;
+  if (job.code >= 128) return true;              // 128+n = 信号
+  // 引擎的语法错误会打印可读信息，崩溃只会留下 runtime 警告
+  return !/error|expected|unexpected|syntax/i.test(job.err || "");
+}
+
 async function obfuscateSource(source, options) {
   if (!trySlot()) return { ok: false, status: 503, error: "ENGINE_BUSY" };
-  const workDir = mkdtempSync(path.join(tmpdir(), `obsucvim-job-${process.pid}-`));
+  const pinnedSeed = Boolean(options && typeof options.seed === "string" && options.seed.trim());
+  let lastDetail = "";
+  let seedNote;
   try {
-    writeFileSync(path.join(workDir, "input.lua"), source, "utf8");
-    const job = await runEngine(buildCliArgs(options), workDir, ENGINE_TIMEOUT_MS);
-    if (job.timedOut) return { ok: false, status: 504, error: "ENGINE_TIMEOUT" };
-    if (job.code !== 0 || !job.codeText) {
-      return {
-        ok: false,
-        status: 500,
-        error: "ENGINE_FAIL",
-        detail: job.err.trim().split("\n").slice(-3).join(" | "),
-      };
+    for (let attempt = 1; attempt <= ENGINE_ATTEMPTS; attempt++) {
+      const attemptOptions = attempt === 1 || !pinnedSeed
+        ? options
+        : { ...options, seed: undefined }; // 固定种子重跑没意义，第二次起换成随机种子
+      const workDir = mkdtempSync(path.join(tmpdir(), `obsucvim-job-${process.pid}-`));
+      try {
+        writeFileSync(path.join(workDir, "input.lua"), source, "utf8");
+        const job = await runEngine(buildCliArgs(attemptOptions), workDir, ENGINE_TIMEOUT_MS);
+        if (job.timedOut) return { ok: false, status: 504, error: "ENGINE_TIMEOUT" };
+        if (job.code === 0 && job.codeText) {
+          return {
+            ok: true,
+            code: job.codeText,
+            attempts: attempt,
+            ...(attempt > 1 && pinnedSeed ? { seedOverridden: true } : {}),
+          };
+        }
+        lastDetail = (job.err || "").trim().split("\n").slice(-3).join(" | ");
+        if (!looksLikeCrash(job)) {
+          return { ok: false, status: 500, error: "ENGINE_FAIL", detail: lastDetail, attempts: attempt };
+        }
+        seedNote = attempt;
+        // 崩溃：换个种子再来一次（默认种子本来就是随机的）
+        if (attempt < ENGINE_ATTEMPTS) await new Promise((r) => setTimeout(r, 120 * attempt));
+      } finally {
+        try { rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
+      }
     }
-    return { ok: true, code: job.codeText };
+    return {
+      ok: false,
+      status: 500,
+      error: "ENGINE_CRASH",
+      detail: `engine produced no output after ${ENGINE_ATTEMPTS} attempts (${lastDetail || "segfault"})`,
+      attempts: seedNote ?? ENGINE_ATTEMPTS,
+    };
   } finally {
     releaseSlot();
-    try { rmSync(workDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
 }
 
@@ -493,6 +533,7 @@ async function runPublishJob(job, { source, version, options, origin }) {
     const started = Date.now();
     const out = await obfuscateSource(guarded, options);
     if (!out.ok) return failJob(job, out.error, out.detail);
+    job.attempts = out.attempts;
 
     const code = out.code;
     const bytes = Buffer.byteLength(code, "utf8");
@@ -512,6 +553,7 @@ async function runPublishJob(job, { source, version, options, origin }) {
       file,
       pipeline: true,
     };
+    if (state.scripts[job.scriptId]) state.scripts[job.scriptId].latestVersion = version;
     saveState();
 
     job.result = {
@@ -665,12 +707,46 @@ function activeDeviceBan(hwidHash) {
 /* Decide whether a license request is acceptable. Failures are counted per
  * client+script so a thief only throttles themselves; legitimate users are not
  * locked out by someone replaying their traffic. */
+/* 客户端传来的 key/hwid 常常带复制时粘上的空格或换行，甚至大写十六进制。
+ * 我们的 key 只会是小写 hex，所以统一 trim + 转小写既安全又不会放宽安全性
+ * （hex 的 16 个符号本来就不区分大小写）。 */
+const LICENSE_KEY_RE = /^osk_[\da-f]{64}$/i;
+const SCRIPT_ID_RE = /^scr_[\da-f]{24}$/i;
+const NONCE_RE = /^[\da-z]{16,64}$/i;
+
+function normalizeLicenseKey(value) {
+  if (typeof value !== "string") return { ok: true, key: "" };
+  const trimmed = value.trim();
+  if (trimmed === "") return { ok: true, key: "" };
+  if (!LICENSE_KEY_RE.test(trimmed)) return { ok: false, key: trimmed, reason: "KEY_INVALID" };
+  return { ok: true, key: trimmed.toLowerCase() };
+}
+
+function normalizeHwid(value) {
+  if (typeof value !== "string") return { ok: true, hwid: "" };
+  const trimmed = value.trim();
+  if (trimmed.length > 256) return { ok: false, hwid: trimmed, reason: "HWID_INVALID" };
+  return { ok: true, hwid: trimmed };
+}
+
 /** 脚本最新版本号，供 runtime.scriptVersion 使用。 */
 function latestReleaseVersion(scriptId) {
-  const releases = Object.values(state.releases).filter((release) => release.scriptId === scriptId);
-  if (releases.length === 0) return null;
-  releases.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0));
-  return releases[0].version;
+  const release = latestReleaseFor(scriptId);
+  return release ? release.version : null;
+}
+
+/* 谁算「最新版本」：优先用发布时记下的指针（同一毫秒内连续发布也不会打乱），
+ * 老数据没有指针时退回按 createdAt 排序，再用版本号做稳定兜底。 */
+function latestReleaseFor(scriptId) {
+  const script = state.scripts[scriptId];
+  if (script?.latestVersion) {
+    const pinned = state.releases[`${scriptId}:${script.latestVersion}`];
+    if (pinned) return pinned;
+  }
+  const releases = Object.values(state.releases)
+    .filter((release) => release.scriptId === scriptId)
+    .sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || String(b.version).localeCompare(String(a.version)));
+  return releases[0] ?? null;
 }
 
 function evaluateLicense({ scriptId, key, hwid, nonce, ip, dryRun = false }) {
@@ -1891,7 +1967,7 @@ const server = createServer(async (req, res) => {
         .filter((script) => script.ownerEmail === owner.email)
         .map(({ scriptId, folderId, name, description, createdAt, active, ffa, silent, heartbeat }) => {
           const releases = Object.values(state.releases).filter((release) => release.scriptId === scriptId);
-          const latest = releases.sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0))[0] ?? null;
+          const latest = latestReleaseFor(scriptId);
           return {
             scriptId, folderId, name, description, createdAt, active,
             ffa: Boolean(ffa), silent: Boolean(silent), heartbeat: Boolean(heartbeat),
@@ -2400,6 +2476,7 @@ const server = createServer(async (req, res) => {
         createdAt: now(),
         file,
       };
+      if (script) script.latestVersion = version;
       saveState();
       const { sha256 } = state.releases[key];
       return json(res, 201, { ok: true, release: { scriptId, version, sha256, size: bytes } });
@@ -2903,15 +2980,25 @@ const server = createServer(async (req, res) => {
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST" });
     }
-    const { scriptId, key, hwid, nonce } = body;
+    const { scriptId, nonce } = body;
+    // 逐项校验并回报具体字段，避免把「卡密格式错」笼统说成 BAD_REQUEST。
+    const bad = (code, message, field) =>
+      json(res, 400, { ok: false, valid: false, error: code, code, message, field });
+    if (typeof scriptId !== "string" || !SCRIPT_ID_RE.test(scriptId)) {
+      return bad("SCRIPT_ID_INVALID", "script id is not a valid scr_ id", "scriptId");
+    }
     // A blank key is legitimate for Free for All scripts; the server decides.
-    const keyOk = key === "" || (typeof key === "string" && /^osk_[\da-f]{64}$/i.test(key));
-    if (
-      typeof scriptId !== "string" || !/^scr_[\da-f]{24}$/i.test(scriptId) ||
-      !keyOk ||
-      typeof hwid !== "string" || hwid.trim().length > 256 ||
-      typeof nonce !== "string" || !/^[\da-z]{16,64}$/i.test(nonce)
-    ) return json(res, 400, { ok: false, valid: false, error: "BAD_REQUEST", code: "BAD_REQUEST" });
+    const keyInfo = normalizeLicenseKey(body.key);
+    if (!keyInfo.ok) {
+      return bad("KEY_INVALID", "key must look like osk_ followed by 64 hex characters", "key");
+    }
+    const hwidInfo = normalizeHwid(body.hwid);
+    if (!hwidInfo.ok) return bad("HWID_INVALID", "hwid is longer than 256 characters", "hwid");
+    if (typeof nonce !== "string" || !NONCE_RE.test(nonce)) {
+      return bad("NONCE_INVALID", "nonce must be 16-64 letters or digits", "nonce");
+    }
+    const key = keyInfo.key;
+    const hwid = hwidInfo.hwid;
 
     const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
     if (verdict.ok) bumpMetric("validations", typeof hwid === "string" ? licenseHwidDigest(hwid) : undefined);
@@ -3014,7 +3101,13 @@ const server = createServer(async (req, res) => {
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       return json(res, 400, { ok: false, error: "BAD_REQUEST" });
     }
-    const { scriptId, token, key, hwid, nonce } = body;
+    const { scriptId, token } = body;
+    // 与 validate 保持一致：允许前后空格、大小写十六进制。
+    const keyInfo = normalizeLicenseKey(body.key);
+    const hwidInfo = normalizeHwid(body.hwid);
+    const key = keyInfo.ok ? keyInfo.key : "\u0000invalid";
+    const hwid = hwidInfo.ok ? hwidInfo.hwid : "";
+    const nonce = body.nonce;
     if (typeof scriptId !== "string" || !/^scr_[\da-f]{24}$/i.test(scriptId)) {
       return json(res, 400, { ok: false, error: "BAD_REQUEST" });
     }
@@ -3031,7 +3124,7 @@ const server = createServer(async (req, res) => {
       );
     } else if (
       typeof key === "string" && typeof hwid === "string" && typeof nonce === "string" &&
-      (key === "" || /^osk_[\da-f]{64}$/i.test(key)) &&
+      keyInfo.ok && (key === "" || LICENSE_KEY_RE.test(key)) &&
       hwid.trim().length >= 8 && /^[\da-z]{16,64}$/i.test(nonce)
     ) {
       const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
@@ -3053,9 +3146,7 @@ const server = createServer(async (req, res) => {
     }
     if (!allowed) return json(res, 403, { ok: false, error: "LICENSE_INVALID", code: "KEY_MISSING" });
 
-    const release = Object.values(state.releases)
-      .filter((entry) => entry.scriptId === scriptId)
-      .sort((a, b) => b.createdAt - a.createdAt)[0];
+    const release = latestReleaseFor(scriptId);
     if (!release) return json(res, 404, { ok: false, error: "RELEASE_NOT_FOUND" });
     let code;
     try {
@@ -3236,10 +3327,11 @@ const server = createServer(async (req, res) => {
     if (!/^scr_[\da-f]{24}$/i.test(scriptId)) {
       return json(res, 400, { ok: false, code: "SCRIPT_ID_INVALID", message: KEY_CHECK_MESSAGES.SCRIPT_ID_INVALID });
     }
-    const key = typeof body?.key === "string" ? body.key : "";
-    if (!/^osk_[\da-f]{64}$/i.test(key)) {
+    const keyInfo = normalizeLicenseKey(body?.key);
+    if (!keyInfo.ok) {
       return json(res, 400, { ok: false, code: "KEY_INVALID", message: KEY_CHECK_MESSAGES.KEY_INVALID });
     }
+    const key = keyInfo.key;
     const hwid = typeof body?.hwid === "string"
       ? body.hwid
       : typeof req.headers["clienthwid"] === "string" ? req.headers["clienthwid"] : "";

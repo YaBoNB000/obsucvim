@@ -284,6 +284,27 @@ web/tools/test-hosting.mjs   57/57 passed
 web/tools/test-loader.py     19/19 passed
 ```
 
+### 2026-10-22 · 线上报错修复（BAD_REQUEST）
+
+用户在执行器里跑 loader 得到 `[Obsucvim] BAD_REQUEST`。复盘与修复：
+
+| 问题 | 根因 | 处理 |
+| --- | --- | --- |
+| 卡密格式不对时只有 `BAD_REQUEST` | 服务端把 scriptId/key/hwid/nonce 四类校验合并成一个 400，客户端无法判断；loader 也没有本地校验 | 服务端改为逐项回报 `SCRIPT_ID_INVALID` / `KEY_INVALID` / `HWID_INVALID` / `NONCE_INVALID`（带 `message` 与 `field`）；loader 与 guard 增加**本地格式校验**，直接说清「应为 osk_ + 64 位十六进制」「你贴的是 licence id」「只有 N 位」 |
+| 复制粘贴带空格/换行 | 面板复制容易带上首尾空白，`osk_` 后多一个换行就整条失败 | 服务端与客户端都 trim；十六进制统一转小写后比对（hex 大小写本就等价，不改动安全性） |
+| 混淆偶尔整体失败 | WASI 引擎会**内容相关地**段错误（实测同样输入换种子就成功，`guard` 6084 字节时概率性 rc=139，且与体积非线性相关） | `obfuscateSource` 崩溃自动重试（最多 3 次、150/300ms 退避），语法错误不重试；失败时返回 `ENGINE_CRASH` 并写明尝试次数 |
+| 同一毫秒发布两个版本时「最新版」不稳定 | 只按 `createdAt` 排序，同毫秒会退回插入顺序 | 发布时记录 `script.latestVersion` 指针，`releases/fetch` 与列表都用它（老数据自动回退到时间排序 + 版本号兜底） |
+
+**新增测试**
+
+```
+web/tools/test-live-loader.py    13/13   真实 HTTP + 真实服务器 + 真实 loader 脚本
+web/tools/test-engine-retry.mjs   9/9    引擎崩溃重试 / 永久崩溃 / 语法错误不重试
+```
+
+`test-live-loader.py` 起真服务、真注册、真发布、抓 `/files/<id>.lua`，再用会发真实 HTTP 的假执行器跑这段 loader：
+证明「发布产物 sha256 一致」「手工上传的纯 Lua 版本确实被执行」「大小写/空白的卡密可用」「32 位卡密、licence id、缺 key、错设备都给出可读错误」。
+
 ### 仍未完成（诚实清单）
 
 1. **Webhook 保护 / 外部验卡应用的前端界面**：接口与文档已就绪，控制台暂未提供图形化配置（需要者可用文档里的 curl 示例）。
