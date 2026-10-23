@@ -271,6 +271,37 @@ async function main() {
       check("batch publish stored the release", (rel.data.releases || []).some((r) => r.version === "v9"));
     }
 
+    /* ---------------- attestation is always served with the loader ---------------- */
+
+    const loaderText = await fetch(`${BASE}/files/${scriptId}.lua`).then((r) => r.text());
+    check("served loader carries attestation", loaderText.includes("Obsucvim attestation")
+      && loaderText.includes("OBS_Attested") && loaderText.includes("OBS_Attest"));
+    check("attestation is ahead of the licence call",
+      loaderText.indexOf("Obsucvim attestation") < loaderText.indexOf("/api/licenses/validate"));
+    check("loader forwards the attested verdict",
+      loaderText.includes("attested = attestedFlag") && loaderText.includes("attestScore"));
+
+    const attestedCall = await api("POST", "/api/licenses/validate", {
+      scriptId, key: licenseKey, hwid: "hwid-test-0123456789", nonce: "9".repeat(32),
+      attested: true, attestScore: 22, attestTotal: 25, attestMissing: "debug.getconstants,",
+    });
+    check("validate accepts attestation fields", attestedCall.data?.valid === true);
+    check("attestation is echoed back as data", attestedCall.data?.runtime?.attested === true
+      && attestedCall.data?.runtime?.attestScore === 22,
+      JSON.stringify(attestedCall.data?.runtime ?? {}).slice(0, 90));
+
+    const plainCall = await api("POST", "/api/licenses/validate", {
+      scriptId, key: licenseKey, hwid: "hwid-test-0123456789", nonce: "8".repeat(32),
+      attested: false, attestScore: 3, attestTotal: 25,
+    });
+    check("unattested hosts still validate (never blocked)", plainCall.data?.valid === true);
+
+    const attestMetrics = await api("GET", "/api/auth/metrics?days=2");
+    const attestDay = (attestMetrics.data.days || []).at(-1);
+    check("metrics count attested and unattested runs",
+      (attestDay?.attested ?? 0) >= 1 && (attestDay?.unanattested ?? 0) >= 1,
+      JSON.stringify(attestDay ?? {}));
+
     /* ---------------- key hygiene on the wire ---------------- */
 
     const padded = await api("POST", "/api/licenses/validate", {

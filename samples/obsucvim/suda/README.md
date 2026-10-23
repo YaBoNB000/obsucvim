@@ -85,3 +85,13 @@ ad716ea153a131ec89ff932dacd4246f09bc38403fd2e2e50305bf2889b1c8e1  suda.luau
 ```
 
 复现时同种子应得到同样大小与内容；不同引擎版本（`obsucvim.wasm`）会不同。
+
+
+## 执行器证明（2026-10-23 起常驻）
+
+`/files/<id>.lua` 返回的 loader 现在总是以 `tools/attest.luau` 开头，探测执行器与 Roblox 环境，
+结论写进 `getgenv().OBS_Attested` / `OBS_Attest`，并随 `validate` 上报。它**永不报错**：
+缺什么记什么，脚本照跑。
+
+为什么不在混淆产物里做：引擎对「注入前言」的嵌套函数数量敏感（+2 个还稳、+4 个开始段错误），
+详细数据见 `web/docs/HOSTING-V2-PLAN.md` 的「engine preamble cliff」一节。

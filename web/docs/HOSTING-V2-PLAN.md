@@ -338,6 +338,63 @@ web/tools/test-engine-retry.mjs   9/9    引擎崩溃重试 / 永久崩溃 / 语
 
 **留下的教训**：编译通过 ≠ 能跑。只有把产物放进真实解释器执行才算验证；这类「自我投毒」型失败在静态检查里完全看不出来。
 
+### 2026-10-23（续）· 执行器证明与 Roblox 环境绑定：永远开启、永不报错
+
+用户要求：这两层必须常驻、不可配置、且不能报错。做法与实测依据：
+
+**引擎侧**（`web/tools/engine-server.mjs`）
+
+- `--env-check` 恒定启用：只比较「开局取到的函数」与「用时再取的函数」是否同一个，
+  执行器在加载前 hook 不会误伤；
+- `--no-bind-executor` 恒定硬编码，**没有任何开关能打开它**（它正是 2026-10-23 事故的元凶）；
+- 任何新的 CLI 选项都不再暴露给 API/UI，`hardening` 已从 `ALLOWED_OPTIONS` 删除。
+
+**证明层**（`web/tools/attest.luau`，25 项探测）
+
+- 服务端每次 `GET /files/<id>.lua` 都把它拼在 loader 最前面，**没有开关**；
+- 探测执行器（getgenv/gethwid/identifyexecutor/checkcaller/iscclosure/newcclosure/
+  loadstring/getrawmetatable/hookfunction/debug.getconstants|getupvalues|setupvalue|getproto）
+  与 Roblox（typeof/Vector3.new→typeof=="Vector3"/Vector2/task/Players/Instance/workspace/
+  game:GetService("Players")/buffer/bit32）；
+- **永不报错**：每一项都 `pcall`，缺什么记什么；结论是数据
+  （`getgenv().OBS_Attested` / `OBS_Attest`），不参与放行判断；
+- 结论随 `validate` 上报（`attested / attestScore / attestTotal / attestMissing`），
+  服务端只落指标（`metrics.attested / unanattested`）与卡密字段，**绝不据此拒绝**。
+
+**为什么放在 loader 而不是混淆产物里（重要发现）**
+
+对 WASI 引擎做了一轮系统性探测（`web/tools/probe-matrix.mjs`）：
+
+| 注入前言的变化 | 6 个种子的成功数 |
+| --- | --- |
+| 仅 guard（6.0 KB） | **6/6** |
+| guard + 25 个普通 `local` | **6/6** |
+| guard + 6 KB 注释 | **6/6** |
+| guard + 1 个嵌套函数 | 6/6 |
+| guard + 2 个嵌套函数 | 6/6 |
+| guard + 4 个嵌套函数 | 4/6 |
+| guard + 8 个嵌套函数 | 2/6 |
+| guard + 完整证明层（4 个函数） | 2/6 |
+| guard + 改成零函数的证明层 | 2/6（~20 个 local + 15 个 pcall 调用点同样触发） |
+
+结论：**崩溃与字节数无关，与前言的「函数/locals 复杂度」相关**，拐点在 guard 现有规模附近
+（+2 稳、+4 不稳）。所以证明层放在明文 loader 里（不经过混淆器，想加多少探测都安全），
+产物里只保留已验证稳定的 guard。`probe-matrix.mjs` 就是为了以后每次改注入前言先跑一遍。
+
+**验证**
+
+```
+web/tools/test-attest.py        18/18   裸 Lua / Delta 宿主 / 恶意宿主 / 部分宿主
+web/tools/test-hosting.mjs      69/69   loader 一定带证明、证明在验卡之前、attested 上报与指标
+web/tools/test-loader.py        24/24
+web/tools/test-live-loader.py   13/13   真 HTTP 端到端
+web/tools/test-engine-retry.mjs  9/9
+```
+
+**边界（如实）**：证明层在 loader 里，用户自己重写 loader 就能绕过它（但绕过者仍需自己实现
+validate+fetch，而 guard 仍在产物内强制验卡）；`OBS_Attested` 是客户端可改的布尔值，
+只能当参考，不能当作可信凭证 —— 想做成可信需要服务端签名回执，属于后续计划。
+
 ### 仍未完成（诚实清单）
 
 1. **Webhook 保护 / 外部验卡应用的前端界面**：接口与文档已就绪，控制台暂未提供图形化配置（需要者可用文档里的 curl 示例）。

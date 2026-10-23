@@ -43,32 +43,21 @@ const ENGINE_TIMEOUT_MS = 60_000;
 
 /* ---------------- 选项 → CLI 参数（与前端 buildCliArgs 对齐） ----------------
  *
- * 默认：v15 VM + 名称混淆 + 字符串密封 + --env-check。
- *   --env-check 只依赖纯 Luau 语义（buffer/bit32/string/元表/协程/freeze），
- *   它在运行期对比「开局取到的函数」和「用的时候再取的函数」是否同一个，
- *   因此执行器在加载前 hook string.char 之类不会误伤，只有运行中被替换才触发。
+ * 固定不动的两层：
+ *   --env-check   纯 Luau 语义自检（buffer/bit32/string/元表/协程/freeze），
+ *                 只比较运行期前后取到的函数是否同一个，宿主差异不会误伤。
+ *   --no-bind-executor
+ *                 引擎默认值是「绑定执行器」，它会核验 debug.getconstants /
+ *                 getupvalues / setupvalue / getproto(s) 等一整套 API，任何一项
+ *                 对不上不是跳过而是自我投毒，整个脚本直接崩（2026-10-23 事故）。
+ *                 所以这里恒定显式关闭，没有任何开关能打开它。
  *
- * 默认**不**开 --bind-env / --bind-executor：
- *   这两层要求宿主（Roblox + 执行器）具备特定 API 且形状完全一致——
- *   bind-env 要求 Vector3.new / Vector2.new / task.defer / typeof 都是真 C 函数，
- *   bind-executor 还要求 debug.getconstants / getupvalues / setupvalue /
- *   getproto(s) / identifyexecutor / checkcaller / iscclosure / newcclosure 齐全。
- *   任何一项缺失或不同，产物不是「跳过校验」而是自我投毒，最终表现为
- *   attempt to call a nil value / arithmetic on nil —— 整个脚本直接跑不起来。
- *   实测：Delta 上带这两层的产物 100% 失败；同一份产物去掉它们后正常。
- *
- *   需要这几层的运营商可以用 OBSUCVIM_ENGINE_HARDEN=1，或在发布时传
- *   hardening: true（仅当确认目标执行器是 Synapse 级别、且自己先跑过）。 */
-function hardeningEnabled(o) {
-  if (o && o.hardening === true) return true;
-  return process.env.OBSUCVIM_ENGINE_HARDEN === "1";
-}
-
+ * 执行器证明 + Roblox 环境绑定改由 attest.luau 承担：它总是被注入到用户代码
+ * 之前、和用户代码一起混淆，做同样的探测但**永不报错**，结果以
+ * getgenv().OBS_Attested / OBS_Attest 的形式交给脚本，并随验卡上报服务端。
+ * 换句话说：证明永远在、证据永远在，但宿主不合规不会让脚本死掉。 */
 function buildCliArgs(o) {
-  const args = ["--preset", "v15", "--env-check"];
-  // 引擎的默认值是「绑定执行器」，必须显式关掉，否则等于一直开着最危险的那层。
-  if (hardeningEnabled(o)) args.push("--bind-executor", "--bind-env", "roblox");
-  else args.push("--no-bind-executor");
+  const args = ["--preset", "v15", "--env-check", "--no-bind-executor"];
   const seed = normalizeSeed(o.seed);
   if (seed) args.push("--seed", seed);
   args.push(o.minify ? "--minify" : "--no-minify");
@@ -349,6 +338,7 @@ const DATA_DIR = process.env.OBSUCVIM_DATA_DIR || path.dirname(STATE_FILE);
 const RELEASE_DIR = path.join(DATA_DIR, "releases");
 const GUARD_TEMPLATE_FILE = path.join(__dirname, "license-guard.luau");
 const LOADER_TEMPLATE_FILE = path.join(__dirname, "loader-template.luau");
+const ATTEST_TEMPLATE_FILE = path.join(__dirname, "attest.luau");
 
 let cachedLoaderTemplate = null;
 function loaderTemplate() {
@@ -357,8 +347,16 @@ function loaderTemplate() {
 }
 
 /** Stable public loader: same URL forever, contents swapped on each publish. */
+/* 执行器证明 + Roblox 环境绑定是**强制**的：每次请求 /files/<id>.lua 都会把
+ * attest.luau 拼在 loader 前面，没有任何开关能关掉。它跑在验卡之前，把结论写进
+ * getgenv().OBS_Attest / OBS_Attested，并随 validate 上报服务端。
+ *
+ * 为什么放在 loader 而不是混淆产物里：WASI 引擎在「注入前言」里多加嵌套函数会
+ * 段错误（实测 +2 个函数还稳、+4 个就开始崩），而 loader 是明文、不经过混淆，
+ * 想加多少探测都安全。产物里的 guard 保持原样（6/6 稳定）。 */
 function buildLoaderSource(script, origin) {
-  return loaderTemplate()
+  return [attestTemplate(), loaderTemplate()]
+    .join("\n")
     .replaceAll("__SCRIPT_ID__", script.scriptId)
     .replaceAll("__BASE_URL__", origin)
     .replaceAll("__HEARTBEAT__", script.heartbeat ? "true" : "false")
@@ -373,11 +371,19 @@ function guardTemplate() {
 
 /* Prepends the licence guard so the check runs before any user code, then the
  * whole file is obfuscated as one unit. Only the public project id is embedded. */
+let cachedAttestTemplate = null;
+function attestTemplate() {
+  if (cachedAttestTemplate === null) cachedAttestTemplate = readFileSync(ATTEST_TEMPLATE_FILE, "utf8");
+  return cachedAttestTemplate;
+}
+
+/* 顺序很重要：证明先跑（拿到执行器/Roblox 证据），再由 guard 带着这份证据验卡，
+ * 最后才是用户代码。三者一起进混淆器，谁都无法单独删掉其中一段。 */
 function buildGuardedSource(source, scriptId, endpoint) {
   const template = guardTemplate()
     .replaceAll("__OBSUCVIM_SCRIPT_ID__", scriptId)
     .replaceAll("__OBSUCVIM_ENDPOINT__", endpoint);
-  return `-- Injected by Obsucvim license guard v2 (runs before user code)\n${template}\n${source}`;
+  return `-- Injected by Obsucvim licence guard (runs before user code)\n${template}\n${source}`;
 }
 
 /* Absolute origin used inside generated guards. Prefers an explicit setting so a
@@ -931,7 +937,9 @@ const METRIC_DEVICE_CAP = 5000;
 
 function bumpMetric(field, deviceHash) {
   const day = todayStr();
-  const bucket = state.metrics[day] ?? (state.metrics[day] = { validations: 0, rejected: 0, executions: 0, devices: {} });
+  const bucket = state.metrics[day] ?? (state.metrics[day] = {
+    validations: 0, rejected: 0, executions: 0, devices: {}, attested: 0, unanattested: 0,
+  });
   if (field === "devices") {
     if (deviceHash && Object.keys(bucket.devices).length < METRIC_DEVICE_CAP) bucket.devices[deviceHash] = 1;
     return;
@@ -945,13 +953,15 @@ function metricsSnapshot(days) {
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(today.getTime() - i * 86400000);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-    const bucket = state.metrics[key] ?? { validations: 0, rejected: 0, executions: 0, devices: {} };
+    const bucket = state.metrics[key] ?? { validations: 0, rejected: 0, executions: 0, devices: {}, attested: 0, unanattested: 0 };
     out.push({
       date: key,
       validations: bucket.validations ?? 0,
       rejected: bucket.rejected ?? 0,
       executions: bucket.executions ?? 0,
       devices: Object.keys(bucket.devices ?? {}).length,
+      attested: bucket.attested ?? 0,
+      unanattested: bucket.unanattested ?? 0,
     });
   }
   return out;
@@ -1185,6 +1195,10 @@ const licensePublic = (license) => ({
   banExpireAt: license.banExpireAt ?? null,
   banned: Boolean(activeLicenseBan(license)),
   totalResets: license.totalResets ?? 0,
+  attested: license.lastAttested ?? null,
+  attestScore: license.lastAttestScore ?? null,
+  attestTotal: license.lastAttestTotal ?? null,
+  attestedAt: license.lastAttestedAt ?? null,
   lastResetAt: license.lastHwidResetAt ?? null,
 });
 
@@ -1579,7 +1593,7 @@ function noteLoginFail(email) {
 /* ---------------- 安全：严格选项白名单 ---------------- */
 const ALLOWED_OPTIONS = new Set([
   "minify", "mangle", "strings", "flatten", "junk",
-  "numbers", "body", "vmSealStrings", "seed", "hardening",
+  "numbers", "body", "vmSealStrings", "seed",
 ]);
 
 function validateOptions(o) {
@@ -1587,7 +1601,7 @@ function validateOptions(o) {
   for (const k of Object.keys(o)) {
     if (!ALLOWED_OPTIONS.has(k)) return "BAD_OPTIONS";
   }
-  for (const k of ["minify", "mangle", "strings", "flatten", "junk", "numbers", "body", "vmSealStrings", "hardening"]) {
+  for (const k of ["minify", "mangle", "strings", "flatten", "junk", "numbers", "body", "vmSealStrings"]) {
     if (k in o && typeof o[k] !== "boolean") return "BAD_OPTIONS";
   }
   if ("seed" in o && (typeof o.seed !== "string" || o.seed.length > 64)) return "BAD_OPTIONS";
@@ -3026,6 +3040,17 @@ const server = createServer(async (req, res) => {
     const hwid = hwidInfo.hwid;
 
     const verdict = evaluateLicense({ scriptId, key, hwid, nonce, ip: clientIp(req) });
+    // 执行器/Roblox 证明：只记录，绝不参与放行判定（合不合规都能跑）。
+    const attested = body.attested === true;
+    const attestScore = Number.isFinite(Number(body.attestScore)) ? Math.max(0, Math.min(999, Math.trunc(Number(body.attestScore)))) : 0;
+    const attestTotal = Number.isFinite(Number(body.attestTotal)) ? Math.max(0, Math.min(999, Math.trunc(Number(body.attestTotal)))) : 0;
+    if (verdict.ok) bumpMetric(attested ? "attested" : "unanattested");
+    if (verdict.ok && verdict.license) {
+      verdict.license.lastAttested = attested;
+      verdict.license.lastAttestScore = attestScore;
+      verdict.license.lastAttestTotal = attestTotal;
+      verdict.license.lastAttestedAt = now();
+    }
     if (verdict.ok) bumpMetric("validations", typeof hwid === "string" ? licenseHwidDigest(hwid) : undefined);
     else bumpMetric("rejected");
     if (verdict.ok && !verdict.free) bumpMetric("executions", licenseHwidDigest(hwid));
@@ -3105,6 +3130,9 @@ const server = createServer(async (req, res) => {
         secondsLeft,
         expiresAt: verdict.license.expiresAt ?? null,
         scriptVersion: latestReleaseVersion(scriptId),
+        attested,
+        attestScore,
+        attestTotal,
         totalExecutions: verdict.license.executions ?? 0,
         firstActivatedAt: verdict.license.firstActivatedAt ?? null,
       },

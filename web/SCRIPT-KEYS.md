@@ -426,3 +426,28 @@ GET /external/check_key?by=<appId>&key=<卡密>
 
 与 Luarmor 的 SHA-1 方案相比这里用 HMAC-SHA256，并且响应同样带
 `signature = HMAC-SHA256(secret, clientnonce|code)`，客户端可验签防篡改。`clienttime` 与服务器相差超过 5 分钟返回 `TIME_ERROR`。
+
+
+## 执行器证明 / Roblox 环境绑定（常驻，不可关闭）
+
+每次 `GET /files/<scriptId>.lua`，服务端都会把 `tools/attest.luau` 拼在 loader 最前面：
+
+- 探测执行器 API（`identifyexecutor`、`checkcaller`、`iscclosure`、`newcclosure`、
+  `loadstring`、`getrawmetatable`、`debug.getconstants/getupvalues/setupvalue/getproto` …）
+- 探测 Roblox 环境（`typeof`、`Vector3.new` → `typeof == "Vector3"`、`Vector2`、`task`、
+  `Players`、`Instance`、`workspace`、`game:GetService("Players")`）
+- 探测 Luau 运行时（`buffer`、`bit32`）
+
+结果写成数据，**永不报错、永不阻断**：
+
+```lua
+if getgenv().OBS_Attested then
+	print("额外防护开启，执行器：" .. getgenv().OBS_Attest.executor)
+else
+	print("未通过完整证明，缺失项：" .. tostring(getgenv().OBS_Attest.missing))
+end
+```
+
+`validate` 请求会带上 `attested / attestScore / attestTotal / attestMissing`；
+服务端把它们记进指标（`GET /api/auth/metrics` 的 `attested` / `unanattested`）
+和卡密字段（`license.attested`），**不会据此拒绝任何用户**。

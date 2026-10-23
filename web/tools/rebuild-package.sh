@@ -42,14 +42,14 @@ PKG="$WORK/$PKG_DIR_NAME"
 [ -d "$PKG" ] || { echo "base zip layout unexpected" >&2; exit 2; }
 
 # 底座包里可能残留上一版的开发资产，先清掉，避免它们一直跟着发布。
-rm -f "$PKG"/tools/test-* "$PKG"/tools/luau-roblox-prelude.luau 2>/dev/null || true
+rm -f "$PKG"/tools/test-* "$PKG"/tools/luau-roblox-prelude.luau "$PKG"/tools/probe-matrix.mjs 2>/dev/null || true
 
 echo "[2/5] 覆盖当前程序文件"
 cp "$WEB/dist/index.html" "$PKG/dist/index.html"
 for f in "$WEB"/tools/*.mjs "$WEB"/tools/*.luau "$WEB"/tools/obsucvim.wasm; do
   [ -f "$f" ] || continue
   case "$(basename "$f")" in
-    test-*|luau-roblox-prelude.luau) continue ;;   # 测试/开发用资产不随包发布
+    test-*|luau-roblox-prelude.luau|probe-matrix.mjs) continue ;;   # 测试/开发用资产不随包发布
   esac
   cp "$f" "$PKG/tools/$(basename "$f")"
 done

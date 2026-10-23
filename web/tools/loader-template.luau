@@ -121,11 +121,29 @@ local function nonce()
 end
 
 local requestNonce = nonce()
+-- attest.luau 总会先跑（服务端在每次 /files/<id>.lua 里拼在最前面）。
+-- 这里只把结论当数据带上去，不参与任何放行判断。
+local attestReport = env.OBS_Attest
+local attestedFlag = env.OBS_Attested == true
+local attestedScore = 0
+local attestedTotal = 0
+local attestedMissing = ""
+if type(attestReport) == "table" then
+	attestedScore = tonumber(attestReport.score) or 0
+	attestedTotal = tonumber(attestReport.total) or 0
+	attestedMissing = tostring(attestReport.missing or "")
+	if attestReport.ok == true then attestedFlag = true end
+end
+
 local verdict, failure, status = post("/api/licenses/validate", {
 	scriptId = SCRIPT_ID,
 	key = key,
 	hwid = hwid,
 	nonce = requestNonce,
+	attested = attestedFlag,
+	attestScore = attestedScore,
+	attestTotal = attestedTotal,
+	attestMissing = attestedMissing,
 })
 if not verdict or verdict.valid ~= true then
 	local code = verdict and (verdict.code or verdict.error) or failure
