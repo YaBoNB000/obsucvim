@@ -1,17 +1,19 @@
-# 测试包：混淆后打印 `Suda`
+# 测试包：R067 引擎混淆后打印 `Suda`
 
-验证「Obsucvim 的产物在你的执行器里能不能跑」，与许可系统无关（没有卡密、没有网络请求）。
+与许可系统无关（没有卡密、没有网络请求）。产物由 **R067 引擎**生成，
+引擎已按锚点逐字节校验：`print("suda") --preset v15 --env-check --bind-executor --seed 67067`
+→ 229,422 B / `3775f3b5…`，与 `handoff/README-R067.md` 记录完全一致。
 
 | 文件 | 大小 | 说明 |
 | --- | --- | --- |
-| `Suda.lua` | 14 B | 原始源码：`print("Suda")` |
-| `Suda.attested.lua` | ~180 KB | **推荐先测这个**：执行器证明 + 诊断 + 兼容版产物（等价于线上 loader 在 Delta 上的行为） |
-| `Suda.safe.lua` | ~172 KB | 纯兼容版产物（`--env-check --no-bind-executor`） |
-| `Suda.hard.lua` | ~212 KB | 纯加固版产物（`--env-check --bind-executor --bind-env roblox`），**原始完整保护** |
+| `Suda.lua` | 14 B | 原始源码 `print("Suda")` |
+| `Suda.attested.lua` | ~196 KB | **推荐先测**：证明层 + 诊断 + 兼容版产物（等价线上 loader 在 Delta 上的行为） |
+| `Suda.safe.lua` | 193,044 B | 兼容版（`--env-check --no-bind-executor`） |
+| `Suda.hard.lua` | 213,679 B | 加固版（`--env-check --bind-executor --bind-env roblox`），R067 完整保护 |
 
-## 怎么测
+## 预期输出
 
-1. 把 `Suda.attested.lua` 整个粘进执行器。预期：
+`Suda.attested.lua`：
 
 ```
 [Obsucvim] attested=true score=24/25 executor=Delta
@@ -20,31 +22,29 @@
 Suda
 ```
 
-最后一行 `Suda` 是产物输出，**必须出现**。前三行告诉你：你的执行器缺什么、
-线上会给你哪一版产物。
+最后一行 `Suda` 必须出现。
 
-2. 想验证加固版：把 `Suda.hard.lua` 粘进去跑。
-   - 若你的执行器是 Synapse 级别（有 `debug.getconstants`/`getupvalues`），应当输出 `Suda`
-   - 若是 Delta 这类，会报错——**这是设计如此**，保护就是「不满足条件不给跑」，
-     线上会自动给你 `Suda.safe.lua` 那一版
+`Suda.hard.lua` 单独跑：
+- Synapse 级（有 `debug.getconstants`/`getupvalues`）→ 输出 `Suda`
+- Delta 这类 → 报错拒绝，**这是保护生效**，线上会自动发兼容版
 
-## 两种产物的区别（实测）
+## 实测（沙箱，真 Luau 解释器）
 
 ```
-Suda.safe.lua  172,293 B   裸 Luau            -> Suda
-Suda.hard.lua  212,075 B   裸 Luau            -> attempt to index nil with 'defer'   （保护生效）
-                           模拟执行器宿主      -> attempt to call a nil value        （缺 debug 深层 API，被拒）
+$ luau Suda.safe.lua                       -> Suda
+$ cat luau-roblox-prelude.luau Suda.safe.lua > x.luau && luau x.luau -> Suda
+$ luau Suda.hard.lua                       -> attempt to index nil with 'defer'（保护）
+grep -c Suda Suda.safe.lua Suda.hard.lua   -> 0 0（明文已封存）
 ```
 
-## 复现命令
+## 复现
 
 ```bash
-printf 'print("Suda")\n' > /tmp/input.luau
+printf 'print("Suda")\n' > /tmp/input.lua
 # 兼容版
 node -e 'const cfg={wasmPath:"web/tools/obsucvim.wasm",workDir:"/tmp",args:[
-  "--preset","v15","--env-check","--no-bind-executor",
-  "--seed","20261023","--minify","--vm-seal-strings",
-  "/work/input.luau","/work/Suda.safe.lua"]};
+  "--preset","v15","--env-check","--no-bind-executor","--minify","--vm-seal-strings",
+  "--seed","20261023","/work/input.lua","/work/Suda.safe.lua"]};
   require("fs").writeFileSync("/tmp/cfg.json",JSON.stringify(cfg));'
 node web/tools/wasi-runner.mjs "$(cat /tmp/cfg.json)"
 # 加固版：把 --no-bind-executor 换成 --bind-executor --bind-env roblox

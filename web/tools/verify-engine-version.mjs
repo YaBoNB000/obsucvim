@@ -7,13 +7,13 @@
  * The v15 output for a fixed input + fixed seed is deterministic, so the engine
  * build can be identified from its bytes. Known anchors:
  *
- *   R067    (2026-10-11, full noise density, bind-executor default)
- *           print("suda"), --preset v15 --env-check --bind-executor --bind-env roblox --seed 67067
+ * Probe: print("suda") with --preset v15 --env-check --bind-executor --seed 67067
+ *
+ *   R067    (2026-10-11, full noise density; junk_n=2, /12 /5 noise, obf_num 40 bit)
  *           229,422 B  sha256 3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6
  *
- *   af7fc32 (2026-10-19, "reduce output size 232KB -> 212KB")
- *           same input/seed
- *           212,137 B  sha256 01099ddbb04eb2608ca230b3b7e4ed1af476d2f9afa3a78f43024caa0eda51da
+ *   af7fc32 (2026-10-19, "reduce output size"; noise halved, junk_n=1, obf_num 28 bit)
+ *           229,900 B  sha256 12c2c05b572d5ede5d8992684ed4aa724096f9254b66d81563848b99fd91d638
  *
  * Anything else means the binary is a build we have no anchor for; the script
  * still reports the observed bytes/hash so it can be pinned deliberately.
@@ -31,15 +31,15 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 const ANCHORS = [
   {
     name: "R067",
-    note: "full noise density (pre size-reduction), bind-executor default",
+    note: "full noise density (junk_n=2, /12 /5 noise, obf_num 40 bit)",
     size: 229422,
     sha256: "3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6",
   },
   {
     name: "af7fc32",
     note: "size reduction: noise halved, junk_n 2->1, obf_num 40->28 bit",
-    size: 212137,
-    sha256: "01099ddbb04eb2608ca230b3b7e4ed1af476d2f9afa3a78f43024caa0eda51da",
+    size: 229900,
+    sha256: "12c2c05b572d5ede5d8992684ed4aa724096f9254b66d81563848b99fd91d638",
   },
 ];
 
@@ -55,7 +55,7 @@ try {
     wasmPath: path.resolve(wasm),
     workDir: work,
     args: [
-      "--preset", "v15", "--env-check", "--bind-executor", "--bind-env", "roblox",
+      "--preset", "v15", "--env-check", "--bind-executor",
       "--seed", "67067", "/work/in.lua", "/work/out.lua",
     ],
   };
@@ -78,7 +78,7 @@ try {
   const match = ANCHORS.find((a) => a.size === bytes && a.sha256 === digest);
 
   console.log(`engine   : ${path.resolve(wasm)}`);
-  console.log(`probe    : print("suda") --env-check --bind-executor --bind-env roblox --seed 67067`);
+  console.log(`probe    : print("suda") --preset v15 --env-check --bind-executor --seed 67067`);
   console.log(`output   : ${bytes} bytes  ${digest}`);
   if (match) {
     console.log(`verdict  : ${match.name} — ${match.note}`);

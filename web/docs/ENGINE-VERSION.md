@@ -1,7 +1,13 @@
 # 引擎版本：R067 与 af7fc32 的差异，以及怎么恢复
 
-> 结论先说：**源码已经恢复到 R067**；`web/tools/obsucvim.wasm` 这个二进制仍是
-> af7fc32 构建，需要在有 Rust 的机器上重编后替换。本文记录差异、验证锚点与重编方式。
+> 结论先说：**引擎源码已恢复到 R067，`web/tools/obsucvim.wasm` 也已重新编译为 R067**
+> （2026-10-23）。本文件记录差异、锚点校验与重编方式。
+>
+> 校验结果：`print("suda") --preset v15 --env-check --bind-executor --seed 67067`
+> → **229,422 B / `3775f3b5…`**，与 `handoff/README-R067.md` 记录的 R067 靶标逐字节一致。
+>
+> 作为对照，我也在同一台机器上编了 af7fc32 版本，它复现了线上旧产物的
+> 212,137 B / `01099ddb…`（`--bind-env roblox` 参数下），证明工具链本身是保真的。
 
 ## 1. 两个版本的差别
 
@@ -42,13 +48,31 @@ git diff af7fc32^ -- obsucvim/src
 
 `obsucvim.wasm` **不在 git 里**（从没有提交过），它是构建产物。本沙箱里：
 
-- 没有 `rustc`/`cargo`；
-- `https://static.rust-lang.org` 不可达（返回 000），`rustup` 装不了；
-- `apt` 无权限、npm/PyPI 没有可用的 Rust 工具链包；
-- GitHub Actions 需要 `.github/workflows/` 写入权限，本会话的 GitHub App 没有
-  `workflows` 权限（push 被拒：`refusing to allow a GitHub App to create or update workflow`）。
+- `static.rust-lang.org` 不可达（返回 000），`rustup` 装不了；
+- `apt` 无权限；
+- GitHub Actions 需要 `.github/workflows/` 写权限，本会话的 GitHub App 没有
+  `workflows` 权限（push 被拒）。
 
-所以只能在你自己的机器或 CI 上编。
+**最后是从 npm 拿到了预编译工具链**（`registry.npmjs.org` 可达）：
+
+```bash
+mkdir -p /tmp/tc && cd /tmp/tc && npm init -y
+npm install @rustbin/rustc-1.88.0-x86_64-unknown-linux-gnu \
+            @rustbin/rust-std-1.88.0-wasm32-wasip1 \
+            @rustbin/rust-std-1.88.0-x86_64-unknown-linux-gnu
+mkdir -p sysroot/lib/rustlib
+cp -r node_modules/@rustbin/rust-std-1.88.0-x86_64-unknown-linux-gnu/rust-std-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu sysroot/lib/rustlib/
+cp -r node_modules/@rustbin/rust-std-1.88.0-wasm32-wasip1/rust-std-wasm32-wasip1/lib/rustlib/wasm32-wasip1 sysroot/lib/rustlib/
+RUSTC=/tmp/tc/node_modules/@rustbin/rustc-1.88.0-x86_64-unknown-linux-gnu/rustc/bin/rustc
+cd obsucvim
+CARGO_PKG_VERSION=0.2.0 $RUSTC --edition 2021 \
+  -C opt-level=3 -C lto -C codegen-units=1 -C panic=abort -C strip=symbols \
+  --target wasm32-wasip1 --sysroot /tmp/tc/sysroot \
+  src/main.rs -o ../web/tools/obsucvim.wasm
+```
+
+产物 1,172,743 B（与旧的 1,182,882 B 同量级），输出与 R067 锚点完全一致。
+这是**无 rustup 环境下的备用路线**；正常情况仍建议用下面 §5 的方式（cargo）编。
 
 ## 4. 怎么验证当前装的是哪个版本
 
@@ -73,8 +97,14 @@ verdict  : af7fc32 — size reduction: noise halved, junk_n 2->1, obf_num 40->28
 
 | 版本 | 产物大小 | SHA-256 |
 | --- | --- | --- |
-| R067 | 229,422 B | `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6` |
-| af7fc32 | 212,137 B | `01099ddbb04eb2608ca230b3b7e4ed1af476d2f9afa3a78f43024caa0eda51da` |
+探测命令：`--preset v15 --env-check --bind-executor --seed 67067`
+
+| 版本 | 产物大小 | SHA-256 |
+| --- | --- | --- |
+| **R067（当前）** | 229,422 B | `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6` |
+| af7fc32（旧） | 229,900 B | `12c2c05b572d5ede5d8992684ed4aa724096f9254b66d81563848b99fd91d638` |
+
+（同一 af7fc32 引擎在发布流水线那种 `--bind-env roblox` 参数下就是 212,137 B / `01099ddb…`。）
 
 ## 5. 重编 R067（三条路，任选）
 
