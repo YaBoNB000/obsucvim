@@ -437,6 +437,33 @@ hard  212,075 B   裸 Luau -> attempt to index nil with 'defer'   （保护仍�
 缺省回落、未知变体回落）。其余套件：loader 24/24、attest 18/18、live-loader 13/13、
 engine-retry 9/9。
 
+### 2026-10-23 · 引擎版本回退到 R067（源码已恢复，二进制待重编）
+
+用户要求「把混淆引擎恢复到 R067」。查明事实：
+
+- R067 = 提交 `56b0755`（2026-10-11，`--bind-executor` 成为默认保护层）时的引擎；
+  锚点 `print("suda") --env-check --bind-executor --bind-env roblox --seed 67067`
+  → **229,422 B / `3775f3b5…`**。
+- 之后唯一改变引擎行为的提交是 `af7fc32`（2026-10-19，*Reduce v15 output size*）：
+  噪声密度 `/12→/30`、`/5→/15`、活跃比 `1/2→1/3`、诱饵常量 `2–5→1–3`、
+  死寄存器 `2–4→2–3`、`junk_n 2→1`、`obf_num` 40bit→28bit。
+  也就是说用户看到的「少 40 KB」是**拿保护换体积**，不是种子抖动。
+- 线上 `web/tools/obsucvim.wasm` 正是 af7fc32 构建（探测输出 212,137 B /
+  `01099ddb…`，与提交信息里的 212,137B 完全一致）。
+
+**已做**：把 `af7fc32` 的 3 个文件反向应用，源码恢复为 R067
+（`git diff af7fc32^ -- obsucvim/src` 为空）；新增
+`web/tools/verify-engine-version.mjs`（按锚点识别引擎构建，服务端启动时也会打印
+`engine build: R067 | af7fc32 | UNKNOWN`）、`web/tools/build-engine-wasm.sh`
+（编译 + 校验锚点 + 安装，锚点不符拒绝安装）、`web/tools/ci/build-engine.yml`
+（GitHub Actions 模板）、`web/docs/ENGINE-VERSION.md`（差异与三种重编路径）。
+
+**未做（受阻，如实记录）**：沙箱内无法重编 wasm —— 没有 `rustc/cargo`，
+`static.rust-lang.org` 不可达（curl 返回 000），apt 无权限，npm/PyPI 无可用工具链；
+GitHub Actions 需要 `.github/workflows/` 写权限，本会话的 GitHub App 没有
+`workflows` 权限（push 被拒）。因此**当前部署的二进制仍是 af7fc32**，
+需要用户在本地或 CI 重编后替换；替换后按 `ENGINE-VERSION.md` §6 重新打包与重发。
+
 ### 仍未完成（诚实清单）
 
 1. **Webhook 保护 / 外部验卡应用的前端界面**：接口与文档已就绪，控制台暂未提供图形化配置（需要者可用文档里的 curl 示例）。

@@ -1,0 +1,115 @@
+# 引擎版本：R067 与 af7fc32 的差异，以及怎么恢复
+
+> 结论先说：**源码已经恢复到 R067**；`web/tools/obsucvim.wasm` 这个二进制仍是
+> af7fc32 构建，需要在有 Rust 的机器上重编后替换。本文记录差异、验证锚点与重编方式。
+
+## 1. 两个版本的差别
+
+`af7fc32`（2026-10-19，*Reduce v15 output size: 232KB → 212KB for print("suda")*）
+为了压缩体积，改了 3 个文件、约 12 行，**全部是降低加密噪声密度**：
+
+| 项 | R067 | af7fc32（当前二进制） | 影响 |
+| --- | --- | --- | --- |
+| 噪声指令密度 | `base_code_len/12` ~ `/5` | `/30` ~ `/15` | 每个函数的伪指令少 ~2.5 倍 |
+| 活跃噪声比例 | `1/2` | `1/3` | 有效噪声更少 |
+| 诱饵常量 | 每函数 2–5 | 1–3 | 常量池反推更容易 |
+| 死寄存器范围 | 2–4 | 2–3 | H3 噪声覆盖变小 |
+| junk_n | 2 | 1 | junk 注入减半 |
+| `obf_num` 随机范围 | 40 bit | 28 bit | 数字混淆的搜索空间缩小 ~4096 倍 |
+
+也就是说：**这不是「优化」，这是拿保护换体积**（提交信息自己也写明
+「Defense audit: D3 structural fingerprint 22/32 (was 23/32)」）。用户看到的
+「少了 40 KB」正来自这里——不是种子抖动，是引擎被削了。
+
+R067 之前的那次 `b82f14f`（剥注释）是零行为变化；所以
+`af7fc32^` 的引擎源码 == R067。
+
+## 2. 现在仓库的状态
+
+```
+obsucvim/src/main.rs             junk_n = 2                ← R067
+obsucvim/src/vmgen/compiler.rs   /12, /5, 1/2, 2..4, 2..5  ← R067
+obsucvim/src/vmgen/template.rs   obf_num 40 bit            ← R067
+```
+
+校验方式（应输出为空）：
+
+```bash
+git diff af7fc32^ -- obsucvim/src
+```
+
+## 3. 二进制为什么还没换
+
+`obsucvim.wasm` **不在 git 里**（从没有提交过），它是构建产物。本沙箱里：
+
+- 没有 `rustc`/`cargo`；
+- `https://static.rust-lang.org` 不可达（返回 000），`rustup` 装不了；
+- `apt` 无权限、npm/PyPI 没有可用的 Rust 工具链包；
+- GitHub Actions 需要 `.github/workflows/` 写入权限，本会话的 GitHub App 没有
+  `workflows` 权限（push 被拒：`refusing to allow a GitHub App to create or update workflow`）。
+
+所以只能在你自己的机器或 CI 上编。
+
+## 4. 怎么验证当前装的是哪个版本
+
+```bash
+node web/tools/verify-engine-version.mjs
+# 或用脚本：
+./web/tools/build-engine-wasm.sh --check
+```
+
+输出示例（当前实际状态）：
+
+```
+engine   : /…/web/tools/obsucvim.wasm
+probe    : print("suda") --env-check --bind-executor --bind-env roblox --seed 67067
+output   : 212137 bytes  01099ddbb04eb2608ca230b3b7e4ed1af476d2f9afa3a78f43024caa0eda51da
+verdict  : af7fc32 — size reduction: noise halved, junk_n 2->1, obf_num 40->28 bit
+```
+
+服务端启动时也会打印一行 `[engine-server] engine build: R067 | af7fc32 | UNKNOWN`。
+
+**锚点**
+
+| 版本 | 产物大小 | SHA-256 |
+| --- | --- | --- |
+| R067 | 229,422 B | `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6` |
+| af7fc32 | 212,137 B | `01099ddbb04eb2608ca230b3b7e4ed1af476d2f9afa3a78f43024caa0eda51da` |
+
+## 5. 重编 R067（三条路，任选）
+
+### A. 本机（Windows / macOS / Linux 均可）
+
+```bash
+rustup target add wasm32-wasip1
+cd obsucvim
+cargo build --release --target wasm32-wasip1
+```
+
+产物 `obsucvim/target/wasm32-wasip1/release/obsucvim.wasm`。或者直接用仓库脚本：
+
+```bash
+./web/tools/build-engine-wasm.sh          # 编译 + 校验 R067 锚点 + 安装
+```
+
+脚本会在锚点不匹配时**拒绝安装**（除非 `--force`）。
+
+### B. GitHub Actions（推荐，零本地环境）
+
+把 `web/tools/ci/build-engine.yml` 复制到 `.github/workflows/build-engine.yml`
+推到仓库即可。它会用 GitHub 的 runner（自带 Rust）编译、跑 R067 锚点校验，
+并把 `obsucvim.wasm` 作为 run artifact 上传。
+
+### C. 只换二进制
+
+任何人给你一个 229,422 B、SHA 为 `3775f3b5…` 的 `obsucvim.wasm`，直接覆盖
+`web/tools/obsucvim.wasm` 即可，其余代码不用动。
+
+## 6. 换完之后
+
+```bash
+node web/tools/verify-engine-version.mjs        # 应显示 R067
+cd web && ./tools/rebuild-package.sh --base releases/Obsucvim-Web-Windows-x64.zip
+```
+
+然后升级服务器并**重新发布所有脚本**——产物是引擎生成的，不重发就还是旧引擎的字节。

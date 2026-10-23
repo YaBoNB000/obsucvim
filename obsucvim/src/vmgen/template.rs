@@ -122,10 +122,10 @@ fn prim_slots(rng: &mut Rng) -> [u8; 15] {
 }
 
 fn obf_num(n: u64, rng: &mut Rng) -> String {
-	let x = rng.int(0, 268_435_455) as i64;
-	let y = rng.int(0, 268_435_455) as i64;
+let x = rng.int(0, 1_099_511_627_775) as i64;
+	let y = rng.int(0, 1_099_511_627_775) as i64;
 	let z = x + y - n as i64;
-	if z < 0 { format!("({}+{}-({}))", x, y, z) } else { format!("({}+{}-{})", x, y, z) }
+	format!("({} + {} - {})", x, y, z)
 }
 
 use super::manifest_key;
@@ -135,7 +135,6 @@ const KEY_MOD: i64 = 268_435_456;
 struct KeyEmitter<'a> {
 	carrier_lengths: &'a [usize],
 }
-
 
 impl<'a> KeyEmitter<'a> {
 	fn new(carrier_lengths: &'a [usize]) -> KeyEmitter<'a> {
@@ -189,9 +188,9 @@ impl<'a> KeyEmitter<'a> {
 		};
 
 		format!(
-			"(function(d)local s=({seed}+({anchor}))%{modulus} for i=1,#d do s=(s*{mul}+#d[i]+i*{step}+{bias})%{modulus} end return({encoded}+s)%{modulus} end)({data})",
+			"(function(d) local s=({seed}+({anchor_expr}))%{modulus} for i=1,#d do s=(s*{mul}+#d[i]+i*{step}+{bias})%{modulus} end return ({encoded}+s)%{modulus} end)({data})",
 			seed = seed,
-			anchor = anchor_expr,
+			anchor_expr = anchor_expr,
 			modulus = KEY_MOD,
 			mul = mul,
 			step = step,

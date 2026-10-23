@@ -3909,6 +3909,35 @@ function serveStatic(req, res) {
 server.listen(PORT, HOST, () => {
   console.log(`[engine-server] obsucvim web+engine on http://${HOST}:${PORT}`);
   console.log(`[engine-server] engine mode: ${engineMode()} (native: ${existsSync(BIN) ? "found" : "missing"}; WASI: ${existsSync(WASM_BIN) ? "found" : "missing"})`);
+  // 引擎版本自检：v15 输出对固定输入+种子是确定的，所以能据此认出构建版本。
+  // 这不影响服务启动——探测失败只记录，不阻断。
+  void (async () => {
+    const KNOWN = {
+      R067: { size: 229422, sha256: "3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6" },
+      af7fc32: { size: 212137, sha256: "01099ddbb04eb2608ca230b3b7e4ed1af476d2f9afa3a78f43024caa0eda51da" },
+    };
+    try {
+      if (engineMode() !== "wasi") return;
+      const out = await obfuscateSource('print("suda")\n', {
+        ...DEFAULT_OBFUSCATION_OPTIONS, seed: "67067", hardening: true,
+      });
+      if (!out.ok) {
+        console.log("[engine-server] engine build: unknown (probe failed)");
+        return;
+      }
+      const digest = createHash("sha256").update(out.code).digest("hex");
+      const size = Buffer.byteLength(out.code, "utf8");
+      const match = Object.entries(KNOWN).find(([, v]) => v.size === size && v.sha256 === digest);
+      if (match) {
+        console.log(`[engine-server] engine build: ${match[0]}`);
+      } else {
+        console.log(`[engine-server] engine build: UNKNOWN (${size} B, ${digest.slice(0, 16)}…)`);
+      }
+    } catch {
+      /* 探测只是提示，任何失败都不影响服务 */
+    }
+  })();
+
   console.log(`[engine-server] web dist: ${WEB_ROOT} (${existsSync(path.join(WEB_ROOT, "index.html")) ? "found" : "MISSING"})`);
   console.log(`[engine-server] smtp: ${demoMail ? "demo fallback" : "configured"}`);
   console.log(`[engine-server] captcha: ${TURNSTILE_MISCONFIGURED ? "CONFIGURATION ERROR" : TURNSTILE_ENABLED ? "Cloudflare Turnstile" : "local puzzle fallback"}`);
