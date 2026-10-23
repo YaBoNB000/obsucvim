@@ -56,16 +56,28 @@ def run_attest(prelude=None):
     end
     """)()
     ran, _, message = str(outcome).partition("|")
-    report = lua.eval("OBS_Attest")
+    # The verdict lives in the executor env when getgenv() exists, otherwise in _G.
+    report = lua.eval("""
+    (function()
+      local env = _G
+      pcall(function()
+        if type(getgenv) == "function" then
+          local value = getgenv()
+          if type(value) == "table" then env = value end
+        end
+      end)
+      return env.OBS_Attest or _G.OBS_Attest
+    end)()
+    """)
     if report is None:
         return ran, None, None, None, None, None, message
     missing = [str(k) for k in (report["missing"] or [])]
     return (
         ran,
-        lua.eval("tostring(OBS_Attested)"),
+        lua.eval("tostring((function() local e = _G local ok, v = pcall(function() if type(getgenv) == 'function' then return getgenv() end end) if ok and type(v) == 'table' then e = v end return e.OBS_Attested or _G.OBS_Attested end)())"),
         int(report["score"]),
         int(report["total"]),
-        lua.eval("tostring(OBS_Attest.executor)"),
+        lua.eval("tostring((function() local e = _G local ok, v = pcall(function() if type(getgenv) == 'function' then return getgenv() end end) if ok and type(v) == 'table' then e = v end local r = e.OBS_Attest or _G.OBS_Attest return r and tostring(r.executor) or 'nil' end)())"),
         missing,
         message,
     )
