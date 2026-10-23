@@ -437,32 +437,37 @@ hard  212,075 B   裸 Luau -> attempt to index nil with 'defer'   （保护仍�
 缺省回落、未知变体回落）。其余套件：loader 24/24、attest 18/18、live-loader 13/13、
 engine-retry 9/9。
 
-### 2026-10-23 · 引擎版本回退到 R067（源码已恢复，二进制待重编）
+### 2026-10-23 · 引擎版本回退到 R067（源码 + 二进制都已完成）
 
 用户要求「把混淆引擎恢复到 R067」。查明事实：
 
 - R067 = 提交 `56b0755`（2026-10-11，`--bind-executor` 成为默认保护层）时的引擎；
-  锚点 `print("suda") --env-check --bind-executor --bind-env roblox --seed 67067`
+  锚点 `print("suda") --preset v15 --env-check --bind-executor --seed 67067`
   → **229,422 B / `3775f3b5…`**。
 - 之后唯一改变引擎行为的提交是 `af7fc32`（2026-10-19，*Reduce v15 output size*）：
   噪声密度 `/12→/30`、`/5→/15`、活跃比 `1/2→1/3`、诱饵常量 `2–5→1–3`、
   死寄存器 `2–4→2–3`、`junk_n 2→1`、`obf_num` 40bit→28bit。
-  也就是说用户看到的「少 40 KB」是**拿保护换体积**，不是种子抖动。
-- 线上 `web/tools/obsucvim.wasm` 正是 af7fc32 构建（探测输出 212,137 B /
-  `01099ddb…`，与提交信息里的 212,137B 完全一致）。
+  也就是说「少 40 KB」是**拿保护换体积**，不是种子抖动。
+- 那段时间线上 `web/tools/obsucvim.wasm` 正是 af7fc32 构建
+  （探测输出 212,137 B / `01099ddb…`，与提交信息里的 212,137B 一致）。
 
-**已做**：把 `af7fc32` 的 3 个文件反向应用，源码恢复为 R067
-（`git diff af7fc32^ -- obsucvim/src` 为空）；新增
-`web/tools/verify-engine-version.mjs`（按锚点识别引擎构建，服务端启动时也会打印
-`engine build: R067 | af7fc32 | UNKNOWN`）、`web/tools/build-engine-wasm.sh`
-（编译 + 校验锚点 + 安装，锚点不符拒绝安装）、`web/tools/ci/build-engine.yml`
-（GitHub Actions 模板）、`web/docs/ENGINE-VERSION.md`（差异与三种重编路径）。
+**已完成**：
 
-**未做（受阻，如实记录）**：沙箱内无法重编 wasm —— 没有 `rustc/cargo`，
-`static.rust-lang.org` 不可达（curl 返回 000），apt 无权限，npm/PyPI 无可用工具链；
-GitHub Actions 需要 `.github/workflows/` 写权限，本会话的 GitHub App 没有
-`workflows` 权限（push 被拒）。因此**当前部署的二进制仍是 af7fc32**，
-需要用户在本地或 CI 重编后替换；替换后按 `ENGINE-VERSION.md` §6 重新打包与重发。
+1. 把 `af7fc32` 的 3 个文件反向应用，源码恢复为 R067（`git diff af7fc32^ -- obsucvim/src` 为空）；
+2. 用 npm 上的预编译工具链（`@rustbin/rustc-1.88.0` + `rust-std-…-wasm32-wasip1`）
+   **重新编出 wasm 并替换**：`web/tools/obsucvim.wasm` = 1,172,743 B，
+   输出对 R067 锚点**逐字节一致**（229,422 B / `3775f3b5…`）；
+3. 工具链保真性对照：同一套工具链编 af7fc32 源码，复现出旧产物
+   212,137 B / `01099ddb…`（`--bind-env roblox` 参数下）；
+4. 新增 `web/tools/verify-engine-version.mjs`（锚点识别，服务端启动打印
+   `engine build: R067 | af7fc32 | UNKNOWN`）、`web/tools/build-engine-wasm.sh`
+   （编译 + 校验 + 安装，锚点不符拒装）、`web/tools/ci/build-engine.yml`
+   （GitHub Actions 模板）、`web/docs/ENGINE-VERSION.md`（差异表 + 三条重编路径）。
+
+**仍然受阻（如实记录）**：`rustup` 装不了（`static.rust-lang.org` 返回 000）、
+apt 无权限、GitHub Actions 需要 `.github/workflows/` 写权限而本会话的
+GitHub App 没有 `workflows` 权限（push 被拒）。所以 CI 模板只能放在
+`web/tools/ci/`，需要用户手动复制到 `.github/workflows/`。
 
 ### 仍未完成（诚实清单）
 

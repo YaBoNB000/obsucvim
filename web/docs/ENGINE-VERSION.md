@@ -14,7 +14,7 @@
 `af7fc32`（2026-10-19，*Reduce v15 output size: 232KB → 212KB for print("suda")*）
 为了压缩体积，改了 3 个文件、约 12 行，**全部是降低加密噪声密度**：
 
-| 项 | R067 | af7fc32（当前二进制） | 影响 |
+| 项 | R067（当前） | af7fc32（旧二进制） | 影响 |
 | --- | --- | --- | --- |
 | 噪声指令密度 | `base_code_len/12` ~ `/5` | `/30` ~ `/15` | 每个函数的伪指令少 ~2.5 倍 |
 | 活跃噪声比例 | `1/2` | `1/3` | 有效噪声更少 |
@@ -44,16 +44,11 @@ obsucvim/src/vmgen/template.rs   obf_num 40 bit            ← R067
 git diff af7fc32^ -- obsucvim/src
 ```
 
-## 3. 二进制为什么还没换
+## 3. 二进制是怎么换过来的
 
-`obsucvim.wasm` **不在 git 里**（从没有提交过），它是构建产物。本沙箱里：
-
-- `static.rust-lang.org` 不可达（返回 000），`rustup` 装不了；
-- `apt` 无权限；
-- GitHub Actions 需要 `.github/workflows/` 写权限，本会话的 GitHub App 没有
-  `workflows` 权限（push 被拒）。
-
-**最后是从 npm 拿到了预编译工具链**（`registry.npmjs.org` 可达）：
+`obsucvim.wasm` 是构建产物。`rustup` 在沙箱里装不上
+（`static.rust-lang.org` 返回 000），apt 无权限，GitHub Actions 又缺少
+`workflows` 写权限。**最后是从 npm 拿到了预编译工具链**（`registry.npmjs.org` 可达）：
 
 ```bash
 mkdir -p /tmp/tc && cd /tmp/tc && npm init -y
@@ -87,8 +82,8 @@ node web/tools/verify-engine-version.mjs
 ```
 engine   : /…/web/tools/obsucvim.wasm
 probe    : print("suda") --env-check --bind-executor --bind-env roblox --seed 67067
-output   : 212137 bytes  01099ddbb04eb2608ca230b3b7e4ed1af476d2f9afa3a78f43024caa0eda51da
-verdict  : af7fc32 — size reduction: noise halved, junk_n 2->1, obf_num 40->28 bit
+output   : 229422 bytes  3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6
+verdict  : R067 — full noise density (junk_n=2, /12 /5 noise, obf_num 40 bit)
 ```
 
 服务端启动时也会打印一行 `[engine-server] engine build: R067 | af7fc32 | UNKNOWN`。
