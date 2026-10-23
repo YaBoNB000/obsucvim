@@ -56,8 +56,19 @@ const ENGINE_TIMEOUT_MS = 60_000;
  * 之前、和用户代码一起混淆，做同样的探测但**永不报错**，结果以
  * getgenv().OBS_Attested / OBS_Attest 的形式交给脚本，并随验卡上报服务端。
  * 换句话说：证明永远在、证据永远在，但宿主不合规不会让脚本死掉。 */
+/* 两种构建模式，都不是「可选优化」：
+ *   hardening=false → 兼容版：`--env-check --no-bind-executor`
+ *   hardening=true  → 加固版：`--env-check --bind-executor --bind-env roblox`（原始保护，一层不少）
+ * 加固版只有在 loader 的证明层确认宿主支持时才下发，否则会自我投毒。
+ * 注意：引擎的默认值就是绑定执行器，所以两种模式都必须显式写明。 */
+function hardeningEnabled(o) {
+  return Boolean(o && o.hardening === true);
+}
+
 function buildCliArgs(o) {
-  const args = ["--preset", "v15", "--env-check", "--no-bind-executor"];
+  const args = ["--preset", "v15", "--env-check"];
+  if (hardeningEnabled(o)) args.push("--bind-executor", "--bind-env", "roblox");
+  else args.push("--no-bind-executor");
   const seed = normalizeSeed(o.seed);
   if (seed) args.push("--seed", seed);
   args.push(o.minify ? "--minify" : "--no-minify");
@@ -467,10 +478,11 @@ async function obfuscateSource(source, options) {
   }
 }
 
-function saveReleaseFile(scriptId, version, code) {
+function saveReleaseFile(scriptId, version, code, variant) {
   const dir = path.join(RELEASE_DIR, scriptId);
   mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, `${version}.lua`);
+  const suffix = variant ? `.${variant}` : "";
+  const file = path.join(dir, `${version}${suffix}.lua`);
   writeFileSync(file, code, "utf8");
   return file;
 }
@@ -548,6 +560,16 @@ function sweepPublishJobs() {
 }
 
 /* 真正的流水线。调用方已经校验过入参与额度。 */
+/* 每个版本产两份产物，保护一点不丢：
+ *   hard = 原来的完整加固（--env-check + --bind-executor + --bind-env roblox）
+ *   safe = 兼容版（--env-check + --no-bind-executor），任何执行器都能跑
+ * 客户端由 loader 先用证明层判断宿主能力，再决定取哪一份。宿主谎报只会让自己
+ * 拿到跑不起来的 hard 版本，无法借此获得任何好处。 */
+const RELEASE_VARIANTS = [
+  { name: "safe", label: "compatible" },
+  { name: "hard", label: "hardened" },
+];
+
 async function runPublishJob(job, { source, version, options, origin }) {
   try {
     setJobStage(job, "injecting");
@@ -562,27 +584,64 @@ async function runPublishJob(job, { source, version, options, origin }) {
     if (engineMode() === "missing") return failJob(job, "ENGINE_MISSING");
     setJobStage(job, "obfuscating");
     const started = Date.now();
-    const out = await obfuscateSource(guarded, options);
-    if (!out.ok) return failJob(job, out.error, out.detail);
-    job.attempts = out.attempts;
 
-    const code = out.code;
-    const bytes = Buffer.byteLength(code, "utf8");
-    if (bytes > MAX_RELEASE_BYTES) return failJob(job, "RELEASE_TOO_LARGE");
+    const variants = {};
+    let attempts = 0;
+    // 两份产物必须用同一个种子：这样它们只差「加固层」，体积/差异才可比，
+    // 否则随机种子带来的 ±40 KB 抖动会把对比彻底淹没。
+    const pinnedSeed = typeof options.seed === "string" && options.seed.trim()
+      ? options.seed
+      : normalizeSeed("");
+    for (const variant of RELEASE_VARIANTS) {
+      const variantOptions = variant.name === "hard"
+        ? { ...options, seed: pinnedSeed, hardening: true }
+        : { ...options, seed: pinnedSeed, hardening: false };
+      const out = await obfuscateSource(guarded, variantOptions);
+      if (out.ok) {
+        attempts += out.attempts ?? 1;
+        const bytes = Buffer.byteLength(out.code, "utf8");
+        if (bytes > MAX_RELEASE_BYTES) return failJob(job, "RELEASE_TOO_LARGE");
+        variants[variant.name] = {
+          variant: variant.name,
+          label: variant.label,
+          code: out.code,
+          bytes,
+          sha256: createHash("sha256").update(out.code).digest("hex"),
+        };
+        continue;
+      }
+      // safe 版失败 = 这次发布彻底失败；hard 版失败 = 只少一层加固，不拖垮发布。
+      if (variant.name === "safe") {
+        return failJob(job, out.error, out.detail);
+      }
+      job.hardVariantError = out.error;
+    }
+    job.attempts = attempts;
 
     setJobStage(job, "storing");
     const key = `${job.scriptId}:${version}`;
-    const file = saveReleaseFile(job.scriptId, version, code);
-    const sha256 = createHash("sha256").update(code).digest("hex");
+    const primary = variants.safe;
+    const stored = {};
+    for (const [name, data] of Object.entries(variants)) {
+      stored[name] = {
+        variant: name,
+        label: data.label,
+        sha256: data.sha256,
+        size: data.bytes,
+        file: saveReleaseFile(job.scriptId, version, data.code, name),
+      };
+    }
     state.releases[key] = {
       scriptId: job.scriptId,
       ownerEmail: job.ownerEmail,
       version,
-      sha256,
-      size: bytes,
+      // 兼容旧字段：顶层始终指向 compatible 版本
+      sha256: primary.sha256,
+      size: primary.bytes,
       createdAt: now(),
-      file,
+      file: stored.safe.file,
       pipeline: true,
+      variants: stored,
     };
     if (state.scripts[job.scriptId]) state.scripts[job.scriptId].latestVersion = version;
     saveState();
@@ -590,11 +649,16 @@ async function runPublishJob(job, { source, version, options, origin }) {
     job.result = {
       scriptId: job.scriptId,
       version,
-      sha256,
-      size: bytes,
+      sha256: primary.sha256,
+      size: primary.bytes,
       sourceBytes: job.sourceBytes,
       guardedBytes: Buffer.byteLength(guarded, "utf8"),
       elapsedMs: Date.now() - started,
+      variants: Object.fromEntries(
+        Object.entries(stored).map(([name, data]) => [name, {
+          sha256: data.sha256, size: data.size, label: data.label,
+        }]),
+      ),
     };
     job.status = "completed";
     setJobStage(job, "completed");
@@ -603,6 +667,7 @@ async function runPublishJob(job, { source, version, options, origin }) {
     failJob(job, "ENGINE_FAIL", error instanceof Error ? error.message : String(error));
   }
 }
+
 loadState();
 
 // 过期清扫（captchas / codes / sessions）
@@ -3200,10 +3265,15 @@ const server = createServer(async (req, res) => {
     if (!allowed) return json(res, 403, { ok: false, error: "LICENSE_INVALID", code: "KEY_MISSING" });
 
     const release = latestReleaseFor(scriptId);
+    // 变体：hard（完整加固）/ safe（兼容）。缺省走 safe，未知变体一律回落。
+    const wantedVariant = body.variant === "hard" ? "hard" : "safe";
     if (!release) return json(res, 404, { ok: false, error: "RELEASE_NOT_FOUND" });
+    const variantInfo = release.variants && release.variants[wantedVariant]
+      ? release.variants[wantedVariant]
+      : null;
     let code;
     try {
-      code = readFileSync(release.file, "utf8");
+      code = readFileSync(variantInfo ? variantInfo.file : release.file, "utf8");
     } catch {
       return json(res, 500, { ok: false, error: "RELEASE_UNREADABLE" });
     }
@@ -3211,8 +3281,9 @@ const server = createServer(async (req, res) => {
       ok: true,
       scriptId,
       version: release.version,
-      sha256: release.sha256,
-      size: release.size,
+      variant: variantInfo ? variantInfo.variant : "safe",
+      sha256: variantInfo ? variantInfo.sha256 : release.sha256,
+      size: variantInfo ? variantInfo.size : release.size,
       code,
     });
   }

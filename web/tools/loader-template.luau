@@ -178,13 +178,48 @@ if verdict.nonce ~= requestNonce then
 	fail("licence response mismatch")
 end
 
+--[[ 变体选择：每个版本都有两份产物
+	hard = 完整加固（引擎级执行器证明 + Roblox 环境绑定），只有在这台宿主真的
+	       具备那套 API 时才取，否则一加载就自己崩掉；
+	safe = 兼容版，任何人任何执行器都能跑。
+	判断依据是上面证明层的实测结果（不是用户手填），谎报只会拿到硬版本然后崩在自己身上。 ]]
+local attestChecks = type(attestReport) == "table" and attestReport.checks or nil
+local wantsHard = false
+if type(attestChecks) == "table" then
+	wantsHard = attestChecks["executor.debug.depth"] == true
+		and attestChecks["executor.identifyexecutor.answers"] == true
+		and attestChecks["executor.classifies"] == true
+		and attestChecks["roblox.Vector3.new"] == true
+		and attestChecks["roblox.typeof"] == true
+		and attestChecks["roblox.task"] == true
+		and attestChecks["roblox.game.GetService"] == true
+end
+
 local release
+local requestedVariant = wantsHard and "hard" or "safe"
 if verdict.token then
-	release = select(1, post("/api/releases/fetch", { scriptId = SCRIPT_ID, token = verdict.token }))
+	release = select(1, post("/api/releases/fetch", {
+		scriptId = SCRIPT_ID, token = verdict.token, variant = requestedVariant,
+	}))
 else
 	release = select(1, post("/api/releases/fetch", {
-		scriptId = SCRIPT_ID, key = "", hwid = hwid, nonce = nonce(),
+		scriptId = SCRIPT_ID, key = "", hwid = hwid, nonce = nonce(), variant = requestedVariant,
 	}))
+end
+-- 硬版本取不到时回落到兼容版，绝不让用户卡死在「没有产物」。
+if type(release) ~= "table" or type(release.code) ~= "string" then
+	if wantsHard then
+		notify("hardened build unavailable, using the compatible build")
+		if verdict.token then
+			release = select(1, post("/api/releases/fetch", {
+				scriptId = SCRIPT_ID, token = verdict.token, variant = "safe",
+			}))
+		else
+			release = select(1, post("/api/releases/fetch", {
+				scriptId = SCRIPT_ID, key = "", hwid = hwid, nonce = nonce(), variant = "safe",
+			}))
+		end
+	end
 end
 if type(release) ~= "table" or type(release.code) ~= "string" or #release.code < 16 then
 	local code = release and (release.error or release.code)

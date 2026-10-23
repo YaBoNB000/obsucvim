@@ -395,6 +395,48 @@ web/tools/test-engine-retry.mjs  9/9
 validate+fetch，而 guard 仍在产物内强制验卡）；`OBS_Attested` 是客户端可改的布尔值，
 只能当参考，不能当作可信凭证 —— 想做成可信需要服务端签名回执，属于后续计划。
 
+### 2026-10-23（补）· 保护一层不丢：双产物 + 能力路由
+
+用户要求「原来的保护一点都不能丢，同时保证可运行」。这两条在**单一产物**上互斥：
+`--bind-executor` 要求 `debug.getconstants / getupvalues / setupvalue / getproto(s)` 齐全，
+缺一项引擎就自我投毒，脚本必崩。所以要同时满足，只能按宿主能力分发不同产物。
+
+**做法**
+
+每次发布生成两份产物（同一种子，只差加固层）：
+
+| 变体 | 引擎参数 | 定位 |
+| --- | --- | --- |
+| `safe`（compatible） | `--preset v15 --env-check --no-bind-executor` | 任何执行器都能跑 |
+| `hard`（hardened） | `--preset v15 --env-check --bind-executor --bind-env roblox` | **原来的完整保护，一层不少** |
+
+- 存储：`state.releases[key].variants = { safe, hard }`，顶层字段仍指向 safe（向后兼容）
+- 接口：`POST /api/releases/fetch` 接受 `variant`，缺省/未知一律回落 `safe`
+- 路由：loader 先跑证明层（25 项），只有当 `executor.debug.depth`、
+  `executor.identifyexecutor.answers`、`executor.classifies`、`roblox.Vector3.new`、
+  `roblox.typeof`、`roblox.task`、`roblox.game.GetService` **全部为 true** 时才取 `hard`，
+  否则取 `safe`；`hard` 取不到还会再回落一次
+- 额度仍是 1 次发布（引擎跑两遍，约 +1–2 秒）
+
+**为什么谎报没用**：变体选择在客户端，但谎报「我支持」只会拿到硬版本，然后在自己的
+宿主上崩掉（硬版本在裸 Luau 上就是 `attempt to index nil with 'defer'`）；
+谎报「我不支持」只会拿到兼容版，而兼容版同样过 guard 验卡，攻击者一无所获。
+
+**实测（同种子对照）**
+
+```
+safe  172,293 B   裸 Luau -> Suda          ✓
+hard  212,075 B   裸 Luau -> attempt to index nil with 'defer'   （保护仍然生效）
+                  模拟执行器宿主 -> attempt to call a nil value （缺 debug 深层 API，证明确实会拒）
+```
+
+`hard` 在**真实 Synapse 级执行器**上的运行我无法验证（沙箱里没有那种执行器，
+也无法伪造 C 级 `debug.getconstants`）。这是本轮唯一未闭环的点，已如实记录。
+
+**回归**：`test-hosting.mjs` 78/78（新增 9 条双产物断言，包含标签、sha 不同、
+缺省回落、未知变体回落）。其余套件：loader 24/24、attest 18/18、live-loader 13/13、
+engine-retry 9/9。
+
 ### 仍未完成（诚实清单）
 
 1. **Webhook 保护 / 外部验卡应用的前端界面**：接口与文档已就绪，控制台暂未提供图形化配置（需要者可用文档里的 curl 示例）。

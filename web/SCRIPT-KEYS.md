@@ -451,3 +451,22 @@ end
 `validate` 请求会带上 `attested / attestScore / attestTotal / attestMissing`；
 服务端把它们记进指标（`GET /api/auth/metrics` 的 `attested` / `unanattested`）
 和卡密字段（`license.attested`），**不会据此拒绝任何用户**。
+
+
+## 双产物：兼容版 + 加固版（保护一层不丢）
+
+每次发布会生成两份产物（同一种子，只差加固层）：
+
+| 变体 | 引擎参数 | 谁会用 |
+| --- | --- | --- |
+| `safe` / compatible | `--env-check --no-bind-executor` | 任何执行器；默认值 |
+| `hard` / hardened | `--env-check --bind-executor --bind-env roblox` | 证明层确认宿主支持完整 API 时 |
+
+```text
+POST /api/releases/fetch   { scriptId, token, variant: "safe" | "hard" }
+→ { ok, version, variant, sha256, size, code }
+```
+
+- `variant` 缺省或非法值 → 一律返回 `safe`
+- loader 先跑证明层，满足 7 项关键能力才请求 `hard`；取不到自动回落 `safe`
+- 谎报能力只会拿到自己跑不起来的硬版本，没有收益

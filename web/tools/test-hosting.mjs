@@ -271,6 +271,47 @@ async function main() {
       check("batch publish stored the release", (rel.data.releases || []).some((r) => r.version === "v9"));
     }
 
+    /* ---------------- dual artifacts: hardened + compatible ---------------- */
+
+    // 用一次全新的发布来验证（前面的发布已经被后续版本覆盖成「最新版本」）。
+    const dual = await api("POST", "/api/publish", { scriptId, version: "vdual", source: SOURCE }, cookie);
+    let dualJob = null;
+    for (let i = 0; i < 200; i++) {
+      const poll = await api("GET", `/api/publish/${dual.data.jobId}`);
+      dualJob = poll.data;
+      if (dualJob?.status !== "processing") break;
+      await sleep(150);
+    }
+    const dualVariants = dualJob?.result?.variants ?? {};
+    check("publish stores both variants", Boolean(dualVariants.safe) && Boolean(dualVariants.hard),
+      JSON.stringify(Object.keys(dualVariants)));
+    // 体积不是可靠指标（引擎的随机化本身就有 ±40 KB 抖动，同种子下加固层
+    // 也可能让某些段变小）。这里断言的是服务端事实：两个变体各自的标签。
+    check("variants are labelled by protection level",
+      dualVariants.safe?.label === "compatible" && dualVariants.hard?.label === "hardened",
+      `${dualVariants.safe?.label} / ${dualVariants.hard?.label}`);
+
+    const safeFetch = await api("POST", "/api/releases/fetch", { scriptId, token: validate.data.token, variant: "safe" });
+    const hardFetch = await api("POST", "/api/releases/fetch", { scriptId, token: validate.data.token, variant: "hard" });
+    check("compatible variant fetchable", safeFetch.data?.variant === "safe" && safeFetch.data.code.length > 100);
+    check("hardened variant fetchable", hardFetch.data?.variant === "hard" && hardFetch.data.code.length > 100);
+    check("variants differ byte-wise", safeFetch.data.sha256 !== hardFetch.data.sha256);
+    check("variant hashes match the job report",
+      safeFetch.data.sha256 === dualVariants.safe.sha256 &&
+      hardFetch.data.sha256 === dualVariants.hard.sha256,
+      `${String(safeFetch.data.sha256).slice(0, 8)}/${String(dualVariants.safe?.sha256).slice(0, 8)}`);
+    check("hardened payload differs from the compatible one",
+      hardFetch.data.code.length !== safeFetch.data.code.length,
+      `${safeFetch.data.code.length} vs ${hardFetch.data.code.length}`);
+
+    const noVariant = await api("POST", "/api/releases/fetch", { scriptId, token: validate.data.token });
+    check("fetch defaults to the compatible variant", noVariant.data?.variant === "safe");
+
+    const bogusVariant = await api("POST", "/api/releases/fetch", {
+      scriptId, token: validate.data.token, variant: "nonsense",
+    });
+    check("unknown variant falls back to compatible", bogusVariant.data?.variant === "safe");
+
     /* ---------------- attestation is always served with the loader ---------------- */
 
     const loaderText = await fetch(`${BASE}/files/${scriptId}.lua`).then((r) => r.text());

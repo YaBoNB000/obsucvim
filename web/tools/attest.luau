@@ -17,7 +17,7 @@
   docs/HOSTING-V2-PLAN.md — "engine preamble cliff".
 ]]
 
-local OBS_Attest_Report = { ok = false, score = 0, total = 0, missing = {}, checks = {}, source = "loader" }
+local OBS_Attest_Report = { ok = false, score = 0, total = 0, missing = {}, checks = {}, details = {}, source = "loader" }
 do
 	local env = _G
 	pcall(function()
@@ -39,12 +39,14 @@ do
 
 	local function note(name, passed, detail)
 		OBS_Attest_Report.total = OBS_Attest_Report.total + 1
+		-- checks 里只放布尔值：Lua 里 0 是 truthy，混进数字会让调用方判断出错。
 		if passed then
 			OBS_Attest_Report.score = OBS_Attest_Report.score + 1
 			OBS_Attest_Report.checks[name] = true
 		else
-			OBS_Attest_Report.checks[name] = passed == false and (detail or false) or false
+			OBS_Attest_Report.checks[name] = false
 			OBS_Attest_Report.missing[#OBS_Attest_Report.missing + 1] = name
+			if detail ~= nil then OBS_Attest_Report.details[name] = detail end
 		end
 		return passed
 	end
