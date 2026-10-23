@@ -1225,6 +1225,7 @@ pub fn generate(
 	bind_env: Option<&str>,
 	env_slots: Option<&[i64; 4]>,
 	executor_bind: bool,
+	executor_guard: bool,
 	env_check: bool,
 	guard: bool,
 ) -> String {
@@ -2234,7 +2235,7 @@ pub fn generate(
 		} else {
 			(String::new(), 0, false)
 		};
-		let (exg_src, exg_consts) = if executor_bind {
+		let (exg_src, exg_consts) = if executor_guard {
 			let (s, c) = super::exguard::build(rng);
 			(Some(s), Some(c))
 		} else {
@@ -3562,7 +3563,7 @@ let f_ty = fold31("Vector3Vector3");
 		run_soa = String::new();
 		let call_tail = format!(
 			"{}{}",
-			if executor_bind { ", XTOK, XPROBE" } else { "" },
+			if executor_guard { ", XTOK, XPROBE" } else { "" },
 			if env_check { ", EVD" } else { "" }
 		);
 		format!(

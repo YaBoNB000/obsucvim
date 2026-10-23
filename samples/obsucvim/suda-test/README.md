@@ -123,6 +123,11 @@ loadstring,typeof,debug.getconstants,debug.getupvalues,debug.setupvalue
 
 回归脚本：`LUAU_BIN=/path/to/luau python3 web/tools/test-exguard-precheck.py`。
 
+## 逐层定位包
+
+`diagnose/` 下有同源同种子的三层产物（L1 = R066 的层 / L2 = +tier-2 / L3 = R067 完整），
+用来在你的执行器上一次定位是哪一层不过。说明见 `diagnose/README.md`。
+
 ## SHA-256
 
 见 `SHA256SUMS.txt`。

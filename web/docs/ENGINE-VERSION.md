@@ -173,3 +173,30 @@ R067.2 改成：`getgenv()` → 回退 `_G`，`debug` 同样二级回退。单�
 | R067 探测锚点 | 229,422 B / `3775f3b5…` | 230,368 B / `8b43132e…` |
 
 `web/tools/verify-engine-version.mjs` 同时认 R067.1 与 R067 两个锚点。
+
+
+## 8. R066 vs R067：到底多了哪两层（2026-10-23 复核）
+
+同一份 14 B 源码、同种子、同引擎，只用开关隔离：
+
+| 产物 | 开关 | 大小 | 含的层 |
+| --- | --- | --- | --- |
+| R066 等价 | `--env-check --no-executor-guard` | 194,326 B | tier-1 |
+| + tier-2 | 再加 `--bind-env roblox` | 198,045 B | tier-1 + tier-2 |
+| R067 完整 | `--env-check --bind-env roblox` | 215,916 B | tier-1 + tier-2 + exguard |
+
+- **tier-2**（`envcheck::build(rng, tier2)`，条件 `env_check && bind_executor`）要求真实
+  Roblox 语义：`Enum.HumanoidRigType` 的 `FromName/FromValue`、`typeof(Enum)=="Enums"`、
+  `getmetatable(Enum)=="The metatable is locked"`、`Random.new(51018400)` 的精确浮点序列、
+  `task.spawn/delay/cancel/wait`、`game:GetService("RunService")`、`Instance.new("Folder")`
+  的 `GetChildren`/`Destroy` 锁、`clonefunction`。
+- **exguard**（`--bind-executor`，默认开）额外需要执行器 API 与 `debug` 深内省，
+  并在失败时静默投毒（R067.2 起会先报缺失清单）。
+
+两者都是 fail-closed 无 oracle，所以线上表现为「与真实原因无关的随机崩溃」。
+R066 只带 tier-1（纯 Luau），因此在任何 Roblox 客户端都能跑——这就是
+「R066 正常、R067 报错」的全部原因。
+
+**诊断开关**：`--no-executor-guard`（2026-10-23 新增，默认关）可只摘掉 exguard
+而保留 tier-2，用于二分定位。定位包见
+`samples/obsucvim/suda-test/diagnose/`（L1 / L2 / L3 三个文件）。

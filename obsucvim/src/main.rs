@@ -43,6 +43,7 @@ dialect: &'static str,
 	bind_env: Option<String>,
 	bind_executor: bool,
 	bind_given: bool,
+	executor_guard: bool,
 	env_check: bool,
 }
 
@@ -210,6 +211,7 @@ fn main() -> ExitCode {
 	junk_n: 2,
 		bind_env: None,
 		bind_executor: true,
+		executor_guard: true,
 		bind_given: false,
 		env_check: false,
 	};
@@ -309,6 +311,7 @@ fn main() -> ExitCode {
 				opts.bind_executor = false;
 				opts.bind_given = true;
 			}
+			"--no-executor-guard" => opts.executor_guard = false,
 			"--env-check" => opts.env_check = true,
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
@@ -476,6 +479,7 @@ fn main() -> ExitCode {
 				opts.bind_env.as_deref(),
 				env_slots.as_ref(),
 				opts.bind_executor,
+				opts.bind_executor && opts.executor_guard,
 				opts.env_check,
 				opts.do_guard,
 			);
