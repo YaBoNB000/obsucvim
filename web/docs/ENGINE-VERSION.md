@@ -96,7 +96,8 @@ verdict  : R067 — full noise density (junk_n=2, /12 /5 noise, obf_num 40 bit)
 
 | 版本 | 产物大小 | SHA-256 |
 | --- | --- | --- |
-| **R067（当前）** | 229,422 B | `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6` |
+| **R067.1（当前）** | 230,368 B | `8b43132eb0297a9017689acfb3a1f80950b2fc269a62630dc4cb4483c014c8fb` |
+| R067（回退点，无前置自检） | 229,422 B | `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6` |
 | af7fc32（旧） | 229,900 B | `12c2c05b572d5ede5d8992684ed4aa724096f9254b66d81563848b99fd91d638` |
 
 （同一 af7fc32 引擎在发布流水线那种 `--bind-env roblox` 参数下就是 212,137 B / `01099ddb…`。）
@@ -138,3 +139,25 @@ cd web && ./tools/rebuild-package.sh --base releases/Obsucvim-Web-Windows-x64.zi
 ```
 
 然后升级服务器并**重新发布所有脚本**——产物是引擎生成的，不重发就还是旧引擎的字节。
+
+
+## 7. R067.1 变更（2026-10-23）
+
+**问题**：`--bind-executor` 产物在缺 API 的执行器上（如 Delta）不是「拒绝」，而是
+`TRIP()` 投毒后 VM 随机位置崩溃，表现为
+`attempt to perform concatenation on a nil value` —— 与真实原因无关，线上无法诊断。
+
+**改动**：`obsucvim/src/vmgen/exguard.rs` 在生成代码的 `VKC = {}` 之后插入一段只读自检
+（约 680 B，仅出现在 `--bind-executor` 产物中）：逐个 `pcall` 检查
+`identifyexecutor / checkcaller / iscclosure / islclosure / newcclosure / loadstring / typeof`
+与 `debug.getconstants / getupvalues / setupvalue`，缺失则直接 `error()` 给出清单。
+
+**影响面（实测）**：
+
+| 构建 | 改动前 | 改动后 |
+| --- | --- | --- |
+| `--env-check --no-bind-executor`（safe） | 193,044 B | **193,044 B，逐字节一致** |
+| `--env-check --bind-executor`（hard） | 212,089 B | 212,770 B（+681 B） |
+| R067 探测锚点 | 229,422 B / `3775f3b5…` | 230,368 B / `8b43132e…` |
+
+`web/tools/verify-engine-version.mjs` 同时认 R067.1 与 R067 两个锚点。

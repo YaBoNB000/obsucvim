@@ -9,6 +9,10 @@
  *
  * Probe: print("suda") with --preset v15 --env-check --bind-executor --seed 67067
  *
+ *   R067.1  (2026-10-23, R067 + hardened-build precondition: reports the missing
+ *            executor APIs instead of dying silently in the poisoned VM)
+ *           230,368 B  sha256 8b43132eb0297a9017689acfb3a1f80950b2fc269a62630dc4cb4483c014c8fb
+ *
  *   R067    (2026-10-11, full noise density; junk_n=2, /12 /5 noise, obf_num 40 bit)
  *           229,422 B  sha256 3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6
  *
@@ -30,8 +34,14 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R067.1",
+    note: "R067 + hardened-build precondition (clear message instead of poison)",
+    size: 230368,
+    sha256: "8b43132eb0297a9017689acfb3a1f80950b2fc269a62630dc4cb4483c014c8fb",
+  },
+  {
     name: "R067",
-    note: "full noise density (junk_n=2, /12 /5 noise, obf_num 40 bit)",
+    note: "full noise density, no precondition",
     size: 229422,
     sha256: "3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6",
   },

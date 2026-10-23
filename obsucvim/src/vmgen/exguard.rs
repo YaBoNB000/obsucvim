@@ -189,7 +189,12 @@ let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
 		.collect::<Vec<_>>()
 		.join(",");
 
+	// 前置自检：在进入任何"静默投毒"逻辑之前，先把"这台宿主到底缺什么"说出来。
+	// 不加这一段时，缺 API 的宿主会被 TRIP 污染状态，然后在 VM 里随机位置炸掉，
+	// 报出的错误（如 attempt to perform concatenation on a nil value）与真实原因无关，
+	// 线上无法诊断。这里只做"报告"，不做放行：检测到缺失仍然 error() 终止。
 	let mut src = String::new();
+
 	src.push_str(&format!(
 		"return function()\nlocal VKB = {{{}}}\nlocal VKM = {{{}}}\nlocal VKC = {{}}\nlocal function VK(t) local v = VKC[t] if v then return v end local r = VKM[t] if not r then return nil end local s = \"\" for i = 1, r[2] do s = s .. string.char((VKB[r[1] + i - 1] - r[3] - i * r[4]) % 256) end VKC[t] = s return s end\n",
 		bytes_s, desc_s
@@ -199,6 +204,9 @@ let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
 		"return function()\nlocal VKB = {{{}}}\nlocal VKM = {{{}}}\nlocal VKC = {{}}\n",
 		bytes_s, desc_s
 	));
+	src.push_str(
+		"do\nlocal _need = { \"identifyexecutor\", \"checkcaller\", \"iscclosure\", \"islclosure\", \"newcclosure\", \"loadstring\", \"typeof\" }\nlocal _miss = \"\"\nfor _i = 1, #_need do local _ok, _v = pcall(function() return _G[_need[_i]] end) if not _ok or type(_v) ~= \"function\" then _miss = _miss .. _need[_i] .. \",\" end end\nlocal _dbg = nil pcall(function() _dbg = _G.debug end)\nlocal _deep = { \"getconstants\", \"getupvalues\", \"setupvalue\" }\nfor _i = 1, #_deep do local _ok, _v = pcall(function() return _dbg and _dbg[_deep[_i]] end) if not _ok or type(_v) ~= \"function\" then _miss = _miss .. \"debug.\" .. _deep[_i] .. \",\" end end\nif _miss ~= \"\" then error(\"[Obsucvim] hardened build needs a Synapse-class executor; missing: \" .. _miss .. \" use the compatible build (--no-bind-executor) if your executor lacks these\", 0) end\nend\n",
+	);
 	src.push_str(
 		"local _ch\nlocal _why = \"\"\ndo\nlocal function _isch(f)\nlocal _w1 = coroutine.wrap(function() return f(65) end)\nlocal o1, r1 = pcall(_w1)\nif not o1 or r1 ~= \"A\" then return \"65:\" .. tostring(r1) end\nlocal _w2 = coroutine.wrap(function() return f(90) end)\nlocal o2, r2 = pcall(_w2)\nif not o2 or r2 ~= \"Z\" then return \"90:\" .. tostring(r2) end\nlocal _w3 = coroutine.wrap(function() return f(48) end)\nlocal o3, r3 = pcall(_w3)\nif not o3 or r3 ~= \"0\" then return \"48:\" .. tostring(r3) end\nlocal _w4 = coroutine.wrap(function() return f(95) end)\nlocal o4, r4 = pcall(_w4)\nif not o4 or r4 ~= \"_\" then return \"95:\" .. tostring(r4) end\nreturn nil end\nlocal function _scan(t)\nfor _k, _v in pairs(t) do\nif type(_v) == \"function\" then local _rr = _isch(_v) if _rr == nil then return _v end end\nend\nreturn nil end\nlocal _mok, _mt = pcall(getmetatable, \"\")\n_why = \"M=\" .. tostring(_mok) .. \"/\" .. type(_mt)\nif _mok and type(_mt) == \"table\" then\nlocal _sok, _sr = pcall(function()\nlocal r = _scan(_mt)\nif not r then\nfor _k, _v in pairs(_mt) do\nif type(_v) == \"table\" then r = _scan(_v) if r then break end end\nend\nend\nreturn r end)\nif _sok then _ch = _sr end\nend\nif not _ch then\nlocal _eok0, _env0 = pcall(getfenv, 0)\nif _eok0 and type(_env0) == \"table\" then\nlocal _sok2, _sr2 = pcall(function()\nfor _k, _tab in pairs(_env0) do\nif type(_tab) == \"table\" then\nlocal r2 = _scan(_tab)\nif r2 then return r2 end\nend\nend\nreturn nil end)\nif _sok2 then _ch = _sr2 end\nend\nend\nif not _ch then\nlocal _lok0, _lv0 = pcall(function() return (\"\\0\")[\"char\"] end)\nif _lok0 and type(_lv0) == \"function\" then\nlocal _rr0 = _isch(_lv0)\nif _rr0 == nil then _ch = _lv0 else _why = _why .. \";L=\" .. _rr0 end\nelse\n_why = _why .. \";L=\" .. tostring(_lok0) .. \"/\" .. type(_lv0)\nend\nend\nend\nif not _ch then return { 0, function() return 0 end } end\n",
 	);
