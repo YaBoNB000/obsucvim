@@ -9,8 +9,12 @@
  *
  * Probe: print("suda") with --preset v15 --env-check --bind-executor --seed 67067
  *
- *   R067.1  (2026-10-23, R067 + hardened-build precondition: reports the missing
- *            executor APIs instead of dying silently in the poisoned VM)
+ *   R067.2  (2026-10-23, precondition now resolves the executor env: getgenv()
+ *            first, then _G — the R067.1 probe only read _G, so on Delta it
+ *            reported every API as missing, including typeof)
+ *           231,271 B  sha256 8f1b5e21a71e8886704ad79068d8114d386dddd4a9a4145af969b47a984575f5
+ *
+ *   R067.1  (2026-10-23, first precondition: reports missing APIs, but probes _G only)
  *           230,368 B  sha256 8b43132eb0297a9017689acfb3a1f80950b2fc269a62630dc4cb4483c014c8fb
  *
  *   R067    (2026-10-11, full noise density; junk_n=2, /12 /5 noise, obf_num 40 bit)
@@ -33,6 +37,12 @@ const RUNNER = path.join(TOOLS, "wasi-runner.mjs");
 const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
+  {
+    name: "R067.2",
+    note: "precondition resolves getgenv() then _G (accurate missing list)",
+    size: 231271,
+    sha256: "8f1b5e21a71e8886704ad79068d8114d386dddd4a9a4145af969b47a984575f5",
+  },
   {
     name: "R067.1",
     note: "R067 + hardened-build precondition (clear message instead of poison)",

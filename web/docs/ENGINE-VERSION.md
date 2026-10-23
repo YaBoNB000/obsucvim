@@ -96,7 +96,8 @@ verdict  : R067 — full noise density (junk_n=2, /12 /5 noise, obf_num 40 bit)
 
 | 版本 | 产物大小 | SHA-256 |
 | --- | --- | --- |
-| **R067.1（当前）** | 230,368 B | `8b43132eb0297a9017689acfb3a1f80950b2fc269a62630dc4cb4483c014c8fb` |
+| **R067.2（当前）** | 231,271 B | `8f1b5e21a71e8886704ad79068d8114d386dddd4a9a4145af969b47a984575f5` |
+| R067.1（探针只读 `_G`，会误报全部缺失） | 230,368 B | `8b43132eb0297a9017689acfb3a1f80950b2fc269a62630dc4cb4483c014c8fb` |
 | R067（回退点，无前置自检） | 229,422 B | `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6` |
 | af7fc32（旧） | 229,900 B | `12c2c05b572d5ede5d8992684ed4aa724096f9254b66d81563848b99fd91d638` |
 
@@ -141,7 +142,18 @@ cd web && ./tools/rebuild-package.sh --base releases/Obsucvim-Web-Windows-x64.zi
 然后升级服务器并**重新发布所有脚本**——产物是引擎生成的，不重发就还是旧引擎的字节。
 
 
-## 7. R067.1 变更（2026-10-23）
+## 7. R067.1 / R067.2 变更（2026-10-23）
+
+### R067.2：探针必须按执行器真实布局查 API
+
+R067.1 的自检写成 `_G[name]`，但执行器把 API 注入 `getgenv()` 返回的执行器环境，
+Roblox 的 `_G` 是另一张表——于是 Delta 上连 `typeof` 都被报缺失，依然无法诊断。
+
+R067.2 改成：`getgenv()` → 回退 `_G`，`debug` 同样二级回退。单测见
+`web/tools/test-exguard-precheck.py`（三种宿主布局，含「不应误报 `_G` 中存在的 typeof」）。
+
+### R067.1：首次加入前置自检
+
 
 **问题**：`--bind-executor` 产物在缺 API 的执行器上（如 Delta）不是「拒绝」，而是
 `TRIP()` 投毒后 VM 随机位置崩溃，表现为

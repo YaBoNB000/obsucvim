@@ -9,7 +9,7 @@
 | `Suda.lua` | 14 B | 原始源码 `print("Suda")` |
 | `Suda.attested.lua` | ~196 KB | **推荐先测**：证明层 + 诊断 + 兼容版产物（等价线上 loader 在 Delta 上的行为） |
 | `Suda.safe.lua` | 193,044 B | 兼容版（`--env-check --no-bind-executor`） |
-| `Suda.hard.lua` | 217,189 B | 加固版（`--env-check --bind-executor --bind-env roblox`），R067.1 完整保护 + 明确报错 |
+| `Suda.hard.lua` | 215,916 B | 加固版（`--env-check --bind-executor --bind-env roblox`），R067.2 完整保护 + 精确报错 |
 
 ## 预期输出
 
@@ -63,7 +63,7 @@ RUN=1 ... ./web/tools/check-artifact-syntax.sh      # 顺便在 CLI 里跑一遍
 | --- | --- | --- | --- |
 | `Suda.lua` | 14 B | OK | `Suda` |
 | `Suda.safe.lua` | 193,044 B | OK | `Suda` |
-| `Suda.hard.lua` | 217,189 B | **OK** | 被拒：`attempt to index nil with 'defer'`（环境绑定按设计拒绝裸 Luau） |
+| `Suda.hard.lua` | 215,916 B | **OK** | 被拒：`attempt to index nil with 'defer'`（环境绑定按设计拒绝裸 Luau） |
 | `Suda.attested.lua` | 200,990 B | OK | `Suda`（前面多一行证明诊断） |
 
 **语法通过 ≠ 能跑**：`hard` 语法完全合法，但在没有 Roblox/executor API 的宿主上会被
@@ -96,6 +96,32 @@ use the compatible build (--no-bind-executor) if your executor lacks these
 （仓库文档原本就写着「正面运行等价未验证」）。沙箱里用 C 级宿主（`iscclosure` 为真）
 也只能得到拒判或挂起，所以目前只能保证「拒绝时给出可读原因」，不能保证「Delta 上能通过」。
 要让 hard 版在 Delta 上真正跑通，需要拿它输出的 `missing:` 清单逐项对齐。
+
+## 2026-10-23 第二轮 · 报错清单为什么全亮了
+
+第一版前置自检上线后，Delta 上得到：
+
+```
+missing: identifyexecutor,checkcaller,iscclosure,islclosure,newcclosure,
+loadstring,typeof,debug.getconstants,debug.getupvalues,debug.setupvalue
+```
+
+`typeof` 也被报缺失——这在任何 Roblox 客户端都不可能。说明**探针本身读错了环境**：
+
+- 自检查的是 `_G[name]`
+- 但执行器把 API 注入到 `getgenv()` 返回的**执行器环境**；Roblox 的 `_G` 是另一张共享表
+- 所以 `_G.identifyexecutor` 本来就是 nil，全部被判缺失
+
+**R067.2 修复**：自检先取 `getgenv()`，取不到才回退 `_G`，查表也同样二级回退；
+`debug` 也一样。用三种宿主布局做了单测（`web/tools/test-exguard-precheck.py`）：
+
+| 宿主 | 期望 | 结果 |
+| --- | --- | --- |
+| API 全在 `getgenv()`、`_G` 空白（真实执行器） | 通过 | PASS |
+| 只有 `debug.getconstants`（Delta 类） | 只报 `debug.getupvalues,debug.setupvalue` | PASS |
+| 空环境 | 报全部，且不误报 `_G` 里存在的 `typeof` | PASS |
+
+回归脚本：`LUAU_BIN=/path/to/luau python3 web/tools/test-exguard-precheck.py`。
 
 ## SHA-256
 
