@@ -9,6 +9,10 @@
  *
  * Probe: print("suda") with --preset v15 --env-check --bind-executor --seed 67067
  *
+ *   R067.3  (2026-10-23, tier-2 no longer vetoes on implementation-specific values:
+ *            Random exact floats and exact Luau parser wording became structural)
+ *           230,177 B  sha256 70fbc8bb3f5303f4c1d4e279aaecea74bc649fb4068a8026d4aa9bf68c0e4c14
+ *
  *   R067.2  (2026-10-23, precondition now resolves the executor env: getgenv()
  *            first, then _G — the R067.1 probe only read _G, so on Delta it
  *            reported every API as missing, including typeof)
@@ -37,6 +41,12 @@ const RUNNER = path.join(TOOLS, "wasi-runner.mjs");
 const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
+  {
+    name: "R067.3",
+    note: "tier-2 structural (no exact PRNG floats / parser wording)",
+    size: 230177,
+    sha256: "70fbc8bb3f5303f4c1d4e279aaecea74bc649fb4068a8026d4aa9bf68c0e4c14",
+  },
   {
     name: "R067.2",
     note: "precondition resolves getgenv() then _G (accurate missing list)",

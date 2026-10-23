@@ -264,20 +264,50 @@ do
 	if RandomV == nil then pcall(function() RandomV = _G.Random end) end
 	add("  Random type        : %s", type(RandomV))
 	if type(RandomV) == "table" and type(RandomV.new) == "function" then
+		-- 注意：R067.3 起不再比对精确浮点（执行器 PRNG 实现不同属正常），
+		-- 只判定「是确定性 PRNG 且取值域正确」。
 		local okN, r = pcall(RandomV.new, 51018400)
 		if okN and r ~= nil then
-			local n1 = "ERR"
 			local ok1, v1 = pcall(function() return r["NextNumber"](r) end)
-			n1 = ok1 and string.format("%.17g", v1) or tostring(v1)
-			add("  NextNumber #1      : %s   (期望 0.9598971928030796)", n1)
-			t2("random_first", ok1 and tostring(v1) == "0.9598971928030796")
+			local n1 = ok1 and string.format("%.17g", v1) or tostring(v1)
+			add("  NextNumber #1      : %s   [0,1) ? %s", n1,
+				tostring(ok1 and type(v1) == "number" and v1 >= 0 and v1 < 1))
+			t2("random_range", ok1 and type(v1) == "number" and v1 >= 0 and v1 < 1)
 			local ok2, v2 = pcall(function() return r["NextInteger"](r, 189, 1164) end)
-			add("  NextInteger(189,1164): %s   (期望 889)", ok2 and tostring(v2) or ("ERR " .. tostring(v2)))
-			t2("random_integer", ok2 and v2 == 889)
+			add("  NextInteger(189,1164): %s   integer & in-range ? %s",
+				ok2 and tostring(v2) or ("ERR " .. tostring(v2)),
+				tostring(ok2 and type(v2) == "number" and math.floor(v2) == v2 and v2 >= 189 and v2 <= 1164))
+			t2("random_integer", ok2 and type(v2) == "number" and math.floor(v2) == v2 and v2 >= 189 and v2 <= 1164)
 			local ok3, v3 = pcall(function() return r["NextNumber"](r) end)
-			add("  NextNumber #2      : %s   (期望 0.027539190730015265)",
-				ok3 and string.format("%.17g", v3) or tostring(v3))
-			t2("random_second", ok3 and tostring(v3) == "0.027539190730015265")
+			add("  NextNumber #2      : %s   advanced ? %s",
+				ok3 and string.format("%.17g", v3) or tostring(v3),
+				tostring(ok3 and type(v3) == "number" and v3 >= 0 and v3 < 1 and v3 ~= v1))
+			t2("random_advances", ok3 and type(v3) == "number" and v3 >= 0 and v3 < 1 and v3 ~= v1)
+			-- 同种子确定性 + Clone 语义 + 不同种子不同序列
+			local sA = 1234567
+			local dOk, rA, rB = pcall(function()
+				local x = RandomV.new(sA)
+				local y = RandomV.new(sA)
+				return x, y
+			end)
+			local sameSeed = false
+			if dOk and rA and rB then
+				local v1ok, va = pcall(function() return rA["NextNumber"](rA) end)
+				local v2ok, vb = pcall(function() return rB["NextNumber"](rB) end)
+				sameSeed = v1ok and v2ok and va == vb
+			end
+			add("  same seed equal    : %s   (期望 true)", tostring(sameSeed))
+			t2("random_deterministic", sameSeed)
+			local sC = sA + 1
+			local sOk, rC = pcall(RandomV.new, sC)
+			local diff = false
+			if sOk and rC then
+				local v1ok, va = pcall(function() return RandomV.new(sA)["NextNumber"](RandomV.new(sA)) end)
+				local v2ok, vb = pcall(function() return rC["NextNumber"](rC) end)
+				diff = v1ok and v2ok and va ~= vb
+			end
+			add("  diff seed differs  : %s   (期望 true)", tostring(diff))
+			t2("random_seed_sensitive", diff)
 		else
 			add("  Random.new(51018400) 失败: %s", tostring(r))
 		end
@@ -293,9 +323,11 @@ do
 		add("  task.spawn         : ok=%s thread=%s ran=%s", tostring(okS), type(th), tostring(zf))
 		local okD, dth = pcall(taskV.delay, 86400, function() end)
 		add("  task.delay         : ok=%s thread=%s", tostring(okD), type(dth))
+		local okC = false
 		if okD then
-			local okC, cerr = pcall(taskV.cancel, dth)
-			add("  task.cancel        : ok=%s err=%s", tostring(okC), tostring(cerr))
+			local okC2, cerr = pcall(taskV.cancel, dth)
+			okC = okC2
+			add("  task.cancel        : ok=%s err=%s", tostring(okC2), tostring(cerr))
 		end
 		local okW, werr = pcall(taskV.wait, {})
 		add("  task.wait(table)   : ok=%s   (期望 ok=false，会报错)", tostring(okW))
@@ -317,6 +349,15 @@ do
 		end)
 		add("  game:GetService    : ok=%s type=%s", tostring(okG), type(svc))
 		t2("game_getservice", okG and svc ~= nil)
+		-- 方法必须用冒号：点调用传 nil self 必须报错；冒号调用必须成功
+		local dotOk, dotErr = pcall(function() return svc["IsStudio"](nil) end)
+		add("  Service.IsStudio(nil) : ok=%s err_type=%s   (期望 ok=false, string)",
+			tostring(dotOk), type(dotErr))
+		t2("member_dot_errors", (not dotOk) and type(dotErr) == "string" and #tostring(dotErr) > 0)
+		local colonOk, colonVal = pcall(function() return svc:IsStudio() end)
+		add("  Service:IsStudio()    : ok=%s type=%s   (期望 ok=true, boolean)",
+			tostring(colonOk), type(colonVal))
+		t2("member_colon_works", colonOk and type(colonVal) == "boolean")
 	end
 	local InstanceV = nil
 	pcall(function() InstanceV = ENV.Instance end)
@@ -330,6 +371,11 @@ do
 			local okD = pcall(function() folder["Destroy"](folder) end)
 			add("  Destroy            : ok=%s", tostring(okD))
 			t2("instance_folder", okI and okC and type(kids) == "table" and #kids == 0)
+			-- 销毁后重新挂父必须报错（不再校验错误文案，只看是否拒绝）
+			local lockOk, lockErr = pcall(function() folder["Parent"] = workspace end)
+			add("  reparent destroyed : ok=%s err_type=%s   (期望 ok=false, string)",
+				tostring(lockOk), type(lockErr))
+			t2("instance_destroy_locked", (not lockOk) and type(lockErr) == "string")
 		end
 	end
 	local wsV = nil
@@ -377,9 +423,10 @@ do
 end
 local t2fail = {}
 for _, name in ipairs({ "enum_identity", "enum_fields", "enum_typeof", "enum_metatable",
-	"random_first", "random_integer", "random_second",
+	"random_range", "random_integer", "random_advances", "random_deterministic", "random_seed_sensitive",
 	"task_spawn", "task_delay_cancel", "task_wait_errors",
-	"game_getservice", "instance_folder" }) do
+	"game_getservice", "member_dot_errors", "member_colon_works",
+	"instance_folder", "instance_destroy_locked" }) do
 	if T2[name] ~= true then t2fail[#t2fail + 1] = name end
 end
 add("  tier-2 未通过项 : %s", #t2fail > 0 and table.concat(t2fail, ",") or "(全通过)")

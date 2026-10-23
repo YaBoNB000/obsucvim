@@ -200,3 +200,37 @@ R066 只带 tier-1（纯 Luau），因此在任何 Roblox 客户端都能跑—�
 **诊断开关**：`--no-executor-guard`（2026-10-23 新增，默认关）可只摘掉 exguard
 而保留 tier-2，用于二分定位。定位包见
 `samples/obsucvim/suda-test/diagnose/`（L1 / L2 / L3 三个文件）。
+
+
+## 9. R067.3：tier-2 去掉「实现敏感」的否决项（2026-10-23）
+
+用户执行 `Obsucvim-Doctor.lua` 的实测报告（Delta 1.1.743.1136）给出了决定性证据：
+
+```
+缺失执行器 API : (无)        缺失 debug 深内省 : (无)
+Enum 三项全部通过（含 getmetatable == "The metatable is locked"）
+tier-2 未通过项 : random_first, random_integer, random_second
+  NextNumber #1 : 0.19639633043786484   (官方 Roblox: 0.9598971928030796)
+  NextInteger   : 563                   (官方: 889)
+```
+
+即：**Delta 的 `Random` 是另一套 PRNG 实现**。tier-2 却把官方 PRNG 的精确浮点写成了
+否决条件 —— 这不是在识别作弊，是在拿实现差异当作弊，结果整份产物被投毒。
+
+同类问题还有两处，一并修掉：
+
+| 位置 | 旧判定 | 新判定（版本无关） |
+| --- | --- | --- |
+| `g_random` | `NextNumber == 0.9598971928030796` / `NextInteger == 889` / 第二个值精确相等 | 值域 `[0,1)`、整数且在区间内、第二次取值有推进、同种子可复现、`Clone` 语义、不同种子不同序列（6 项） |
+| `g_member` | 错误文案必须包含 `"Expected ':' not '.'"` | 点调用必须报错且返回字符串；**新增**冒号调用必须成功且返回 boolean |
+| `g_instance` | 错误文案必须包含 `"locked"` | 销毁后重新挂父必须被拒绝（报错且为字符串） |
+
+保留不动的部分：Enum 身份/字段/`typeof`/元表（Delta 实测全过）、`task` 语义、
+`Instance` 的 `GetChildren`/`Connection` 生命周期、17 项 tier-1 常量与身份全等。
+
+**影响面**：`safe`（`--no-bind-executor`）**逐字节不变**（193,044 B / `c8659801…`）；
+`hard` 变 217,206 B / `3372aeb0…`；引擎锚点 230,177 B / `70fbc8bb…`。
+
+**诚实边界**：这三处从「否决」降级为「结构判定」，强度确实略降——一个能正确实现
+`Random` 语义的伪造环境现在能过这三项。但换来的是：不再因为执行器 PRNG 实现不同
+而把正常用户全部杀掉。这是权衡，不是免费的加强。

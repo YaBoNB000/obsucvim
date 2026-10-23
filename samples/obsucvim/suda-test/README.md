@@ -128,6 +128,20 @@ loadstring,typeof,debug.getconstants,debug.getupvalues,debug.setupvalue
 `diagnose/` 下有同源同种子的三层产物（L1 = R066 的层 / L2 = +tier-2 / L3 = R067 完整），
 用来在你的执行器上一次定位是哪一层不过。说明见 `diagnose/README.md`。
 
+## 2026-10-23 第三轮 · tier-2 的三处实现敏感判定已改为结构判定
+
+Delta 的 Doctor 报告显示：执行器 API 与 `debug` 深内省**全部齐全**，Enum 全过，
+唯一失败的是 `Random` —— 因为 Delta 用自己的 PRNG（`0.19639633043786484` vs 官方
+`0.9598971928030796`）。tier-2 原来把这个差异当成「环境被篡改」，直接投毒。
+
+R067.3 把三处改成版本无关判定（详见 `web/docs/ENGINE-VERSION.md` §9）：
+
+| 位置 | 旧 | 新 |
+| --- | --- | --- |
+| `Random` | 精确浮点相等 | 值域 / 整数性 / 推进 / 同种子可复现 / Clone / 种子敏感（6 项） |
+| 方法调用 | 错误文案含 `"Expected ':' not '.'"` | 点调用必须报错 + **冒号调用必须成功**（更严的一方反而更稳） |
+| 销毁锁 | 错误文案含 `"locked"` | 重新挂父必须被拒绝 |
+
 ## SHA-256
 
 见 `SHA256SUMS.txt`。

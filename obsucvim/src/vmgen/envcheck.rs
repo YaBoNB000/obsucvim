@@ -192,15 +192,22 @@ d=(d*{p2}+(k5 and 0 or 1))%{m}",
 }
 
 fn g_random(rng: &mut Rng) -> String {
+	// 只做「结构/语义」判定，不比对精确浮点。Delta 这类执行器把 Random 用另一套
+	// PRNG 实现（实测 seed 51018400 首个值 0.19639633043786484，而官方是
+	// 0.9598971928030796），比对数值等于把执行器实现差异当成作弊。
 	let s1 = rng.int(1, 2_147_483_646);
 	let s2 = rng.int(1, 2_147_483_646);
+	let s3 = rng.int(1, 2_147_483_646);
 	format!(
 		"local z6=Random.new(51018400)
-local k6=(z6[\"NextNumber\"](z6)==0.9598971928030796)
+local z6a=z6[\"NextNumber\"](z6)
+local k6=(type(z6a)==\"number\" and z6a>=0 and z6a<1)
 d=(d*{p1}+(k6 and 0 or 1))%{m}
-local k7=(z6[\"NextInteger\"](z6,189,1164)==889)
+local z6b=z6[\"NextInteger\"](z6,189,1164)
+local k7=(type(z6b)==\"number\" and math.floor(z6b)==z6b and z6b>=189 and z6b<=1164)
 d=(d*{p2}+(k7 and 0 or 1))%{m}
-local k8=(z6[\"NextNumber\"](z6)==0.027539190730015265)
+local z6c=z6[\"NextNumber\"](z6)
+local k8=(type(z6c)==\"number\" and z6c>=0 and z6c<1 and z6c~=z6a)
 d=(d*{p3}+(k8 and 0 or 1))%{m}
 local z7=Random.new({s1}) local z8=Random.new({s1})
 local k9=(z7[\"NextNumber\"](z7)==z8[\"NextNumber\"](z8))
@@ -209,14 +216,19 @@ local z9=Random.new({s2}) z9[\"NextNumber\"](z9)
 local za=z9[\"Clone\"](z9) local zb=za[\"NextNumber\"](za)
 local zc=za[\"Clone\"](za) local zd=zc[\"NextNumber\"](zc) local ze=za[\"NextNumber\"](za)
 local k10=(zd==ze)
-d=(d*{p5}+(k10 and 0 or 1))%{m}",
+d=(d*{p5}+(k10 and 0 or 1))%{m}
+local zt=Random.new({s3}) local zw=Random.new({s3}+1)
+local k11=(zt[\"NextNumber\"](zt)~=zw[\"NextNumber\"](zw))
+d=(d*{p6}+(k11 and 0 or 1))%{m}",
 		p1 = mul(rng),
 		p2 = mul(rng),
 		p3 = mul(rng),
 		p4 = mul(rng),
 		p5 = mul(rng),
+		p6 = mul(rng),
 		s1 = s1,
 		s2 = s2,
+		s3 = s3,
 		m = MOD,
 	)
 }
@@ -242,16 +254,23 @@ d=(d*{p3}+(k13 and 0 or 1))%{m}",
 }
 
 fn g_member(rng: &mut Rng) -> String {
+	// 「点调用方法必须报错」这一条保留（语义），但不再依赖官方 Luau 的精确错误文案
+	// （"Expected ':' not '.'"）。不同执行器的解析器文案不同，Delta 的报错格式
+	// 就与官方不一致；拿文案当否决权 = 版本一换就全灭。
 	format!(
 		"local zm=game:GetService(\"RunService\")
-local zn,zo=pcall(zm[\"IsStudio\"], nil)
-local k14=(not zn and type(zo)==\"string\" and string.find(zo, \"Expected ':' not '.'\", 1, true)~=nil)
+local zn,zo=pcall(function() return zm[\"IsStudio\"](nil) end)
+local k14=(not zn and type(zo)==\"string\" and #zo>0)
 d=(d*{p1}+(k14 and 0 or 1))%{m}
-local zp,zq=pcall(game.GetChildren, nil)
-local k15=(not zp and type(zq)==\"string\" and string.find(zq, \"Expected ':' not '.'\", 1, true)~=nil)
-d=(d*{p2}+(k15 and 0 or 1))%{m}",
+local zk,zl=pcall(function() return zm:IsStudio() end)
+local k14b=(zk and type(zl)==\"boolean\")
+d=(d*{p2}+(k14b and 0 or 1))%{m}
+local zp,zq=pcall(function() return game.GetChildren(nil) end)
+local k15=(not zp and type(zq)==\"string\" and #zq>0)
+d=(d*{p3}+(k15 and 0 or 1))%{m}",
 		p1 = mul(rng),
 		p2 = mul(rng),
+		p3 = mul(rng),
 		m = MOD,
 	)
 }
@@ -270,7 +289,7 @@ k17=k17 and zv[\"Connected\"]==false
 d=(d*{p2}+(k17 and 0 or 1))%{m}
 zr[\"Destroy\"](zr)
 local zx,zy=pcall(function() zs[\"Parent\"]=zr end)
-local k18=(not zx and type(zy)==\"string\" and string.find(zy, \"locked\", 1, true)~=nil)
+local k18=(not zx and type(zy)==\"string\" and #zy>0)
 d=(d*{p3}+(k18 and 0 or 1))%{m}",
 		p1 = mul(rng),
 		p2 = mul(rng),
@@ -399,9 +418,9 @@ mod tests {
 		for needle in [
 			"Enum.HumanoidRigType",
 			"Random.new(51018400)",
-			"0.9598971928030796",
+			"math.floor(z6b)==z6b",
 			"task.spawn(function()",
-			"\"Expected ':' not '.'\"",
+			"zm:IsStudio()",
 			"Instance.new(\"Folder\")",
 			"_G[\"clonefunction\"]",
 			"local q2=(game==r18",
