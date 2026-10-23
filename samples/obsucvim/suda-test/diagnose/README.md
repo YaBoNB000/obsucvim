@@ -1,5 +1,35 @@
 # R066 vs R067 差异定位包
 
+## 0. 先跑这一个：`Obsucvim-Doctor.lua`
+
+**整段粘贴进执行器运行即可**，它不会报错、不改任何东西：
+
+- 逐项探测执行器 API（并区分 API 在 `getgenv()` 还是 `_G`）
+- 探测闭包分类 `iscclosure(print)`（exguard 第 9/14 号闸门）
+- 探测 `debug.getconstants/getupvalues/setupvalue/getproto` 的**真实调用结果**
+- 逐条复现 tier-2 的 Roblox 语义判定（Enum 身份 / `Random` 精确浮点 / `task` / `Instance` / `GetService`）
+- 打印报告，**自动复制到剪贴板**，末尾给一行 `RESULT:` 摘要
+
+把 `RESULT:` 那行（或剪贴板全部内容）发给我，就能直接定位到是哪一层、哪一项。
+
+`RESULT` 字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `tier2_fail=[...]` | tier-2 环境检查里**没通过**的项（空 = 全过）。常见：`enum_metatable`、`random_first`、`random_second` |
+| `missing_api=[...]` | 执行器缺的 API（exguard 需要） |
+| `missing_debug=[...]` | 缺的 `debug` 深内省（Synapse 级才有） |
+| `genv_eq_G` | `getgenv() == _G`？`false` 说明 API 在执行器自己的环境里 |
+
+三个常见结论：
+
+- `tier2_fail` 非空 → R067 的 tier-2 在你这台机器上不成立（`Random` 精确序列、`Enum` 元表最敏感）
+- `missing_debug` 非空 → `hard` 版永远跑不了，只能用兼容版
+- 两者都空但仍失败 → 把完整报告发我，继续看 exguard 的其余闸门
+
+---
+
+
 用途：在**你的执行器**上逐层跑，一次定位到底哪一层坏了。
 三个文件同源（`print("Suda")`）、同种子（20261023）、同引擎（R067.2），只差防护层。
 
