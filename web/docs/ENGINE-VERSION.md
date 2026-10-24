@@ -349,3 +349,22 @@ upvalue，M/N/P/Q 闸只能靠真执行器给出首份证据。
 闸门编号；③（可选）`Suda.hard.lua` 直接实测；④（可选）GateProbe 全输出。
 诚实边界：PREDICT 是逐闸独立求值的风险集；引擎按 precheck→PROBE→CIDENT→SCHALL→
 seal/ATTEST 顺序执行，真机首次拒绝只落在顺序最先的那道闸。
+
+## 14. 里程碑：hard 在真 Delta 全闸门通过（2026-10-24，用户实测）
+
+用户实测回传：R067.5 的 `Suda.L2-tier2.lua`（tier-2 + bind-env）与
+`Suda.hard-trace.lua`（完整加固 + 闸门编号插桩）在真 Delta 1.1.743.1136 上
+**均正常打印 `Suda`**。trace 构建与 hard 仅差 XF 插桩，故 SCHALL 全闸门（含
+C 环境分离、D 金丝雀、J 反向 debug、M `setupvalue` 真改、N `getproto`、P/Q
+`loadstring`/`newcclosure` 语义）在真 Delta 上**首次全部正向通过**；
+tier-2 的 R067.5 修复（冒号 → 方括号）在真机上同样成立。
+此前 §12/§13 的「待真机验证」至此闭环。
+
+同日产物 `samples/obsucvim/kkksu-test/`：`print("kkksu")` 的手测双产物
+（safe 191,800 B / hard 214,663 B，同种子 20261024，与发布流水线同构、
+仅缺服务端许可守卫注入）。沙箱验证：safe 裸跑与高保真 mock 均打印 `kkksu`；
+hard 在 mock 上精确拒绝四项深内省缺失（与 GateProbe 预测逐字一致）。
+预期真 Delta 上两者均打印 `kkksu`。
+
+下一步：用户在控制台用 R067.5 包发布线上版本（服务端 safe+hard 双产物、
+loader/attest 按宿主能力路由），完成端到端验证。
