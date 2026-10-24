@@ -32,3 +32,22 @@
 
 沙箱自检：三件套均过 `luau-compile`；safe 件在高保真 prelude 下打印 `kkksu`。
 hard 件与 R067.5 一样，只该在真 Delta / 真 Roblox 系宿主上跑。
+
+## 追加：b82f14f + 已定位修复 = 现版（2026-10-24 收尾实锤）
+
+应用户要求把已定位错误点外科移植进 b82f14f 引擎：`exguard.rs`（R067.4 precheck
+判定集 / DTBL 走 LKP / CIDENT CENV 容错）与 `envcheck.rs`（R067.3 门槛剔除 +
+R067.5 方括号修复）整文件替换为现版内容；`main.rs` / `template.rs` 的
+`--no-executor-guard` 开关接线仅服务诊断分层，hard 构建不需要，故不引入。
+重编 wasm（1,174,976 B）后同参数重新混淆 `print("kkksu")`（seed 20261024）：
+
+| 件 | 大小 | SHA-256 |
+| --- | ---: | --- |
+| 修复后 b82f14f hard（`Kkksu.b82f14f-fixed.hard.lua`） | 214,663 B | `3ede3ab1c992…` |
+| 现版 R067.5 `Kkksu.hard.lua` | 214,663 B | `3ede3ab1c992…` |
+
+**逐字节相同（`cmp` 实证）。** 即：把定位好的错误点修进旧引擎后，旧引擎产出与
+现版完全一致——「R067 前引擎」与「R067.5」的 VM 核心同体再次获得构建级证明。
+该件已通过 `luau-compile` 语法检查，并在 prelude（缺深内省宿主）上精确报出
+四项缺失清单——与现版行为逐字一致。真 Delta 无需重测：它与今天已通过
+SCHALL 全闸门的构建同源同字节。
