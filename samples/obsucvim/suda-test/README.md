@@ -9,7 +9,7 @@
 | `Suda.lua` | 14 B | 原始源码 `print("Suda")` |
 | `Suda.attested.lua` | ~196 KB | **推荐先测**：证明层 + 诊断 + 兼容版产物（等价线上 loader 在 Delta 上的行为） |
 | `Suda.safe.lua` | 193,044 B | 兼容版（`--env-check --no-bind-executor`） |
-| `Suda.hard.lua` | 215,171 B | 加固版（`--env-check --bind-executor --bind-env roblox`），R067.4 完整保护 + 精确报错 |
+| `Suda.hard.lua` | 217,216 B | 加固版（`--env-check --bind-executor --bind-env roblox`），R067.5 完整保护 + 精确报错 |
 
 ## 预期输出
 
@@ -63,13 +63,13 @@ RUN=1 ... ./web/tools/check-artifact-syntax.sh      # 顺便在 CLI 里跑一遍
 | --- | --- | --- | --- |
 | `Suda.lua` | 14 B | OK | `Suda` |
 | `Suda.safe.lua` | 193,044 B | OK | `Suda` |
-| `Suda.hard.lua` | 215,171 B | **OK** | 被拒：`attempt to index nil with 'defer'`（环境绑定按设计拒绝裸 Luau） |
+| `Suda.hard.lua` | 217,216 B | **OK** | 被拒：`attempt to index nil with 'defer'`（环境绑定按设计拒绝裸 Luau） |
 | `Suda.attested.lua` | 200,990 B | OK | `Suda`（前面多一行证明诊断） |
 
 **语法通过 ≠ 能跑**：`hard` 语法完全合法，但在没有 Roblox/executor API 的宿主上会被
 加固层主动拒绝——这是 `--bind-env roblox` 的设计目的，不是语法错误。
 
-同种子重生成逐字节一致（`--seed 20261023`：safe `c8659801…`、hard `85751a9a…`）。
+同种子重生成逐字节一致（`--seed 20261023`：safe `c8659801…`、hard `0369d02a…`）。
 
 ## 2026-10-23 · hard 版报错定位与修复
 
@@ -160,3 +160,25 @@ R067.3 把三处改成版本无关判定（详见 `web/docs/ENGINE-VERSION.md` �
 深闸门是否全部通过**仍待真机实测**——特别是闸门 14 用 `debug.getproto(fn,1)`
 探子函数，Delta 对无子函数报 `out of proto bounds`（正常），对带子函数的
 探针是否返回真 proto，只有真机知道。若仍失败，把新的控制台输出整段发回。
+
+## 2026-10-24 第五轮 · 真凶是 R067.3 自己引入的（R067.5）
+
+真机分叉实测：safe 正常打印 → VM 核心无辜；L2（tier-2，无 exguard）崩 → 与守卫无关。
+R067.3 把 member 检查改成「冒号调用必须成功」时用了**冒号方法语法** `svc:IsStudio()`，
+而注入片段会过 `sanitize_frag`：非全局对象的方法名一律被改名（产物里变成
+`svc:tk()`）→ 冒号调用永败 → tier-2 折叠值与编译期模型不符 → **任何宿主必投毒**。
+即：tier-2 自从 R067.3 起在真 Roblox/真 Delta 上就没有通过的可能——与执行器无关，
+是我自己的低级错误。R067.4 的 precheck 修复（exguard 侧）本身没有问题。
+
+修法：冒号调用改回方括号字符串形式 `svc["IsStudio"](svc)`。同时发现 bind-env 还需要
+`Vector2.new`（沙箱 prelude 缺失时也炸同一位置，已记入宿主对照清单）。
+
+**分层尺寸（R067.5，同种子 20261023）**：safe 193,044 B（safe 仍逐字节不变）/
+L1（tier-2）195,146 B / L2（+bind-env）197,033 B / hard（+exguard）217,216 B。
+引擎锚点（`--env-check --bind-executor`）：231,237 B / `f11a6cea…`（R067.5）。
+
+**沙箱首次正向验证（真实 Luau + 高保真 Roblox 宿主 mock）**：
+L2 打印 `Suda`（tier-2/bind-env 史上第一次正向跑通）；hard 在缺深内省的宿主上
+精确报出四项缺失，无误报。exguard 的 SCHALL 深闸门能否在真 Delta 上全过，
+仍需真机：先跑 L2 应打印 `Suda`，再跑 `diagnose/Suda.hard-trace.lua`
+（带闸门编号的定位版），把输出发回。

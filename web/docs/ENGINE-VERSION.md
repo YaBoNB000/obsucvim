@@ -286,3 +286,40 @@ value`（TRIP 投毒的次生杂讯）崩溃。需要闸门级定位 → 启用 
 产物：`samples/obsucvim/suda-test/diagnose/Suda.hard-trace.lua`（215,558 B，同种子 20261023），
 每道闸门炸掉时报 `(字母-随机串)`，字母表见 diagnose/README.md。已在沙箱验证链路：
 假宿主深内省造假时正确炸出 H 闸（细节串显示 `cn:Service:Players`，正是假宿主被识破的点）。
+
+## 12. R067.5：tier-2 恒投毒的总根因（2026-10-24）
+
+真机分叉（用户实测）：`Suda.safe.lua` 在 Delta **正常打印 Suda**（VM 核心无辜）；
+`Suda.L2-tier2.lua`（tier-2 + bind-env，无 exguard）崩 `attempt to call a nil value` →
+问题在 tier-2 层而非 exguard。沙箱成功复现同型错误后，在导出的模板源码里看到：
+
+```lua
+local bJ=game:GetService("RunService") ... pcall(function() return bJ:tk() end)
+```
+
+R067.3 把 member 检查改成「冒号调用必须成功」时写了 `svc:IsStudio()` **冒号方法语法**，
+而注入片段会过 `sanitize_frag`：非保留字、非「全局.字段」形态的标识符一律文本改名
+（`IsStudio` → `tk`）。冒号调用从此必然失败 → tier-2 的折叠值 `oqf` 与编译期模型不符
+→ **任何宿主上 tier-2 都投毒**。即级联事故：R067.3 修 tier-2 时把 sanitize 规则忘了，
+R067.4 修的 precheck 是 exguard 侧的另一处同类问题（两处均正确）。
+
+修复（envcheck.rs）：`svc["IsStudio"](svc)` 方括号字符串形式（与方法名查找语义等价，
+但 sanitize 不碰字符串内容）。层模型校正（此前文档把开关记反了）：
+
+| 开关组合 | 开启的层 | R067.5 尺寸（同种子 20261023） |
+| --- | --- | --- |
+| `--no-bind-executor` | tier-1 | 193,044 B（仍逐字节不变） |
+| `--bind-executor --no-executor-guard` | tier-1 + tier-2（L1） | 195,146 B |
+| 同上 + `--bind-env roblox` | + Roblox 绑定 CENVPROBE（L2） | 197,033 B |
+| 再加 exguard | 完整（L3/hard） | 217,216 B |
+
+**沙箱首次正向验证**（真实 Luau + 高保真 Roblox 宿主 mock，`luau-roblox-prelude.luau`
+已升级：Random(LCG)/Enum/RunService.IsStudio/Instance 生命周期/Vector2/Vector3
+`__tostring`/task.spawn,delay 返回 thread）：L2 打印 `Suda`（tier-2/bind-env 史上
+第一次正向跑通）；hard 在缺深内省宿主上继续精确报四项缺失清单。bind-env 的 env_slots
+内建集 = `Vector3.new` / `Vector2.new` / `task.defer` / `typeof`（宿主对照清单）。
+锚点 R067.5：231,237 B / `f11a6cea20548681635f81e0d7e6c84987a12c0dbd5b4f8ab1ec81df72205c42`。
+
+**诚实边界**：exguard SCHALL 深闸门在真机上的正向跑通仍未验证（trace 版闸门编号
+定位件 `diagnose/Suda.hard-trace.lua` 就绪）。沙箱 mock 里 `setupvalue` 无法真改
+upvalue，M/N/P/Q 闸只能靠真执行器给出首份证据。

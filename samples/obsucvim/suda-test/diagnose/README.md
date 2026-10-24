@@ -31,14 +31,14 @@
 
 
 用途：在**你的执行器**上逐层跑，一次定位到底哪一层坏了。
-三个文件同源（`print("Suda")`）、同种子（20261023）、同引擎（R067.4），只差防护层。
+三个文件同源（`print("Suda")`）、同种子（20261023）、同引擎（R067.5），只差防护层。
 
 | 文件 | 大小 | 开启的层 | 期望 |
 | --- | --- | --- | --- |
-| `Suda.L1-tier1.lua` | 194,326 B | tier-1 环境检查（= **R066** 的层） | 应打印 `Suda` |
-| `Suda.L2-tier2.lua` | 198,045 B | tier-1 + **tier-2**（Roblox 语义检查） | 待测 |
-| `Suda.L3-full.lua` | 215,171 B | tier-1 + tier-2 + **exguard**（= **R067.4**） | 待真机复测 |
-| `Suda.hard-trace.lua` | 215,558 B | 同 L3，但 exguard 每道闸门炸掉时带**编号** | 真机定位专用 |
+| `Suda.L1-tier1.lua` | 195,146 B | tier-1 + **tier-2**（`--bind-executor`，无 Roblox 绑定） | 应打印 `Suda` |
+| `Suda.L2-tier2.lua` | 197,033 B | tier-1 + tier-2 + **bind-env**（Roblox 绑定） | 沙箱高保真宿主已正向跑通；真机待复测 |
+| `Suda.L3-full.lua` | 217,216 B | tier-1 + tier-2 + bind-env + **exguard**（= **R067.5**） | 待真机复测 |
+| `Suda.hard-trace.lua` | 215,458 B | 同 L3，但 exguard 每道闸门炸掉时带**编号** | 真机定位专用 |
 
 ## 怎么用
 
@@ -59,15 +59,16 @@
 | 层 | R066 | R067 | 依赖什么 |
 | --- | --- | --- | --- |
 | L1 tier-1 环境检查 | ✅ | ✅ | 纯 Luau：`buffer` / `bit32` / `string` / 元表 / 协程 / `freeze` / `loadstring` |
-| L2 tier-2 环境检查 | ❌ | ✅ | **Roblox 语义**：`Enum.HumanoidRigType` 的 `FromName/FromValue`、`typeof(Enum)=="Enums"`、`getmetatable(Enum)=="The metatable is locked"`、`Random.new(51018400)` 的**精确浮点**序列、`task.spawn/delay/cancel/wait` 语义、`game:GetService("RunService")`、`Instance.new("Folder")` 的 `GetChildren`/`Destroy` 锁、`clonefunction` |
+| L2 tier-2 环境检查 | ❌ | ✅ | **Roblox 语义**：`Enum.HumanoidRigType` 的 `FromName/FromValue`、`typeof(Enum)=="Enums"`、`getmetatable(Enum)=="The metatable is locked"`、`Random.new(51018400)` 的**结构判定**（R067.3 起：值域/整数性/推进/同种子/Clone/种子敏感，不再比精确浮点）、`task.spawn/delay/cancel/wait` 语义、`game:GetService("RunService")`、`Instance.new("Folder")` 的 `GetChildren`/`Destroy` 锁、`clonefunction` |
 | L3 exguard 执行器认证 | ❌ | ✅ | **执行器 API**：`identifyexecutor` / `checkcaller` / `iscclosure` / `islclosure` / `newcclosure` / `loadstring` / `typeof` + `debug.getconstants` / `getupvalues` / `setupvalue` / `getproto(s)`，还要求能把 C 闭包与 Lua 闭包区分开 |
 
 实测差异（同一份 14 B 源码、同种子）：
 
 ```
-R066 等价产物（--env-check --no-executor-guard）      194,326 B
-+ tier-2                                           198,045 B  (+3,719)
-+ exguard（= R067.4 完整）                          215,171 B  (+16,833)
+R066 等价产物（--no-bind-executor，tier-1）           193,044 B
++ tier-2（--bind-executor，L1）                     195,146 B  (+2,102)
++ Roblox 绑定（--bind-env roblox，L2）              197,033 B  (+1,887)
++ exguard（= R067.5 完整，L3/hard）                 217,216 B  (+20,183)
 ```
 
 引擎源码里 `tier-2` 的开关条件是 `env_check && executor_bind`，

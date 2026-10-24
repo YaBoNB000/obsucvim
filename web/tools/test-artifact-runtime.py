@@ -106,7 +106,23 @@ def main():
 
             check(f"default config seed {seed}: source text is gone", "suda" not in artifact)
 
-        # 2. hardening stays opt-in, and this documents *why* it is opt-in
+        # 2. bind-env 分层（tier-1+tier-2+Roblox 绑定，无 exguard）在高保真宿主上必须
+        #    跑通。R067.3/4 时代这层从未在任何宿主上正向跑通过（`:IsStudio()` 被
+        #    sanitize_frag 改名导致恒投毒），R067.5 起此为固定回归。
+        artifact, error = build(
+            work, BASE_FLAGS + ["--bind-executor", "--bind-env", "roblox", "--no-executor-guard"],
+            "20261022", "tier2")
+        if artifact is None:
+            check("tier-2/bind-env config: engine produced output", False, error)
+        else:
+            target = work / "prelude-tier2.luau"
+            target.write_text(PRELUDE.read_text() + "\n" + artifact)
+            rc, out = run_luau(luau, target)
+            check("tier-2/bind-env config runs on a faithful Roblox host",
+                  rc == 0 and out == EXPECTED, out[:120])
+
+        # 3. exguard：本 prelude 故意不带 debug 深内省，hard 必须给出精确缺失清单
+        #    （而不是静默投毒随机崩）。
         artifact, error = build(work, BASE_FLAGS + HARDENING_FLAGS, "20261022", "hard")
         if artifact is None:
             check("hardening config: engine produced output", False, error)
@@ -114,8 +130,10 @@ def main():
             target = work / "prelude-hard.luau"
             target.write_text(PRELUDE.read_text() + "\n" + artifact)
             rc, out = run_luau(luau, target)
-            check("hardening config is NOT safe by default (expected to fail here)",
-                  rc != 0, out[:120])
+            missing_ok = ("lacks APIs" in out and "debug.getconstants" in out
+                          and "debug.setupvalue" in out and "identifyexecutor" not in out)
+            check("hardening config refuses with the accurate missing list",
+                  rc != 0 and missing_ok, out[:140])
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

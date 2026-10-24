@@ -262,7 +262,7 @@ fn g_member(rng: &mut Rng) -> String {
 local zn,zo=pcall(function() return zm[\"IsStudio\"](nil) end)
 local k14=(not zn and type(zo)==\"string\" and #zo>0)
 d=(d*{p1}+(k14 and 0 or 1))%{m}
-local zk,zl=pcall(function() return zm:IsStudio() end)
+local zk,zl=pcall(function() return zm[\"IsStudio\"](zm) end)
 local k14b=(zk and type(zl)==\"boolean\")
 d=(d*{p2}+(k14b and 0 or 1))%{m}
 local zp,zq=pcall(function() return game.GetChildren(nil) end)
@@ -420,7 +420,7 @@ mod tests {
 			"Random.new(51018400)",
 			"math.floor(z6b)==z6b",
 			"task.spawn(function()",
-			"zm:IsStudio()",
+			"zm[\\\"IsStudio\\\"](zm)",
 			"Instance.new(\"Folder\")",
 			"_G[\"clonefunction\"]",
 			"local q2=(game==r18",

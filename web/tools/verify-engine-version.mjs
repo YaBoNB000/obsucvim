@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R067.5",
+    note: "tier-2 colon member-check uses bracket form (sanitize-rename universal poison fixed)",
+    size: 231237,
+    sha256: "f11a6cea20548681635f81e0d7e6c84987a12c0dbd5b4f8ab1ec81df72205c42",
+  },
+  {
     name: "R067.4",
     note: "exguard precheck via guard bindings (no bare getgenv); DTBL via LKP; CIDENT CENV-tolerant",
     size: 231496,
