@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R071",
+    note: "V17 Phase-1a + --super-insn 演练门面（默认关；on/off 产物字节与 R069/R070 完全相同，差异仅在 wasm 内部规划码）",
+    size: 231571,
+    sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a",
+  },
+  {
     name: "R070",
     note: "v16-a --key-host 固化恒开（--no-key-host 移除；产物字节与 R069 相同，差异仅在 CLI）",
     size: 231571,

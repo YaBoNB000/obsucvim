@@ -2,6 +2,7 @@
 pub mod compiler;
 pub mod envcheck;
 pub mod exguard;
+pub mod fuse;
 pub mod handlers;
 pub mod isa;
 pub mod strpool;

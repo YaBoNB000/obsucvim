@@ -521,3 +521,27 @@ attest 18、live-loader 13、engine-retry 9。
 部署：增量升级第二件换成 R070 wasm（见 §18 路径；engine-server.mjs 本轮也随
 KNOWN 表更新）。回退口径修正：R070 起「无钥产物」只剩守卫链不齐的构建形态
 （safe/tier-2 变体），发布管线 hard 变体不再有「去钥」选项——这正是拍板语义。
+
+## 20. R071：V17 Phase-1a `--super-insn` 演练门面（2026-10-24）
+
+V17 函数级超指令融合的编译期数据流引擎第一刀：新模块 `obsucvim/src/vmgen/fuse.rs`
+（白名单 5 对、FUSE_TOP_K=4、滑窗统计 BTreeMap、确定性选词 tie-break、leaders
+禁融的塌缩器 `collapse` + 分支槽位重映射、`plan()` 演练门面），经
+`Ctx { super_insn }` / `compile_chunk` / `compile` 签名贯穿，CLI 新增
+`--super-insn`（默认关）。演练性质：**结果跑完即弃、零 rng 消费、不碰发射端**，
+所以：
+
+- on/off 四配置实测逐字节恒等；off 态锚点件 231,571 B `6c22c008…` 与
+  R069/R070 相同（verify/engine-server KNOWN 表 R071 置顶、同锚点并列，差异仅在
+  wasm 内部新增规划码）。
+- 单测层 `rustc --test` 53 绿（新增 fuse_tests 6 项；顺带修 compiler.rs 三处
+  陈旧测试夹具的 5 参 compile_chunk 调用、envcheck 一根残留旧转义层级的
+  IsStudio 针——两者均为夹具陈旧，引擎语义零改动）。
+- 全套件复验全绿：artifact-runtime 27、keyhost-fold、exguard-precheck、
+  hosting 78、loader 24、attest 18、live-loader 13、engine-retry 9。
+
+R071 引擎 wasm：1,216,279 B / `267e127b74d2c99f85b70c6c58938e7e04c96359604053144cefd9a1d9983685`。
+（体积较 R070 +36 KB：新增规划器代码进 wasm 属预期；产物字节不受 wasm 体积影响。）
+
+掌握事实以真树为准：V17 计划文档 §3-§7 为 Phase-1a 落地后的现状与设计，
+§8 仅剩「翻默认」「体积预算」「窗口 3」三项未决。

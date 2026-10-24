@@ -420,7 +420,7 @@ mod tests {
 			"Random.new(51018400)",
 			"math.floor(z6b)==z6b",
 			"task.spawn(function()",
-			"zm[\\\"IsStudio\\\"](zm)",
+			"zm[\"IsStudio\"](zm)",
 			"Instance.new(\"Folder\")",
 			"_G[\"clonefunction\"]",
 			"local q2=(game==r18",

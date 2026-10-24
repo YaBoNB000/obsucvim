@@ -46,6 +46,7 @@ dialect: &'static str,
 	executor_guard: bool,
 	env_check: bool,
 	key_host: Option<String>,
+	super_insn: bool,
 }
 
 fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
@@ -183,6 +184,10 @@ Options:
                          绑定态产物只做语法校验。非 v15 管线自动降级为关闭。
   --no-bind-executor     显式关闭 executor 认证绑定（等价于 2026-10-11 前
                          的默认产物；运行等价测试矩阵用此旗标）。
+  --super-insn           V17 函数级超指令融合（试验旗标，默认关）：按每个函数
+                         的指令流数据统计/选择可安全融合的相邻对。P1-a 阶段仅
+                         运行编译期数据流引擎（统计/选择/塌缩/pc 重映射演练，
+                         发射端 P1-b 接线）；off/on 产物字节恒等。
   --key-host <delta>     v16-a 转录绑定解码钥（仅 v15 + executor 守卫，
                          **R070 起固化为底层、恒开**；此旗标保留仅为兼容，
                          与不传等价）：把宿主观测值（Vector3 tostring/
@@ -225,6 +230,7 @@ fn main() -> ExitCode {
 		bind_given: false,
 		env_check: false,
 		key_host: None,
+		super_insn: false,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -332,6 +338,7 @@ fn main() -> ExitCode {
 				}
 				opts.key_host = Some(args[i].clone());
 			}
+			"--super-insn" => opts.super_insn = true,
 			"--no-key-host" => {
 				eprintln!(
 					"error: --no-key-host was removed in R070\n  \
@@ -501,7 +508,8 @@ fn main() -> ExitCode {
 				.and_then(vmgen::exguard::keyhost_profile);
 			let vm_raw = std::env::var("OBSUCVIM_VM_RAW").is_ok();
 			let (mut block, mut table, v15_done) = if opts.do_vm {
-			let program = vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15);
+			let program =
+				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn);
 			let n = program.fns.len();
 			let carrier_bytes: Vec<Vec<u8>> = program
 				.fns

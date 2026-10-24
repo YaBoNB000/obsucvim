@@ -61,6 +61,7 @@ struct Ctx<'a> {
 	symtab: &'a crate::symtab::SymTable,
 	lua51: bool,
 	scatter: bool,
+	super_insn: bool,
 	next_fn_slot: usize,
 	scopes: Vec<HashMap<SymId, CellKind>>,
 	upvals: HashMap<SymId, u16>,
@@ -158,6 +159,7 @@ impl<'a> Ctx<'a> {
 		symtab: &'a crate::symtab::SymTable,
 		lua51: bool,
 		scatter: bool,
+		super_insn: bool,
 	) -> Ctx<'a> {
 		Ctx {
 			program,
@@ -165,6 +167,7 @@ impl<'a> Ctx<'a> {
 			symtab,
 			lua51,
 			scatter,
+			super_insn,
 			next_fn_slot: 0,
 			scopes: vec![HashMap::new()],
 			upvals: HashMap::new(),
@@ -774,6 +777,11 @@ impl<'a> Ctx<'a> {
 		}
 		leaders.sort_unstable();
 		leaders.dedup();
+		if self.super_insn {
+			// V17 P1-a：编译期数据流引擎演练（统计/选择/塌缩/pc 重映射，纯函数零 rng）。
+			// 发射端 P1-b 接线；本轮结果丢弃——on/off 产物字节恒等由「从不改动输入流」保证。
+			let (_vocab, _fused_len) = super::fuse::plan(&self.code, &leaders);
+		}
 		if self.scatter {
 			noise_audit(&format!(
 				"fn={} seed={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={} chaff={}",
@@ -1242,6 +1250,7 @@ fn compile_chunk(
 	rng: &mut Rng,
 	lua51: bool,
 	scatter: bool,
+	super_insn: bool,
 ) -> VmProgram {
 	let total = count_fns_count(block);
 	let has_loadstr = crate::vmgen::strseal::contains_sealed_literals(block);
@@ -1318,7 +1327,7 @@ fn compile_chunk(
 	{
 		let main_index = program.fns.len();
         program.s_indices[main_index] = if scatter { rng.int(0, 3) as u8 } else { 0 };
-        let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter);
+        let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter, super_insn);
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
 		let (bytes, nops, osum, osum2, chaff, blocks) = ctx.finish(nregs, main_index);
@@ -2446,6 +2455,7 @@ let _ = has_vararg;
 			labels: HashMap::new(),
 			loops: Vec::new(),
 			cell_loops: Vec::new(),
+			super_insn: self.super_insn,
 		};
 		for (i, s) in ups.iter().enumerate() {
 			child.upvals.insert(*s, i as u16);
@@ -2590,8 +2600,9 @@ pub fn compile(
 	rng: &mut Rng,
 	lua51: bool,
 	scatter: bool,
+	super_insn: bool,
 ) -> VmProgram {
-	compile_chunk(block, table, rng, lua51, scatter)
+	compile_chunk(block, table, rng, lua51, scatter, super_insn)
 }
 
 #[cfg(test)]
@@ -2749,7 +2760,7 @@ mod dbg {
 		};
 		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
 		let mut rng = crate::rng::Rng::new(77);
-		let program = compile_chunk(&block, &table, &mut rng, false, true);
+		let program = compile_chunk(&block, &table, &mut rng, false, true, false);
 		assert!(program.has_loadstr);
 		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
 		assert!(strings.iter().any(|s| s == &expected_cipher));
@@ -2812,7 +2823,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true, false);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -2922,7 +2933,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(7);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, false);
 		let mut saw_scattered_operand = false;
 		let tags = &prog.section_tags;
 		for (fi, b) in prog.fns.iter().enumerate() {
