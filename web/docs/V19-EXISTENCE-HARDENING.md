@@ -164,3 +164,25 @@
 
 - 真机回传 v19-check 两件 → Bind 公式确认 → 再拍 M1（R6+R3+R5）是否开工、
   EVKEY 何时翻默认。
+
+## 8. 原型一阶段真机 R1 回传与 v2 修复（2026-10-25 晚）
+
+**回传**：对照件（knob 关）真 Delta 正常 ✓；evkey 件（v1）真机挂死 ✗。
+
+**定案**：探针取值通道错误——v1 用 `getfenv(1)` 拷贝表（构建层既有 `EV`），
+而 Delta 注入面（Vector3/typeof/checkcaller/identifyexecutor）在 `getgenv()`
+侧；exguard 既有 `LKP` 自始至终是 **getgenv() 优先、getfenv(0) 兜底**。
+v1 EVK=0 ≠ 4576808 → blob LCG 失步 → 装载期死循环。
+教训留档：**凡镜像 exguard 测量，必须连取值通道一起镜像，不能只镜像算式。**
+
+**v2 修复**（commit 本文档同轮）：
+1. 探针改走 LKP 同源：`getgenv()` → `getfenv(0)` 两级查找；
+2. fail-fast：探针整体失败（非真环境缺 API）→ 干净拒绝文案（与闸同一 UX），
+   不再挂死；值在但不对（hook 环境）→ 仍静默失步（投毒语义保留）。
+3. 本地复验：DEV 件 luau 打印正确；Bind 件裸 luau 干净拒绝（非挂起）；
+   旋钮关锚点 R073 恒等（171,881B `b67a06e3…`）；单测 59 绿；
+   verify/artifact-runtime/exguard-precheck 全绿。
+
+**待回传（v2）**：`samples/obsucvim/v19-check/kkksu-mini.v19evkey.hard.lua`
+（172,358B sha `f6c1f45e…`）真 Delta 结果；异常则跑 `diag-evk.lua`
+（明文诊断，逐行 OK/MISMATCH），按 k2a/k2b/k3c/EVK 四值定位。

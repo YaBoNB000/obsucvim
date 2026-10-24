@@ -2,13 +2,28 @@
 
 两件同种子（20261025）、同输入（`src-kkksu-mini.lua`，斐波那契打印）：
 
-| 件 | 构建 | 裸 luau（预期） | 真 Delta（待回传） |
+| 件 | 构建 | 裸 luau（已实测） | 真 Delta（待回传） |
 |---|---|---|---|
-| `kkksu-mini.v19evkey.hard.lua` (171,582B, sha `55f0ea78…`) | `--preset v15 --env-check --bind-executor` + `OBSUCVIM_V19_EVKEY=1` | 不执行（失步挂起，无输出） | **=关键验证点**：正常打印 `kkksu-mini:1,1,...55` ⇒ EVK 探针公式与真机一致；拒绝/挂起 ⇒ 公式需修 |
-| `kkksu-mini.v19ctl.hard.lua` (169,171B, sha `80044d24…`) | 同上但旋钮关（=R073 形态） | 精确缺 API 拒绝（既有行为） | 正常打印（对照组） |
+| `kkksu-mini.v19evkey.hard.lua` (172,358B, sha `f6c1f45e…`) | `--preset v15 --env-check --bind-executor` + `OBSUCVIM_V19_EVKEY=1` | **干净拒绝**（缺 API 文案，不挂死） | **关键验证点**：正常打印 `kkksu-mini:1,1,...55` ⇒ 探针公式与真机一致；拒绝/挂起 ⇒ 跑诊断件 |
+| `kkksu-mini.v19ctl.hard.lua` (169,171B, sha `80044d24…`) | 同上但旋钮关（=R073 形态） | 精确缺 API 拒绝（既有行为） | 正常打印（对照组，已验收 ✓） |
+| `diag-evk.lua` (2,407B 明文诊断) | — | 打印各通道存在性与折叠值 | 判据：k2a=1143546169 / k2b=1317214663 / k3c=22 / EVK=4576808 |
 
-真机回传口径：各回一句「正常打印 / 拒绝 / 挂起 / 其他（报错原文）」即可。
-两件都正常 ⇒ R4 通道成立，EVKEY 可进入 M1/M2 排期讨论；
-evkey 件异常 ⇒ 探针与 exguard 测量有异，寄回 trace 件排查。
+## v2 修复说明（2026-10-25 晚）
+
+初代 evkey 件真机挂死定案：探针取 `getfenv(1)` 拷贝表，而 Vector3/checkcaller/
+identifyexecutor 在 Delta 注入在 `getgenv()` 侧（exguard 的 LKP 正是 getgenv
+优先）→ EVK=0 ≠ 4576808 → blob 失步挂死。修复：
+
+1. 取值通道镜像 exguard `LKP`——`getgenv()` 优先、`getfenv(0)` 兜底；
+2. fail-fast：探针整体缺失（非真环境）→ 干净拒绝文案，不再挂死；
+   值在但被改（hook 环境）→ 仍静默失步（投毒语义不变）。
+
+本地复验：DEV 件 luau 打印正确；Bind 件裸 luau 干净拒绝；锚点 R073 恒等；单测 59 绿。
+
+## 真机回传口径（v2）
+
+- `kkksu-mini.v19evkey.hard.lua`（v2）：正常打印 = **修复成立**；干净拒绝/挂死
+  = 仍有异 → 跑 `diag-evk.lua` 把输出原样发回（逐行有 OK/MISMATCH 标注）。
+- 对照件已验收，无需重跑。
 
 纪律：Dev 档（`OBSUCVIM_V19_EVKEY_DEV`）产物零安全性，严禁交付。
