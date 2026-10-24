@@ -275,3 +275,14 @@ tier-2 未通过项 : random_first, random_integer, random_second
 **未验证（照旧诚实标注）**：SCHALL 其余闸门对真 Delta 的正向跑通仍待用户实测——
 特别是闸门 14 的 `debug.getproto(fn,1)`（Doctor 显示 Delta 对无子函数会报
 `out of proto bounds`）。R067.4 只保证：**该过的 precheck 不再误报；拒绝时原因准确**。
+## 11. XF 诊断通道修复（2026-10-24）
+
+R067.4 真机首测：precheck 未再误报，但产物在闸门后以 `attempt to get length of a nil
+value`（TRIP 投毒的次生杂讯）崩溃。需要闸门级定位 → 启用 `OBSUCVIM_EXG_TRACE` 时才发现
+该通道从未被实际编译过：XF 错误串的两个分支括号都写错了（if 支 `") "`、else 支 `")"`），
+生成的 Lua 根本无法解析。已修两处；`wasi-runner.mjs` 顺带支持 `cfg.env` / `cfg.preopens`
+透传（服务端不传，行为不变）。非 trace 产物与 R067.4 锚点**逐字节一致**。
+
+产物：`samples/obsucvim/suda-test/diagnose/Suda.hard-trace.lua`（215,558 B，同种子 20261023），
+每道闸门炸掉时报 `(字母-随机串)`，字母表见 diagnose/README.md。已在沙箱验证链路：
+假宿主深内省造假时正确炸出 H 闸（细节串显示 `cn:Service:Players`，正是假宿主被识破的点）。

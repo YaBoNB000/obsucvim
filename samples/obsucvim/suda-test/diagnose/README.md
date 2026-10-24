@@ -38,6 +38,7 @@
 | `Suda.L1-tier1.lua` | 194,326 B | tier-1 环境检查（= **R066** 的层） | 应打印 `Suda` |
 | `Suda.L2-tier2.lua` | 198,045 B | tier-1 + **tier-2**（Roblox 语义检查） | 待测 |
 | `Suda.L3-full.lua` | 215,171 B | tier-1 + tier-2 + **exguard**（= **R067.4**） | 待真机复测 |
+| `Suda.hard-trace.lua` | 215,558 B | 同 L3，但 exguard 每道闸门炸掉时带**编号** | 真机定位专用 |
 
 ## 怎么用
 
@@ -96,3 +97,30 @@ R067.2 已经给 exguard 加了前置自检（会说清缺哪个 API）。tier-2
 
 `--no-executor-guard` 是 2026-10-23 新增的诊断开关（默认关闭 = 默认行为不变），
 用于把 exguard 从 tier-2 里摘出来单独验证。
+
+## `Suda.hard-trace.lua`：真机闸门定位版（2026-10-24）
+
+在 Delta 跑它。报错形如：
+
+```
+Luau: The debug library is required on Luau platforms. Please open a support ticket. (R-wioh) true/142
+```
+
+**伪装文案是故意的**（不让旁观者看出是混淆器的守卫），有用的是括号里的
+`字母-四位随机串`（以及冒号后的细节）。把整段发回来即可。字母 → 闸门：
+
+| 字母 | 闸门 | 字母 | 闸门 |
+| --- | --- | --- | --- |
+| A | 字符解码链 | K | `getconstants` 返回表 |
+| B | API 类型总检 | L | `getupvalues` 返回表 |
+| C | `getgenv() ≠ getfenv(0)` | M | `setupvalue` 真改 upvalue |
+| D | env 金丝雀 | N | `getproto(s)` 子函数枚举 |
+| E | `identifyexecutor` | O | `loadstring` 坏源拒载 |
+| F | `checkcaller` | P | `loadstring` 常量核对 |
+| G | Roblox 全局类型 | Q | `newcclosure` 包装 |
+| H | Roblox 深探（带细节） | R | 总开关/转录哈希 |
+| I | 原语 C 闭包判定 | T | ATTEST 最终对账 |
+| J | 反向 debug 探针 | U | 投毒链路 |
+
+注意：**没打出任何 `(X-…)` 就崩**（例如 `attempt to ... nil`）说明死在闸门之外的
+杂讯层，把那一整段也发回来。

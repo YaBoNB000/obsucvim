@@ -464,7 +464,7 @@ end
 			.map(|i| (b'a' + ((tns >> (i * 5)) % 26) as u8) as char)
 			.collect();
 		let xf = format!(
-			"return function()\nlocal XFM = {{\"A\",\"B\",\"C\",\"D\",\"E\",\"F\",\"G\",\"H\",\"I\",\"J\",\"K\",\"L\",\"M\",\"N\",\"O\",\"P\",\"Q\",\"R\",\"S\",\"T\",\"U\"}}\nlocal function XF(c, d) if d ~= nil then error(\"Luau: The debug library is required on Luau platforms. Please open a support ticket. (\" .. XFM[c] .. \"-\" .. \"{}\") \" .. tostring(d), 0) else error(\"Luau: The debug library is required on Luau platforms. Please open a support ticket. (\" .. XFM[c] .. \"-\" .. \"{}\")\", 0) end end\n",
+			"return function()\nlocal XFM = {{\"A\",\"B\",\"C\",\"D\",\"E\",\"F\",\"G\",\"H\",\"I\",\"J\",\"K\",\"L\",\"M\",\"N\",\"O\",\"P\",\"Q\",\"R\",\"S\",\"T\",\"U\"}}\nlocal function XF(c, d) if d ~= nil then error(\"Luau: The debug library is required on Luau platforms. Please open a support ticket. (\" .. XFM[c] .. \"-\" .. \"{}\" .. \") \" .. tostring(d), 0) else error(\"Luau: The debug library is required on Luau platforms. Please open a support ticket. (\" .. XFM[c] .. \"-\" .. \"{}\" .. \")\", 0) end end\n",
 			trace_tag, trace_tag
 		);
 		fixed = fixed.replacen("return function()\n", &xf, 1);

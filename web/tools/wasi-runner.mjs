@@ -15,8 +15,8 @@ try {
   const wasi = new WASI({
     version: "preview1",
     args: ["obsucvim", ...cfg.args],
-    env: {},
-    preopens: { "/work": cfg.workDir },
+    env: cfg.env && typeof cfg.env === "object" ? cfg.env : {},
+    preopens: { "/work": cfg.workDir, ...(cfg.preopens && typeof cfg.preopens === "object" ? cfg.preopens : {}) },
     stdin: 0,
     stdout: 1,
     stderr: 2,
