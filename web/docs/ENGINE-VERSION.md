@@ -496,3 +496,28 @@ engine-retry 9。live-loader/hosting 走发布管线 → 证明管线在默认�
 `C:\Obsucvim\tools\` 同名文件并重启即完成升级。整包（runtime/node.exe+nodemailer
 Windows 底座）重出**暂缺底座**（旧 zip 从未入库、沙箱快照已清、邮检白名单够不到
 nodejs.org），待底座恢复后重出并更新 `Update-Obsucvim.ps1` 配套哈希。
+
+## 19. R070：delta 宿主钥固化为底层、恒开（2026-10-24，用户拍板）
+
+拍板原文：「key-host delta 直接当底层，永远开启」。落地：**`--no-key-host` 旗标移除**
+（使用即报错：`removed in R070 … permanent底层`，不给静默忽略的活口）；
+`--key-host delta` 保留为兼容旗标（与不传等价，校验不变：非 v15 / 非守卫 / 未知
+profile 仍硬报错）。auto 注入不变（v15+executor 守卫链齐即带钥）；safe/tier-2
+无守卫链**维持静默降级**——守卫链是钥的唯一载体，物理上没有折钥的位置，
+这与「FFA 要、safe 件跑弱宿主」的既定决策一致，不是可关的口子。
+
+**产物字节零变化**（实测）：auto hard 锚点 = 231,571 B /
+`6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a`（与 R069 相同；
+verify/engine-server KNOWN 表 R070/R069 并列同锚点，R070 在前）。
+
+R070 引擎 wasm：1,180,086 B / `22fca22df841ae9fd479445319da9e221767ba0476e591676e921450db89db78`。
+
+测试变化：§5「--no-key-host == R067.5 锚点」与「冲突拒」两条退役，换成
+「--no-key-host 被拒（removed in R070）」；auto==显式、auto==R069 锚点两条
+字节级断言保留（正好钉死「固化不改产物」）。全套件 R070 重跑全绿：
+artifact-runtime 24、exguard-precheck、keyhost-fold、hosting 78、loader 24、
+attest 18、live-loader 13、engine-retry 9。
+
+部署：增量升级第二件换成 R070 wasm（见 §18 路径；engine-server.mjs 本轮也随
+KNOWN 表更新）。回退口径修正：R070 起「无钥产物」只剩守卫链不齐的构建形态
+（safe/tier-2 变体），发布管线 hard 变体不再有「去钥」选项——这正是拍板语义。

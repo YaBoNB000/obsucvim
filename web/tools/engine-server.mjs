@@ -3913,6 +3913,7 @@ server.listen(PORT, HOST, () => {
   // 这不影响服务启动——探测失败只记录，不阻断。
   void (async () => {
     const KNOWN = {
+      R070: { size: 231571, sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a" },
       R069: { size: 231571, sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a" },
       "R067.5": { size: 231237, sha256: "f11a6cea20548681635f81e0d7e6c84987a12c0dbd5b4f8ab1ec81df72205c42" },
       "R067.4": { size: 231496, sha256: "c1887865059cadb9b799f9defbdd132d4d685b720dd2e4787c05db1d8a79f653" },
