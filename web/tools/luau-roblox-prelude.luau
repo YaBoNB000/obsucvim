@@ -10,7 +10,8 @@
 ]]
 
 -- prelude4: 高保真 Roblox/executor 宿主（仅供沙箱正向验证 tier-2/bind-env）
--- 在 prelude1 基础上补齐：Random(LCG)、Enum、RunService.IsStudio、Instance 生命周期、
+-- 在 prelude1 基础上补齐：Random(LCG)、Enum、RunService.IsStudio（默认 false=
+-- 真 Delta 客户端；OBSUCVIM_MOCK_STUDIO=true 模拟 Studio）、Instance 生命周期、
 -- Vector3 __tostring、task.spawn/delay 返回 thread、ExecuteScript 之外的 loadstring。
 local API = {}
 local TYPED = setmetatable({}, { __mode = "k" })
@@ -118,9 +119,12 @@ Instance = expose("Instance", { new = function(class) return newInstance(class) 
 
 -- ============ game / services ============
 local RunService = newInstance("RunService")
+-- 默认 = 真 Delta 客户端形态（IsStudio()==false，2026-10-24 真机实测）；
+-- 在 prelude 之前放置全局 OBSUCVIM_MOCK_STUDIO=true 即可模拟 Studio 宿主
+-- （v16-a --key-host 负向矩阵用：观测不符必须静默投毒、载荷字节不出现）。
 RunService.IsStudio = function(self)
 	if self ~= RunService then error("Expected ':' not '.' calling member function IsStudio", 2) end
-	return true
+	return OBSUCVIM_MOCK_STUDIO == true
 end
 local SRVS = { RunService = RunService }
 for _, n in ipairs({ "Players", "Workspace", "Lighting", "ReplicatedStorage" }) do SRVS[n] = newInstance(n) end

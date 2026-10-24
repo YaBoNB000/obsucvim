@@ -13,7 +13,31 @@ pub struct ExgConsts {
 	pub xte: u64,
 }
 
-pub fn build(rng: &mut Rng) -> (String, ExgConsts) {
+/// v16-a 转录绑定解码钥：编译期宿主模型，全部来自真机实测。
+/// k2a = fold31(tostring(Vector3.new(1,2,3)))（h=7; h=(h*31+b)%2147483647）
+/// k2b = fold31(typeof(Vector3.new(1,2,3)))
+/// k3c = isStudio*1 + checkcaller*2 + identifyexecutor 名长*4
+/// 设计约束：不混版本串（易变）、不混名串字节（无熵）；产物里不出现这些期望值，
+/// 运行期观测值现算现折，宿主不符 → 转录失步 → ATTEST/TOK/SLT/st 全链失步 → 静默投毒。
+#[derive(Clone, Copy)]
+pub struct KeyHost {
+	pub k2a: u64,
+	pub k2b: u64,
+	pub k3c: u64,
+}
+
+pub fn keyhost_profile(name: &str) -> Option<KeyHost> {
+	match name {
+		// 2026-10-24 真 Delta 1.1.743.1136 实测回传（GateProbe v2 [XG-K1..K3]）：
+		// tostring(Vector3.new(1,2,3))="1, 2, 3" → fold31=1143546169
+		// typeof="Vector3" → fold31=1317214663
+		// IsStudio=false、checkcaller=true、名长=5 → 0*1 + 1*2 + 5*4 = 22
+		"delta" => Some(KeyHost { k2a: 1_143_546_169, k2b: 1_317_214_663, k3c: 22 }),
+		_ => None,
+	}
+}
+
+pub fn build(rng: &mut Rng, keyhost: Option<&KeyHost>) -> (String, ExgConsts) {
 	let decoy_seed = rng.int(1, 2_147_483_646) as u64;
 	let salt_a = (decoy_seed ^ 0x6E62_4EB7) % M31;
 	let salt_b = rng.int(1, 2_147_483_646) as u64;
@@ -38,8 +62,14 @@ pub fn build(rng: &mut Rng) -> (String, ExgConsts) {
 		proto_expected,
 		load_expected,
 		c_input,
-	] {
+		] {
 		transcript_expected = (transcript_expected.wrapping_mul(31).wrapping_add(v)) % M32;
+	}
+	if let Some(kh) = keyhost {
+		// v16-a：宿主观测折项追加在既有六项之后；运行期同位置折叠现算值。
+		for v in [kh.k2a, kh.k2b, kh.k3c] {
+			transcript_expected = (transcript_expected.wrapping_mul(31).wrapping_add(v)) % M32;
+		}
 	}
 	let offset = (attest_token + M32 - transcript_expected) % M32;
 	let poison = rng.int(1, 2_147_483_646) as u64;
@@ -139,6 +169,11 @@ let xm1 = rng.int(1024, 999_999) as u64;
 	entries.push(("TK_CANARY".to_string(), canary.clone()));
 	entries.push(("TK_INVALID".to_string(), invalid_chunk.clone()));
 	entries.push(("TK_INVALIDSRC".to_string(), "return )".to_string()));
+	// v16-a：新 token 只在 --key-host 开时注入（关态产物字节必须零变化）
+	if keyhost.is_some() {
+		entries.push(("TK_RUNSERVICE".to_string(), "RunService".to_string()));
+		entries.push(("TK_ISSTUDIO".to_string(), "IsStudio".to_string()));
+	}
 	rng.shuffle(&mut entries);
 	let mut bytes: Vec<u8> = Vec::new();
 let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
@@ -297,6 +332,10 @@ end
 		"local COUNTER = 0\nlocal NEXTP = 1\nlocal EPOCH = 0\nlocal STATE = {} % 2147483647\nlocal ATTEST = 0\nlocal SEALA = (STATE * 65599 + {} + ATTEST) % 2147483647\nlocal SEALB = (STATE * 4099 + {} + ATTEST % 104729) % 2147483647\nlocal SEALC = (STATE * 8191 + {} + (ATTEST % 65521) * 131) % 2147483647\nlocal TRIPPED = false\nlocal ATTESTED = false\nlocal TOK = {}\nlocal PSTATE = 0\nlocal PSEAL = 0\nlocal PACTIVE = false\nlocal UPV = {}\n",
 		decoy_seed, salt_a, salt_b, salt_c, poison, upvalue_expected
 	));
+	if keyhost.is_some() {
+		// v16-a 诊断寄存器：SCHALL 观测结果落 chunk 作用域，trace 模式 XF(18) 随 _tr 带出
+		src.push_str("local KHXA = -1\nlocal KHXB = -1\nlocal KHXC = -1\n");
+	}
 	src.push_str(
 		"local function TRIP() TRIPPED = true ATTEST = 0 TOK = POISONV end\n",
 	);
@@ -431,9 +470,24 @@ end
 		load_expected, load_expected, load_expected, load_expected
 	));
 	sc.push_str(&format!(
-		"local function _cbody(v) return ABSV(v) end\nlocal _wok, _wrapped = PCALV(NEWCV, _cbody) if not _wok or TYPV(_wrapped) ~= \"function\" then return false, 0 end\nlocal _w2ok, _wv = PCALV(_wrapped, -{})\nif not _w2ok or _wv ~= {} or not CLASSIFIES(_wrapped, true) then return false, 0 end\nlocal _w3ok, _w3 = PCALV(GUPVV, _wrapped) if _w3ok and not TEMPTY(_w3) then return false, 0 end TRW({})\nreturn true, TR end\n",
+		"local function _cbody(v) return ABSV(v) end\nlocal _wok, _wrapped = PCALV(NEWCV, _cbody) if not _wok or TYPV(_wrapped) ~= \"function\" then return false, 0 end\nlocal _w2ok, _wv = PCALV(_wrapped, -{})\nif not _w2ok or _wv ~= {} or not CLASSIFIES(_wrapped, true) then return false, 0 end\nlocal _w3ok, _w3 = PCALV(GUPVV, _wrapped) if _w3ok and not TEMPTY(_w3) then return false, 0 end TRW({})\n",
 		c_input, c_input, c_input
 	));
+	if keyhost.is_some() {
+		// v16-a 转录绑定解码钥：运行期观测现算现折（产物内无期望值常量）；
+		// 观测全程在 pcall 内，API 缺失/异常 → 折零 → 与编译期模型失配 → 静默失步。
+		sc.push_str(&format!(
+			"local _kha = 0 local _khb = 0 local _khc = 0\nlocal _khok = PCALV(function()\nlocal function _f31(s) local h = 7 for i = 1, #s do h = (h * 31 + SBYTEV(s, i)) % 2147483647 end return h end\nlocal _vn2 = ERD(VEC3V, VK({}))\nif _vn2 == nil then _vn2 = VEC3V[VK({})] end\nlocal _v3 = _vn2(1, 2, 3)\n_kha = _f31(TOSTRV(_v3))\n_khb = _f31(TYPHOF(_v3))\nlocal _gs2 = ERD(GAMEV, VK({}))\nif _gs2 == nil then _gs2 = GAMEV[VK({})] end\nlocal _rs2 = _gs2(GAMEV, VK({}))\nlocal _isf2 = ERD(_rs2, VK({}))\nif _isf2 == nil then _isf2 = _rs2[VK({})] end\nlocal _bs = (_isf2(_rs2) == true) and 1 or 0\nlocal _cok3, _cres3 = PCALV(CHKCV)\nlocal _bc = (_cok3 and _cres3 == true) and 1 or 0\n_khc = _bs + _bc * 2 + #_in1 * 4\nend)\nif not _khok then _kha, _khb, _khc = 0, 0, 0 end\nKHXA, KHXB, KHXC = _kha, _khb, _khc\nTRW(_kha) TRW(_khb) TRW(_khc)\n",
+			tok("TK_NEW"),
+			tok("TK_NEW"),
+			tok("TK_GETSERVICE"),
+			tok("TK_GETSERVICE"),
+			tok("TK_RUNSERVICE"),
+			tok("TK_ISSTUDIO"),
+			tok("TK_ISSTUDIO")
+		));
+	}
+	sc.push_str("return true, TR end\n");
 	src.push_str(&sc);
 
 	src.push_str(&format!(
@@ -546,6 +600,13 @@ end
 			"if not _valid then TRIP() return POISONV end",
 			"if not _valid then XF(18, tostring(_heavy) .. \"/\" .. tostring(_tr)) end",
 		);
+		if keyhost.is_some() {
+			// v16-a：trace 模式把三项观测值随 XF(18) 带出，便于真机对表
+			fixed = fixed.replace(
+				"XF(18, tostring(_heavy) .. \"/\" .. tostring(_tr)) end",
+				"XF(18, tostring(_heavy) .. \"/\" .. tostring(_tr) .. \"/\" .. tostring(KHXA) .. \"/\" .. tostring(KHXB) .. \"/\" .. tostring(KHXC)) end",
+			);
+		}
 		fixed = fixed.replace("TRIP() return POISONV", "XF(21)");
 	}
 

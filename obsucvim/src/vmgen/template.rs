@@ -1226,6 +1226,7 @@ pub fn generate(
 	env_slots: Option<&[i64; 4]>,
 	executor_bind: bool,
 	executor_guard: bool,
+	key_host: Option<&super::exguard::KeyHost>,
 	env_check: bool,
 	guard: bool,
 ) -> String {
@@ -2236,7 +2237,7 @@ pub fn generate(
 			(String::new(), 0, false)
 		};
 		let (exg_src, exg_consts) = if executor_guard {
-			let (s, c) = super::exguard::build(rng);
+			let (s, c) = super::exguard::build(rng, key_host);
 			(Some(s), Some(c))
 		} else {
 			(None, None)

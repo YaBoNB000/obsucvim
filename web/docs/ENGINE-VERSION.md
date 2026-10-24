@@ -400,3 +400,62 @@ v15 架构天花板（解码链自描述于产物）所致，与 R067 系列修�
 保留：`samples/obsucvim/diag-tools/`（~55 K）——两件现场排障工具
 `Obsucvim-Doctor.lua`（19.8 K，`71a861fa…`）与 `Obsucvim-GateProbe.lua`
 （21.6 K，`52aa259d…`）及原 diagnose README（含闸门处置手册）。
+
+## 17. R068 = R067.5 + `--key-host`（v16-a Phase-0/1，2026-10-24）
+
+**关态逐字节同 R067.5**：新引擎不传 `--key-host` 时，锚点重建 =
+231,237 B / `f11a6cea20548681635f81e0d7e6c84987a12c0dbd5b4f8ab1ec81df72205c42`
+（verify-engine-version 实测），kkksu/发布流水线行为不变。回退保险 = 不传旗标。
+
+### Phase-0 真 Delta 实测（用户回传，真机 Delta 1.1.743.1136）
+
+```
+[XG-K1] ok=true name=Delta len=5 stable=true
+[XG-K2] ok=true typeof=Vector3 tostring="1, 2, 3" fold31(v3str)=1143546169 fold31(typeof)=1317214663
+[XG-K3] ok=true IsStudio=false checkcaller=true boolpack=3
+[XG-K4] ok=true {request:function http_request:function syn.request:nil http.request:function}
+[XG-KF] combined-fold=1083812779
+[PREDICT] risk={}（全闸通过）
+```
+
+### v16-a 构造（转录绑定解码钥，flag = `--key-host delta`，非默认）
+
+SCHALL 转录在既有六项后**追加三项运行期现算观测**（产物内无期望值常量）：
+
+- a = fold31(tostring(Vector3.new(1,2,3)))，模型值 `1143546169`
+- b = fold31(typeof(Vector3.new(1,2,3)))，模型值 `1317214663`
+- c = IsStudio()*1 + checkcaller()*2 + identifyexecutor 名长*4，模型值 `22`
+  （真 Delta 客户端 = 0 + 2 + 20）
+
+观测不符/观测 API 缺失（pcall 内折零）→ 转录失配 → ATTEST/TOK/SLT/st 全链失步 →
+**静默投毒，载荷字节不出现**。不混版本串（易变）、不混名串字节（无熵）。
+诊断同步：trace 模式 XF(18) 随 _tr 带出 KHXA/KHXB/KHXC 三项实测值；
+GateProbe 新增 `[XG-KH]` 行直接对表（match=true 才可跑 keyhost 产物）。
+
+### 锚点（R068，seed 67067；发布参数另见 v16-check/SHA256SUMS）
+
+- 引擎 wasm：1,179,341 B / `04b004b2de7212eb0140cac4981ae7eac164bcb00a2b11c1f09443519b9f7ea3`
+- suda hard+keyhost：231,571 B / `6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a`
+  （`--preset v15 --env-check --bind-executor --key-host delta --seed 67067`）
+
+### 证据矩阵（已测/未测标注）
+
+| 命题 | 状态 | 证据 |
+| --- | --- | --- |
+| 关态产物逐字节同 R067.5 | ✅已测 | verify-engine-version 实测 231,237/f11a6cea |
+| 折叠公式双层一致（Lua 运行期 vs 编译期模型） | ✅已测 | `test-keyhost-fold.py`：client c=22 tr 互等、studio c=23 失步可复算 |
+| precheck 先于转录链（缺 API 清单逐字一致） | ✅已测 | test-artifact-runtime §4（keyhost 与非 keyhost 同清单） |
+| CLI 校验（未知 profile / --no-executor-guard 组合拒绝） | ✅已测 | test-artifact-runtime §4 + 手工 stderr 原文核验 |
+| 载荷字符串不出现在 keyhost 产物字节 | ✅已测 | grep=0（seed 67067/20261024 两件） |
+| prelude 翻默认 IsStudio=false（=真 Delta 形态）后既有套件 | ✅已测 | 全测试绿：artifact-runtime 12(+4 新)、exguard-precheck、hosting 78、loader 24、attest 18、live-loader 13、engine-retry 9 |
+| **真 Delta 正向打印载荷（keyhost 产物全链绿）** | ⏳待真机 | hard 需 debug 内省 API，沙箱不可 mock；验收件 `samples/obsucvim/v16-check/` |
+
+### 本轮文件变动
+
+`obsucvim/src/vmgen/exguard.rs`（KeyHost 档案+转录折项+运行期片段+trace 扩展）、
+`template.rs`（参数贯通）、`main.rs`（`--key-host` 旗标+校验）、`web/tools/obsucvim.wasm`
+（R068）、`web/tools/luau-roblox-prelude.luau`（IsStudio 默认 false=真 Delta 客户端形态，
+`OBSUCVIM_MOCK_STUDIO=true` 旋钮模拟 Studio）、`web/tools/test-keyhost-fold.py`（新）、
+`web/tools/test-artifact-runtime.py`（+§4）、`samples/obsucvim/diag-tools/`
+（GateProbe +`[XG-KH]`，现行 sha `d0555cda…`；§16 内哈希为裁剪时点记录）、
+`samples/obsucvim/v16-check/`（真机验收件两件+README+SHA256SUMS）。

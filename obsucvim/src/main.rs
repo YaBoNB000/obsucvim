@@ -45,6 +45,7 @@ dialect: &'static str,
 	bind_given: bool,
 	executor_guard: bool,
 	env_check: bool,
+	key_host: Option<String>,
 }
 
 fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
@@ -182,6 +183,12 @@ Options:
                          绑定态产物只做语法校验。非 v15 管线自动降级为关闭。
   --no-bind-executor     显式关闭 executor 认证绑定（等价于 2026-10-11 前
                          的默认产物；运行等价测试矩阵用此旗标）。
+  --key-host <delta>     v16-a 转录绑定解码钥（仅 v15 + executor 守卫，
+                         **非默认，试验旗标**）：把宿主观测值（Vector3
+                         tostring/typeof 折叠、IsStudio/checkcaller 布尔、
+                         identify 名长）折入 SCHALL 转录链；观测不符 →
+                         ATTEST/TOK/SLT/st 全链失步 → 错钥静默死亡，
+                         非 exec 环境连载荷字节都解不出来。
   -h, --help             show this help
   --version              show version
 ",
@@ -214,6 +221,7 @@ fn main() -> ExitCode {
 		executor_guard: true,
 		bind_given: false,
 		env_check: false,
+		key_host: None,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -313,6 +321,14 @@ fn main() -> ExitCode {
 			}
 			"--no-executor-guard" => opts.executor_guard = false,
 			"--env-check" => opts.env_check = true,
+			"--key-host" => {
+				i += 1;
+				if i >= args.len() {
+					eprintln!("error: --key-host requires a host profile (delta)");
+					return ExitCode::FAILURE;
+				}
+				opts.key_host = Some(args[i].clone());
+			}
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -394,6 +410,29 @@ fn main() -> ExitCode {
 		);
 		return ExitCode::FAILURE;
 	}
+	if let Some(kh) = &opts.key_host {
+		if !(opts.do_vm && opts.do_v15) {
+			eprintln!(
+				"error: --key-host requires --preset v15\n  \
+					the host-keyed decode rides the v15 attestation transcript chain."
+			);
+			return ExitCode::FAILURE;
+		}
+		if !(opts.bind_executor && opts.executor_guard) {
+			eprintln!(
+				"error: --key-host requires the executor guard (drop --no-executor-guard)\n  \
+					the keyed transcript folds into the SCHALL attestation chain."
+			);
+			return ExitCode::FAILURE;
+		}
+		if vmgen::exguard::keyhost_profile(kh).is_none() {
+			eprintln!(
+				"error: --key-host profile '{kh}' unknown (only 'delta')\n  \
+					a profile is a compile-time host model built from measured values."
+			);
+			return ExitCode::FAILURE;
+		}
+	}
 
 	let luau = opts.dialect == "luau";
 	let seed = if opts.seed == 0 {
@@ -433,6 +472,10 @@ fn main() -> ExitCode {
 			} else {
 				None
 			};
+			let keyhost_prof = opts
+				.key_host
+				.as_deref()
+				.and_then(vmgen::exguard::keyhost_profile);
 			let vm_raw = std::env::var("OBSUCVIM_VM_RAW").is_ok();
 			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program = vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15);
@@ -480,6 +523,7 @@ fn main() -> ExitCode {
 				env_slots.as_ref(),
 				opts.bind_executor,
 				opts.bind_executor && opts.executor_guard,
+				keyhost_prof.as_ref(),
 				opts.env_check,
 				opts.do_guard,
 			);

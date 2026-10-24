@@ -146,6 +146,10 @@ SCHALL 各闸判定 **1:1 复刻**成独立的只读探针，**一次运行给�
   （不一致本身就是 bug 证据，请发回）。
 - 标 `skip(api-missing)` 的小节不计入 PREDICT：缺 API 时 precheck/前置闸会先拦，
   对应闸实际不可达。
+- `[XG-K1..K4]`/`[XG-KF]` 是 v16 密钥源稳定性探针（只测量，不进 PREDICT）；
+  `[XG-KH]` 直接给出 v16-a `--key-host delta` 引擎的三项 hostfold 现算值
+  （a=Vector3 tostring 折叠、b=typeof 折叠、c=IsStudio/checkcaller/名长联合值）
+  与编译期模型对表结果——`match=true` 的宿主才能跑通 keyhost 产物。
 - R/S/T/U 不可测：它们是引擎内部状态机闸（seal 链 / 转录哈希 / ATTEST 对账 /
   投毒链），只能由 trace 产物在真机观测；S 为保留号（产物内不可达，转录不符并入 R）。
 - 安全：仅 D 小节做一次“写入后立即还原”的 rawset 金丝雀，其余全程只读 + pcall。

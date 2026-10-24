@@ -51,7 +51,8 @@ def find_luau():
     return None
 
 
-def build(workdir, flags, seed, name):
+def build_status(workdir, flags, seed, name):
+    """Returns (ok, artifact, detail). detail carries engine stderr on failure."""
     args = flags + ["--seed", seed, "/work/input.lua", f"/work/{name}.lua"]
     cfg = {"wasmPath": str(WASM), "workDir": str(workdir), "args": args}
     cfg_path = workdir / "cfg.json"
@@ -62,8 +63,16 @@ def build(workdir, flags, seed, name):
     )
     out = workdir / f"{name}.lua"
     if not out.exists() or out.stat().st_size == 0:
-        return None, f"engine rc={proc.returncode} {proc.stderr.strip()[:160]}"
-    return out.read_text(), None
+        detail = (proc.stderr or proc.stdout or "").strip()
+        return False, None, f"engine rc={proc.returncode} {detail[:240]}"
+    return True, out.read_text(), ""
+
+
+def build(workdir, flags, seed, name):
+    ok, artifact, detail = build_status(workdir, flags, seed, name)
+    if not ok:
+        return None, detail
+    return artifact, None
 
 
 def run_luau(luau, path):
@@ -134,6 +143,34 @@ def main():
                           and "debug.setupvalue" in out and "identifyexecutor" not in out)
             check("hardening config refuses with the accurate missing list",
                   rc != 0 and missing_ok, out[:140])
+
+        # 4. v16-a --key-host 开关态行为约束：
+        #    a. 产物可构建，precheck 仍在转录链之前先行（缺 API 清单与非 keyhost
+        #       hard 逐字一致），载荷字符串不在字节中；
+        #    b. CLI 校验：未知 profile 拒绝；与 --no-executor-guard 组合拒绝。
+        artifact, error = build(
+            work, BASE_FLAGS + HARDENING_FLAGS + ["--key-host", "delta"], "20261022", "keyhost")
+        if artifact is None:
+            check("keyhost hard: engine produced output", False, error)
+        else:
+            check("keyhost hard: source text is gone", "suda" not in artifact)
+            target = work / "prelude-keyhost.luau"
+            target.write_text(PRELUDE.read_text() + "\n" + artifact)
+            rc, out = run_luau(luau, target)
+            missing_ok = ("lacks APIs" in out and "debug.getconstants" in out
+                          and "debug.setupvalue" in out and "identifyexecutor" not in out)
+            check("keyhost hard refuses with the accurate missing list (precheck first)",
+                  rc != 0 and missing_ok, out[:140])
+
+        ok, _, detail = build_status(
+            work, BASE_FLAGS + HARDENING_FLAGS + ["--key-host", "delta", "--no-executor-guard"],
+            "20261022", "keyhost-noguard")
+        check("--key-host with --no-executor-guard is refused",
+              not ok and "executor guard" in detail, detail[:140])
+        ok, _, detail = build_status(
+            work, BASE_FLAGS + HARDENING_FLAGS + ["--key-host", "wave"], "20261022", "keyhost-unknown")
+        check("--key-host unknown profile is refused",
+              not ok and "unknown" in detail, detail[:140])
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

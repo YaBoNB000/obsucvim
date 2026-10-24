@@ -591,6 +591,31 @@ do
 	out("[XG-KF] combined-fold=" .. tostring(fold31(
 		(type(IDENTV) == "function" and tostring(select(2, pcall(IDENTV)) or "" ) or "") .. "|"
 		.. tostring(isStudio) .. "|" .. tostring(ccv))))
+	-- KH: v16-a 引擎 hostfold 三项（= --key-host delta 编译期模型的运行期对应物）。
+	-- a=fold31(tostring(Vector3.new(1,2,3))) b=fold31(typeof) c=IsStudio*1+checkcaller*2+名长*4。
+	-- match=true 的宿主才能跑通 --key-host delta 产物；执行器升级后改 tostring 格式也会翻 false。
+	do
+		local kh = "skip(no Vector3)"
+		if VEC3V ~= nil then
+			local okr, r = pcall(function()
+				local v = VEC3V.new(1, 2, 3)
+				local a = fold31(tostring(v))
+				local b = fold31((TYPHOF and TYPHOF(v) or type(v)))
+				local bs = (isStudio == "true") and 1 or 0
+				local bc = (ccv == "true") and 1 or 0
+				local nl = -1
+				if type(IDENTV) == "function" then
+					local _, n2 = pcall(IDENTV)
+					if type(n2) == "string" then nl = #n2 end
+				end
+				local c = bs + bc * 2 + nl * 4
+				return string.format("a=%d b=%d c=%d match(delta a=1143546169 b=1317214663 c=22)=%s",
+					a, b, c, tostring(a == 1143546169 and b == 1317214663 and c == 22))
+			end)
+			kh = okr and r or ("err:" .. tostring(r))
+		end
+		out("[XG-KH] " .. kh)
+	end
 end
 
 -- ===== 汇总 =====

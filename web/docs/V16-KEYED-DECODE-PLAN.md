@@ -123,3 +123,17 @@
 
 阶段准入门槛（Phase-1 开工前必须齐）：K1 名长与稳定性、K2 两个 fold 值、
 K3 布尔包、KF 联合折叠——四门全部来自真 Delta，缺一不可猜。
+
+## 8. 进度快照（2026-10-24 Phase-1 收口）
+
+- **Phase-0 ✅**：真 Delta 回传 K1=名长 5 稳定 / K2=1143546169+1317214663 /
+  K3=boolpack 3（IsStudio=false+checkcaller=true → c=22）/ KF=1083812779，
+  PREDICT 空集。GateProbe v2 自动复制到剪贴板 + 新增 `[XG-KH]` 对表行。
+- **Phase-1 ✅（引擎手术完成，flag 默认关）**：`--key-host delta` 落地
+  （exguard 转录三项 + CLI 校验 + trace XF(18) 扩展 + prelude 旋钮 + 双层公式
+  测试）；关态产物与 R067.5 **逐字节相同**（回归门槛实测）；全测试套件绿。
+  详细锚点/证据矩阵见 `ENGINE-VERSION.md` §17。
+- **Phase-2 ⏳（等真 Delta 数据）**：用户跑
+  `samples/obsucvim/v16-check/Kkksu.v16keyhost.hard.lua`——正常打印 `kkksu`
+  即正向验收；异常则跑 trace 件回传 `(R-xxxx)` 五值对表。两轮稳定后再拍板：
+  `--key-host` 是否翻默认、是否进发布管线 hard 变体、锚点与部署包重出。
