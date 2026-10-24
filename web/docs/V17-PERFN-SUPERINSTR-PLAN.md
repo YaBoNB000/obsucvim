@@ -207,3 +207,16 @@ R072 调试期 on 态曾双层失守，均按「减法实验 + 数值载荷 trac
   与计划 §2.3 预期一致）；Kkksu 级件的体积预算回填移交 Phase-1c。
 - `--seed` 流预算：super on 态每函数多耗 `s_idx∈{0..3}` + fv_m1/fv_mc + 段
   shuffle 的 rng 抽取已在 Phase-1a 钉死（off 态零消耗证据 = 锚点恒等）。
+
+### 9.6 真机验收收口（2026-10-24）
+
+`samples/obsucvim/v17-check/` 四件由用户在真 Delta 环境回传：
+
+| 件 | 结果 |
+|---|---|
+| `Kkksu.v17fusion.hard.lua` | 打印 `kkksu`，无报错 ✓ |
+| `Kkksu-mid.v17fusion.hard.lua` | 精确打印 `kkksu-mid:1,1,2,3,5,8,13,21,34,55|143` ✓ |
+| 两个 `-trace` 件 | 未动用（无失败需诊断） |
+
+**V3 真机段通过，Phase-1b 验收正式收口。** 剩余待拍事项移交 §8：
+窗口 3、`--super-insn` 翻默认、Kkksu 级体积预算回填。

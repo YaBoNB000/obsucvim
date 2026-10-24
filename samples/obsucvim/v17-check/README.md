@@ -30,3 +30,12 @@ trampoline 派发；off 态产物与 R070/R071 锚点逐字节恒等（231,571B 
 - 正向「真 Delta 全链打印」在沙箱无法自证（hard 链要求真 executor 的
   深内省 API 四件 + game/Instance/Vector3/task），须真机回传；
 - 本件验收的是「融合不回退可观察行为」（V3 真机段），不宣称任何「不可破解」。
+
+## 真机验收结果（2026-10-24 回传）
+
+- `Kkksu.v17fusion.hard.lua`：真 Delta 打印 `kkksu`，无报错。**通过**。
+- `Kkksu-mid.v17fusion.hard.lua`：真 Delta 精确打印
+  `kkksu-mid:1,1,2,3,5,8,13,21,34,55|143`，无报错。**通过**。
+- trace 两件未动用（无失败需诊断）。
+- 结论：V17 Phase-1b V3 真机段通过，on 态融合在真 Delta 全链下不回退
+  可观察行为；Phase-1b 验收正式收口。

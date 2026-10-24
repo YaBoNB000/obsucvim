@@ -577,6 +577,10 @@ NSECT 6→7、TFV 支臂）→ BSS parse → EP 装载 → HW2 trampoline 派发
 
 R072 引擎 wasm：1,226,632 B / `b4262fcb668a5602bd3403119f0f7c341231bcac1e8628032f2f51350ac1880d`
 （较 R071 +10.4 KB，trampoline/装载接线 + FUSE_DBG 诊断口）；
-off 态产物锚点不变，KNOWN 表无需新增行——verify 仍判 R071 行（同锚点），
-语义口径以本节为准。真 Delta 四件验收件沿用 `samples/obsucvim/v16-check/`
-链路重出（on 态道），用户侧验收走既有流程。
+off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保留为别名行；
+二者产物字节逐字节相同，仅 wasm 内部接线码不同），engine-server KNOWN 表
+同口径加 R072 行（hosting 78/78 重测过）。语义口径以本节为准。
+真 Delta 验收件走 `samples/obsucvim/v17-check/`（on 态道）：
+2026-10-24 用户回传两 hard 件均正常（`kkksu` 与
+`kkksu-mid:1,1,2,3,5,8,13,21,34,55|143` 精确打印、无报错，trace 件未动用），
+**V3 真机段通过，Phase-1b 验收收口**。
