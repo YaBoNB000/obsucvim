@@ -1,6 +1,7 @@
 -- Obsucvim GateProbe v2 -- R067.5 companion host probe (diagnostic only, no protection logic)
 --
--- 用途：在目标执行器/宿主里【整段运行一次】，把全部输出原样贴回。
+-- 用途：在目标执行器/宿主里【整段运行一次】，跑完全部输出自动复制到剪贴板，
+-- 末尾 [XG-CLIP] 行报告复制结果（host 无 setclipboard/toclipboard 时会提示手动复制）。
 -- Suda.hard-trace.lua 报的是「第一道炸掉的闸」（一次只给一道）；
 -- 本探针按 R067.5 的 SCHALL 判定逻辑 1:1 复刻，【一次给出全部闸门的风险画像】，
 -- 末尾 [PREDICT] 行列出预测会炸的闸字母（空集 = hard 产物预期直接跑通）。
@@ -13,8 +14,15 @@
 -- 不改全局、不联网、不依赖任何 Obsucvim 组件。
 
 local risk = {}
+-- 输出收集：所有报告行在打印的同时进缓冲区，跑完自动复制到剪贴板
+local OUTBUF = {}
+local rawprint = print
+local function out(line)
+	OUTBUF[#OUTBUF + 1] = tostring(line)
+	rawprint(line)
+end
 local function emit(id, ok, detail)
-	print("[XG-" .. id .. "] ok=" .. tostring(ok and true or false) .. " " .. tostring(detail))
+	out("[XG-" .. id .. "] ok=" .. tostring(ok and true or false) .. " " .. tostring(detail))
 end
 local function mark(letter, ok, why)
 	if not ok then risk[letter] = why or "" end
@@ -580,7 +588,7 @@ do
 		table.insert(hcap, pair[1] .. ":" .. type(pair[2]))
 	end
 	emit("K4", true, "{" .. table.concat(hcap, " ") .. "}")
-	print("[XG-KF] combined-fold=" .. tostring(fold31(
+	out("[XG-KF] combined-fold=" .. tostring(fold31(
 		(type(IDENTV) == "function" and tostring(select(2, pcall(IDENTV)) or "" ) or "") .. "|"
 		.. tostring(isStudio) .. "|" .. tostring(ccv))))
 end
@@ -589,7 +597,24 @@ end
 local ks = {}
 for l in pairs(risk) do table.insert(ks, l) end
 table.sort(ks)
-print("[PREDICT] risk={" .. table.concat(ks, ",") .. "}")
-print("[PREDICT] note: empty = hard-build gates A..Q expected to pass on this host;"
+out("[PREDICT] risk={" .. table.concat(ks, ",") .. "}")
+out("[PREDICT] note: empty = hard-build gates A..Q expected to pass on this host;"
 	.. " R/S/T/U are engine-internal gates and can only be observed via Suda.hard-trace.lua")
-print("[END] Obsucvim GateProbe v2")
+out("[END] Obsucvim GateProbe v2")
+
+-- ===== 自动复制到剪贴板 =====
+-- 复制内容 = 上面全部报告行（含 [PREDICT]/[END]）；本 [XG-CLIP] 状态行只打印、不进剪贴板。
+local CLIPTEXT = table.concat(OUTBUF, "\n")
+local clipfn, clipvia = nil, "none"
+if type(setclipboard) == "function" then
+	clipfn, clipvia = setclipboard, "setclipboard"
+elseif type(toclipboard) == "function" then
+	clipfn, clipvia = toclipboard, "toclipboard"
+end
+if clipfn then
+	local okc, errc = pcall(clipfn, CLIPTEXT)
+	print("[XG-CLIP] copied=" .. tostring(okc) .. " via=" .. clipvia .. " bytes=" .. tostring(#CLIPTEXT)
+		.. (okc and "" or (" err=" .. tostring(errc))))
+else
+	print("[XG-CLIP] copied=false reason=no-clipboard-api (host has no setclipboard/toclipboard; copy the output manually)")
+end

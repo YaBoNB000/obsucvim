@@ -135,7 +135,10 @@ Luau: The debug library is required on Luau platforms. Please open a support tic
 
 trace 版构建一次只报**第一道**炸掉的闸（报完即崩）；GateProbe 把 R067.5 的
 SCHALL 各闸判定 **1:1 复刻**成独立的只读探针，**一次运行给出全部闸门的风险画像**。
-用法：整段粘贴进执行器运行，把全部 `[XG-*]` 输出（尤其末尾 `[PREDICT]` 行）原样贴回。
+用法：整段粘贴进执行器运行；**跑完全部输出会自动复制到剪贴板**，直接粘贴返回即可
+（末尾 `[XG-CLIP]` 行报告复制结果：`copied=true` 即已在剪贴板里；宿主无
+`setclipboard`/`toclipboard` 时会提示手动复制。剪贴板内容含 `[XG-K1..K4]`/`[XG-KF]`
+与 `[PREDICT]` 行，不含 `[XG-CLIP]` 状态行本身）。
 
 - 行号 `[XG-X]` 的字母 == trace 报告 `(字母-xxxx)` 的字母，两者可互验。
 - `[PREDICT] risk={...}` 为空集 = hard 产物预期在该宿主直接跑通。
