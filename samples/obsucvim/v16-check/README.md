@@ -23,7 +23,7 @@ identify 名长折入 SCHALL 转录；观测不符 → 全链失步 → 错钥�
   **预期精确打印**：
   `kkksu-mid:1,1,2,3,5,8,13,21,34,55|143`
   任何一位不对/报错都算失败（错位即投毒的表现）；打印完全一致讲一声，
-  两轮齐了就拍板 `--key-host` 翻默认 + 进发布管线。
+  两轮已齐（2026-10-24 真 Delta 均正常打印），`--key-host` 已于 R069 翻默认并进入发布管线 hard 变体，见 `web/docs/ENGINE-VERSION.md` §18。
 - `Kkksu-mid.v16keyhost-trace.hard.lua` —— 同样的诊断形态，仅失败时用。
 
 ## 旁证

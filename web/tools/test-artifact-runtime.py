@@ -23,6 +23,7 @@ but you should run this before shipping a release).
     LUAU_BIN=/tmp/luau-src/luau-master/build/release/luau \
       python3 web/tools/test-artifact-runtime.py
 """
+import hashlib
 import json
 import os
 import pathlib
@@ -171,6 +172,34 @@ def main():
             work, BASE_FLAGS + HARDENING_FLAGS + ["--key-host", "wave"], "20261022", "keyhost-unknown")
         check("--key-host unknown profile is refused",
               not ok and "unknown" in detail, detail[:140])
+
+        # 5. R069 翻默认等价断言（字节级）：
+        #    a. 默认（auto）hard == 显式 --key-host delta hard（同种子同参数）
+        #    b. --no-key-host 件 == R067.5 锚点（f11a6cea，67067 精简参数集）
+        #    c. auto 默认件 == R069 锚点（6c22c008）
+        #    d. --key-host 与 --no-key-host 冲突被拒
+        artifact_auto, error = build(work, BASE_FLAGS + HARDENING_FLAGS, "20261022", "khauto")
+        artifact_expl, error = build(
+            work, BASE_FLAGS + HARDENING_FLAGS + ["--key-host", "delta"], "20261022", "khexpl")
+        check("keyhost auto default == explicit --key-host delta (byte-identical)",
+              artifact_auto is not None and artifact_auto == artifact_expl,
+              (error or "")[:120])
+
+        R0675 = "f11a6cea20548681635f81e0d7e6c84987a12c0dbd5b4f8ab1ec81df72205c42"
+        R069A = "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a"
+        ANCHOR_FLAGS = ["--preset", "v15", "--env-check", "--bind-executor"]
+        off, error = build(work, ANCHOR_FLAGS + ["--no-key-host"], "67067", "khoff")
+        check("--no-key-host artifact == R067.5 anchor (byte-identical)",
+              off is not None and hashlib.sha256(off.encode()).hexdigest() == R0675,
+              (error or "")[:120])
+        auto5, error = build(work, ANCHOR_FLAGS, "67067", "khauto5")
+        check("auto default artifact == R069 keyed anchor",
+              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R069A,
+              (error or "")[:120])
+        ok, _, detail = build_status(
+            work, ANCHOR_FLAGS + ["--key-host", "delta", "--no-key-host"], "1", "khconflict")
+        check("--key-host + --no-key-host conflict is refused",
+              not ok and "conflict" in detail, detail[:140])
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

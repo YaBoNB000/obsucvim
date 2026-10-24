@@ -459,3 +459,40 @@ GateProbe 新增 `[XG-KH]` 行直接对表（match=true 才可跑 keyhost 产物
 `web/tools/test-artifact-runtime.py`（+§4）、`samples/obsucvim/diag-tools/`
 （GateProbe +`[XG-KH]`，现行 sha `d0555cda…`；§16 内哈希为裁剪时点记录）、
 `samples/obsucvim/v16-check/`（真机验收件两件+README+SHA256SUMS）。
+
+## 18. R069：v16-a `--key-host` 翻默认（2026-10-24，Phase-2 两轮真机验收后落地）
+
+**验收（真 Delta，用户回传）**：第一轮 `Kkksu.v16keyhost.hard.lua` 正常打印 `kkksu`；
+第二轮中型件 `Kkksu-mid.v16keyhost.hard.lua` 正常打印
+`kkksu-mid:1,1,2,3,5,8,13,21,34,55|143`（递归/循环/table/多常量 bdec 与常量解密
+路径全压）。Phase-2 两轮齐 → 按计划翻默认。
+
+**默认语义**：v15 + executor 守卫链齐时 `--key-host delta` **自动注入**（无需旗标）；
+守卫链不齐（`--no-executor-guard` 的 safe/tier-2 变体、非 v15 管线）**静默降级为关**
+（与 bind_executor 降级风格一致）；`--no-key-host` 显式回退；`--key-host` 与
+`--no-key-host` 同用报错。发布管线（engine-server buildGuardedSource dual-artifact）
+**参数零改动**：hard 变体自动带钥，safe 变体自动降级。
+
+**字节级等价四断言（实测记录）**：
+
+| 断言 | 结果 |
+| --- | --- |
+| 默认 auto == 显式 `--key-host delta`（同种子同参数） | ✅ cmp 逐字节相同 |
+| auto 默认产物 == R069 锚点 | ✅ 231,571 B / `6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a` |
+| `--no-key-host` == R067.5 锚点 | ✅ 231,237 B / `f11a6cea…` 逐字节回退 |
+| `--key-host` + `--no-key-host` 冲突 | ✅ 报错拒绝 |
+
+以上四条已固化进 `test-artifact-runtime.py` §5（字节级锚点断言）；R069 锚点已加进
+`verify-engine-version.mjs` 与 `engine-server.mjs` 启动自检 KNOWN 表（最前）。
+
+**R069 引擎 wasm**：1,180,071 B / `31a9dc7ee3ab4b324e589e9fbe8f81a4fc190852c0d8e525f0583ea3de1ebcb2`。
+
+**全测试套件（R069 翻默认后重跑，全绿）**：artifact-runtime 25（+§5 四条）、
+exguard-precheck、keyhost-fold、hosting 78、loader 24、attest 18、live-loader 13、
+engine-retry 9。live-loader/hosting 走发布管线 → 证明管线在默认带钥下行为不变。
+
+**部署（增量升级路径）**：本轮实际变更仅两件——`tools/obsucvim.wasm`（R069）与
+`tools/engine-server.mjs`（KNOWN+ R069，行为兼容）；用它们覆盖安装目录
+`C:\Obsucvim\tools\` 同名文件并重启即完成升级。整包（runtime/node.exe+nodemailer
+Windows 底座）重出**暂缺底座**（旧 zip 从未入库、沙箱快照已清、邮检白名单够不到
+nodejs.org），待底座恢复后重出并更新 `Update-Obsucvim.ps1` 配套哈希。

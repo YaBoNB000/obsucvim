@@ -46,6 +46,7 @@ dialect: &'static str,
 	executor_guard: bool,
 	env_check: bool,
 	key_host: Option<String>,
+	key_host_off: bool,
 }
 
 fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
@@ -184,11 +185,14 @@ Options:
   --no-bind-executor     显式关闭 executor 认证绑定（等价于 2026-10-11 前
                          的默认产物；运行等价测试矩阵用此旗标）。
   --key-host <delta>     v16-a 转录绑定解码钥（仅 v15 + executor 守卫，
-                         **非默认，试验旗标**）：把宿主观测值（Vector3
-                         tostring/typeof 折叠、IsStudio/checkcaller 布尔、
-                         identify 名长）折入 SCHALL 转录链；观测不符 →
-                         ATTEST/TOK/SLT/st 全链失步 → 错钥静默死亡，
-                         非 exec 环境连载荷字节都解不出来。
+                         **R069 起默认开**：v15+executor 守卫链齐时自动注入
+                         delta 宿主模型）：把宿主观测值（Vector3 tostring/
+                         typeof 折叠、IsStudio/checkcaller 布尔、identify
+                         名长）折入 SCHALL 转录链；观测不符 → ATTEST/TOK/
+                         SLT/st 全链失步 → 错钥静默死亡，非 exec 环境连
+                         载荷字节都解不出来。守卫链不齐时静默降级为关。
+  --no-key-host          显式关闭 v16-a 转录绑定解码钥（回退到 R067.5
+                         形态的产物；与 --key-host 同时使用会报错）。
   -h, --help             show this help
   --version              show version
 ",
@@ -222,6 +226,7 @@ fn main() -> ExitCode {
 		bind_given: false,
 		env_check: false,
 		key_host: None,
+		key_host_off: false,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -329,6 +334,7 @@ fn main() -> ExitCode {
 				}
 				opts.key_host = Some(args[i].clone());
 			}
+			"--no-key-host" => opts.key_host_off = true,
 			s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -410,6 +416,13 @@ fn main() -> ExitCode {
 		);
 		return ExitCode::FAILURE;
 	}
+	if opts.key_host_off && opts.key_host.is_some() {
+		eprintln!(
+			"error: --key-host and --no-key-host conflict\n  \
+				pick one: the keyed transcript is either on (a profile) or off."
+		);
+		return ExitCode::FAILURE;
+	}
 	if let Some(kh) = &opts.key_host {
 		if !(opts.do_vm && opts.do_v15) {
 			eprintln!(
@@ -432,6 +445,18 @@ fn main() -> ExitCode {
 			);
 			return ExitCode::FAILURE;
 		}
+	}
+	// v16-a 默认开（R069 起）：v15 + executor 守卫链齐时自动注入 delta 宿主模型；
+	// 链不齐（如 --no-executor-guard 的 safe/tier-2 变体）静默降级为关——
+	// 与 bind_executor 在非 v15 管线的降级风格一致；显式 --no-key-host 永远优先。
+	if !opts.key_host_off
+		&& opts.key_host.is_none()
+		&& opts.do_vm
+		&& opts.do_v15
+		&& opts.bind_executor
+		&& opts.executor_guard
+	{
+		opts.key_host = Some("delta".to_string());
 	}
 
 	let luau = opts.dialect == "luau";

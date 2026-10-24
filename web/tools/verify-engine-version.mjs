@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R069",
+    note: "v16-a --key-host 翻默认（v15+executor 守卫自动注入 delta 宿主模型；--no-key-host 回退 = R067.5 字节）",
+    size: 231571,
+    sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a",
+  },
+  {
     name: "R067.5",
     note: "tier-2 colon member-check uses bracket form (sanitize-rename universal poison fixed)",
     size: 231237,
