@@ -1,4 +1,4 @@
--- Obsucvim GateProbe v1 -- R067.5 companion host probe (diagnostic only, no protection logic)
+-- Obsucvim GateProbe v2 -- R067.5 companion host probe (diagnostic only, no protection logic)
 --
 -- 用途：在目标执行器/宿主里【整段运行一次】，把全部输出原样贴回。
 -- Suda.hard-trace.lua 报的是「第一道炸掉的闸」（一次只给一道）；
@@ -525,6 +525,66 @@ do
 	emit("T2-env", okD and hasV2new, "Vector2.new=fn:" .. tostring(hasV2new) .. " task.defer=" .. tostring(okD))
 end
 
+-- ===== K: v16 密钥源稳定性探针（仅测量，不进 PREDICT） =====
+-- v16-a 会把这些运行期观测值编进载荷解码钥；每个值都必须在真 Delta 上稳定可见。
+do
+	local function fold31(str)
+		local h = 7
+		for i = 1, #str do h = (h * 31 + string.byte(str, i)) % 2147483647 end
+		return h
+	end
+	-- K1: identifyexecutor 名字段长度与不稳定性（版本串不参与）
+	local k1 = "noapi"
+	if type(IDENTV) == "function" then
+		local o1, n1 = pcall(IDENTV)
+		local o2, n2 = pcall(IDENTV)
+		local o3, n3 = pcall(IDENTV)
+		k1 = string.format("name=%s len=%s stable=%s",
+			tostring(n1), (type(n1) == "string" and #n1 or -1),
+			tostring(o1 and o2 and o3 and n1 == n2 and n2 == n3))
+	end
+	emit("K1", true, k1)
+	-- K2: Vector3 形态指纹（typeof 值 + tostring 格式的 fold）
+	local k2 = "noapi"
+	if VEC3V ~= nil then
+		local ok, r = pcall(function()
+			local v = VEC3V.new(1, 2, 3)
+			local t = tostring(v)
+			local y = TYPHOF and TYPHOF(v) or type(v)
+			return string.format("typeof=%s tostring=%q fold31(v3str)=%d fold31(typeof)=%d",
+				tostring(y), t, fold31(t), fold31(tostring(y)))
+		end)
+		k2 = ok and r or ("err:" .. tostring(r))
+	end
+	emit("K2", true, k2)
+	-- K3: RunService IsStudio 布尔 + checkcaller 布尔的联合折叠
+	local isStudio, ccv = "nil", "nil"
+	pcall(function()
+		local gsf = erd(GAMEV, "GetService"); if gsf == nil then gsf = GAMEV["GetService"] end
+		local svc = gsf(GAMEV, "RunService")
+		local f = erd(svc, "IsStudio"); if f == nil then f = svc["IsStudio"] end
+		isStudio = tostring(f(svc))
+	end)
+	if type(CHKCV) == "function" then
+		local okc, v = pcall(CHKCV); ccv = tostring(okc and v)
+	end
+	emit("K3", true, "IsStudio=" .. isStudio .. " checkcaller=" .. ccv
+		.. " boolpack=" .. tostring((isStudio == "false" and 2 or 0) + (ccv == "true" and 1 or 0)))
+	-- K4: HTTP 能力矩阵（为将来可选的联网形态摸底；纯登记）
+	local hcap = {}
+	for _, pair in ipairs({
+		{ "request", lkp("request") }, { "http_request", lkp("http_request") },
+		{ "syn.request", lkp("syn") and erd(lkp("syn"), "request") },
+		{ "http.request", lkp("http") and erd(lkp("http"), "request") },
+	}) do
+		table.insert(hcap, pair[1] .. ":" .. type(pair[2]))
+	end
+	emit("K4", true, "{" .. table.concat(hcap, " ") .. "}")
+	print("[XG-KF] combined-fold=" .. tostring(fold31(
+		(type(IDENTV) == "function" and tostring(select(2, pcall(IDENTV)) or "" ) or "") .. "|"
+		.. tostring(isStudio) .. "|" .. tostring(ccv))))
+end
+
 -- ===== 汇总 =====
 local ks = {}
 for l in pairs(risk) do table.insert(ks, l) end
@@ -532,4 +592,4 @@ table.sort(ks)
 print("[PREDICT] risk={" .. table.concat(ks, ",") .. "}")
 print("[PREDICT] note: empty = hard-build gates A..Q expected to pass on this host;"
 	.. " R/S/T/U are engine-internal gates and can only be observed via Suda.hard-trace.lua")
-print("[END] Obsucvim GateProbe v1")
+print("[END] Obsucvim GateProbe v2")
