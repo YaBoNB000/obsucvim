@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R073",
+    note: "体积收敛 R073：_mx 微解释器工厂化（5 份同源体→1 共享函数体+薄包装）+ HW2 别名表折叠；打印探针 231,571→171,881B，md 滚动方言/全 kind 注册不变",
+    size: 171881,
+    sha256: "b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b",
+  },
+  {
     name: "R072",
     note: "V17 Phase-1b --super-insn 发射端接线收官（on/off 产物字节与 R069/R070/R071 完全相同，差异仅在 wasm 内部接线码）",
     size: 231571,

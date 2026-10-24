@@ -951,6 +951,10 @@ mod micro_fusion_tests {
 	}
 }
 
+// R073 体积：n 份 _mx 微解释器逐字节同源（codes/field_perm/carrier 均为参数），
+// 工厂化 = 1 份共享函数体 _MXF + 每 shard 一个薄包装闭包。md 滚动方言不变
+// （每 shard 仍注册全 kind 集），运行期语义与逐份展开逐字节等价。
+#[allow(dead_code)]
 fn micro_tree(items: &[(u8, String)]) -> String {
 	if items.len() == 1 {
 		return items[0].1.clone();
@@ -965,74 +969,73 @@ fn micro_tree(items: &[(u8, String)]) -> String {
 	)
 }
 
-fn micro_shard_source(
-	name: &str,
-	blob: &str,
-	session_mask: &str,
-	session_step: &str,
-	shard: &MicroShard,
-	used: &std::collections::HashSet<usize>,
+fn micro_factory_source(
+	kinds: &[usize],
+	variant: u8,
 	lit: &MicroLits,
 	nop: &str,
 	rng: &mut Rng,
-) -> String {
-	let mut kinds: Vec<usize> = used.iter().copied().collect();
-	kinds.sort_unstable();
-	let mut items: Vec<(u8, String)> = kinds
-		.into_iter()
-		.map(|i| (shard.codes[i], micro_op_body(i, lit, nop)))
+) -> (String, Vec<usize>) {
+	let mut items: Vec<(usize, String)> = kinds
+		.iter()
+		.map(|&i| (i, micro_op_body(i, lit, nop)))
 		.collect();
 	rng.shuffle(&mut items);
+	let order: Vec<usize> = items.iter().map(|x| x.0).collect();
 	let dispatch = if items.is_empty() {
 		String::new()
 	} else {
-		match shard.shape % 3 {
-		0 => items
-			.iter()
-			.enumerate()
-			.map(|(i, (code, body))| {
-				format!(
-					"{} op == {} then {} ",
-					if i == 0 { "if" } else { "elseif" },
-					code,
-					body
-				)
-			})
-			.collect::<String>()
-			+ "end",
-		1 => items
-			.iter()
-			.enumerate()
-			.map(|(i, (code, body))| {
-				format!(
-					"{} {} == op then {} ",
-					if i == 0 { "if" } else { "elseif" },
-					code,
-					body
-				)
-			})
-			.collect::<String>()
-			+ "end",
-		_ => {
-			items.sort_by_key(|x| x.0);
-			micro_tree(&items)
-		}
+		match variant % 2 {
+			0 => items
+				.iter()
+				.enumerate()
+				.map(|(i, (_, body))| {
+					format!(
+						"{} op == zC[{}] then {} ",
+						if i == 0 { "if" } else { "elseif" },
+						i + 1,
+						body
+					)
+				})
+				.collect::<String>() + "end",
+			_ => items
+				.iter()
+				.enumerate()
+				.map(|(i, (_, body))| {
+					format!(
+						"{} zC[{}] == op then {} ",
+						if i == 0 { "if" } else { "elseif" },
+						i + 1,
+						body
+					)
+				})
+				.collect::<String>() + "end",
 		}
 	};
+	let src = format!(
+		"local function _MXF(E,a,b,c,d,o,R,N,zB,zM,zS,zC,z1,z2,z3) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE(zB,o)-(zM+o*zS)%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE(zB,ip)-(zM+ip*zS)%256)%256 local d2=(BYTE(zB,ip+1)-(zM+(ip+1)*zS)%256)%256 local d3=(BYTE(zB,ip+2)-(zM+(ip+2)*zS)%256)%256 ip=ip+3 local DK={{d1,d2,d3}} local op,x,y=DK[z1],DK[z2],DK[z3] {dispatch} end for _ti=1,3 do T[_ti]=nil end DK=nil for _oi=1,4 do O[_oi]=nil end end ",
+		dispatch = dispatch,
+	);
+	(src, order)
+}
+
+fn micro_shard_wrapper(index: usize, shard: &MicroShard, order: &[usize]) -> String {
 	let mut logical_pos = [0usize; 3];
 	for (physical, logical) in shard.field_perm.iter().enumerate() {
 		logical_pos[*logical] = physical + 1;
 	}
+	let csv = order
+		.iter()
+		.map(|&k| shard.codes[k].to_string())
+		.collect::<Vec<_>>()
+		.join(",");
 	format!(
-		"local function {name}(E,a,b,c,d,o,R,N) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE({blob},o)-({sm}+o*{ss})%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE({blob},ip)-({sm}+ip*{ss})%256)%256 local d2=(BYTE({blob},ip+1)-({sm}+(ip+1)*{ss})%256)%256 local d3=(BYTE({blob},ip+2)-({sm}+(ip+2)*{ss})%256)%256 ip=ip+3 local op,x,y=d{op},d{x},d{y} {dispatch} end for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
-		name = name,
-		blob = blob,
-		sm = session_mask,
-		ss = session_step,
-		op = logical_pos[0],
-		x = logical_pos[1],
-		y = logical_pos[2],
-		dispatch = dispatch,
+		"local _mx{i}=function(E,a,b,c,d,o,R,N) return _MXF(E,a,b,c,d,o,R,N,_mb{i},_ms{i},_mt{i},{{{csv}}},{p1},{p2},{p3}) end ",
+		i = index,
+		csv = csv,
+		p1 = logical_pos[0],
+		p2 = logical_pos[1],
+		p3 = logical_pos[2],
 	)
 }
 
@@ -2244,17 +2247,24 @@ __FVARM__        else
 				km = km_e,
 				kc = kc_e,
 			));
-			micro_fill.push_str(&micro_shard_source(
-				&format!("_mx{}", i),
-				&format!("_mb{}", i),
-				&format!("_ms{}", i),
-				&format!("_mt{}", i),
-				&micro_shards[i],
-				&micro_used[i],
-				&micro_lits,
-				&nop,
-				rng,
-			));
+		}
+		// R073：工厂化发射——先出一份共享 _MXF，再按 shard 出薄包装。
+		{
+			let mut kinds_set: std::collections::HashSet<usize> =
+				std::collections::HashSet::new();
+			for used in &micro_used {
+				kinds_set.extend(used.iter().copied());
+			}
+			let mut kinds_all: Vec<usize> = kinds_set.into_iter().collect();
+			kinds_all.sort_unstable();
+			if !kinds_all.is_empty() {
+				let variant = rng.int(0, 1) as u8;
+				let (fsrc, order) = micro_factory_source(&kinds_all, variant, &micro_lits, &nop, rng);
+				micro_fill.push_str(&fsrc);
+				for (i, shard) in micro_shards.iter().enumerate() {
+					micro_fill.push_str(&micro_shard_wrapper(i, shard, &order));
+				}
+			}
 		}
 		micro_fill.push_str(&micro_wrappers);
 		let chaff_micro_e = obf_num(chaff_micro as u64, rng);
@@ -3449,23 +3459,24 @@ let f_ty = fold31("Vector3Vector3");
 			}
 		}
         let hw_expand = if v15 {
-            let mut hw_expands: Vec<String> = Vec::new();
+            // R073 体积：别名拷贝逐对展开折叠为 pairs 表循环（语义逐条等价）。
+            let mut hw_pairs: Vec<String> = Vec::new();
             for i in 0..active_op_count {
                 let base = map.to_wire[0][i] as u16;
                 for tt in 1..4 {
                     let w = map.to_wire[tt][i] as u16;
-                    hw_expands.push(format!("HW2[({}+AV)%256]=HW2[({}+AV)%256];", w, base));
+                    hw_pairs.push(format!("{{{},{}}}", w, base));
                 }
             }
             for tt in 1..4 {
                 let base = map.nop_alias[0] as u16;
                 let w = map.nop_alias[tt] as u16;
-                hw_expands.push(format!("HW2[({}+AV)%256]=HW2[({}+AV)%256];", w, base));
+                hw_pairs.push(format!("{{{},{}}}", w, base));
             }
-            if hw_expands.is_empty() {
+            if hw_pairs.is_empty() {
                 String::new()
             } else {
-                format!("do local _av=AV; {} end", hw_expands.join(" "))
+                format!("do local _av=AV; local _al={{{}}}; for _i=1,#_al do local p=_al[_i]; HW2[(p[1]+_av)%256]=HW2[(p[2]+_av)%256] end end", hw_pairs.join(","))
             }
         } else {
             String::new()

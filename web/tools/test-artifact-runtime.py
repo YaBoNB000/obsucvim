@@ -173,9 +173,9 @@ def main():
         check("--key-host unknown profile is refused",
               not ok and "unknown" in detail, detail[:140])
 
-        # 5. R069/R070 翻默认+固化等价断言（字节级）：
+        # 5. R069/R070 翻默认+固化等价断言（字节级；锚点 R073 起新口径）：
         #    a. 默认（auto）hard == 显式 --key-host delta hard（同种子同参数）
-        #    b. auto 默认件 == R069 锚点（6c22c008；R070 固化不改产物字节）
+        #    b. auto 默认件 == R073 锚点（b67a06e3；R073 体积收敛：_mx 工厂化+别名折叠）
         #    c. R070 起 --no-key-host 已移除：使用即报错（固化不可关）
         artifact_auto, error = build(work, BASE_FLAGS + HARDENING_FLAGS, "20261022", "khauto")
         artifact_expl, error = build(
@@ -184,11 +184,11 @@ def main():
               artifact_auto is not None and artifact_auto == artifact_expl,
               (error or "")[:120])
 
-        R069A = "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a"
+        R073A = "b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b"
         ANCHOR_FLAGS = ["--preset", "v15", "--env-check", "--bind-executor"]
         auto5, error = build(work, ANCHOR_FLAGS, "67067", "khauto5")
-        check("auto default artifact == R069 keyed anchor",
-              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R069A,
+        check("auto default artifact == R073 keyed anchor",
+              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R073A,
               (error or "")[:120])
         ok, _, detail = build_status(
             work, ANCHOR_FLAGS + ["--no-key-host"], "1", "khconflict")

@@ -584,3 +584,30 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
 2026-10-24 用户回传两 hard 件均正常（`kkksu` 与
 `kkksu-mid:1,1,2,3,5,8,13,21,34,55|143` 精确打印、无报错，trace 件未动用），
 **V3 真机段通过，Phase-1b 验收收口**。
+
+## 22. R073：打印级产物体积收敛（231.6KB → 171.9KB）（2026-10-24）
+
+用户反馈打印级产物 ~220KB 偏大、目标 180–200KB。体积解剖（TSRC dump）定位
+主项：微解释器 `_mx{i}` 按 shard 逐份展开（5 份 × ~14KB 臂文本），而各份逐字节
+同源（codes/field_perm/carrier 本来就是参数）；shard 数 rng(3,5) 还是种子方差
+主驱动（±19KB）。md 滚动方言（`E.md` 运行时轮换）在结构上要求每 shard 注册
+全 kind——因此**不可按方言过滤臂**（会破坏绊线路径正确性），正确的减法只有
+表征级去重：
+
+1. **工厂化**：`micro_shard_source` 拆为 `micro_factory_source`（1 份共享函数体
+   `_MXF`，dispatch 走 `zC[j]` 码位表/`DK[z1..3]` 域排列参数）+ 每 shard 一个
+   薄包装闭包 `_mx{i}=function(...) return _MXF(...,_mb{i},_ms{i},_mt{i},{codes},
+   p1,p2,p3) end`。语义不变式：每 shard 仍注册全 kind 集、md 轮换路径逐字节等价。
+   排障一处关节：原 `d{op},d{x},d{y}` 是**编译期拼名**生成 d1/d2/d3 三个独立
+   local，不是表索引——工厂化后改 `DK={d1,d2,d3}` 包 + `DK[z1..3]` 运行期选择。
+2. **HW2 别名折叠**：132 对逐条 `HW2[(w+AV)%256]=HW2[(b+AV)%256];` → pairs 表循环
+   （-3KB）。
+
+实测（发布构建 1,218,817B，较 R072 -7.8KB）：
+- 新锚点（off 态探针）= **171,881B `b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b`**，
+  双构建逐字节恒等；verify 锚表 R073 置顶（R072 及前保留为历史行）。
+- 8 种子 × on/off 共 16 件全落 **161.8–172.8KB**（超出 180–200 目标余量，
+  种子方差 ±5.5KB）；Kkksu 级 hard 件 163,115B / 182,491B。
+- 64 格 luau 矩阵全绿（s7 按既定口径判）；hard 件裸 luau 精确缺失清单、不挂死；
+  单测 57 绿；八套件全绿（artifact-runtime 锚断言已同步 R073）。
+- 验收复检件：`samples/obsucvim/v18-check/`（4 件，待真 Delta 回传）。
