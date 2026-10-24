@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R067.4",
+    note: "exguard precheck via guard bindings (no bare getgenv); DTBL via LKP; CIDENT CENV-tolerant",
+    size: 231496,
+    sha256: "c1887865059cadb9b799f9defbdd132d4d685b720dd2e4787c05db1d8a79f653",
+  },
+  {
     name: "R067.3",
     note: "tier-2 structural (no exact PRNG floats / parser wording)",
     size: 230177,

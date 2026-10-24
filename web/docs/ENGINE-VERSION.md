@@ -234,3 +234,44 @@ tier-2 未通过项 : random_first, random_integer, random_second
 **诚实边界**：这三处从「否决」降级为「结构判定」，强度确实略降——一个能正确实现
 `Random` 语义的伪造环境现在能过这三项。但换来的是：不再因为执行器 PRNG 实现不同
 而把正常用户全部杀掉。这是权衡，不是免费的加强。
+## 10. R067.4：precheck 不再裸写 `getgenv`（2026-10-24）
+
+**事故复盘（实锤到字节）**：用户把 R067.3 的 `Suda.hard.lua` 放进真 Delta 跑，Doctor 已证明
+13 项执行器 API 与全部 debug 深内省都在，产物却报「**整张清单全部缺失**」，然后拒绝运行。
+原因链：
+
+1. 注入进模板的 exguard 片段会过 `sanitize_frag`（template.rs）：凡是不在
+   `frag_reserved` 白名单里的标识符一律文本级改名（`_G`、`pcall`、`type`、`error` 等
+   在白名单里；**`getgenv` 不在**——守卫本体从来只用 `VK(密文串)` 查它）。
+2. R067.2/3 的 precheck 裸写了 `type(getgenv) == "function"` → 产物里变成
+   `type(Idu)=="function"then local gy=Idu()`（`Idu` 无任何定义），恒假 →
+   precheck 退回只查 `_G` → 执行器 API 全在 `getgenv()` 侧 → 全部误报缺失。
+   直接在 `Suda.hard.lua` 里 `grep` 可见：`Idu` 恰出现 2 次、`getgenv` 0 次。
+
+**修法（exguard.rs，三处）**：
+
+| 处 | 改动 | 理由 |
+| --- | --- | --- |
+| precheck 整体重写 | 不再做任何查表，改为复核守卫已绑定的原语（`IDENTV/CHKCV/ISCV/ISLV/NEWCV/LSTRV/TYPHOF/GINFO(S)V/GCONSTV/GUPVV/GPROTO(S)V/SUPVV`，全部经 `LKP(VK(密文串))` 取得），判定集与 SCHALL 第一道闸门逐一对应，另加 `game/Instance/Vector3/task` 四项（对应闸门 7） | 根除「裸标识符被改名」这一类 bug；报告清单 = 闸门真实要求 |
+| `DTBL` 绑定 | `ERD(ENV, …)` → `LKP(…)` | `debug` 库可能只在 `getgenv()` 侧（CENV），LKP 两侧都查 |
+| `CIDENT` 恒等检查 | `ERD(ENV,debug) ~= DTBL` → 容忍 `ERD(CENV,debug) == DTBL` | 与上一处配套，否则 DTBL 从 CENV 来时自己否决自己 |
+
+`error`/`type`/`pcall`/`_G` 等允许裸用（白名单内）；字符串字面量不受改名影响。
+
+**验证（真实 Luau 运行时，沙箱）**：
+
+- 裸官方 Luau（非执行器宿）：种子 `67067` 下 precheck 送达，清单准确——
+  `loadstring/typeof/debug.info` 是 Luau 自带的**不在**缺失清单里，其余 13 项全列出。
+  注意：**某些种子下 tier-2 宿主探测会比 precheck 先崩**（fail-closed 噪音，R067 起
+  既有，仅影响非执行器宿主的报错美观度，不影响保护判定，也不影响执行器宿主）。
+- Delta 式宿主（API 齐、无深内省，prelude 模拟）：拒绝清单**恰好**是
+  `debug.getconstants,debug.getupvalues,debug.getproto,debug.setupvalue` 四项。
+- 回归：`safe` 193,044 B / `c8659801…` 与 L1 194,840 B、L2 198,338 B **逐字节不变**；
+  仅 `hard`/L3 变 215,171 B / `85751a9a…`；引擎锚点 231,496 B / `c1887865…`。
+- 测试套件：hosting 78/78、loader 24/24、attest 18/18、live-loader 13/13、
+  engine-retry 9/9、artifact-runtime 全过；`test-exguard-precheck.py` 重写为
+  全产物级回归（含「产物不得残留裸 `getgenv`」断言）。
+
+**未验证（照旧诚实标注）**：SCHALL 其余闸门对真 Delta 的正向跑通仍待用户实测——
+特别是闸门 14 的 `debug.getproto(fn,1)`（Doctor 显示 Delta 对无子函数会报
+`out of proto bounds`）。R067.4 只保证：**该过的 precheck 不再误报；拒绝时原因准确**。

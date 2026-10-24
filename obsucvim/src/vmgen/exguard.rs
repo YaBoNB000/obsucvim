@@ -205,9 +205,6 @@ let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
 		bytes_s, desc_s
 	));
 	src.push_str(
-		"do\nlocal _e = nil\npcall(function() if type(getgenv) == \"function\" then local g = getgenv() if type(g) == \"table\" then _e = g end end end)\nif _e == nil then _e = _G end\nlocal _need = { \"identifyexecutor\", \"checkcaller\", \"iscclosure\", \"islclosure\", \"newcclosure\", \"loadstring\", \"typeof\" }\nlocal _miss = \"\"\nfor _i = 1, #_need do\nlocal _k = _need[_i]\nlocal _v = nil\npcall(function() _v = _e[_k] end)\nif type(_v) ~= \"function\" then _v = nil pcall(function() _v = _G[_k] end) end\nif type(_v) ~= \"function\" then _miss = _miss .. _k .. \",\" end\nend\nlocal _dbg = nil\npcall(function() _dbg = _e.debug end)\nif _dbg == nil then pcall(function() _dbg = _G.debug end) end\nlocal _deep = { \"getconstants\", \"getupvalues\", \"setupvalue\" }\nfor _i = 1, #_deep do\nlocal _k = _deep[_i]\nlocal _v = nil\npcall(function() if _dbg ~= nil then _v = _dbg[_k] end end)\nif type(_v) ~= \"function\" then _miss = _miss .. \"debug.\" .. _k .. \",\" end\nend\nif _miss ~= \"\" then error(\"[Obsucvim] this executor lacks APIs the hardened build requires: \" .. _miss .. \" - use the compatible build (--no-bind-executor) here, or a Synapse-class executor\", 0) end\nend\n",
-	);
-	src.push_str(
 		"local _ch\nlocal _why = \"\"\ndo\nlocal function _isch(f)\nlocal _w1 = coroutine.wrap(function() return f(65) end)\nlocal o1, r1 = pcall(_w1)\nif not o1 or r1 ~= \"A\" then return \"65:\" .. tostring(r1) end\nlocal _w2 = coroutine.wrap(function() return f(90) end)\nlocal o2, r2 = pcall(_w2)\nif not o2 or r2 ~= \"Z\" then return \"90:\" .. tostring(r2) end\nlocal _w3 = coroutine.wrap(function() return f(48) end)\nlocal o3, r3 = pcall(_w3)\nif not o3 or r3 ~= \"0\" then return \"48:\" .. tostring(r3) end\nlocal _w4 = coroutine.wrap(function() return f(95) end)\nlocal o4, r4 = pcall(_w4)\nif not o4 or r4 ~= \"_\" then return \"95:\" .. tostring(r4) end\nreturn nil end\nlocal function _scan(t)\nfor _k, _v in pairs(t) do\nif type(_v) == \"function\" then local _rr = _isch(_v) if _rr == nil then return _v end end\nend\nreturn nil end\nlocal _mok, _mt = pcall(getmetatable, \"\")\n_why = \"M=\" .. tostring(_mok) .. \"/\" .. type(_mt)\nif _mok and type(_mt) == \"table\" then\nlocal _sok, _sr = pcall(function()\nlocal r = _scan(_mt)\nif not r then\nfor _k, _v in pairs(_mt) do\nif type(_v) == \"table\" then r = _scan(_v) if r then break end end\nend\nend\nreturn r end)\nif _sok then _ch = _sr end\nend\nif not _ch then\nlocal _eok0, _env0 = pcall(getfenv, 0)\nif _eok0 and type(_env0) == \"table\" then\nlocal _sok2, _sr2 = pcall(function()\nfor _k, _tab in pairs(_env0) do\nif type(_tab) == \"table\" then\nlocal r2 = _scan(_tab)\nif r2 then return r2 end\nend\nend\nreturn nil end)\nif _sok2 then _ch = _sr2 end\nend\nend\nif not _ch then\nlocal _lok0, _lv0 = pcall(function() return (\"\\0\")[\"char\"] end)\nif _lok0 and type(_lv0) == \"function\" then\nlocal _rr0 = _isch(_lv0)\nif _rr0 == nil then _ch = _lv0 else _why = _why .. \";L=\" .. _rr0 end\nelse\n_why = _why .. \";L=\" .. tostring(_lok0) .. \"/\" .. type(_lv0)\nend\nend\nend\nif not _ch then return { 0, function() return 0 end } end\n",
 	);
 	src.push_str(
@@ -221,7 +218,7 @@ let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
 		tok("TK_GETGENV")
 	));
 	src.push_str(&format!(
-		"local STBL = ERD(ENV, VK({}))\nlocal TTBL = ERD(ENV, VK({}))\nlocal MTBL = ERD(ENV, VK({}))\nlocal DTBL = ERD(ENV, VK({}))\nlocal PCALV = LKP(VK({}))\nlocal TYPV = LKP(VK({}))\nlocal RGETV = LKP(VK({}))\nlocal RSETV = LKP(VK({}))\nlocal RAWEQV = LKP(VK({}))\nlocal NEXTV = LKP(VK({}))\nlocal SELV = LKP(VK({}))\nlocal TONUMV = LKP(VK({}))\nlocal TOSTRV = LKP(VK({}))\nlocal SMTV = LKP(VK({}))\nlocal GMTV = LKP(VK({}))\nlocal UNPV = LKP(VK({}))\nlocal FLRV = MTBL and ERD(MTBL, VK({}))\nlocal ABSV = MTBL and ERD(MTBL, VK({}))\nlocal LDEXPV = MTBL and ERD(MTBL, VK({}))\nlocal SBYTEV = STBL and ERD(STBL, VK({}))\nlocal SCHARV = STBL and ERD(STBL, VK({}))\nlocal SSUBV = STBL and ERD(STBL, VK({}))\nlocal TCONCV = TTBL and ERD(TTBL, VK({}))\nlocal TINSEV = TTBL and ERD(TTBL, VK({}))\nlocal TUNPV = TTBL and ERD(TTBL, VK({}))\nlocal IDENTV = LKP(VK({}))\nlocal CHKCV = LKP(VK({}))\nlocal ISCV = LKP(VK({}))\nlocal ISLV = LKP(VK({}))\nlocal NEWCV = LKP(VK({}))\nlocal LSTRV = LKP(VK({}))\nlocal TYPHOF = LKP(VK({}))\nlocal GAMEV = LKP(VK({}))\nlocal INSTV = LKP(VK({}))\nlocal VEC3V = LKP(VK({}))\nlocal TASKV = LKP(VK({}))\nlocal GINFOV = DTBL and ERD(DTBL, VK({}))\nlocal GINFOSV = DTBL and ERD(DTBL, VK({}))\nlocal GCONSTV = DTBL and ERD(DTBL, VK({}))\nlocal GUPVV = DTBL and ERD(DTBL, VK({}))\nlocal GPROTOV = DTBL and ERD(DTBL, VK({}))\nlocal GPROTOSV = DTBL and ERD(DTBL, VK({}))\nlocal SUPVV = DTBL and ERD(DTBL, VK({}))\nlocal INSPECTV = TYPV and TYPV(GINFOSV) == \"function\" and GINFOSV or GINFOV\nlocal LOADPX = VK({})\n_pc, _ty, _rg = PCALV, TYPV, RGETV\n",
+		"local STBL = ERD(ENV, VK({}))\nlocal TTBL = ERD(ENV, VK({}))\nlocal MTBL = ERD(ENV, VK({}))\nlocal DTBL = LKP(VK({}))\nlocal PCALV = LKP(VK({}))\nlocal TYPV = LKP(VK({}))\nlocal RGETV = LKP(VK({}))\nlocal RSETV = LKP(VK({}))\nlocal RAWEQV = LKP(VK({}))\nlocal NEXTV = LKP(VK({}))\nlocal SELV = LKP(VK({}))\nlocal TONUMV = LKP(VK({}))\nlocal TOSTRV = LKP(VK({}))\nlocal SMTV = LKP(VK({}))\nlocal GMTV = LKP(VK({}))\nlocal UNPV = LKP(VK({}))\nlocal FLRV = MTBL and ERD(MTBL, VK({}))\nlocal ABSV = MTBL and ERD(MTBL, VK({}))\nlocal LDEXPV = MTBL and ERD(MTBL, VK({}))\nlocal SBYTEV = STBL and ERD(STBL, VK({}))\nlocal SCHARV = STBL and ERD(STBL, VK({}))\nlocal SSUBV = STBL and ERD(STBL, VK({}))\nlocal TCONCV = TTBL and ERD(TTBL, VK({}))\nlocal TINSEV = TTBL and ERD(TTBL, VK({}))\nlocal TUNPV = TTBL and ERD(TTBL, VK({}))\nlocal IDENTV = LKP(VK({}))\nlocal CHKCV = LKP(VK({}))\nlocal ISCV = LKP(VK({}))\nlocal ISLV = LKP(VK({}))\nlocal NEWCV = LKP(VK({}))\nlocal LSTRV = LKP(VK({}))\nlocal TYPHOF = LKP(VK({}))\nlocal GAMEV = LKP(VK({}))\nlocal INSTV = LKP(VK({}))\nlocal VEC3V = LKP(VK({}))\nlocal TASKV = LKP(VK({}))\nlocal GINFOV = DTBL and ERD(DTBL, VK({}))\nlocal GINFOSV = DTBL and ERD(DTBL, VK({}))\nlocal GCONSTV = DTBL and ERD(DTBL, VK({}))\nlocal GUPVV = DTBL and ERD(DTBL, VK({}))\nlocal GPROTOV = DTBL and ERD(DTBL, VK({}))\nlocal GPROTOSV = DTBL and ERD(DTBL, VK({}))\nlocal SUPVV = DTBL and ERD(DTBL, VK({}))\nlocal INSPECTV = TYPV and TYPV(GINFOSV) == \"function\" and GINFOSV or GINFOV\nlocal LOADPX = VK({})\n_pc, _ty, _rg = PCALV, TYPV, RGETV\n",
 		tok("TK_STRING"),
 		tok("TK_TABLE"),
 		tok("TK_MATH"),
@@ -267,6 +264,35 @@ let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
 		tok("TK_SETUPVALUE"),
 		tok("TK_LOADPFX")
 	));
+
+	// 前置自检（R067.4 重写）：只复用守卫自己已经绑定的原语（TYPV/LKP 解析后的
+	// IDENTV/CHKCV/.../SUPVV），不再出现任何裸执行器标识符。sanitize_frag 会把任何
+	// 非保留字标识符改名（getgenv → Idu 之类），裸写必坏；字符串字面量不受影响。
+	// 判定集与 SCHALL 第一道闸门逐一对应，因此报告出的缺失清单就是闸门真实要求。
+	src.push_str(
+		r#"do
+local _miss = ""
+local function _chk(n, v) if TYPV(v) ~= "function" then _miss = _miss .. n .. "," end end
+_chk("identifyexecutor", IDENTV)
+_chk("checkcaller", CHKCV)
+_chk("iscclosure", ISCV)
+_chk("islclosure", ISLV)
+_chk("newcclosure", NEWCV)
+_chk("loadstring", LSTRV)
+_chk("typeof", TYPHOF)
+if TYPV(GINFOV) ~= "function" and TYPV(GINFOSV) ~= "function" then _miss = _miss .. "debug.info," end
+_chk("debug.getconstants", GCONSTV)
+_chk("debug.getupvalues", GUPVV)
+if TYPV(GPROTOV) ~= "function" and TYPV(GPROTOSV) ~= "function" then _miss = _miss .. "debug.getproto," end
+_chk("debug.setupvalue", SUPVV)
+if TYPV(GAMEV) ~= "table" and TYPV(GAMEV) ~= "userdata" then _miss = _miss .. "game," end
+if TYPV(INSTV) ~= "table" then _miss = _miss .. "Instance," end
+if TYPV(VEC3V) ~= "table" then _miss = _miss .. "Vector3," end
+if TYPV(TASKV) ~= "table" then _miss = _miss .. "task," end
+if _miss ~= "" then error("[Obsucvim] this executor lacks APIs the hardened build requires: " .. _miss .. " - use the compatible build (--no-bind-executor) here, or a Synapse-class executor", 0) end
+end
+"#,
+	);
 	src.push_str(&format!(
 		"local COUNTER = 0\nlocal NEXTP = 1\nlocal EPOCH = 0\nlocal STATE = {} % 2147483647\nlocal ATTEST = 0\nlocal SEALA = (STATE * 65599 + {} + ATTEST) % 2147483647\nlocal SEALB = (STATE * 4099 + {} + ATTEST % 104729) % 2147483647\nlocal SEALC = (STATE * 8191 + {} + (ATTEST % 65521) * 131) % 2147483647\nlocal TRIPPED = false\nlocal ATTESTED = false\nlocal TOK = {}\nlocal PSTATE = 0\nlocal PSEAL = 0\nlocal PACTIVE = false\nlocal UPV = {}\n",
 		decoy_seed, salt_a, salt_b, salt_c, poison, upvalue_expected
@@ -286,10 +312,11 @@ let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
 	let mut ci = String::new();
 	ci.push_str("local function CIDENT() if TYPV == nil then return false end\n");
 	ci.push_str(&format!(
-		"if ERD(ENV, VK({})) ~= STBL or ERD(ENV, VK({})) ~= TTBL or ERD(ENV, VK({})) ~= MTBL or ERD(ENV, VK({})) ~= DTBL or ERD(ENV, VK({})) ~= PCALV or ERD(ENV, VK({})) ~= TYPV or ERD(ENV, VK({})) ~= RGETV or ERD(ENV, VK({})) ~= RSETV or ERD(ENV, VK({})) ~= NEXTV or ERD(ENV, VK({})) ~= GMTV or ERD(ENV, VK({})) ~= SMTV or ERD(ENV, VK({})) ~= RAWEQV or ERD(ENV, VK({})) ~= TOSTRV or ERD(ENV, VK({})) ~= SELV or ERD(ENV, VK({})) ~= TONUMV or ERD(STBL, VK({})) ~= SBYTEV or ERD(STBL, VK({})) ~= SCHARV or ERD(STBL, VK({})) ~= SSUBV or ERD(TTBL, VK({})) ~= TCONCV or ERD(TTBL, VK({})) ~= TINSEV or ERD(MTBL, VK({})) ~= LDEXPV then return false end\n",
+		"if ERD(ENV, VK({})) ~= STBL or ERD(ENV, VK({})) ~= TTBL or ERD(ENV, VK({})) ~= MTBL or (ERD(ENV, VK({})) ~= DTBL and ERD(CENV, VK({})) ~= DTBL) or ERD(ENV, VK({})) ~= PCALV or ERD(ENV, VK({})) ~= TYPV or ERD(ENV, VK({})) ~= RGETV or ERD(ENV, VK({})) ~= RSETV or ERD(ENV, VK({})) ~= NEXTV or ERD(ENV, VK({})) ~= GMTV or ERD(ENV, VK({})) ~= SMTV or ERD(ENV, VK({})) ~= RAWEQV or ERD(ENV, VK({})) ~= TOSTRV or ERD(ENV, VK({})) ~= SELV or ERD(ENV, VK({})) ~= TONUMV or ERD(STBL, VK({})) ~= SBYTEV or ERD(STBL, VK({})) ~= SCHARV or ERD(STBL, VK({})) ~= SSUBV or ERD(TTBL, VK({})) ~= TCONCV or ERD(TTBL, VK({})) ~= TINSEV or ERD(MTBL, VK({})) ~= LDEXPV then return false end\n",
 		tok("TK_STRING"),
 		tok("TK_TABLE"),
 		tok("TK_MATH"),
+		tok("TK_DEBUG"),
 		tok("TK_DEBUG"),
 		tok("TK_PCALL"),
 		tok("TK_TYPE"),

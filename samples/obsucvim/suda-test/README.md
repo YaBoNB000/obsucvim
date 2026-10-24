@@ -9,7 +9,7 @@
 | `Suda.lua` | 14 B | 原始源码 `print("Suda")` |
 | `Suda.attested.lua` | ~196 KB | **推荐先测**：证明层 + 诊断 + 兼容版产物（等价线上 loader 在 Delta 上的行为） |
 | `Suda.safe.lua` | 193,044 B | 兼容版（`--env-check --no-bind-executor`） |
-| `Suda.hard.lua` | 215,916 B | 加固版（`--env-check --bind-executor --bind-env roblox`），R067.2 完整保护 + 精确报错 |
+| `Suda.hard.lua` | 215,171 B | 加固版（`--env-check --bind-executor --bind-env roblox`），R067.4 完整保护 + 精确报错 |
 
 ## 预期输出
 
@@ -63,13 +63,13 @@ RUN=1 ... ./web/tools/check-artifact-syntax.sh      # 顺便在 CLI 里跑一遍
 | --- | --- | --- | --- |
 | `Suda.lua` | 14 B | OK | `Suda` |
 | `Suda.safe.lua` | 193,044 B | OK | `Suda` |
-| `Suda.hard.lua` | 215,916 B | **OK** | 被拒：`attempt to index nil with 'defer'`（环境绑定按设计拒绝裸 Luau） |
+| `Suda.hard.lua` | 215,171 B | **OK** | 被拒：`attempt to index nil with 'defer'`（环境绑定按设计拒绝裸 Luau） |
 | `Suda.attested.lua` | 200,990 B | OK | `Suda`（前面多一行证明诊断） |
 
 **语法通过 ≠ 能跑**：`hard` 语法完全合法，但在没有 Roblox/executor API 的宿主上会被
 加固层主动拒绝——这是 `--bind-env roblox` 的设计目的，不是语法错误。
 
-同种子重生成逐字节一致（`--seed 20261023`：safe `c8659801…`、hard `22f7eb3b…`）。
+同种子重生成逐字节一致（`--seed 20261023`：safe `c8659801…`、hard `85751a9a…`）。
 
 ## 2026-10-23 · hard 版报错定位与修复
 
@@ -145,3 +145,18 @@ R067.3 把三处改成版本无关判定（详见 `web/docs/ENGINE-VERSION.md` �
 ## SHA-256
 
 见 `SHA256SUMS.txt`。
+
+## 2026-10-24 第四轮 · precheck 不再裸写 `getgenv`（R067.4）
+
+第三轮的产物在真 Delta 上依然误报「整张清单全缺」。字节级实锤：产物里
+`type(getgenv)=="function"` 被模板级改名器 `sanitize_frag` 改成了 `type(Idu)`（恒假）——
+执行器 API 全在 `getgenv()` 侧、不在 `_G`，于是误报。R067.4 的 fix：
+
+- precheck 不再做任何查表，改为复核守卫自己解析好的绑定（与 SCHALL 第一道闸门
+  逐条对应），整个文件里**不再出现裸 `getgenv`**（回归测试里有专门断言）；
+- `debug` 库绑定改走 LKP（`getgenv()` 侧和脚本 env 侧都查），CIDENT 对来源容错。
+
+现在预期：在 Delta 上 precheck **应当通过**（Doctor 已证明 API 全齐），随后 SCHALL
+深闸门是否全部通过**仍待真机实测**——特别是闸门 14 用 `debug.getproto(fn,1)`
+探子函数，Delta 对无子函数报 `out of proto bounds`（正常），对带子函数的
+探针是否返回真 proto，只有真机知道。若仍失败，把新的控制台输出整段发回。
