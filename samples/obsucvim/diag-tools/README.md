@@ -1,4 +1,9 @@
-# R066 vs R067 差异定位包
+> **2026-10-24 迁移说明**：原 `suda-test/`、`kkksu-test/`、`b82f14f-check/`、`suda/`
+> 四个大体积样本文件夹已应主要求裁掉（合计约 3 MB）；本目录只保留两件**现场排障工具**
+> （Doctor / GateProbe，共 ~40 KB）。分层产物可按文中命令用当前引擎随时重建
+> （同种子同字节，哈希记录见 `web/docs/ENGINE-VERSION.md`）。
+
+# 现场排障工具包
 
 ## 0. 先跑这一个：`Obsucvim-Doctor.lua`
 

@@ -389,3 +389,14 @@ v15 架构天花板（解码链自描述于产物）所致，与 R067 系列修�
 
 后续强度方向另案：v16 keyed-decode（载荷解密密钥混入运行期观测值，使静态
 复现脚本拿不到首字节）——待用户确认立项。
+
+## 16. 样本裁剪（2026-10-24，应主要求）
+
+`samples/obsucvim/` 下四个大体积测试文件夹已删除（合计约 3 MB）：
+`suda-test/`（1.5 M）、`b82f14f-check/`（853 K）、`kkksu-test/`（409 K）、`suda/`（213 K）。
+本文 §1–§15 中的所有尺寸/哈希记录**继续有效**，作为留档证据；任何一件产物都可用
+当前引擎（`web/tools/obsucvim.wasm` = R067.5）+ 文中记录的参数/种子**同字节重建**。
+
+保留：`samples/obsucvim/diag-tools/`（~55 K）——两件现场排障工具
+`Obsucvim-Doctor.lua`（19.8 K，`71a861fa…`）与 `Obsucvim-GateProbe.lua`
+（21.6 K，`52aa259d…`）及原 diagnose README（含闸门处置手册）。

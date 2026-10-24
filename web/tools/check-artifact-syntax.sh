@@ -21,7 +21,11 @@ LUAU_BIN="${LUAU_BIN:-$(command -v luau || true)}"
 if [ "$#" -gt 0 ]; then
   FILES=("$@")
 else
+  # 样本目录 2026-10-24 起不再入库（应主要求裁剪大体积测试件）；默认无件可验时直接跳过。
+  shopt -s nullglob
   FILES=("$ROOT"/samples/obsucvim/suda-test/*.lua)
+  shopt -u nullglob
+  if [ ${#FILES[@]} -eq 0 ]; then echo "SKIP: 默认样本目录已裁剪，传入具体文件路径再校验" >&2; exit 0; fi
 fi
 
 if [ ! -x "${LUAU_COMPILE:-/nonexistent}" ] && [ ! -x "${LUAU_BIN:-/nonexistent}" ]; then
