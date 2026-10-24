@@ -103,3 +103,64 @@
 - 计划文档 §9 系列中「融合提供 descriptor/码位互异结构证据」的口径曾偏向
   「多样性≈强度」——本文件起统一纠正为：多样性只收人工费，存在性只由
   密钥流结构承担。
+
+## 7. 原型一阶段实装与验收（R4/R1 融合通道 EVKEY，2026-10-25）
+
+路线「3」落地：**先原型验证 R1/R2，再定全纲排期**。本轮交付 R4/R1 融合原型
+（宿主 EV 进密钥流本体）+ R2 可行性结论。
+
+### 7.1 实装（旋钮 `OBSUCVIM_V19_EVKEY`，默认关）
+
+- 三态：`Off`（产物与 R073 逐字节恒等）/ `Bind`（真宿主测量现算现折）/
+  `Dev(n)`（`OBSUCVIM_V19_EVKEY_DEV=<n>` 开发档：常量进产物，仅本地矩阵机制
+  验证，零安全性，构建时 stderr 明示"禁止交付"）。
+- 密钥函数（exguard.rs `ev_fold`，钉测试）：`EV = ((k2a*31+k2b)%2^28*31+k3c)%2^28`，
+  delta 剖面 = **4576808**。
+- 编译期：`compiler::finish` blob LCG 基址 `base += ev_term`（两段 g 初值共用
+  base，天然覆盖 ksplit 前后）——**at-rest 字节首次依赖产物外秘密**。
+- 运行期：构建层早探针（vault 打包前）现算 `EVK`——逐式镜像 exguard 既有
+  测量（Vector3.new(1,2,3) 的 tostring/typeof 的 f31 折叠、IsStudio、
+  checkcaller、identifyexecutor 名长）——经 **vault 第 9 槽 → HBOOT → BSS 外层
+  第 17 参 EVKX → `unmask_pre` 两处 g 初值**。探针任一环节缺失 → EVK=0 ≠ EV
+  → blob 链失步。
+- knob 开 + `--no-bind-executor` 且无 DEV → 编译期明确报错（无宿主模型可烘）。
+
+### 7.2 验收证据（全绿）
+
+| 检查 | 结果 |
+|---|---|
+| 旋钮关锚点 | `print("suda")` seed 67067 → 171,881B sha `b67a06e3…` **逐字节恒等 R073** |
+| 单测 | 59 绿（57+ev_fold 钉/模式解析 2 新增） |
+| 八套件 | hosting 78/78、engine-retry 9/9、artifact-runtime 0 fail（锚断言满足）、exguard-precheck 0 fail、keyhost-fold PASS、attest 18/18、loader 24/24、live-loader 13/13 |
+| 行为矩阵 | s1–s5（print/递归斐波那契/pcall-error/pairs/vararg+math）DEV×Off × luau 输出恒等（s3 仅 chunk 名差异，既定口径） |
+| EV 烘入字节实证 | 同种子 DEV=7777777 vs 8888888：148KB 件间 143,136 字节差异 |
+| 负样本（存在性） | Bind 件裸 luau：探针取空 → EVK=0 → **载荷不执行**（失步挂起，无输出无泄漏；对照件同环境=既有精确缺 API 拒绝信息） |
+| 静态审计（TSRC） | EV=4576808 **零字面命中**；探针在案；BSS 外层 17 参、vault 9 槽 |
+
+### 7.3 未定与诚实边界
+
+- **Bind 路径真机未验**：探针镜像公式须真 Delta 回传（验收件
+  `samples/obsucvim/v19-check/`，两件同种子对照）。回了才算数。
+- 失败形态=**失步挂起**（静默、无投毒文案）；对非真环境这是设计语义
+  （解码失败而非仅拒绝执行），对真机 mismatch 场景自认"变砖"风险——
+  故 knob 默认关，Bind 先验收件探路。
+- EV 观测面可被**同宿主旁录**（在 Delta 上跑探针即可收割三量）⇒ R4 只做
+  叠加柱，不独撑；叠加后攻击下限=真机动态工程，符合 §3 上限声明。
+- Dev 档产物可被平凡静态拆（常量就在文里）——严禁交付，仅机制验证。
+- 熵面：EV 经 LCG 基址的 28-bit 态进每字节 fold_key，叠加在既有 LCG 截断
+  输出之上；截断态恢复类攻击面的收口属 R5（28-bit 非线性折叠）后续轮。
+
+### 7.4 R2（执行门控）可行性结论
+
+- **发现**：现架构装载期一次性解析全部函数 blob（phase 逐台 parse），任何
+  "执行量"都无法在装载前进数据路径 ⇒ blob 层做不了 R2。
+- **可行落点**：stage-2 `bdec` 是懒解（按块在首次 dispatch 时才解），子函数
+  段钥=「父闭包直线前缀（编译期可证无数据分支）的 dispatch 折叠 + EV」在
+  该层成立；检查点只能设在编译期可证的确定性前缀（计划文档既定备案）。
+- 结论：R2 可做但要动 bdec 键源 + 编译器前缀可证性分析，属 M3 轮；本轮
+  不动，避免一次开两个战场。
+
+### 7.5 下一步（待拍板）
+
+- 真机回传 v19-check 两件 → Bind 公式确认 → 再拍 M1（R6+R3+R5）是否开工、
+  EVKEY 何时翻默认。

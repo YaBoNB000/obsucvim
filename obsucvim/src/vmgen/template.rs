@@ -1235,7 +1235,20 @@ pub fn generate(
 	key_host: Option<&super::exguard::KeyHost>,
 	env_check: bool,
 	guard: bool,
+	ev_mode: super::exguard::EvKeyMode,
 ) -> String {
+	let ev_on = ev_mode.on();
+	// V19 R4-proto（OBSUCVIM_V19_EVKEY）：Bind=真宿主探针现算 EVK；
+	// Dev(n)=开发档常量（仅本地矩阵机制验证，禁止交付）；Off=不发射任何 EV 痕迹。
+	let evsig = if ev_on { ",EVKX" } else { "" };
+	let evhk_unpack = if ev_on { ",EVK_" } else { "" };
+	let evk_probe: String = match ev_mode {
+		super::exguard::EvKeyMode::Off => String::new(),
+		super::exguard::EvKeyMode::Dev(v) => format!("local EVK = {} ", obf_num(v as u64, rng)),
+		super::exguard::EvKeyMode::Bind => String::from(
+			"local EVK = 0 do local _eko, _ekv = PCAL(function() local _vn = EV[\"Vector3\"] if TYP(_vn) ~= \"table\" then return nil end local _nw = _vn[\"new\"] if TYP(_nw) ~= \"function\" then return nil end local _v = _nw(1, 2, 3) local _a = 7 local _s = TSTR(_v) for _i = 1, #_s do _a = (_a * 31 + BYTE(_s, _i)) % 2147483647 end local _tf = EV[\"typeof\"] if TYP(_tf) ~= \"function\" then return nil end local _s2 = _tf(_v) if TYP(_s2) ~= \"string\" then return nil end local _b = 7 for _i = 1, #_s2 do _b = (_b * 31 + BYTE(_s2, _i)) % 2147483647 end local _c = 0 local _gm = EV[\"game\"] if TYP(_gm) == \"table\" or TYP(_gm) == \"userdata\" then local _gs = _gm[\"GetService\"] if TYP(_gs) == \"function\" then local _gok, _rs = PCAL(_gs, _gm, \"RunService\") if _gok and _rs ~= nil then local _isf = _rs[\"IsStudio\"] if TYP(_isf) == \"function\" then local _iok, _iv = PCAL(_isf, _rs) if _iok and _iv == true then _c = _c + 1 end end end end end local _ckf = EV[\"checkcaller\"] if TYP(_ckf) == \"function\" then local _cok, _cr = PCAL(_ckf) if _cok and _cr == true then _c = _c + 2 end end local _idf = EV[\"identifyexecutor\"] if TYP(_idf) == \"function\" then local _iok2, _n1 = PCAL(_idf) if _iok2 and TYP(_n1) == \"string\" then _c = _c + #_n1 * 4 end end return ((_a * 31 + _b) % 268435456 * 31 + _c) % 268435456 end) if _eko and TYP(_ekv) == \"number\" then EVK = _ekv end end "
+		),
+	};
 	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().take(active_op_count).enumerate() {
@@ -1477,6 +1490,16 @@ pub fn generate(
     __TAGS__local p = 1
     local got = 0
     local cstart = 0"#;
+	// V19 R4-proto：knob 开时 blob LCG 两个 g 初值都并入 EVKX（BSS 外层
+	// 函数新增尾参；off 时文本与 R073 逐字节一致）。
+	let unmask_pre = if ev_on {
+		unmask_pre.replace(
+			"BSEED + (fi - 1) * BSTEP",
+			"BSEED + (fi - 1) * BSTEP + EVKX",
+		)
+	} else {
+		unmask_pre.to_string()
+	};
 	let walk_head = r#"local tag = BYTE(s, p); p = p + 1
         if tag == TH then
           local v
@@ -1589,7 +1612,7 @@ __FVARM__        else
     end
     return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, ck2 = CK2, W = W, SA = SA, SB = SB, SC = SC, SD = SD__FVRET__ }
   end"#
-            .replace("__UNMASK__", unmask_pre)
+            .replace("__UNMASK__", &unmask_pre)
             .replace("__TAGS__", &tag_defs)
             .replace("__WALK__", walk_head_emit)
             .replace("__CODE_EXTRA__", code_extra)
@@ -1652,7 +1675,7 @@ __FVARM__        else
     return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
   end"#,
 		)
-		.replace("__UNMASK__", unmask_pre)
+		.replace("__UNMASK__", &unmask_pre)
 		.replace("__TAGS__", &tag_defs)
 		.replace("__WALK__", walk_head_emit)
 		.replace("__CODE_EXTRA__", code_extra)
@@ -2753,7 +2776,8 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.collect::<String>()
 			+ "else BD=(BD+BSSKPX)%268435456 end";
 		let mut bss_static_src = format!(
-			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch_arm}{dispatch} _bi=_bi+1 end end end",
+			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR{evsig}) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch_arm}{dispatch} _bi=_bi+1 end end end",
+			evsig = evsig,
 			os = os_list,
 			os2 = os_list2,
 			parse = parse_fn,
@@ -3141,14 +3165,27 @@ let chaff_lane = rng.int(1, 4) as usize;
         let vault_name = format!("_vt{}", rng.int(10, 99));
         let vault_get_name = format!("_vg{}", rng.int(10, 99));
         let vault_ckj_e = ke.key_expr(ckj, None, rng);
-        let vault_def = format!(
-            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS,HBD}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8] end ",
-            vn = vault_nonce_name,
-            vt = vault_name,
-            vg = vault_get_name,
-            nonce = vault_nonce,
-            ckj = vault_ckj_e
-        );
+        // V19 R4-proto：knob 开时 vault 追加第 9 项 EVK（编译期 EV 烘进 blob，
+        // 运行期探针现算 EVK 沿 vault 进 HBOOT → BSS；产物内无 EV 常量）。
+        let vault_def = if ev_on {
+            format!(
+                "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS,HBD,EVK}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8],v[9] end ",
+                vn = vault_nonce_name,
+                vt = vault_name,
+                vg = vault_get_name,
+                nonce = vault_nonce,
+                ckj = vault_ckj_e
+            )
+        } else {
+            format!(
+                "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS,HBD}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8] end ",
+                vn = vault_nonce_name,
+                vt = vault_name,
+                vg = vault_get_name,
+                nonce = vault_nonce,
+                ckj = vault_ckj_e
+            )
+        };
         let shell_params: Vec<&str> = vec![
             "AL", "BYTE", "CHAR", "FLR", "SUB", "CARR1_", "CARR2_", "CARR3_", "CARR4_", "EV",
             "FN_", "NOPA_", "TK_", "DC1", "R16", "CKM_", "CKC_", "BKM_",
@@ -3216,8 +3253,11 @@ let chaff_lane = rng.int(1, 4) as usize;
 		let hb_phase_poison_e = ke.key_expr_with_data(hb_phase_poison, None, "FN_", rng);
 		manifest_key("HBOOT_PHASE_CK", hb_phase_checksum as u64);
 		manifest_key("HBOOT_PHASE_POISON", hb_phase_poison as u64);
-		let hb_factory =
-			"_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string();
+        let hb_factory = if ev_on {
+            "_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_,EVK_)".to_string()
+        } else {
+            "_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string()
+        };
 		let hb_execute =
 			"_b1,_b2,_b3=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD1)%268435456,CKJ_)".to_string();
 		let hb_seal = "_ready=1".to_string();
@@ -3251,9 +3291,10 @@ let chaff_lane = rng.int(1, 4) as usize;
 				m = hb_phase_mask,
 			);
 		let hboot_src = format!(
-			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_=GET_(NONCE_) local HD1=HBD_ local HD2=HBD_*257 local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end local _he=(_hc-({expected}))%268435456 HD1=(HD1+_he)%268435456 HD2=(HD2+_he*({mask}+1))%268435456 local _lv1,_b1,_b2,_b3 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD1=(HD1+({poison}))%268435456 HD2=(HD2+({poison})*({step}+1))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD1)%{m1} local h2=({iv2}+HD2)%{m2} local _O1,_O2,_O3,_O4,_O5,_O6{hpret_decl}=HW,_b1,_b2,h1,h2,_b3{hpret} HW,_b1,_b2,h1,h2,_b3{hpret}=nil,nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5,_O6{hpret_ret} end end",
+			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_{evhk}=GET_(NONCE_) local HD1=HBD_ local HD2=HBD_*257 local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end local _he=(_hc-({expected}))%268435456 HD1=(HD1+_he)%268435456 HD2=(HD2+_he*({mask}+1))%268435456 local _lv1,_b1,_b2,_b3 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD1=(HD1+({poison}))%268435456 HD2=(HD2+({poison})*({step}+1))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD1)%{m1} local h2=({iv2}+HD2)%{m2} local _O1,_O2,_O3,_O4,_O5,_O6{hpret_decl}=HW,_b1,_b2,h1,h2,_b3{hpret} HW,_b1,_b2,h1,h2,_b3{hpret}=nil,nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5,_O6{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
+			evhk = evhk_unpack,
 			shell_sig = shell_sig,
 			shell_bind = shell_bind,
 			program = hb_phase_stored
@@ -3563,7 +3604,7 @@ let f_ty = fold31("Vector3Vector3");
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
-    {vault_def}local _hok, _r1 = PCAL(function() return HBOOT({vault_args}) end) HBOOT = nil BSS = nil
+    {evk_probe}{vault_def}local _hok, _r1 = PCAL(function() return HBOOT({vault_args}) end) HBOOT = nil BSS = nil
     if not _hok then {hbootfail} end
     HW, MPF, SALT, SH1, SH2, CHQ{hp_recv} = _r1() _r1 = nil{xtok_extract}{env_extract}
     {hp_stash}
@@ -3581,6 +3622,7 @@ let f_ty = fold31("Vector3Vector3");
             hw_expand = hw_expand,
 		hp_recv = hp_recv,
 		hp_stash = hp_stash,
+		evk_probe = evk_probe,
 		vault_def = vault_def,
 		vault_args = vault_args,
 		hbootfail = "PD()",

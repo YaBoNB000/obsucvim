@@ -26,6 +26,56 @@ pub struct KeyHost {
 	pub k3c: u64,
 }
 
+/// V19 R4-proto｜host delta 入密钥流本体（不只执行闸）。
+/// EV = ((k2a*31 + k2b) % 2^28 * 31 + k3c) % 2^28。
+/// 编译期用宿主模型常量算出 EV 烘进 at-rest blob 字节；运行期探针按完全同式
+/// 对活环境现算 EVKX；二者只在真宿主相等 ⇒ 非真环境/纯离线静态分析解不出 blob。
+/// 诚实边界：观测面（Vector3 tostring/typeof/IsStudio/checkcaller/名长）
+/// 可被「同宿主旁录」⇒ R4 只叠加、不做独柱（V19 文档 §3 R4 原文纪律）。
+pub fn ev_fold(kh: &KeyHost) -> u32 {
+	let a = (kh.k2a.wrapping_mul(31).wrapping_add(kh.k2b)) % M28;
+	((a.wrapping_mul(31).wrapping_add(kh.k3c)) % M28) as u32
+}
+
+/// V19 原型旋钮（OBSUCVIM_V19_EVKEY）的形态：
+/// Off=关闭（产物与 R073 逐字节恒等）；Bind=真宿主测量（密钥显式不进产物）；
+/// Dev(n)=开发档（常量进产物，仅用于本地矩阵机制验证，零安全性，禁止交付）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum EvKeyMode {
+	Off,
+	Bind,
+	Dev(u32),
+}
+
+impl EvKeyMode {
+	pub fn on(self) -> bool {
+		!matches!(self, EvKeyMode::Off)
+	}
+}
+
+pub fn resolve_ev_term(mode: EvKeyMode, kh: Option<&KeyHost>) -> Result<u32, String> {
+	match mode {
+		EvKeyMode::Off => Ok(0),
+		EvKeyMode::Dev(v) => {
+			if v == 0 || v >= M28 as u32 {
+				Err(format!(
+					"OBSUCVIM_V19_EVKEY_DEV 取值需在 1..{}（当前 {v}）",
+					M28 - 1
+				))
+			} else {
+				Ok(v)
+			}
+		}
+		EvKeyMode::Bind => match kh {
+			Some(k) => Ok(ev_fold(k)),
+			None => Err(
+				"OBSUCVIM_V19_EVKEY(Bind) 需要已知 key-host（--key-host delta）"
+					.to_string(),
+			),
+		},
+	}
+}
+
 pub fn keyhost_profile(name: &str) -> Option<KeyHost> {
 	match name {
 		// 2026-10-24 真 Delta 1.1.743.1136 实测回传（GateProbe v2 [XG-K1..K3]）：
@@ -611,4 +661,27 @@ end
 	}
 
 	(fixed, ExgConsts { attest_token, poison, xm1, xm2, xte })
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn ev_fold_delta_pinned() {
+		let kh = keyhost_profile("delta").expect("delta profile");
+		// 手工复核（2026-10-25）：((1143546169*31+1317214663)%2^28*31+22)%2^28
+		assert_eq!(ev_fold(&kh), 4_576_808);
+	}
+
+	#[test]
+	fn resolve_ev_term_modes() {
+		assert_eq!(resolve_ev_term(EvKeyMode::Off, None).unwrap(), 0);
+		assert!(resolve_ev_term(EvKeyMode::Bind, None).is_err());
+		let kh = keyhost_profile("delta").unwrap();
+		assert_eq!(resolve_ev_term(EvKeyMode::Bind, Some(&kh)).unwrap(), 4_576_808);
+		assert_eq!(resolve_ev_term(EvKeyMode::Dev(7), None).unwrap(), 7);
+		assert!(resolve_ev_term(EvKeyMode::Dev(0), None).is_err());
+		assert!(resolve_ev_term(EvKeyMode::Dev(268_435_456), None).is_err());
+	}
 }

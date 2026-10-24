@@ -611,3 +611,19 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
 - 64 格 luau 矩阵全绿（s7 按既定口径判）；hard 件裸 luau 精确缺失清单、不挂死；
   单测 57 绿；八套件全绿（artifact-runtime 锚断言已同步 R073）。
 - 验收复检件：`samples/obsucvim/v18-check/`（4 件，待真 Delta 回传）。
+
+## 23. V19-EVKEY 原型：宿主 EV 进 blob 密钥流（默认关，2026-10-25）
+
+触发：`Kkksu-mid.v18fusion.hard.lua` 被纯静态全拆（V19 文档 §1 L0–L12 定案）；
+路线按用户拍板「3」先原型验证 R1/R4 融合通道，R2 可行性结论见 V19 §7.4。
+
+- 新旋钮 `OBSUCVIM_V19_EVKEY`（Off/Bind/Dev 三态，默认 Off）：
+  Bind 态把 `ev_fold(keyhost)=4576808`（delta）烘进每函数 blob LCG 基址，
+  运行期 EVK 探针现算补齐；产物内零 EV 字面量（TSRC 审计 0 命中）。
+- **旋钮关 = R073 逐字节恒等**（锚点 171,881B `b67a06e3…` 复测不变），
+  verify 锚表无需新增行；发布 wasm 1,222,840B（+4.0KB，探针/穿线代码）。
+- 部署件 `web/tools/obsucvim.wasm` 已刷新为本构建（关态行为不变 ⇒ SP 全绿：
+  单测 59、八套件、行为矩阵、锚点全部复跑通过）。
+- Bind 态真机待验：验收件 `samples/obsucvim/v19-check/`（evkey+对照两件，
+  同种子 20261025）；Dev 档（`OBSUCVIM_V19_EVKEY_DEV`）仅本地机制验证，
+  构建时 stderr 明示禁止交付。

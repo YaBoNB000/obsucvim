@@ -513,10 +513,35 @@ fn main() -> ExitCode {
 				.key_host
 				.as_deref()
 				.and_then(vmgen::exguard::keyhost_profile);
+			// V19 R4-proto：OBSUCVIM_V19_EVKEY=1 打开宿主 EV 进 blob 密钥流。
+			// Bind（默认）= 真宿主测量现算现折，产物无 EV 常量；
+			// OBSUCVIM_V19_EVKEY_DEV=<n> = 开发档（常量进产物，仅机制验证）。
+			let ev_mode = if std::env::var("OBSUCVIM_V19_EVKEY").is_ok() {
+				if !(opts.do_vm && opts.do_v15) {
+					return Err("OBSUCVIM_V19_EVKEY 目前只接 --preset v15".to_string());
+				}
+				if let Ok(dev) = std::env::var("OBSUCVIM_V19_EVKEY_DEV") {
+					let v: u32 = dev.parse().map_err(|_| {
+						"OBSUCVIM_V19_EVKEY_DEV 必须是非负整数".to_string()
+					})?;
+					eprintln!(
+						"[V19-EVKEY] DEV 开发档 ({v})：EV 常量进产物，零安全性，禁止交付"
+					);
+					vmgen::exguard::EvKeyMode::Dev(v)
+				} else {
+					vmgen::exguard::EvKeyMode::Bind
+				}
+			} else {
+				vmgen::exguard::EvKeyMode::Off
+			};
+			let ev_term = vmgen::exguard::resolve_ev_term(ev_mode, keyhost_prof.as_ref())?;
+			if ev_mode.on() {
+				vmgen::manifest_key("EVKEY_TERM", ev_term as u64);
+			}
 			let vm_raw = std::env::var("OBSUCVIM_VM_RAW").is_ok();
 			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program =
-				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn);
+				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn, ev_term);
 			let n = program.fns.len();
 			let carrier_bytes: Vec<Vec<u8>> = program
 				.fns
@@ -567,6 +592,7 @@ fn main() -> ExitCode {
 				keyhost_prof.as_ref(),
 				opts.env_check,
 				opts.do_guard,
+				ev_mode,
 			);
 			if std::env::var("OBSUCVIM_VM_TSRC").is_ok() {
 				let path = std::env::var("OBSUCVIM_VM_TSRC_PATH")
