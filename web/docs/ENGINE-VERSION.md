@@ -283,7 +283,7 @@ value`（TRIP 投毒的次生杂讯）崩溃。需要闸门级定位 → 启用 
 生成的 Lua 根本无法解析。已修两处；`wasi-runner.mjs` 顺带支持 `cfg.env` / `cfg.preopens`
 透传（服务端不传，行为不变）。非 trace 产物与 R067.4 锚点**逐字节一致**。
 
-产物：`samples/obsucvim/suda-test/diagnose/Suda.hard-trace.lua`（215,558 B，同种子 20261023），
+产物：`samples/obsucvim/suda-test/diagnose/Suda.hard-trace.lua`（215,458 B，同种子 20261023），
 每道闸门炸掉时报 `(字母-随机串)`，字母表见 diagnose/README.md。已在沙箱验证链路：
 假宿主深内省造假时正确炸出 H 闸（细节串显示 `cn:Service:Players`，正是假宿主被识破的点）。
 
@@ -323,3 +323,29 @@ R067.4 修的 precheck 是 exguard 侧的另一处同类问题（两处均正确
 **诚实边界**：exguard SCHALL 深闸门在真机上的正向跑通仍未验证（trace 版闸门编号
 定位件 `diagnose/Suda.hard-trace.lua` 就绪）。沙箱 mock 里 `setupvalue` 无法真改
 upvalue，M/N/P/Q 闸只能靠真执行器给出首份证据。
+
+## 13. GateProbe 宿主画像探针（2026-10-24，引擎零变更）
+
+背景：trace 产物一次只报第一道炸掉的闸，逐轮往返代价高（每轮都要用户开真机）。
+新增 `samples/obsucvim/suda-test/diagnose/Obsucvim-GateProbe.lua`（9 开头的 [XG-*] 行 +
+`[PREDICT]` 汇总），把 R067.5 的 SCHALL 各闸判定 **1:1 复刻**为独立只读探针
+（仅 D 小节做一次写入后立即还原的 rawset 金丝雀），一次运行即得全部闸门的
+风险预测。行号字母与 trace 报告的 `(字母-xxxx)` 一一对应，两者可互验。
+
+**沙箱自检**（官方 Luau release 直跑，探针本身非产物）：
+
+| 宿主 | `[PREDICT] risk=` | 说明 |
+| --- | --- | --- |
+| 裸 Luau | `{B,G,H}` | 无执行器 API / 无 Roblox 全局，引擎 precheck 会先拦 |
+| 高保真 prelude | `{B,Q}` | B 的 missing 清单 = `debug.getconstants,debug.getupvalues,debug.getproto,debug.setupvalue`，与 hard 产物在同一 prelude 下的**实际拒绝清单逐字一致**（探针保真度的直接证据）；Q 系 prelude 的 newcclosure mock 为 Lua 包装（mock 局限，非探针缺陷） |
+
+- skip 语义：缺前置 API 的小节只显示 `skip(api-missing)`，不计入 PREDICT（缺 API 时引擎 precheck/前置闸本来就先拦，该闸不可达）。
+- 字母表补正：S（19）为保留号，产物内不可达；转录不符经 `_valid=false` 并入 R（18）。
+- 锚点不变：引擎 wasm 仍为 R067.5（1,175,136 B / `13916d0b…`；产物锚点 231,237 B / `f11a6cea…`），本轮无任何引擎源码改动。
+- 逐闸处置手册（判定内容 / 细节串字段 / Delta 预判 / 命中后处置）见
+  `samples/obsucvim/suda-test/diagnose/README.md` 的 GateProbe 一节。
+
+**待真机回传（按优先级）**：① L2 复测应打印 `Suda`；② `Suda.hard-trace.lua` 的
+闸门编号；③（可选）`Suda.hard.lua` 直接实测；④（可选）GateProbe 全输出。
+诚实边界：PREDICT 是逐闸独立求值的风险集；引擎按 precheck→PROBE→CIDENT→SCHALL→
+seal/ATTEST 顺序执行，真机首次拒绝只落在顺序最先的那道闸。

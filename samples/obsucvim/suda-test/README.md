@@ -182,3 +182,8 @@ L2 打印 `Suda`（tier-2/bind-env 史上第一次正向跑通）；hard 在缺�
 精确报出四项缺失，无误报。exguard 的 SCHALL 深闸门能否在真 Delta 上全过，
 仍需真机：先跑 L2 应打印 `Suda`，再跑 `diagnose/Suda.hard-trace.lua`
 （带闸门编号的定位版），把输出发回。
+
+**同场加映（引擎零变更）**：`diagnose/Obsucvim-GateProbe.lua` —— 把 R067.5 SCHALL
+闸门判定 1:1 复刻成独立只读探针，一次运行给出全部闸门风险预测（`[PREDICT]` 行），
+字母编号与 trace 产物一一对应。沙箱自检：prelude 下 `risk={B,Q}`，其中 B 的
+missing 清单与 hard 产物实际拒绝清单逐字一致。判定手册见 `diagnose/README.md`。

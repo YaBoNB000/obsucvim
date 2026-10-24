@@ -125,3 +125,54 @@ Luau: The debug library is required on Luau platforms. Please open a support tic
 
 注意：**没打出任何 `(X-…)` 就崩**（例如 `attempt to ... nil`）说明死在闸门之外的
 杂讯层，把那一整段也发回来。
+
+## `Obsucvim-GateProbe.lua`：一次拿全闸门风险画像（2026-10-24，R067.5 配套）
+
+trace 版构建一次只报**第一道**炸掉的闸（报完即崩）；GateProbe 把 R067.5 的
+SCHALL 各闸判定 **1:1 复刻**成独立的只读探针，**一次运行给出全部闸门的风险画像**。
+用法：整段粘贴进执行器运行，把全部 `[XG-*]` 输出（尤其末尾 `[PREDICT]` 行）原样贴回。
+
+- 行号 `[XG-X]` 的字母 == trace 报告 `(字母-xxxx)` 的字母，两者可互验。
+- `[PREDICT] risk={...}` 为空集 = hard 产物预期在该宿主直接跑通。
+- B 闸打印的 `missing={...}` 应与 hard 产物拒绝时打印的缺失清单**逐字一致**
+  （不一致本身就是 bug 证据，请发回）。
+- 标 `skip(api-missing)` 的小节不计入 PREDICT：缺 API 时 precheck/前置闸会先拦，
+  对应闸实际不可达。
+- R/S/T/U 不可测：它们是引擎内部状态机闸（seal 链 / 转录哈希 / ATTEST 对账 /
+  投毒链），只能由 trace 产物在真机观测；S 为保留号（产物内不可达，转录不符并入 R）。
+- 安全：仅 D 小节做一次“写入后立即还原”的 rawset 金丝雀，其余全程只读 + pcall。
+
+### 逐闸处置手册
+
+| 闸 | 判定内容 | 细节串字段 | 真 Delta 预判（基于 Doctor） | 命中后的处置方向 |
+| --- | --- | --- | --- | --- |
+| A | 字符解码链（VK 基元来源） | `via=M/E/L` | 已过 precheck ⇒ 不会中 | 中=字符串元表与环境扫描全灭，截图发回 |
+| B | 13 项 API 类型总检 | `missing={...}` | 已证明全齐（R067.4 无清单） | 应与 precheck 清单一致 |
+| C | `getgenv() ~= getfenv(0)` | `rawequal(ENV,CENV)` | **未实测的高疑点**（Doctor 未覆盖 getfenv） | 中 ⇒ 该宿主环境不分离，C/D 判据需重设计（R068 议题） |
+| D | env 金丝雀：分离+持久 | `canok/tr1/tr2/sep/per` | 与 C 同源 | C 过而 D 挂 ⇒ getgenv 代理表；判据放宽为「可写可读回」 |
+| E | `identifyexecutor` 双调用一致性 | `i1ok/i2ok/in1/iv1/in2/iv2` | Doctor 已证稳定 ⇒ 应过 | 若中：报四次返回值 |
+| F | `checkcaller()==true` | `gate=ok/val nested-pcall coroutine` | 预计过 | 中 = 调用栈身份被稀释；报三种形态值 |
+| G | `game/Instance/Vector3/task` 类型 | 四个 type | 真 Roblox 必过 | 中 ⇒ 假 Roblox 全局 |
+| H | Roblox 深探 | `hok/hver:g,rp,er,gs,pl,cn,vn,v3,smt,in,tw,tsp,tdf` | 必过（`cn` 必须是 `Players`） | 沙箱假宿主曾在此现形；对照细节串看哪一跳不符 |
+| I | 19 项原语 C/Lua 分类 + Lua 反例 | `bad={...}` | 预计过 | 中 ⇒ 列出的原语被换成 Lua 包装 |
+| J | 反向 debug（对 `string.byte` 必须全败或空） | 五项 ok 值 | **次高疑点**：若 Delta 对 C 函数返回空表且不报错 | 中 ⇒ J 判据放宽为「ok 且非空才有害」 |
+| K | `getconstants`(Lua fn) 返回表 | `ok/type/n/hasConst` | 预计过 | 中 ⇒ 深内省为假 |
+| L | `getupvalues`(Lua fn) 返回表 | `ok/type/n` | 预计过 | 同上 |
+| M | `setupvalue` 真改 upvalue | `set(999)/set(111)/uprobe(0)` | **高疑点**：Doctor 的 `invalid index` 是对无 upvalue 函数；本闸闭包有真 upvalue | 中 ⇒ 判据核实 Delta setupvalue 索引语义 |
+| N | `getproto(fn,1)`/`getprotos(fn)` | 逐项失败描述 | 预计过（探针函数有真子函数） | 中 ⇒ 对版本文案 |
+| O | `loadstring` 坏源拒载 | `call/fn/err` | 预计过 | O/P 同中 ⇒ loadstring 形同虚设 |
+| P | `loadstring` 好源+常量核对 | `load/call/class/consts` | 疑点：部分实现不暴露动态 chunk 常量 | 中 ⇒ 判据调整或改用静态 chunk |
+| Q | `newcclosure` 包装 | `wrap/call/class-not-c/upv-leak` | 预计过 | 判据核实包装产物的分类语义 |
+| R | 总开关/转录哈希 | `heavy/tr` | 不可测 | trace 唯一来源 |
+| S | （保留号，产物内不可达） | — | — | 转录不符并入 R |
+| T | ATTEST 终对账 | ATTEST 值 | 不可测 | 中 ⇒ 状态机被扰 |
+| U | 投毒链 / seal 校验 | — | 不可测 | R067.4 的「无编号杂讯崩」本质是 tier-2 投毒（R067.5 已修） |
+
+执行顺序（为什么 trace 只报一道）：precheck → `PROBE(0,true)` → CIDENT →
+SCHALL(A…Q) → seal/ATTEST 对账；任何一步失败即终止。GateProbe 则逐闸独立求值，
+所以 PREDICT 可能一次给出多个字母，真机首次拒绝只落在顺序最先的那道上。
+
+沙箱自检（真实 Luau 直跑，非产物）：裸 Luau `risk={B,G,H}`；高保真 prelude
+`risk={B,Q}`，其中 B 的 missing 清单与 hard 产物在同一 prelude 下的实际拒绝清单
+逐字一致（探针保真度的直接证据）；Q 是 prelude 的 newcclosure mock 为 Lua 包装
+所致（mock 局限，非探针缺陷）。
