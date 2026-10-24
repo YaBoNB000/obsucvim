@@ -42,8 +42,14 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R072",
+    note: "V17 Phase-1b --super-insn 发射端接线收官（on/off 产物字节与 R069/R070/R071 完全相同，差异仅在 wasm 内部接线码）",
+    size: 231571,
+    sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a",
+  },
+  {
     name: "R071",
-    note: "V17 Phase-1a + --super-insn 演练门面（默认关；on/off 产物字节与 R069/R070 完全相同，差异仅在 wasm 内部规划码）",
+    note: "V17 Phase-1a + --super-insn 演练门面（on/off 产物字节与 R069/R070 相同，差异仅在 wasm 内部规划码；与 R072 同锚点）",
     size: 231571,
     sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a",
   },

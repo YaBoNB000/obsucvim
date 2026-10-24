@@ -121,6 +121,20 @@ pub fn op_index(op: Op) -> usize {
 	}
 }
 
+/// op_index 的反查（V17 fused 词汇回映射用；i ∈ [0, N_OPS)）。
+pub fn op_from_index(i: u8) -> Op {
+	const REV: [Op; N_OPS] = [
+		Op::Jmp, Op::Jf, Op::Jt, Op::LoadNil, Op::LoadK, Op::Move, Op::Add, Op::Sub,
+		Op::Mul, Op::Div, Op::Mod, Op::Pow, Op::Concat, Op::Unm, Op::Not, Op::Len,
+		Op::Lt, Op::Le, Op::Gt, Op::Ge, Op::Eq, Op::Ne, Op::Idiv, Op::NewTab,
+		Op::GetTab, Op::SetTab, Op::TabN, Op::CallT, Op::Closure, Op::Call,
+		Op::VarArgTab, Op::VarArgC, Op::VarArgTabN, Op::GetGlobal, Op::SetGlobal,
+		Op::GetUp, Op::SetUp, Op::Return, Op::Nop, Op::CallE, Op::CallM,
+		Op::MkStr, Op::LoadStr,
+	];
+	REV[i as usize]
+}
+
 #[derive(Debug, Clone)]
 pub struct OpMap {
 	pub to_wire: [[u8; N_OPS]; 4],
@@ -177,6 +191,18 @@ impl OpMap {
 
 	pub fn code_for(&self, op: Op, s_idx: usize) -> u8 {
 		self.to_wire[s_idx][op_index(op)]
+	}
+
+	/// V17 P1-b：fused trampoline 码位 = 方言 base + 44 + k。
+	/// （per-dialect 区间 64 码位：基础 43 + nop_alias 1 → 空闲 [base+44, base+64) 共 20。）
+	pub fn fused_tramp_code(s_idx: usize, k: usize) -> u8 {
+		(s_idx * 64 + 44 + k) as u8
+	}
+
+	/// V17 P1-b：tail-less 融合件 handler 码位 = 方言 base + 48 + j，
+	/// j 为 FUSE_TAIL_OPS 内序号（不带 chain_epilogue 的版本，专供 trampoline 内嵌调用）。
+	pub fn fused_tail_code(s_idx: usize, j: usize) -> u8 {
+		(s_idx * 64 + 48 + j) as u8
 	}
 
 	pub fn codes_text(&self) -> String {

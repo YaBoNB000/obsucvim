@@ -128,3 +128,82 @@
   属下一轮拍板，默认形态未冻结）；
 - 尾部产物体积预算（小函数偏多时 fused 表收益是否仍正，Phase-1b 实测后回填）；
 - Phase-1c（若立项）：窗口 3 滑窗与超长链塌缩（`collapse` 已预留多词汇顺序消费）。
+
+---
+
+# Phase-1b（发射端接线）收官记录（R072，2026-10-24）
+
+## 9. Phase-1b 实填（接线落地 + 两个实测定案的根因修复）
+
+**定案范围**：`--super-insn` on 态端到端打通——编译期 collapse/编码、
+字节段（每函数第 7 段 fv 词汇表）、模板装载链、运行时 trampoline 派发
+全部上线且语义正确；off 态产物与 R070 锚点**逐字节恒等**。
+
+### 9.1 字节段与装载链（最终形态）
+
+- 每函数第 7 段（fv 词汇段）：`u16 n + n × u16 词条`，词条 =
+  `(tailCodeA + tailCodeB*256 + fvm) % 65536`（`pack_fv_entry`），随 6 段一起
+  shuffle 进函数字节流；walk 状态机 NSECT 6→7、TFV 支臂解析进 `fvt`。
+- parse 返回表新增 `fv = fvt, fvm = fvm0`；**`fvm0` 在 TCK 支臂读到原始
+  ckseed 的当行立即快照**（`fvm0 = (v * E1 + E2) % 65536`）。
+- v15 装载链的 `EP[i]` 重建是**选择性字段拷贝**，本次补拷
+  `fv = pf.fv, fvm = pf.fvm`（super-only 文本，off 态纹理不变）。
+
+### 9.2 实测定案的两个根因（防幻影备忘）
+
+R072 调试期 on 态曾双层失守，均按「减法实验 + 数值载荷 trace」定位，非臆测：
+
+1. **fvck 系数的作用域失守**（原罪）： fv_ret_fields 最初用
+   `ke.key_expr(...)`（默认 `data_expr="FN"`），但 v15 的 parse 函数被嵌进
+   BSS fragment 的内层装载函数，该词法作用域**没有 FN 载体**（只有 `FN_`
+   参数）→ 运行期 `(function(d)...#d...)(FN)` 对 nil 取长度 →
+   `#nil` → HBOOT 的 PCAL 捕获 → PD() 死环（外症状 = 死循环 rc=124）。
+   证据链：产物全文 `Pzr` 仅出现 2 处且**无任何定义点**；EXG_TRACE 抓到
+   `attempt to get length of a nil value`。
+   修复：fvck 两系数改 `obf_num` 纯数值混淆。代价：fvm 不再绑定载体长度
+   （该绑定本非设计性质，是 key_expr 默认行为的副产品）。
+2. **fvm 求值时点错位**：`fvm = (cks * E1 + E2) % 65536` 写在 parse 的
+   return 表构造点，而 st2 的常量解码（`mb()/lw()`）会**就地推进 cks 的
+   LCG 态**——return 时 cks 已是演化终值。实测同构建对照：编译端
+   ckseed=59509/fvm=17139，运行端数值载荷抓回 `fvm=38257`
+   （对解方程 `Uh ≡ 18139 (mod 65536)`，唯一解 = LCG 演化后的 cks），
+   而 `fv[1]=62372` 与编译端 packed 完全一致 → 唯 fvm 错 → trampoline
+   解码 `(fv[k]-fvm)%65536` 落到未注册码位（wa=51/187 等）。
+   修复：TCK 支臂快照 `fvm0`（见 §9.1）。修复后同一表达式数学自证：
+   `cks=59509 → fvm=17139`、`cks=1810 → 2756` 与编译端逐项一致。
+
+调试期约束顺带实测：micro_fill 片段过 ast.rs 迷你解析器，
+`error('x'..expr..']',0)` 里的 `..` 拼接不受支持（报 `expected Punct ')'`），
+定位信息须走静态文本或 `error(数值,0)` 数值载荷/`print(数值)` 通道。
+
+### 9.3 发射端与运行时派发（最终形态）
+
+- 码位：tramp_k = `t*64+44+k`（k<FUSE_TOP_K=4）；tail-less_j =
+  `t*64+48+j`（j∈FUSE_TAIL_OPS=[LoadK,Move,LoadNil,GetUp]）；
+  每方言空闲区 [base+44, base+64) 20 码位，on 态按 used_t 集合注册。
+- trampoline 形态：`local fv=E.bt.fv local fe=(fv[k+1]-E.bt.fvm)%65536
+  local wa=fe%256 HW2[(wa+AV)%256](E,a,b,c,d) fe=((fe-wa)/256)%256
+  HW2[(fe+AV)%256](E,c,d,c,d); <chain_epilogue>`（E.bt = 当前函数 pf）。
+- tail-less 四 op 语义全直译、无 return/pc/metamethod，尾衔由 trampoline
+  内嵌完成后接 chain_epilogue，链预算口径不变。
+
+### 9.4 验收矩阵（本论全绿）
+
+| 门禁 | 结果 |
+|---|---|
+| off 态锚点（`verify-engine-version.mjs`） | **231,571B / 6c22c008… ≡ R070/R071 逐字节恒等** ✓ |
+| 单测 `rustc --test` | 57 绿（含 fuse 塌缩/映射/编码、section_walk、vocab_consistency、id7 臂） |
+| on 态运行矩阵（luau 直跑） | 8 输入（print/子函数/循环/globals+upvalue 闭环/字符串/table/varargs/pcall/递归 fib16）× 4 种子 = **32/32 输出逐字节正确** |
+| on 态 bind-executor 产物的 exguard 拒绝路 | 裸 luau 下精确缺失清单、**不再挂死**（原罪修复的直接回归） |
+| V1 结构证据 | 同形态双子函数 fa/fb + main：词汇=[(4,5),(5,4)]/[(5,4),(5,5)]/[(5,5)] 互异、方言 s_idx=[1,1,2]、fvm=[10946,28959,22615] 互异 ⇒ descriptor 段与 handler 码位双互异 ✓ |
+| 仓库套件 | artifact-runtime **0 fail**、exguard-precheck **0 fail**、keyhost-fold **PASS**、attest **18/18**、loader **24/24**、live-loader **13/13**、engine-retry **9/9**、hosting **78/78** |
+
+### 9.5 已知观察项（不阻塞，移交 Phase-1c 回填）
+
+- handler 计数差观察：on 态 HW2 注册 59 = 43 基础（本构建序号 0..42，nop_alias
+  独立 1 槽未计入基础）+ 16 fused（2 方言 × 8）；off 态 44 = 43+1 nop_alias。
+  口径自洽（on 态 fused 走 HW2 扩展槽、nop_alias 注册位不变），非丢注册。
+- 体积：探针 on 态 198KB vs off 态 231KB 同种子同配置（塌缩减 ISA 记录数，
+  与计划 §2.3 预期一致）；Kkksu 级件的体积预算回填移交 Phase-1c。
+- `--seed` 流预算：super on 态每函数多耗 `s_idx∈{0..3}` + fv_m1/fv_mc + 段
+  shuffle 的 rng 抽取已在 Phase-1a 钉死（off 态零消耗证据 = 锚点恒等）。

@@ -31,10 +31,19 @@ pub const FUSE_TOP_K: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FKind {
-	/// 原 ISA op（值为 op_index）
-	Base(u8),
+	/// 原 ISA op
+	Base(Op),
 	/// 融合对（值为该函数词汇表内序号）
 	Fused(u8),
+}
+
+/// tail-less 融合件 handler 的 op 序（与 isa::OpMap::fused_tail_code 的 j 槽一致）：
+/// 白名单对出现的全部 op（首 ∈ {LoadK,Move,LoadNil,GetUp}，次 ∈ {Move,LoadK}）。
+pub const FUSE_TAIL_OPS: [Op; 4] = [Op::LoadK, Op::Move, Op::LoadNil, Op::GetUp];
+
+/// tail-less 序号；白名单外 op 不应出现（返回 None 即防御性拒融的来源）。
+pub fn tail_index(op: Op) -> Option<u8> {
+	FUSE_TAIL_OPS.iter().position(|&o| o == op).map(|p| p as u8)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,7 +127,7 @@ pub fn collapse(
 		old_to_new[i] = (out.len() + 1) as u16;
 		let ins = code[i];
 		out.push(FRec {
-			kind: FKind::Base(op_index(ins.op) as u8),
+			kind: FKind::Base(ins.op),
 			a: ins.a,
 			b: ins.b,
 			c: ins.c,
@@ -129,9 +138,9 @@ pub fn collapse(
 	// 分支目标重映射
 	let mut remapped = out.clone();
 	for rec in remapped.iter_mut() {
-		if rec.kind == FKind::Base(op_index(Op::Jmp) as u8)
-			|| rec.kind == FKind::Base(op_index(Op::Jf) as u8)
-			|| rec.kind == FKind::Base(op_index(Op::Jt) as u8)
+		if rec.kind == FKind::Base(Op::Jmp)
+			|| rec.kind == FKind::Base(Op::Jf)
+			|| rec.kind == FKind::Base(Op::Jt)
 		{
 			let tgt = rec.b as usize;
 			if tgt >= 1 && tgt <= n {
@@ -144,16 +153,45 @@ pub fn collapse(
 	(remapped, old_to_new)
 }
 
-/// 演练门面：统计 → 选择 → 塌缩，全部只读；返回 (词汇表, 塌缩后记录数)。
-/// P1-a 阶段发射端未接线（on==off 字节恒等由「本函数不改动输入」保证）；
-/// P1-b 起发射端直接消费 collapse 的结果。
-pub fn plan(code: &[Instr], leaders: &[u16]) -> (Vec<(u8, u8)>, usize) {
-	let st = stats(code);
-	let vocab = select_vocab(&st, FUSE_TOP_K);
-	let leaders_set: BTreeSet<u16> = leaders.iter().cloned().collect();
-	let (fused, _) = collapse(code, &vocab, &leaders_set);
-	debug_assert!(!fused.is_empty() || code.is_empty());
-	(vocab, fused.len())
+/// 发射端（P1-b）：fused 记录流的 SoA 编码——opcode 列按「Base→方言基础码、
+/// Fused(k)→`OpMap::fused_tramp_code(s_idx, k)`」写；四条 u16var 通道流仍按
+/// slot_perm 落物理道（散射/置换面零改动）。FKind::Fused 的通道布局恒为
+/// [X.a, X.b, Y.a, Y.b]（白名单对全部 2+2 通道，无空洞，无噪声填充口）。
+pub fn encode_soa_fused(
+	recs: &[FRec],
+	map: &super::isa::OpMap,
+	slot_perm: &[u8; 4],
+	s_idx: usize,
+	out: &mut Vec<u8>,
+) {
+	for r in recs {
+		let code = match r.kind {
+			FKind::Base(op) => map.code_for(op, s_idx),
+			FKind::Fused(k) => super::isa::OpMap::fused_tramp_code(s_idx, k as usize),
+		};
+		out.push(code);
+	}
+	for sl in 0..4 {
+		let which = slot_perm[sl] as usize;
+		for r in recs {
+			let v = [r.a, r.b, r.c, r.d][which];
+			super::isa::encode_u16var(out, v);
+		}
+	}
+}
+
+/// 每函数 FV 段打包：词汇对 (opA, opB) → 单条 u16 = tailCodeA + tailCodeB*256，
+/// 存链表项前加 mask（mask 由调用方以 (ckseed*fv_m1+fv_mc)%65536 现算）。
+/// 返回 None = 词汇对含白名单外 op（防御：不应发生，tail_index 已过滤）。
+pub fn pack_fv_entry(pair: (u8, u8), s_idx: usize, mask: u16) -> Option<u16> {
+	let (oa, ob) = (
+		super::isa::op_from_index(pair.0),
+		super::isa::op_from_index(pair.1),
+	);
+	let (ja, jb) = (tail_index(oa)?, tail_index(ob)?);
+	let wa = super::isa::OpMap::fused_tail_code(s_idx, ja as usize) as u32;
+	let wb = super::isa::OpMap::fused_tail_code(s_idx, jb as usize) as u32;
+	Some(((wa + wb * 256 + mask as u32) % 65536) as u16)
 }
 
 #[cfg(test)]
@@ -233,10 +271,7 @@ mod fuse_tests {
 			.filter(|r| matches!(r.kind, FKind::Fused(_)))
 			.count();
 		assert_eq!(fused_count, 2);
-		assert!(matches!(
-			out.last().unwrap().kind,
-			FKind::Base(k) if k == op_index(Op::Jf) as u8
-		));
+		assert!(matches!(out.last().unwrap().kind, FKind::Base(Op::Jf)));
 	}
 
 	#[test]
@@ -262,5 +297,57 @@ mod fuse_tests {
 		let (o1, _) = collapse(&code, &vocab, &leaders);
 		let (o2, _) = collapse(&code, &vocab, &leaders);
 		assert_eq!(o1, o2);
+	}
+
+	#[test]
+	fn op_index_roundtrip() {
+		for i in 0..crate::vmgen::isa::N_OPS {
+			assert_eq!(
+				op_index(crate::vmgen::isa::op_from_index(i as u8)),
+				i,
+				"op_from_index/op_index mismatch at {i}"
+			);
+		}
+	}
+
+	#[test]
+	fn encode_soa_fused_layout_matches_base_stream_structure() {
+		use crate::vmgen::isa::{encode_soa_for, Instr, OpMap};
+		let map = OpMap::new(&mut crate::rng::Rng::new(5));
+		let perm: [u8; 4] = [2, 0, 3, 1];
+		// base-only：与既有 encode_soa_for 逐字节一致（不变量：Base 无新行为）
+		let recs = vec![
+			FRec { kind: FKind::Base(Op::LoadK), a: 3, b: 9, c: 0, d: 0 },
+			FRec { kind: FKind::Base(Op::Return), a: 1, b: 0, c: 0, d: 0 },
+		];
+		let mut a = Vec::new();
+		encode_soa_fused(&recs, &map, &perm, 2, &mut a);
+		let mut b = Vec::new();
+		encode_soa_for(
+			&[Instr::abcd(Op::LoadK, 3, 9, 0, 0), Instr::abcd(Op::Return, 1, 0, 0, 0)],
+			&map, &perm, 2, &mut b,
+		);
+		assert_eq!(a, b);
+		// fused 码位：base+44+k（k=0），四条通道序 = slot_perm 物理序
+		let recs2 = vec![FRec { kind: FKind::Fused(0), a: 7, b: 8, c: 9, d: 10 }];
+		let mut out = Vec::new();
+		encode_soa_fused(&recs2, &map, &perm, 1, &mut out);
+		assert_eq!(out[0], OpMap::fused_tramp_code(1, 0));
+		// perm [2,0,3,1] → 物理道序 c=9, a=7, d=10, b=8（u16var 直连，均 <128：单字节）
+		assert_eq!(&out[1..], &[9u8, 7, 10, 8]);
+	}
+
+	#[test]
+	fn pack_fv_entry_roundtrip_and_whitelist_only() {
+		let lk = op_index(Op::LoadK) as u8;
+		let mv = op_index(Op::Move) as u8;
+		let mask = 51_007u16;
+		let e = pack_fv_entry((lk, mv), 3, mask).expect("whitelist pair packs");
+		let plain = (e as u32 + 65536 - mask as u32) % 65536;
+		let wa = plain % 256;
+		let wb = plain / 256;
+		assert_eq!(wa, crate::vmgen::isa::OpMap::fused_tail_code(3, 0) as u32); // LoadK → j=0
+		assert_eq!(wb, crate::vmgen::isa::OpMap::fused_tail_code(3, 1) as u32); // Move → j=1
+		assert!(pack_fv_entry((lk, op_index(Op::Add) as u8), 3, 0).is_none());
 	}
 }

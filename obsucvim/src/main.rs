@@ -184,10 +184,10 @@ Options:
                          绑定态产物只做语法校验。非 v15 管线自动降级为关闭。
   --no-bind-executor     显式关闭 executor 认证绑定（等价于 2026-10-11 前
                          的默认产物；运行等价测试矩阵用此旗标）。
-  --super-insn           V17 函数级超指令融合（试验旗标，默认关）：按每个函数
-                         的指令流数据统计/选择可安全融合的相邻对。P1-a 阶段仅
-                         运行编译期数据流引擎（统计/选择/塌缩/pc 重映射演练，
-                         发射端 P1-b 接线）；off/on 产物字节恒等。
+  --super-insn           V17 函数级超指令融合（Phase-1b 已接发射端，默认关，
+                         仅 --preset v15）：按每个函数的指令流数据统计/选择
+                         top-4 白名单相邻对，塌缩为 fused 记录（trampoline
+                         经 pf.fv 现解本函数词汇，tail-less 双段连跑）。
   --key-host <delta>     v16-a 转录绑定解码钥（仅 v15 + executor 守卫，
                          **R070 起固化为底层、恒开**；此旗标保留仅为兼容，
                          与不传等价）：把宿主观测值（Vector3 tostring/
@@ -482,6 +482,13 @@ fn main() -> ExitCode {
 		}
 	};
 
+	if opts.super_insn && !opts.do_v15 {
+		eprintln!(
+			"error: --super-insn currently requires --preset v15 (V17 Phase-1b 只接 v15 模板链)"
+		);
+		return ExitCode::FAILURE;
+	}
+
 	let result = (|| -> Result<String, String> {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
@@ -550,6 +557,9 @@ fn main() -> ExitCode {
 				program.consts_mask_safe,
 				&program.block_starts,
 				&program.s_indices,
+				opts.super_insn,
+				&program.fv_sets,
+				(program.fv_m1, program.fv_mc),
 				opts.bind_env.as_deref(),
 				env_slots.as_ref(),
 				opts.bind_executor,
@@ -559,7 +569,11 @@ fn main() -> ExitCode {
 				opts.do_guard,
 			);
 			if std::env::var("OBSUCVIM_VM_TSRC").is_ok() {
-				std::fs::write("/tmp/vm_tsrc.lua", &tsrc).unwrap();
+				let path = std::env::var("OBSUCVIM_VM_TSRC_PATH")
+					.unwrap_or_else(|_| "/tmp/vm_tsrc.lua".to_string());
+				if let Err(e) = std::fs::write(&path, &tsrc) {
+					eprintln!("[vm-tsrc] write {path} failed: {e}");
+				}
 			}
 			let mut tblock = parser::parse(&tsrc, luau).map_err(|e| e.to_string())?;
 			if opts.do_v15 {

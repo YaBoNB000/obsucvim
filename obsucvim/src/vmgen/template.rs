@@ -1218,10 +1218,13 @@ pub fn generate(
 	ck: (u32, u32),
 	mk: (u16, u16),
 	blobk: (u32, u32, u32, u32),
-	tags: [u8; 7],
+	tags: [u8; 8],
 	consts_safe: bool,
 	block_starts: &[Vec<u16>],
 	s_indices: &[u8],
+	super_insn: bool,
+	fv_sets: &[Vec<(u8, u8)>],
+	fvck: (u16, u16),
 	bind_env: Option<&str>,
 	env_slots: Option<&[i64; 4]>,
 	executor_bind: bool,
@@ -1438,8 +1441,15 @@ pub fn generate(
 	manifest_key("BSTEP", blobk.3 as u64);
 	manifest_key("CKJ", ckj as u64);
 	let tag_defs = format!(
-		"local TH = {}\n    local TCK = {}\n    local TU = {}\n    local TC = {}\n    local TS = {}\n    local TDC = {}\n    local NSECT = {}\n    ",
-		tags[0], tags[1], tags[2], tags[3], tags[4], tags[6], if v15 { 6 } else { 5 }
+		"local TH = {}\n    local TCK = {}\n    local TU = {}\n    local TC = {}\n    local TS = {}\n    local TDC = {}\n    local NSECT = {}\n    {}",
+		tags[0],
+		tags[1],
+		tags[2],
+		tags[3],
+		tags[4],
+		tags[6],
+		if v15 { if super_insn { 7 } else { 6 } } else { 5 },
+		if super_insn { format!("local TFV = {}", tags[7]) } else { String::new() }
 	);
 	let unmask_pre = r#"s = decarrier(s)
     local n = #s
@@ -1494,13 +1504,56 @@ pub fn generate(
         elseif tag == TDC then
           local dl; dl, p = r16(s, p)
           p = p + dl
-        else
+__FVARM__        else
           local v; v, p = r16(s, p); ncode = v
           W = {}
           for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
           __CODE_EXTRA__
           got = got + 1
         end"#;
+	// V17 P1-b：fv 段解析支臂 + 返回表字段（super 开启时）。
+	// R072 实测定案（两层根因）：
+	//  1. parse_fn 在 v15 下被嵌进 BSS fragment 内层装载函数，词法作用域里
+	//     **没有** FN 载体 → fvck 系数不能用 ke.key_expr（data_expr="FN" 解析成 nil）。
+	//  2. cks 会被 st2 常量解码（mb/lw 每字节推进 LCG）**就地演化**——在 return
+	//     表构造点取 cks 已是演化终值，与编译端 fvm=(原始ckseed*m1+mc) 不符
+	//     （实测 Uh≡18139 vs ckseed=59509，fvm 垃圾→trampoline 解码落空槽）。
+	//  故：TCK 支臂读完原始 ckseed 立刻快照 fvm0，返回表只引快照；
+	//  系数走 obf_num 纯数值混淆（放弃对载体长度的意外绑定，见计划文档 §4）。
+	let (fv_walk_arm, fv_ret_fields, fv_locals): (String, String, &str) =
+		if super_insn {
+			(
+				String::from(
+					"        elseif tag == TFV then\n          local nv2; nv2, p = r16(s, p)\n          fvt = {}\n          for _fj = 1, nv2 do local fv1; fv1, p = r16(s, p); fvt[_fj] = fv1 end\n          got = got + 1\n",
+				),
+				String::from(", fv = fvt, fvm = fvm0"),
+				", fvt, fvm0",
+			)
+		} else {
+			(String::new(), String::new(), "")
+		};
+	// TCK 支臂快照注入（仅在 super 开启的 v15 路径生效；non-v15 拒绝 super，
+	// off 态 walk_head 保持逐字节不变 = 锚点前提）。
+	let e1_e2: Option<(String, String)> = if super_insn {
+		Some((obf_num(fvck.0 as u64, rng), obf_num(fvck.1 as u64, rng)))
+	} else {
+		None
+	};
+	let walk_head_super: String = if let Some((e1, e2)) = &e1_e2 {
+		walk_head.replace(
+			"v, p = r16(s, p); cks = v\n          got = got + 1",
+			&format!(
+				"v, p = r16(s, p); cks = v\n          fvm0 = (v * {e1} + {e2}) % 65536\n          got = got + 1"
+			),
+		)
+	} else {
+		String::new()
+	};
+	let walk_head_emit: &str = if walk_head_super.is_empty() {
+		walk_head
+	} else {
+		&walk_head_super
+	};
 	let parse_fn = if v15 {
 		let code_extra = r#"local p0 = p
           __STREAMS__
@@ -1518,7 +1571,7 @@ pub fn generate(
 			r#"local function parse(s, fi)
     __UNMASK__
     local st = 1
-    local nregs, nparams, vararg, cks, csl, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK, CK2
+    local nregs, nparams, vararg, cks, csl, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK, CK2__FVLOC__
     while st <= 2 do
       if st == 1 then
         __WALK__
@@ -1531,11 +1584,11 @@ pub fn generate(
         st = 3
       end
     end
-    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, ck2 = CK2, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
+    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, ck2 = CK2, W = W, SA = SA, SB = SB, SC = SC, SD = SD__FVRET__ }
   end"#
             .replace("__UNMASK__", unmask_pre)
             .replace("__TAGS__", &tag_defs)
-            .replace("__WALK__", walk_head)
+            .replace("__WALK__", walk_head_emit)
             .replace("__CODE_EXTRA__", code_extra)
             .replace("__CONSTS__", const_loop)
             .replace(
@@ -1558,6 +1611,9 @@ pub fn generate(
                     fold_read()
                 ),
             )
+            .replace("__FVLOC__", fv_locals)
+            .replace("__FVARM__", &fv_walk_arm)
+            .replace("__FVRET__", &fv_ret_fields)
             .replace(
                 "__FOLDS2__",
                 &format!(
@@ -1595,9 +1651,11 @@ pub fn generate(
 		)
 		.replace("__UNMASK__", unmask_pre)
 		.replace("__TAGS__", &tag_defs)
-		.replace("__WALK__", walk_head)
+		.replace("__WALK__", walk_head_emit)
 		.replace("__CODE_EXTRA__", code_extra)
 		.replace("__CONSTS__", const_loop)
+		.replace("__FVARM__", &fv_walk_arm)
+		.replace("__FVRET__", &fv_ret_fields)
 	};
 
 	let decode_seg = if v15 {
@@ -2095,6 +2153,57 @@ pub fn generate(
 				route = route,
 			));
 		}
+		// V17 P1-b：super-insn 发射端——tail-less 白名单件 + trampoline 派发槽。
+		// 码位布局（防幻影修正：nop_alias 已占 base+43，空闲区自 base+44 起 20 码位）：
+		//   trampoline_k : base(t)+44+k  (k < FUSE_TOP_K)
+		//   tail-less_j  : base(t)+48+j  (j = FUSE_TAIL_OPS 内序号)
+		// trampoline 运行时经 E.bt.fv[k+1]（+fvm 解掩码）现解本函数词汇的
+		// (wA,wB) 两个 tail-less 码位，顺序内嵌调用；链尾照旧 chain_epilogue。
+		if super_insn {
+			let mut used_t: std::collections::BTreeSet<usize> =
+				std::collections::BTreeSet::new();
+			for (fi, v) in fv_sets.iter().enumerate() {
+				if !v.is_empty() && fi < s_indices.len() {
+					used_t.insert(s_indices[fi] as usize);
+				}
+			}
+			for &t in &used_t {
+				for (j, op) in super::fuse::FUSE_TAIL_OPS.iter().enumerate() {
+					let op_name = OP_NAMES[super::isa::op_index(*op)];
+					let recipe = micro_recipe(op_name)
+						.expect("whitelist op must have a micro recipe");
+					let mut variants = Vec::with_capacity(n_micro_shards);
+					for shard in 0..n_micro_shards {
+						let v = register_micro_variant(
+							&recipe,
+							shard,
+							&micro_shards,
+							&mut micro_used,
+							&mut micro_carriers,
+							rng,
+						);
+						variants.push(v);
+					}
+					let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng);
+					micro_fill.push_str(&format!(
+						"HW2[({w}+AV)%256]=function(E,a,b,c,d) {route}; return end ",
+						w = super::isa::OpMap::fused_tail_code(t, j) as u16,
+						route = route,
+					));
+				}
+				for k in 0..super::fuse::FUSE_TOP_K {
+					let w = super::isa::OpMap::fused_tramp_code(t, k) as u16;
+					let tail = chain_epilogue(rng, &wk);
+					micro_fill.push_str(&format!(
+						"HW2[({w}+AV)%256]=function(E,a,b,c,d) local fv=E.bt.fv local fe=(fv[{k1}]-E.bt.fvm)%65536 local wa=fe%256 HW2[(wa+AV)%256](E,a,b,c,d) fe=((fe-wa)/256)%256 HW2[(fe+AV)%256](E,c,d,c,d); {tail} end ",
+						w = w,
+						k1 = k + 1,
+						tail = tail,
+					));
+				}
+			}
+			manifest_key("FUSE_DIALECTS", used_t.len() as u64);
+		}
 		let micro_wrappers = std::mem::take(&mut micro_fill);
 		let mut micro_checksum: u64 = 0;
 		for carrier in &micro_carriers {
@@ -2415,10 +2524,18 @@ let xm3v = rng.int(1024, 999_999) as u64;
 				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl = nil, nil, nil, nil",
 			)
 		};
-		let c_fields_enc = if consts_safe {
-			"m = m, ct = ct, cn = cn, csb = csb, csl = csl, co = co"
+		// V17 P1-b 修复（R072）：EP[i] 是选择性字段拷贝，原表漏拷 fv/fvm，
+		// 导致 E.bt.fv == nil、trampoline 首跳即崩（"attempt to index nil with
+		// number"，实测 [TRT k=0 fvnil] 抓获）。super 开时补拷；off 态恒空串，
+		// 锚点产物不受影响。
+		let c_fields_enc: String = if consts_safe {
+			"m = m, ct = ct, cn = cn, csb = csb, csl = csl, co = co".to_string()
 		} else {
-			"m = m, C = Ct"
+			"m = m, C = Ct".to_string()
+		} + if super_insn {
+			", fv = pf.fv, fvm = pf.fvm"
+		} else {
+			""
 		};
 		let os_list = operand_sums
 			.iter()
@@ -2600,7 +2717,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			zw_inner.clone()
 		};
 		let phase_encode = enc_body.clone();
-		let mut phase_branches = vec![
+				let mut phase_branches = vec![
 			(phase_codes[0], phase_parse),
 			(phase_codes[1], phase_rewrite),
 			(phase_codes[2], phase_encode),
@@ -2626,7 +2743,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.collect::<String>()
 			+ "else BD=(BD+BSSKPX)%268435456 end";
 		let mut bss_static_src = format!(
-			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch} _bi=_bi+1 end end end",
+			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch_arm}{dispatch} _bi=_bi+1 end end end",
 			os = os_list,
 			os2 = os_list2,
 			parse = parse_fn,
@@ -2635,6 +2752,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			step = phase_step,
 			expected = "BSSKCX",
 			dispatch = phase_dispatch,
+			dispatch_arm = String::new(),
 		);
 		let tag_decode_rt = format!(
 			"local td=({}+fi*{}+(PZ2%720)*(1+NQ%719)+(PZ3%720)*(1+NI%719)+(PZ4%720)*(1+MI%719)+(MZD%720)*(1+MM%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLOOR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end ",
@@ -3454,11 +3572,7 @@ let f_ty = fold31("Vector3Vector3");
 		hp_stash = hp_stash,
 		vault_def = vault_def,
 		vault_args = vault_args,
-		hbootfail = if std::env::var("OBSUCVIM_EXG_TRACE").is_ok() {
-			"error(tostring(_r1), 0)"
-		} else {
-			"PD()"
-		},
+		hbootfail = "PD()",
 		xtok_decl = xtok_decl,
 		xtok_extract = xtok_extract,
 		env_decl = env_decl,
@@ -3592,13 +3706,14 @@ let f_ty = fold31("Vector3Vector3");
 	format!(
 		r#"local VM = function({vm_params})
   local FN = {{{params}}}
+  
   {oc_table}
   local PF = {{}}
   {p_fill}  {prim_unpack}
   {ms_block}{helpers}
   {ck_consts}{parse_fn}
   {decode_seg}
-{hfrag}{v15_selfmod}
+  {hfrag}{v15_selfmod}
   local G = GFE(0)
   local U = UNP
   local FLOOR = FLR

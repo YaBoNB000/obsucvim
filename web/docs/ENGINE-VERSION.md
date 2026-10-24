@@ -545,3 +545,38 @@ R071 引擎 wasm：1,216,279 B / `267e127b74d2c99f85b70c6c58938e7e04c96359604053
 
 掌握事实以真树为准：V17 计划文档 §3-§7 为 Phase-1a 落地后的现状与设计，
 §8 仅剩「翻默认」「体积预算」「窗口 3」三项未决。
+
+## 21. R072：V17 Phase-1b `--super-insn` 发射端接线收官（2026-10-24）
+
+v17 主线第二刀：发射端全通（编译 collapse/编码 → 每函数 fv 字节段（第 7 段，
+NSECT 6→7、TFV 支臂）→ BSS parse → EP 装载 → HW2 trampoline 派发）。
+两个运行期根因按「减法实验 + 数值载荷 trace」实测定案后修复：
+
+1. fvck 系数原先走 `KeyEmitter::key_expr`（默认 data 引用 `FN`），而 v15 的
+   parse 位于 BSS fragment 内层装载函数，**词法作用域无 FN** → on 态运行期
+   必现 `#nil` → HBOOT PCAL 捕获 → PD() 死环（外呈死循环）。修复：改
+   `obf_num` 纯数值混淆。
+2. `fvm=(cks*E1+E2)%65536` 原先在 parse return 表构造点求值，而 st2 常量
+   解码就地推进 cks 的 LCG 态 → 运行期 fvm 与编译端不符、trampoline 落空槽。
+   修复：TCK 支臂读原始 ckseed 当行快照 `fvm0`，返回表只引快照。
+
+另补：v15 装载链 EP 重建是选择性字段拷贝，新增 `fv/fvm` 补拷（super-only）。
+调试期全部临时钩（FUSE_TRACE 分级/VM_MARK/BSSOP/EXG_TRACE/TRT/FTR* 占位等）
+已撤净；永久保留 `OBSUCVIM_FUSE_DBG` 编译期 stderr 词汇 dump（与既有
+`*_DBG` 钩子同型，不触产物字节）。
+
+验收（全部实测）：
+- **V2 锚点恒等**：off 态 231,571 B `6c22c008…` ≡ R070/R071 逐字节恒等
+  （verify-engine-version 判定 R071 行命中；on/off 纹理隔离成立）。
+- **V3 行为不回退（沙箱段）**：luau 直跑 8 输入 × 4 种子 = 32/32 输出逐字节
+  正确（含子函数调用、upvalue 闭环、变长参、pcall、fib16 递归）。
+- **V1 结构证据**：互异词汇/方言/fvm，详见 V17 计划文档 §9.4。
+- 单测 57 绿；全套件：artifact-runtime 0 fail、exguard-precheck 0 fail、
+  keyhost-fold PASS、attest 18/18、loader 24/24、live-loader 13/13、
+  engine-retry 9/9、hosting 78/78。
+
+R072 引擎 wasm：1,226,632 B / `b4262fcb668a5602bd3403119f0f7c341231bcac1e8628032f2f51350ac1880d`
+（较 R071 +10.4 KB，trampoline/装载接线 + FUSE_DBG 诊断口）；
+off 态产物锚点不变，KNOWN 表无需新增行——verify 仍判 R071 行（同锚点），
+语义口径以本节为准。真 Delta 四件验收件沿用 `samples/obsucvim/v16-check/`
+链路重出（on 态道），用户侧验收走既有流程。

@@ -39,7 +39,7 @@ pub struct VmProgram {
 	pub blob_kc: u32,
 	pub blob_seed: u32,
 	pub blob_step: u32,
-	pub section_tags: [u8; 7],
+	pub section_tags: [u8; 8],
 	pub operand_sums: Vec<u64>,
 	pub operand_sums2: Vec<u64>,
 	pub chaff_folds: Vec<u16>,
@@ -50,6 +50,11 @@ pub struct VmProgram {
 	pub block_starts: Vec<Vec<u16>>,
 	pub s_indices: Vec<u8>,
 	pub consts_mask_safe: bool,
+	/// V17 P1-b：每函数 fused 词汇（(op_index, op_index) 对，≤FUSE_TOP_K）；
+	/// super_insn 关时恒空。fvm 掩码常量对（fv_m1/fv_mc）off 态为 0。
+	pub fv_sets: Vec<Vec<(u8, u8)>>,
+	pub fv_m1: u16,
+	pub fv_mc: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -588,26 +593,92 @@ impl<'a> Ctx<'a> {
 				ins.d = ((ins.d as u32 + msk) % 65536) as u16;
 			}
 		}
-		let map = &self.program.opmap;
-		let perm = if self.scatter {
-			&self.program.slot_perms[fn_index]
+		let map = self.program.opmap.clone();
+		let perm: [u8; 4] = if self.scatter {
+			self.program.slot_perms[fn_index]
 		} else {
-			&self.program.slot_perm
+			self.program.slot_perm
 		};
-		let nops: Vec<u16> = self
-			.code
+		// V17 P1-b：leaders 提前到塌缩之前（塌缩禁忌输入 + 块边界数据源）；
+		// 公式与不融合路径下的原位计算逐句相同——off 态零行为差。
+		let mut leaders: Vec<u16> = vec![1];
+		{
+			let ncode0 = self.code.len();
+			for (idx, ins) in self.code.iter().enumerate() {
+				if matches!(ins.op, Op::Jmp | Op::Jf | Op::Jt) {
+					if ins.b >= 1 && ins.b as usize <= ncode0 {
+						leaders.push(ins.b);
+					}
+					if idx + 2 <= ncode0 {
+						leaders.push(idx as u16 + 2);
+					}
+				}
+			}
+			leaders.sort_unstable();
+			leaders.dedup();
+		}
+		// V17 P1-b：数据流驱动塌缩（统计→确定性选词→collapse→leader 重映射）。
+		// 全程零 rng；映射不变量失守时整体回退本函数（release 兜底 debug_assert）。
+		let mut fv_vocab: Vec<(u8, u8)> = Vec::new();
+		let fused_stream: Option<Vec<super::fuse::FRec>> = if self.super_insn {
+			use super::fuse;
+			let st = fuse::stats(&self.code);
+			let vocab = fuse::select_vocab(&st, fuse::FUSE_TOP_K);
+			if vocab.is_empty() {
+				None
+			} else {
+				let lset: std::collections::BTreeSet<u16> = leaders.iter().cloned().collect();
+				let (frecs, old_to_new) = fuse::collapse(&self.code, &vocab, &lset);
+				let mapped: Vec<u16> =
+					leaders.iter().map(|&t| old_to_new[(t - 1) as usize]).collect();
+				if mapped.iter().any(|&m| m == 0) {
+					None
+				} else {
+					let mut nl = mapped;
+					nl.sort_unstable();
+					nl.dedup();
+					leaders = nl;
+					fv_vocab = vocab;
+					Some(frecs)
+				}
+			}
+		} else {
+			None
+		};
+		// 统一记录域：fused 流或 self.code 的 Plain 映射（后者与前实现逐条同构）。
+		let mut recs: Vec<super::fuse::FRec> = match &fused_stream {
+			Some(fr) => fr.clone(),
+			None => self
+				.code
+				.iter()
+				.map(|i| super::fuse::FRec {
+					kind: super::fuse::FKind::Base(i.op),
+					a: i.a,
+					b: i.b,
+					c: i.c,
+					d: i.d,
+				})
+				.collect(),
+		};
+		fn rec_unused(k: super::fuse::FKind) -> [bool; 4] {
+			match k {
+				super::fuse::FKind::Base(op) => isa::unused_operands(op),
+				super::fuse::FKind::Fused(_) => [false, false, false, false],
+			}
+		}
+		let nops: Vec<u16> = recs
 			.iter()
 			.enumerate()
-			.filter(|(_, i)| i.op == Op::Nop)
+			.filter(|(_, r)| r.kind == super::fuse::FKind::Base(Op::Nop))
 			.map(|(p, _)| p as u16)
 			.collect();
 		let mut real_lanes: [Vec<u16>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 		let mut real_all = Vec::new();
 		let mut real_total = 0usize;
 		let mut real_high = 0usize;
-		for ins in &self.code {
-			let unused = isa::unused_operands(ins.op);
-			let vals = ins.operands();
+		for r in &recs {
+			let unused = rec_unused(r.kind);
+			let vals = [r.a, r.b, r.c, r.d];
 			for k in 0..4 {
 				if !unused[k] {
 					real_lanes[k].push(vals[k]);
@@ -623,9 +694,9 @@ impl<'a> Ctx<'a> {
 		let mut noise_high = 0usize;
 		if self.scatter {
 			let mut fill_rng = Rng::new(noise_seed ^ 0xa5a5_5a5a);
-			for ins in self.code.iter_mut() {
-				let unused = isa::unused_operands(ins.op);
-				let mut vals = ins.operands();
+			for r in recs.iter_mut() {
+				let unused = rec_unused(r.kind);
+				let mut vals = [r.a, r.b, r.c, r.d];
 				for k in 0..4 {
 					if unused[k] {
 						vals[k] = sample_noise_operand(&mut fill_rng, &real_lanes[k], &real_all);
@@ -635,26 +706,26 @@ impl<'a> Ctx<'a> {
 						}
 					}
 				}
-				ins.a = vals[0];
-				ins.b = vals[1];
-				ins.c = vals[2];
-				ins.d = vals[3];
+				r.a = vals[0];
+				r.b = vals[1];
+				r.c = vals[2];
+				r.d = vals[3];
 			}
 		} else {
-			for ins in self.code.iter_mut() {
-				let m = isa::unused_operands(ins.op);
-				if m[0] { ins.a = self.rng.int(0, 65535) as u16; }
-				if m[1] { ins.b = self.rng.int(0, 65535) as u16; }
-				if m[2] { ins.c = self.rng.int(0, 65535) as u16; }
-				if m[3] { ins.d = self.rng.int(0, 65535) as u16; }
+			for r in recs.iter_mut() {
+				let m = rec_unused(r.kind);
+				if m[0] { r.a = self.rng.int(0, 65535) as u16; }
+				if m[1] { r.b = self.rng.int(0, 65535) as u16; }
+				if m[2] { r.c = self.rng.int(0, 65535) as u16; }
+				if m[3] { r.d = self.rng.int(0, 65535) as u16; }
 			}
 		}
 		let chaff_mod = 65_521u64;
 		let mut chaff = (((fn_index as u64 + 1) * self.program.chaff_fn as u64)
 			% chaff_mod) as u64;
-		for (p, ins) in self.code.iter().enumerate() {
-			if ins.op == Op::Nop {
-				let logical = [ins.a as u64, ins.b as u64, ins.c as u64, ins.d as u64];
+		for (p, r) in recs.iter().enumerate() {
+			if r.kind == super::fuse::FKind::Base(Op::Nop) {
+				let logical = [r.a as u64, r.b as u64, r.c as u64, r.d as u64];
 				let physical = [
 					logical[perm[0] as usize],
 					logical[perm[1] as usize],
@@ -671,13 +742,13 @@ impl<'a> Ctx<'a> {
 		}
 		let chaff_fold = (chaff + 1) as u16;
 		let mut osum: u64 = 0;
-		for ins in &self.code {
-			osum = (osum + ins.a as u64 + ins.b as u64 + ins.c as u64 + ins.d as u64) % 4294967296;
+		for r in &recs {
+			osum = (osum + r.a as u64 + r.b as u64 + r.c as u64 + r.d as u64) % 4294967296;
 		}
 		let mut osum2: u64 = 0;
-		let ncode64 = self.code.len() as u64;
-		for (p, ins) in self.code.iter().enumerate() {
-			let vals = [ins.a as u64, ins.b as u64, ins.c as u64, ins.d as u64];
+		let ncode64 = recs.len() as u64;
+		for (p, r) in recs.iter().enumerate() {
+			let vals = [r.a as u64, r.b as u64, r.c as u64, r.d as u64];
 			for st in 0..4usize {
 				let k = perm[st] as usize;
 				let pos = (st as u64) * ncode64 + (p as u64) + 1;
@@ -720,10 +791,32 @@ impl<'a> Ctx<'a> {
 			secs.push((4, slots));
 		}
 		let mut code = Vec::new();
-		isa::encode_u16var(&mut code, self.code.len() as u16);
+		isa::encode_u16var(&mut code, recs.len() as u16);
 		let s_idx = self.program.s_indices[fn_index] as usize;
-		isa::encode_soa_for(&self.code, map, perm, s_idx, &mut code);
+		super::fuse::encode_soa_fused(&recs, &map, &perm, s_idx, &mut code);
 		secs.push((5, code));
+		// V17 P1-b：fv 段（每函数融合词汇→tail-less handler 码位对，+fvm 掩码后的 u16 流）。
+		// super 开时恒发（含空词汇 len=0），与模板 NSECT 口径一致。
+		if self.super_insn {
+			let fvm = ((ckseed as u32 * self.program.fv_m1 as u32
+				+ self.program.fv_mc as u32)
+				% 65536) as u16;
+			let mut fv = Vec::new();
+			isa::encode_u16var(&mut fv, fv_vocab.len() as u16);
+			for &pair in &fv_vocab {
+				let e = super::fuse::pack_fv_entry(pair, s_idx, fvm)
+					.expect("vocab pairs are whitelist-only by construction");
+				isa::encode_u16var(&mut fv, e);
+			}
+			if std::env::var("OBSUCVIM_FUSE_DBG").is_ok() {
+				eprintln!(
+					"[fuse] fn={} s_idx={} ckseed={} fvm={} vocab={:?}",
+					fn_index, s_idx, ckseed, fvm, fv_vocab
+				);
+			}
+			secs.push((7, fv));
+			self.program.fv_sets[fn_index] = fv_vocab.clone();
+		}
 		let ndecoys = self.rng.int(0, 2);
 		for _ in 0..ndecoys {
 			let len = self.rng.int(8, 48);
@@ -763,32 +856,13 @@ impl<'a> Ctx<'a> {
 			state = (km * state + kc) % 268_435_456;
 			*byte = byte.wrapping_add(isa::fold_key(state));
 		}
-		let ncode = self.code.len();
-		let mut leaders: Vec<u16> = vec![1];
-		for (idx, ins) in self.code.iter().enumerate() {
-			if matches!(ins.op, Op::Jmp | Op::Jf | Op::Jt) {
-				if ins.b >= 1 && ins.b as usize <= ncode {
-					leaders.push(ins.b);
-				}
-				if idx + 2 <= ncode {
-					leaders.push(idx as u16 + 2);
-				}
-			}
-		}
-		leaders.sort_unstable();
-		leaders.dedup();
-		if self.super_insn {
-			// V17 P1-a：编译期数据流引擎演练（统计/选择/塌缩/pc 重映射，纯函数零 rng）。
-			// 发射端 P1-b 接线；本轮结果丢弃——on/off 产物字节恒等由「从不改动输入流」保证。
-			let (_vocab, _fused_len) = super::fuse::plan(&self.code, &leaders);
-		}
 		if self.scatter {
 			noise_audit(&format!(
 				"fn={} seed={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={} chaff={}",
 				fn_index,
 				noise_seed,
 				base_code_len,
-				self.code.len(),
+				recs.len(),
 				nop_count,
 				active_count,
 				dead_regs,
@@ -1267,7 +1341,13 @@ fn compile_chunk(
 	let blob_step = rng.int(1_048_576, 268_435_455) as u32;
 	let mut tag_pool: Vec<u8> = (1..=250).collect();
 	rng.shuffle(&mut tag_pool);
-	let section_tags: [u8; 7] = tag_pool[..7].try_into().unwrap();
+	let section_tags: [u8; 8] = tag_pool[..8].try_into().unwrap();
+	// V17 P1-b：fv 掩码常量——门控于 super_insn，off 态不消耗 rng（字节恒等前提）。
+	let (fv_m1, fv_mc) = if super_insn {
+		((rng.int(1, 65535) | 1) as u16, rng.int(1, 65535) as u16)
+	} else {
+		(0, 0)
+	};
 	let chaff_seed = (blob_seed as u64)
 		^ (blob_step as u64).rotate_left(17)
 		^ (ck_km as u64).rotate_left(33)
@@ -1323,6 +1403,9 @@ fn compile_chunk(
 		consts_mask_safe: true,
 		block_starts: vec![Vec::new(); total + 1],
 		s_indices: vec![0; total + 1],
+		fv_sets: vec![Vec::new(); total + 1],
+		fv_m1,
+		fv_mc,
 	};
 	{
 		let main_index = program.fns.len();
@@ -2610,6 +2693,7 @@ mod dbg {
 	use super::*;
 	use crate::parser;
 	use crate::symtab;
+	use crate::vmgen::fuse;
 
 	fn varint(src: &[u8], p: &mut usize) -> u32 {
 		let (v, next) = isa::decode_varint(src, *p).expect("valid proto varint");
@@ -2637,6 +2721,98 @@ mod dbg {
 			*b = b.wrapping_sub(isa::fold_key(state));
 		}
 		out
+	}
+
+	/// V17 P1-b：fused 模式编译后的 blob 自封完整性——逐 section 走查：
+	/// id 7(fv) 必须出现、各段消耗到 blob 恰好结尾、fv 条数与 fv_sets 一致。
+	fn section_walk(program: &VmProgram, fi: usize) -> Vec<usize> {
+		let blob = unmask_blob(program, fi);
+		let mut p = 0usize;
+		let mut seen = Vec::new();
+		while p < blob.len() {
+			let tag = blob[p];
+			p += 1;
+			let id = program
+				.section_tags
+				.iter()
+				.position(|&candidate| candidate == tag)
+				.expect("known section tag");
+			seen.push(id);
+			match id {
+				0 => {
+					for _ in 0..3 {
+						varint(&blob, &mut p);
+					}
+				}
+				1 => {
+					varint(&blob, &mut p);
+				}
+				2 => {
+					let nups = varint(&blob, &mut p) as usize;
+					for _ in 0..nups {
+						varint(&blob, &mut p);
+					}
+				}
+				3 => {
+					let _nconst = varint(&blob, &mut p) as usize;
+					let len = varint(&blob, &mut p) as usize;
+					p += len;
+				}
+				4 => {
+					let nslots = varint(&blob, &mut p) as usize;
+					for _ in 0..nslots {
+						varint(&blob, &mut p);
+					}
+				}
+				5 => {
+					let ncode = varint(&blob, &mut p) as usize;
+					p += ncode;
+					for _ in 0..4 {
+						for _ in 0..ncode {
+							varint(&blob, &mut p);
+						}
+					}
+				}
+				6 => {
+					let len = varint(&blob, &mut p) as usize;
+					p += len;
+				}
+				7 => {
+					let nv = varint(&blob, &mut p) as usize;
+					for _ in 0..nv {
+						varint(&blob, &mut p);
+					}
+				}
+				_ => unreachable!(),
+			}
+		}
+		assert_eq!(p, blob.len(), "section walk must consume the blob exactly");
+		seen
+	}
+
+	#[test]
+	fn super_insn_blob_layout_and_vocab_consistency() {
+		// Move-Move / LoadK-Move 密集的双函数源：词汇必须非空
+		let src = "local function f(a, b) local x = a local y = x local z = y + 1 \
+			local function g(q) local w = q return w end \
+			return z, g(z) end return f(1, 2)";
+		let mut block = parser::parse(src, true).unwrap();
+		let table = symtab::resolve(&mut block);
+		let mut rng = crate::rng::Rng::new(4242);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, true);
+		assert!(prog.fv_sets.iter().any(|v| !v.is_empty()), "super on: vocab must be non-empty here");
+		for (fi, _) in prog.fns.iter().enumerate() {
+			let walk = section_walk(&prog, fi.min(prog.fns.len() - 1));
+			assert!(walk.contains(&7), "fv section must be present when super on (fn {fi})");
+		}
+		// 词汇合法性：全部是白名单对、规模 ≤ topK
+		for v in &prog.fv_sets {
+			assert!(v.len() <= fuse::FUSE_TOP_K);
+			for &(pa, pb) in v {
+				let key = (isa::op_from_index(pa), isa::op_from_index(pb));
+				assert!(fuse::FUSE_WHITELIST.contains(&key), "non-whitelist pair leaked: {key:?}");
+			}
+		}
 	}
 
 	fn sealed_pool_strings(program: &VmProgram, fi: usize) -> Vec<Vec<u8>> {
@@ -2689,6 +2865,13 @@ mod dbg {
 				6 => {
 					let len = varint(&blob, &mut p) as usize;
 					p += len;
+				}
+				7 => {
+					// V17 fv 段：count + count×u16var
+					let nv = varint(&blob, &mut p) as usize;
+					for _ in 0..nv {
+						varint(&blob, &mut p);
+					}
 				}
 				_ => unreachable!(),
 			}
