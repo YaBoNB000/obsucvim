@@ -17,6 +17,15 @@ identify 名长折入 SCHALL 转录；观测不符 → 全链失步 → 错钥�
    `heavy/tr/KHXA/KHXB/KHXC` 五值，可与 GateProbe 的 `[XG-KH]` 行直接对表定位
    是哪一个观测项在真机上偏了。
 
+## 第二轮（Phase-2 要求：中型脚本，覆盖多函数/多常量/多字符串的解码全链）
+
+- **`Kkksu-mid.v16keyhost.hard.lua`** —— 递归 fib + 循环 + table + 拼接，
+  **预期精确打印**：
+  `kkksu-mid:1,1,2,3,5,8,13,21,34,55|143`
+  任何一位不对/报错都算失败（错位即投毒的表现）；打印完全一致讲一声，
+  两轮齐了就拍板 `--key-host` 翻默认 + 进发布管线。
+- `Kkksu-mid.v16keyhost-trace.hard.lua` —— 同样的诊断形态，仅失败时用。
+
 ## 旁证
 
 - 跑 `diag-tools/Obsucvim-GateProbe.lua`（现行版），`[XG-KH]` 行应打印

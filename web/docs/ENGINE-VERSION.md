@@ -448,7 +448,7 @@ GateProbe 新增 `[XG-KH]` 行直接对表（match=true 才可跑 keyhost 产物
 | CLI 校验（未知 profile / --no-executor-guard 组合拒绝） | ✅已测 | test-artifact-runtime §4 + 手工 stderr 原文核验 |
 | 载荷字符串不出现在 keyhost 产物字节 | ✅已测 | grep=0（seed 67067/20261024 两件） |
 | prelude 翻默认 IsStudio=false（=真 Delta 形态）后既有套件 | ✅已测 | 全测试绿：artifact-runtime 12(+4 新)、exguard-precheck、hosting 78、loader 24、attest 18、live-loader 13、engine-retry 9 |
-| **真 Delta 正向打印载荷（keyhost 产物全链绿）** | ⏳待真机 | hard 需 debug 内省 API，沙箱不可 mock；验收件 `samples/obsucvim/v16-check/` |
+| **真 Delta 正向打印载荷（keyhost 产物全链绿）** | ✅已测·第一轮 | 2026-10-24 真 Delta 跑 `Kkksu.v16keyhost.hard.lua` 正常打印 `kkksu` 无报错；Phase-2 第二轮中型件 `Kkksu-mid.v16keyhost.hard.lua`（预期精确输出行留档于 v16-check/README）待回 |
 
 ### 本轮文件变动
 

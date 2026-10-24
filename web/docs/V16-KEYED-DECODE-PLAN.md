@@ -133,7 +133,10 @@ K3 布尔包、KF 联合折叠——四门全部来自真 Delta，缺一不可�
   （exguard 转录三项 + CLI 校验 + trace XF(18) 扩展 + prelude 旋钮 + 双层公式
   测试）；关态产物与 R067.5 **逐字节相同**（回归门槛实测）；全测试套件绿。
   详细锚点/证据矩阵见 `ENGINE-VERSION.md` §17。
-- **Phase-2 ⏳（等真 Delta 数据）**：用户跑
-  `samples/obsucvim/v16-check/Kkksu.v16keyhost.hard.lua`——正常打印 `kkksu`
-  即正向验收；异常则跑 trace 件回传 `(R-xxxx)` 五值对表。两轮稳定后再拍板：
-  `--key-host` 是否翻默认、是否进发布管线 hard 变体、锚点与部署包重出。
+- **Phase-2 · 第一轮 ✅（2026-10-24，真 Delta）**：
+  `Kkksu.v16keyhost.hard.lua` 正常打印 `kkksu` 无报错——三项宿主观测与编译期
+  模型在真机逐值匹配，转录链全链绿。
+- **Phase-2 · 第二轮 ⏳**：按计划补一个中型脚本（多函数/多常量/多字符串，
+  bdec/常量解密路径全压一遍）：`Kkksu-mid.v16keyhost.hard.lua`，预期精确
+  输出行见 v16-check/README；回传后拍板：`--key-host` 是否翻默认、是否进
+  发布管线 hard 变体、锚点/测试/部署包重出。
