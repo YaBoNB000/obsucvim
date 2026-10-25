@@ -17,24 +17,32 @@
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | **R079**（V19 M2 P1 车道解剖定案，2026-10-25） |
-| 引擎 wasm | `web/tools/obsucvim.wasm`，1,249,048 B，sha256 `95f69c99f0e0db89a1db537b0a7c7a251b9cd3de3b4b2906e98942b87319f40a` |
+| 版本 | **R080**（静态弱点批次 1：审计 V-06/V-07/V-08，2026-10-25） |
+| 引擎 wasm | `web/tools/obsucvim.wasm`，1,302,019 B，sha256 `7458cb1f33905174e798d5e5fd5516e8b5a59ad4780d743227032bce1dd4cb86` |
 | 锚点命令 | `print("suda") --preset v15 --env-check --bind-executor --seed 67067` |
-| 锚点结果 | **178,551 B** / `ccf5d0839fef962a8a0c031d745d869dff7a861b6590fe8e267d93f5cf63c045` |
-| 自检 | `node web/tools/verify-engine-version.mjs` → `verdict: R079` |
+| 锚点结果 | **179,643 B** / `1b1056221c386f5a7232153e5d5f6f63a2e68cc4c51f5e6e7165a46b8b5c7135` |
+| 自检 | `node web/tools/verify-engine-version.mjs` → `verdict: R080` |
+| 上一版 | R079：178,551 B / `ccf5d083…c045`（wasm 1,249,048 B / `95f69c99…f40a`，历史锚保留在自检表内） |
 
-**必须知道的一个事实**：`rustc` 通道在立项环境里不通（`static.rust-lang.org` 不可达、
-无 apt 权限、GitHub Actions 无 `workflows` 权限），所以线上 wasm 是
-「R077 二进制 + l1 数据段等长手术」的产物；**源码 R079 已同义落盘**
-（`engine/src/vmgen/template.rs`），rustc 恢复后重编刷锚即可。这不影响产物字节，
-但意味着「改源码 → 重编 wasm」这条链路当前在本机不可执行。
+**构建通道已恢复（2026-10-25）**：仓库内 `.tools/`（gitignored）重建了 rustc 1.88 +
+cargo + wasm32-wasip1 std（`@rustbin/*` npm 包）+ lua51 + luau 0.735。
+`cargo build --release --target wasm32-wasip1` 可正牌重编；重编件已逐字节复现 R079
+锚点（178,551 B / `ccf5d083…`），证明源码树与发布件同源，此后所有锚点由源码直出，
+不再有「二进制手术」通道。
 
 `--no-key-host` 自 R070 起被移除（宿主钥是底层、恒开）；选项表里仍有 `--key-host`
 仅为兼容，传与不传等价。
 
 ---
 
-## 3. 已生效的停止令（2026-10-25，用户指令）
+## 3. 停止令与恢复令
+
+- **恢复令（2026-10-25 第二批）**：用户指令「先读仓库内所有 md 再开始优化」——
+  静态弱点优化线**重新立项**，依据 `docs/engine/AUDIT-20261025-v19evkey.md` 的 V-01..V-10，
+  方案与过筛见 `docs/engine/OPTIMIZATION-PLAN-20261025.md`；批次 1（V-06/V-07/V-08）已落地
+  并刷锚为 R080。**旧 R0–R4 排期仍然作废**，P2/P3/P4/P5 仍为取消状态。
+
+### 已生效的停止令（2026-10-25，用户指令）
 
 - **§34 收摊**：停止引擎改进，剩余全部计划取消（P2 时钟接入 / P3 镜像悬案 /
   P4 懒解层 / P5 相窗三）；退役项（含 rustc 正牌重编刷锚）一并封存。

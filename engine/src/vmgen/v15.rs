@@ -397,6 +397,26 @@ fn opaque_wrap(code: String, rng: &mut crate::rng::Rng, vname: &str) -> String {
 	}
 }
 
+// 惰性局部（V-06/V-07 修复）：所有形态都探测一个运行期槽（C[slot]），
+// 因此形态各异但都不可静态常量折叠；值本身不被任何后续代码使用。
+fn idle_val(rng: &mut crate::rng::Rng, probe: &str, a: i64, b: i64) -> String {
+	match rng.int(0, 4) {
+		0 => format!("({probe}~=nil)and {a} or {b}"),
+		1 => format!("({b})+(if {probe}==nil then 0 else {a}-{b})"),
+		2 => format!("(({probe}~=nil)and {a} or {b})"),
+		_ => format!("({b})+(({probe}~=nil)and({a}-{b})or 0)"),
+	}
+}
+
+fn idle_local(rng: &mut crate::rng::Rng, name: &str, probe: &str, a: i64, b: i64) -> String {
+	match rng.int(0, 3) {
+		0 => format!("local {name}={};", idle_val(rng, probe, a, b)),
+		1 => format!("local {name};if {probe}==nil then {name}={b} else {name}={a} end;"),
+		2 => format!("local {name}={b};if {probe}~=nil then {name}={a} end;"),
+		_ => format!("local {name};do local _t={probe};{name}=(_t==nil)and {b} or {a} end;"),
+	}
+}
+
 fn dispatch_tree(
 	vname: &str,
 	leaves: &[(i64, String)],
@@ -818,14 +838,13 @@ let start_word = all_words.len() + 1;
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let qf = nm.take_avoid(&["b", "C", "s"]);
+			let qf_src = idle_local(rng, &qf, &format!("C[{sumslot}]"), decoy_a, decoy_b);
 			let src = format!(
 				"function(b,C,{ra},{rb},{rc},{rd},{re}) local s=C[{sumslot}]; \
-				local {qf}=if C[{sumslot}]>=0 then {da} else {db}; \
+				{qf_src} \
 				 C[{sumslot}]=b:{modulo}(b:{mul}(s,31)+{ksum}); \
 				 return {ret},C,{rb},{rc},{rd},{re},{ra} end",
 				sumslot = sumslot,
-				da = decoy_a,
-				db = decoy_b,
 				modulo = modulo,
 				mul = mul,
 				ksum = ksum_e,
@@ -835,7 +854,7 @@ let start_word = all_words.len() + 1;
 				rc = rc,
 				rd = rd,
 				re = re,
-				qf = qf,
+				qf_src = qf_src,
 			);
 			fields.push(named(name.clone(), parse_expr(&src)));
 			leaves.push((
@@ -990,8 +1009,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 			local {kv}=b[{kg}](b); local {ax}=(({kv})+(({kv})%16384)*((({kv})-(({kv})%16384))/16384))%268435456; {ax}=(({ax})*257+((({ax})-(({ax})%65536))/65536))%268435456; local {kn}=((({ax})%256)+((({ax})-(({ax})%256))/256)%256+((({ax})-(({ax})%65536))/65536)%256+((({ax})-(({ax})%16777216))/16777216))%256; \
 				 local {ti}=1; \
 				 {segs}\
-				 local {qc}=C[{idx}]~=nil and {da} or {db}; \
-				 local {qr}=if {da}~={db} then {da} else {db}; \
+				 {qc_src} {qr_src} \
 				 C[{idx}]={final_concat}; \
 				 return {ret},C,{rc},{ra},{rd},{re},{rb} end",
 				idx = k * CHUNKS + j + 1,
@@ -1011,16 +1029,14 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				kfb = kfrag[2],
 				kfc = kfrag[3],
 				kfd = kfrag[4],
-				da = decoy_a,
-				db = decoy_b,
 				ret = ret,
 				ra = ra,
 				rb = rb,
 				rc = rc,
 				rd = rd,
 				re = re,
-				qc = qc,
-				qr = qr,
+				qc_src = idle_local(rng, &qc, &format!("C[{}]", k * CHUNKS + j + 1), decoy_a, decoy_b),
+				qr_src = idle_local(rng, &qr, &format!("C[{}]", k * CHUNKS + j + 1), decoy_b, decoy_a),
 			);
 			fields.push(named(name.clone(), parse_expr(&src)));
 			leaves.push((
@@ -1040,18 +1056,15 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 		let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 		let qn = nm.take_avoid(&["b", "C"]);
 		let src = format!(
-			"function(b,C,{ra},{rb},{rc},{rd},{re}) local {qn}=C[{ss}]~=nil and {da} or {db}; \
+			"function(b,C,{ra},{rb},{rc},{rd},{re}) {qn_src} \
 			 return {ret},C,{rb},{rc},{rd},{re},{ra} end",
-			ss = sumslot,
-			da = decoy_a,
-			db = decoy_b,
 			ret = ret,
 			ra = ra,
 			rb = rb,
 			rc = rc,
 			rd = rd,
 			re = re,
-			qn = qn,
+			qn_src = idle_local(rng, &qn, &format!("C[{sumslot}]"), decoy_a, decoy_b),
 		);
 		fields.push(named(name.clone(), parse_expr(&src)));
 		leaves.push((
@@ -1170,13 +1183,12 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 			let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
 			let qv = nm.take_avoid(&["b", "C", "s", "E", "i", "Q"]);
 			body.push_str(&format!(
-				"local {qv}=if s>=0 then {da} else {db};s=b:{mod}(b:{mul}(s,31)+{acc}+{qv}-{qv});",
-				da = decoy_a,
-				db = decoy_b,
+				"{qv_src}s=b:{mod}(b:{mul}(s,31)+{acc}+{qv}-{qv});",
 				mod = modulo,
 				mul = mul,
 				acc = acc,
 				qv = qv,
+				qv_src = idle_local(rng, &qv, "s", decoy_a, decoy_b),
 			));
 		}
 		let src = format!(

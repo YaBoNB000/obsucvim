@@ -12,8 +12,9 @@ Luau 字节码，也还原不出源码结构。每个 `--seed` 的 VM（指令�
   → 环境绑定 / 环境检查 / executor 认证守卫 / 宿主钥
 - **交付形态**：CLI + React 控制台 + 托管服务（卡密、双产物发布、验卡）+ Discord `/obf`
 
-> **当前状态以 [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) 为准**（引擎 **R079**、
-> 锚点 178,551 B / `ccf5d083…`）。本文只讲产品与用法，不重复状态。
+> **当前状态以 [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) 为准**（引擎 **R080**、
+> 锚点 179,643 B / `1b105622…`；上一版 R079 = 178,551 B / `ccf5d083…`）。
+> 本文只讲产品与用法，不重复状态。
 
 ---
 
@@ -139,7 +140,7 @@ bash tests/defense_audit.sh  # 防御审计 D1–D20
 bash tests/gen_examples.sh   # 重生成 engine/examples/
 
 cd ../web
-node tools/verify-engine-version.mjs   # 引擎锚点（R079）
+node tools/verify-engine-version.mjs   # 引擎锚点（R080）
 node tools/test-hosting.mjs            # 托管套件
 python3 tools/test-loader.py           # loader 套件
 ```
