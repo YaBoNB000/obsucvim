@@ -702,3 +702,17 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
   唯一交付口径。
 - 验收件第四轮已重出：evkey 178,974B `c61cdc5c…`、ctl 177,109B
   `1af735bc…`；真机回传中 → 正常即 M2-R1 首包收口。
+
+## §29 R077 真机故障取证 + wasm 手术判别件（2026-10-25）
+
+- evkey 与 ctl 真 Delta **同错 call-nil** ⇒ 分界定为 bind 共用链/R1 共有改造；
+  模板 61 行 diff 定性（SALT 三源+时钟门、三车道 NL 像），HBOOT/EXGFRAG 壳
+  **零变更**（前期「25 参重排主嫌疑」幻影结论证伪弃档）；CLK 守门惰性定案
+  （chunk 签名无 CLK/PCAL，[OSCLK] 恒 2），登记 R1 余账。
+- 本地 bind 复现呈非确定彩票族；指针串/时钟/缺全局三驱动钉死排除；本地
+  复现链判别力停用声明。
+- rustc 不可得 ⇒ **wasm 数据段等长手术**应急：锚点/字面量合并布局实测，
+  S1（盐回退）/S2（车道恒等）/S3（全回退）三件，验证链全过（sha 复建命中、
+  no-bind fib 全绿、TSRC 静默、bind 干净拒绝）；判别飞行件落档
+  `samples/obsucvim/v19-check/diff-flight/`（sha 见 §11.5/V19 文档）。
+- 手术工具 `web/tools/wasm-data-surgery.py`；源码修复待 rustc 通道恢复。

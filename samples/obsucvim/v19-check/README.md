@@ -38,3 +38,31 @@ LoadStr 等注入点作用域并无 FLR 绑定（裸跑 `attempt to call a nil v
 现形）；既有 FLR 站点（mb/APH/TKD）维持原样。
 
 纪律：Dev 档（`OBSUCVIM_V19_EVKEY_DEV`）产物零安全性，严禁交付。
+
+## diff-flight/（R077 故障判别飞行件，2026-10-25 落档）
+
+ctl 件真机回传：**同错 `attempt to call a nil value`** ⇒ 嫌疑从 evkey 专属线切至
+**bind 共用链 / R1 共有改造**（EP SALT 三源强派生 + 三车道 lane NL 像）。
+
+取证定案（详 `web/docs/V19-EXISTENCE-HARDENING.md` §11）：61 行模板 diff 逐项定性；
+R076→R077 bind 壳（HBOOT/EXGFRAG/BSSF/exguard）**零变更**；CLK 守门惰性（EP chunk
+签名不含 CLK/PCAL，恒不触发）；本地复现显现非确定性彩票族，三大驱动（指针串/时钟/
+缺真全局）逐一钉死排除。
+
+本目录三件为 **wasm 数据段等长手术**判别件（引擎源码未动，rustc 通道不可用期的
+应急判别手段；构建链可复现：sha 对照件复建命中 `c61cdc5c`/`1af735bc`）：
+
+| 件 | 手术 | sha256 前16 | 作用 |
+| --- | --- | --- | --- |
+| `diff-flight/kkksu-mini.ws1evk.hard.lua` | S1：EP SALT 回 R076 单源派生 | `19c9fdb83313616e` | 判别 SALT 三源/时钟门区 |
+| `diff-flight/kkksu-mini.ws2evk.hard.lua` | S2：三车道 lane NL 像回恒等线性 | `6add3d1b3e3d7a40` | 判别 _sv/_svk/_svq 车道 |
+| `diff-flight/kkksu-mini.ws3evk.hard.lua` | S1+S2 全回退 | `2a926c2d518f15a9` | 判别两区共谋 |
+
+验证链（每件均过）：未动刀 wasm 复建命中对照 sha；手术 wasm 建 no-bind 件本地
+**完整打印 fib**；TSRC dump 语法静默；bind 件裸 luau **既有文案干净拒绝**。
+
+手术工具存档：`web/tools/wasm-data-surgery.py`（等长替换，含唯一性/多处出现保险）。
+
+**熵诚实声明**：WS1 的 SALT 退化为 R076 单源 tostring 派生、WS2 的三车道退化为
+线性直加——判别件熵低于 R077 设计目标，仅作病灶定位，不作交付态；判罪后须
+源码落同义修复并重出正牌 wasm。

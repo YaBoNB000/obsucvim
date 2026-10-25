@@ -419,3 +419,82 @@ EVK 之上），对「同宿主旁录 EV 后离线重放」的攻击面强制其
 
 **真机验收件（第四轮）**：`samples/obsucvim/v19-check/` evkey 178,974B
 `c61cdc5c…` + ctl 177,109B `1af735bc…` 已重出，待真 Delta 回传。
+
+
+## §11 R077 真机故障取证全书与 wasm 手术判别飞行（2026-10-25）
+
+### 11.1 分界实验定案
+
+第四轮验收件在真 Delta 上的回传：
+
+- evkey 件（`c61cdc5c…`）：`qpTaFNJmHnfMMWNVP:3: attempt to call a nil value`，
+  LocalScript Line 3 ×7 帧。
+- ctl 件（`1af735bc…`，EVKEY=0、同 bind hard 门）：**同错**。
+
+⇒ 嫌疑从「evkey 专属线」切至 **bind 共用链 / R1 共有改造**（EP SALT 三源强派生
+与 _sv/_svk/_svq 三车道 lane NL 像——R077 相对 R076 的唯二引擎语义变更）。
+
+### 11.2 取证定案（逐项）
+
+1. **模板 diff 61 行定性**：R076(c8fd8c7)→R077(fb96e01) 的 `vmgen/template.rs`
+   全 diff 只有 SALT 一源→三源派生（含时钟门）与三车道 lane NL 像的注入文本
+   及其 manifest 三常量；**HBOOT/EXGFRAG/BSSF/exguard 壳代码零变更**。
+   此前一度记为「HBOOT 25 参重排/EXGFRAG 变更为主嫌疑」系幻影结论，已证伪弃档。
+2. **CLK 守门惰性**：EP build chunk 签名为
+   `function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR{,EVKX})`，
+   不含 CLK/PCAL；时钟门内 `CLK`/`PCAL` 为全局裸名读，恒 nil，门不触发。
+   运行证据：插桩 luau 的 `[OSCLK]` 计数 R076/R077 四件恒为 2。
+   **「R1 称时钟噪声混入」名不副实，登记为 R1 余账修复项。**
+3. **镜面一致性**：`_sv/_svk/_svq` 写入侧（EP，SALT 种子）、读取侧
+   （bdec，SLT 种子 / CDEC，SLTC=SLT 种子）逐字镜面，幂二次整除浮点算术双
+   realized 复核一致。
+4. **本地复现与彩票现象**：自建 luau(master) + Delta 形桩下，bind 件呈
+   非确定性失败族（arith-nil/length-nil/call-nil 漂移，~1/12 通过率）。
+   三大驱动逐一钉死排除：C 级指针串钉死（TOSTR-PIN 常量化）—非地址串驱动；
+   os.clock 定值—非时钟驱动；env 覆盖全量（行为日志仅见引擎自检随机名诱饵
+   读）—非缺全局。残余嫌疑为桩-真机 Luau 行为差；**本地 bind 复现链对 R077
+   根因不具判别力，停用**。
+5. **引擎产物结构**：EP build 文本在产物内不可见（加密于载荷区），明文区为
+   烧壳+attestation+探针——wasm 数据段是唯一手术场。
+
+### 11.3 wasm 数据段等长手术（应急判别通道）
+
+rustc 不可得（网络白名单），判别修复改走 **wasm 数据段等长字节手术**：
+
+- 模板文本以 rustc `format!` 拼片连续存储：`{}` 洞在数据段**零字节**，
+  编译期占位；实测五处 lane piece1 锚与三份 piece2 存储（bx_ep/bx_rt 共用
+  `_sv` 版 120B、ct_ep/ct_rt 共用 `_svk` 版 129B、km_ep 独有 `_svq` 版 129B
+  ——rustc 字面量合并布局），SALT 块 425B 单点连续。
+- 手术一律等长覆盖（不动数据段 (ptr,len) 参照与指针表），新文本尾空格垫齐；
+  Lua 侧垫空格经 minify 压缩，无语义影响。
+- **S1**：EP SALT 三源+时钟门 → R076 单源派生核（`local _st={} ... end end`
+  含 do 闭合）。**S2**：lane piece1 `local _sv=(SALT+` → `local _sv=SALT+(`
+  等价翻转、piece2 尾部 NL 链置空格 ⇒ `_sv/_svk/_svq` 恒等 = R076 线性直加
+  钥流（LC 常量保留，双镜面随共用存储一并生效）。
+- 工具存档 `web/tools/wasm-data-surgery.py`（唯一性/多处出现保险，sha 打印）。
+
+### 11.4 手术件验证链（每件均过）
+
+1. 未动刀 wasm (0f8dc517) 复建：ctl 命中 `1af735bc…`、evkey 命中
+   `c61cdc5c…`（构建参数完全可复现）。
+2. 手术 wasm 建 no-bind 件：本地 luau **完整打印 fib**（最强本地语义门）。
+3. 手术 wasm TSRC dump：luau 直接运行语法静默。
+4. 手术 wasm 建 bind 件：裸 luau **既有文案干净拒绝**（不挂死）。
+
+### 11.5 判别飞行件（`samples/obsucvim/v19-check/diff-flight/`）
+
+| 件 | 手术 | sha256 |
+| --- | --- | --- |
+| kkksu-mini.ws1evk.hard.lua | S1 | `19c9fdb83313616e3e99e7d8cec09417aee7a1b17abdd39993d67c4c0857a303` |
+| kkksu-mini.ws2evk.hard.lua | S2 | `6add3d1b3e3d7a40275463764d15036d022cb0c8cd20f664e3b0c647875e0ad1` |
+| kkksu-mini.ws3evk.hard.lua | S1+S2 | `2a926c2d518f15a9ffd90b9876b40427986dde722d5474064a8b2b0ab7bdbff5` |
+
+判读表：全挂 ⇒ bind 壳潜伏病（转阶段错误分解诊断）；WS1 独正常 ⇒ SALT
+三源/时钟门区有罪；WS2 独正常 ⇒ 三车道 lane 有罪；WS3 正常而 1/2 各挂 ⇒ 共谋。
+
+### 11.6 诚实边界
+
+- 手术件为 wasm 级判别件，**引擎源码未改**；判罪后须源码落同义修复
+  （rustc 通道恢复后重出正牌 wasm），手术熵退化（盐/车道回 R076 形）不得
+  作为交付态。
+- 手术件未过六套件/单测门禁（rustc 不可用），验证链如 §11.4，明载边界。
