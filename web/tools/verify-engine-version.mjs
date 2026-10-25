@@ -42,8 +42,14 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R076",
+    note: "V19 M1-bb（R5-b 熵坍缩次批）：字符串池 strseal 链（65521 域 NL+级联）、常量段 ConstLcg/mb 与 ct/csb-CDEC 两链（28-bit NL+级联）、oc_boot 16-bit 线性掩码（NL16+洗序后级联 _ocv）、fv 融合掩码 fuse::fv_mask_nl（NL16，1-based 下标演化）、APH 字母表/TKD 标符节/v15 分块 kn 折叠全换 fold_key_nl；新注入点一律幂二次 (x-(x%D))/D 整除（FLR 部分作用域未绑定）；R5 静态可常折面就此清零（相位三字节表除外，R3 已锁校验）",
+    size: 177951,
+    sha256: "20ff221c64e34abafa857c96bbd32d1e85b286923de431a905ed769a5091b728",
+  },
+  {
     name: "R075",
-    note: "V19 M1 终锚（R6+R3+R5-a 齐）：R6 指纹熔断 + R3 oracle 熄灭六车道 + R5-a 熵坍缩首批（stage-1 blob/微码载体/boot 名池 = 28-bit 非线性折叠+明文级联，双镜面钉测）；余账 R5-b（字符串/常量池链、oc_boot 16-bit、fv 掩码）见 V19 §9.6",
+    note: "V19 M1 终锚（历史对照，R076 起已被 M1-bb 改写）：R6+R3+R5-a 齐：R6 指纹熔断 + R3 oracle 熄灭六车道 + R5-a 熵坍缩首批；见 V19 §9.6/§9.7",
     size: 175796,
     sha256: "a968a510b50a623b538c8a4814724feb39eecc87d79ac0583ad243e6354fabc5",
   },

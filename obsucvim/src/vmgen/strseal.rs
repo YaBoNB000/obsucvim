@@ -8,26 +8,42 @@ pub struct SealStats {
 	pub bytes: usize,
 }
 
+/// V19 R5-b（存在性硬化）：65521 域非线性折叠（交叉半积 + 高位回混，双精度
+/// 精确域内最大中间值 < 2^25）+ 明文级联（前一明文字节并入推进）；
+/// 镜像为模板 LoadStr handler 的同式 Lua 文本。替代「state%256」线性折叠——
+/// 字符串池密封链的仿射相消面就此灭绝。
+fn nl_mask_65521(state: u64) -> u8 {
+	let mut x = (state + (state % 256) * (state / 256)) % 65_521;
+	x = (x * 257 + x / 256) % 65_521;
+	(((x % 256) + ((x / 256) % 256)) % 256) as u8
+}
+
 pub fn encode(plain: &[u8], seed: u16, step: u16) -> Vec<u8> {
 	let mut state = seed as u64;
+	let mut pv = 0u64;
 	plain
 		.iter()
 		.enumerate()
 		.map(|(i, &byte)| {
-			state = (state * 257 + step as u64 + i as u64 + 1) % 65_521;
-			byte.wrapping_add((state % 256) as u8)
+			state = (state * 257 + step as u64 + i as u64 + 1 + pv) % 65_521;
+			let out = byte.wrapping_add(nl_mask_65521(state));
+			pv = byte as u64;
+			out
 		})
 		.collect()
 }
 
 pub fn decode(cipher: &[u8], seed: u16, step: u16) -> Vec<u8> {
 	let mut state = seed as u64;
+	let mut pv = 0u64;
 	cipher
 		.iter()
 		.enumerate()
 		.map(|(i, &byte)| {
-			state = (state * 257 + step as u64 + i as u64 + 1) % 65_521;
-			byte.wrapping_sub((state % 256) as u8)
+			state = (state * 257 + step as u64 + i as u64 + 1 + pv) % 65_521;
+			let out = byte.wrapping_sub(nl_mask_65521(state));
+			pv = out as u64;
+			out
 		})
 		.collect()
 }

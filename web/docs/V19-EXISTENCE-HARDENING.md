@@ -324,3 +324,39 @@ fv 融合掩码（`pack_fv_entry` 65536 线性）、`_bp/_rp/_hp` 相位三字�
 
 **M1 合并轮至此真机收口**。R5-b 余账、M2（R1 全量 SALT 入钥流）、R2/M3 排队状态
 不变（§9.6 逐条明载），等用户拍板下一批。
+
+### 9.8 M1-bb 实装（R5-b 熵坍缩次批，2026-10-25，R076 终锚）
+
+**R5-b 落地**：§9.6 所列静态可常折余面（除相位三字节表，R3 已锁校验、本身非
+数据流）全部换轨为「非线性折叠 + 明文级联」同族构造，逐链双镜面：
+
+1. **字符串池 strseal 链**：65521 域交叉半积 `(st%256)*(st/256)` + 高位回混
+   `x*257 + x/256`，`_pv` 明文级联（Rust `strseal` 双函数 × LoadStr handler）。
+2. **常量段 ConstLcg/mb 链**：`ConstLcg` 增 `pv` 字段、`fold_key_nl`、
+   `mask/unmask` 双口（编译侧 `Const::encode` × parse `mb()` × 测试镜像）。
+3. **常量段 ct/csb-CDEC 链**：stj/stp 双 pre-advance 后 NL 混洗成 16-bit 掩码；
+   字符串字节流并入 `_pv2` 级联（boot 编码侧 × CDEC 懒解 metamethod 镜面）。
+4. **oc_boot 16-bit 线性掩码**：先洗序、后按洗后顺序施掩，NL16 +
+   `_ocv` 级联（Rust 装表 × boot 解表循环）。
+5. **fv 融合掩码**：`fuse::fv_mask_nl`（NL16，1-based 条目下标演化；
+   编译端逐条现算 × fused trampoline 内 `_m` 同式）。
+6. **APH 字母表 / TKD 标符节 / v15 分块 kn 折叠**：残留 `fold_key` 线性面
+   全数换 `fold_key_nl`（同式 Lua 文本镜面）。
+
+**作用域教训（实测定案）**：oc_boot / LoadStr 注入点内 **FLR 未绑定（nil）**——
+裸跑当场 `attempt to call a nil value` 现形。R5-b 全部新注入点整除统一改为
+幂二次 `(x - (x % D)) / D`（D 为 2^k，双精度精确除法），不再依赖 FLR 可见性；
+既有 FLR 站点（mb/APH/TKD 文本原已存在 FLR）维持不动。
+
+**门禁**：单测 **61 绿**；no-bind 四件矩阵输出恒等、auto==off 逐字节恒等；
+Bind 件裸 luau fail-fast；**super-insn 件专项跑通**（fv 掩码路径实测覆盖）；
+TSRC `4576808` 零命中；六套件全绿；**R076 终锚 = 177,951B
+`20ff221c64e34abafa857c96bbd32d1e85b286923de431a905ed769a5091b728`**
+（seed 67067 bind 探针，双构建逐字节恒等）；发布 wasm 1,244,869B 已刷新。
+
+**至此「静态可常折面清零」成立**：攻击者面对 R076 纹理只余逐点人工一途，
+不再有代数相消快车。诚实口径照旧：本批次只抬人工解析成本，密钥存在性论
+（EVKEY 通道）由 R3/R4 承担，R5-b 不宣称不可破解。
+
+**真机验收件（第三轮）**：`samples/obsucvim/v19-check/` evkey 176,057B
+`5b7d1dbd…` + ctl 173,848B `352ea2d2…` 已重出，待真 Delta 回传。

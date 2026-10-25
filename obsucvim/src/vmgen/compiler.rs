@@ -806,8 +806,10 @@ impl<'a> Ctx<'a> {
 				% 65536) as u16;
 			let mut fv = Vec::new();
 			isa::encode_u16var(&mut fv, fv_vocab.len() as u16);
-			for &pair in &fv_vocab {
-				let e = super::fuse::pack_fv_entry(pair, s_idx, fvm)
+			// V19 R5-b：掩码按 1-based 条目下标逐条非线性演化（镜像 trampoline 文本）。
+			for (j, &pair) in fv_vocab.iter().enumerate() {
+				let m = super::fuse::fv_mask_nl(fvm, j as u32 + 1);
+				let e = super::fuse::pack_fv_entry(pair, s_idx, m)
 					.expect("vocab pairs are whitelist-only by construction");
 				isa::encode_u16var(&mut fv, e);
 			}
@@ -2910,23 +2912,23 @@ mod dbg {
 		);
 		let mut strings = Vec::new();
 		for _ in 0..nconst {
-			let ty = bytes[q].wrapping_sub(lcg.next_key());
+			let ty = lcg.unmask(bytes[q]);
 			q += 1;
 			match ty {
 				0 => {}
 				1 => {
+					lcg.unmask(bytes[q]);
 					q += 1;
-					lcg.next_key();
 				}
 				3 => {
-					let lo = bytes[q].wrapping_sub(lcg.next_key()) as usize;
+					let lo = lcg.unmask(bytes[q]) as usize;
 					q += 1;
-					let hi = bytes[q].wrapping_sub(lcg.next_key()) as usize;
+					let hi = lcg.unmask(bytes[q]) as usize;
 					q += 1;
 					let n = lo | (hi << 8);
 					let mut s = Vec::with_capacity(n);
 					for _ in 0..n {
-						s.push(bytes[q].wrapping_sub(lcg.next_key()));
+						s.push(lcg.unmask(bytes[q]));
 						q += 1;
 					}
 					strings.push(s);
@@ -2934,11 +2936,11 @@ mod dbg {
 				4 => {
 					for _ in 0..2 {
 						loop {
-							let b = bytes[q].wrapping_sub(lcg.next_key());
-						q += 1;
-						if b < 128 {
-							break;
-						}
+							let b = lcg.unmask(bytes[q]);
+							q += 1;
+							if b < 128 {
+								break;
+							}
 						}
 					}
 				}

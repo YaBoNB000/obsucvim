@@ -378,22 +378,37 @@ pub struct ConstLcg {
 	pub state: u32,
 	pub km: u32,
 	pub kc: u32,
+	/// V19 R5-b：明文级联——前一明文字节并入推进（镜像 const_loop `mb()` 的 `_cpv`）。
+	pub pv: u8,
 }
 
 impl ConstLcg {
 	pub fn new(seed: u32, km: u32, kc: u32) -> ConstLcg {
-		ConstLcg { state: seed, km, kc }
+		ConstLcg { state: seed, km, kc, pv: 0 }
 	}
 	pub fn next_key(&mut self) -> u8 {
-		self.state = ((self.km as u64 * self.state as u64 + self.kc as u64)
+		self.state = ((self.km as u64 * self.state as u64
+			+ self.kc as u64
+			+ self.pv as u64)
 			% 268_435_456) as u32;
-		fold_key(self.state as u64)
+		fold_key_nl(self.state as u64)
 	}
+	/// 编码侧：出钥 + 级联携带明文。
 	pub fn mask(&mut self, plain: u8) -> u8 {
-		plain.wrapping_add(self.next_key())
+		let k = self.next_key();
+		self.pv = plain;
+		plain.wrapping_add(k)
+	}
+	/// 解码侧镜像（测试通路）：出钥、解掩码、级联携带解出的明文。
+	pub fn unmask(&mut self, cipher: u8) -> u8 {
+		let k = self.next_key();
+		let plain = cipher.wrapping_sub(k);
+		self.pv = plain;
+		plain
 	}
 }
 
+/// 旧线性四字节求和折叠（仅留作 fold_key_nl 区分度对照与残留引用）。
 pub(crate) fn fold_key(state: u64) -> u8 {
 	(((state % 256)
 		+ ((state / 256) % 256)

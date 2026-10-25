@@ -180,8 +180,20 @@ pub fn encode_soa_fused(
 	}
 }
 
+/// V19 R5-b：fv 条目掩码——65536 域非线性折叠（交叉半积 + 高位回混），
+/// 按 1-based 条目下标逐条演化（base = 每函数 fvm 快照）。
+/// 镜像为模板 fused trampoline 内的同式 Lua 文本 `_m=...`，替代「恒 fvm 常量
+/// 减掩」线性面（静态可常折面灭绝之一）。双精度精确域内最大中间值 < 2^25。
+pub fn fv_mask_nl(base: u16, j: u32) -> u16 {
+	let b = base as u64;
+	let mut m = (b + j as u64 * (b % 251 + 1)) % 65_536;
+	m = (m + (m % 256) * (m / 256)) % 65_536;
+	m = (m * 257 + m / 64) % 65_536;
+	m as u16
+}
+
 /// 每函数 FV 段打包：词汇对 (opA, opB) → 单条 u16 = tailCodeA + tailCodeB*256，
-/// 存链表项前加 mask（mask 由调用方以 (ckseed*fv_m1+fv_mc)%65536 现算）。
+/// 存链表项前加 mask（mask 由调用方以 fv_mask_nl(fvm 快照, 1-based 下标) 现算）。
 /// 返回 None = 词汇对含白名单外 op（防御：不应发生，tail_index 已过滤）。
 pub fn pack_fv_entry(pair: (u8, u8), s_idx: usize, mask: u16) -> Option<u16> {
 	let (oa, ob) = (

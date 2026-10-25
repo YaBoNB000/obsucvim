@@ -1,7 +1,7 @@
 
 use crate::rng::Rng;
 use crate::vmgen::handlers;
-use crate::vmgen::isa::{fold_key, fold_key_nl, Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
+use crate::vmgen::isa::{fold_key_nl, Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
 use crate::vmgen::strpool::StrPool;
 
 const OP_NAMES: [&str; N_OPS] = [
@@ -733,8 +733,10 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_READ_V => "T[x] = V[O[y] + 1]".to_string(),
 		M_WRITE_V => "V[O[x] + 1] = T[y]".to_string(),
 		M_READ_C => "T[x] = C[O[y] + 1]".to_string(),
+		// V19 R5-b：strseal 镜像——非线性折叠（交叉半积+高位回混）+ 明文级联 _pv。
+		// 本 handler 作用域无 FLR——整除用幂二次 (x-(x%D))/D 同式镜面。
 		M_LOAD_STR => format!(
-			"local q=T[y] local st=O[3] local step=O[4] local by={empty}[{byte_}] local ch={empty}[{char_}] local out={empty} for i=1,#q do st=(st*257+step+i)%65521 out=out..ch((by(q,i)-st%256)%256) end T[x]=out",
+			"local q=T[y] local st=O[3] local step=O[4] local by={empty}[{byte_}] local ch={empty}[{char_}] local out={empty} local _pv=0 for i=1,#q do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(by(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 out=out..ch(_v) _pv=_v end T[x]=out",
 			empty = lit.empty,
 			byte_ = lit.byte_,
 			char_ = lit.char_,
@@ -1325,23 +1327,33 @@ pub fn generate(
 		+ 1) as u16;
 	manifest_key("CHAFF_CK", qf_checksum as u64);
 	manifest_key("CHAFF_MICRO", chaff_micro as u64);
+	// V19 R5-b：oc_boot 密封链换 NL16（交叉半积+高位回混）+ 级联 _ocv
+	// （先洗序、后按洗后顺序施掩，运行期同序复演；FLR 为闭包 upvalue 全作用域可达）。
 	let oc_boot: String = if v15 {
 		let ocm = rng.int(1, 65535);
 		let occ = rng.int(1, 65535);
+		let mut idxs: Vec<i64> = (0..active_op_count as i64).collect();
+		rng.shuffle(&mut idxs);
+		let mut prev: i64 = 0;
 		let mut pairs: Vec<String> = Vec::new();
-		for i in 0..active_op_count {
-			let mask = (ocm + i as i64 * occ) % 65536;
-			let stored = (map.to_wire[0][i] as i64 + mask) % 256;
-			pairs.push(format!("{}, {}", i, stored));
+		for x in idxs {
+			let wire = map.to_wire[0][x as usize] as i64;
+			let mut m = (ocm + x * occ + prev) % 65536;
+			m = (m + (m % 256) * (m / 256)) % 65536;
+			m = (m * 257 + m / 64) % 65536;
+			let stored = (wire + m) % 256;
+			pairs.push(format!("{}, {}", x, stored));
+			prev = wire;
 		}
-		rng.shuffle(&mut pairs);
 		let p1 = rng.int(0, 255);
 		let p2 = ((map.nop_alias[0] as i64 - p1) % 256 + 256) % 256;
 		let ocm_e = ke.key_expr(ocm, Some(("#ocp", 2 * active_op_count as i64)), rng);
 		let occ_e = ke.key_expr(occ, Some(("#ocp", 2 * active_op_count as i64)), rng);
 		let nopa_e = ke.key_expr((p1 + p2).rem_euclid(KEY_MOD), None, rng);
+		// 注意：本注入点作用域内 FLR 未绑定（nil）——整除一律用幂二次
+		// (x-(x%D))/D 同式（D 为 2^k，双精度精确），与 Rust / 整数除法严格镜面。
 		format!(
-			"local OCt = {{}}\n  do\n    local ocp = {{{}}}\n    local oi = 1\n    while oi <= #ocp do\n      local x = ocp[oi]\n      OCt[x] = (ocp[oi + 1] - ({} + x * {}) % 65536) % 256\n      oi = oi + 2\n    end\n  end\n  local NOPA = ({}) % 256",
+			"local OCt = {{}}\n  do\n    local ocp = {{{}}}\n    local _ocv = 0\n    local oi = 1\n    while oi <= #ocp do\n      local x = ocp[oi]\n      local _m = ({} + x * {} + _ocv) % 65536\n      _m = (_m + (_m % 256) * ((_m - (_m % 256)) / 256)) % 65536\n      _m = (_m * 257 + ((_m - (_m % 64)) / 64)) % 65536\n      local _v = (ocp[oi + 1] - _m) % 256\n      OCt[x] = _v\n      _ocv = _v\n      oi = oi + 2\n    end\n  end\n  local NOPA = ({}) % 256",
 			pairs.join(", "), ocm_e, occ_e, nopa_e
 		)
 	} else {
@@ -1449,11 +1461,16 @@ pub fn generate(
 		)
 	};
 
+	// V19 R5-b：mb() 镜像 isa::ConstLcg（fold_key_nl 非线性 + _cpv 明文级联）。
 	let const_loop = r#"local _mc = ("")["char"]
+    local _cpv = 0
     local function mb()
-      cks = (CKM * cks + CKC) % 268435456
-      local b = (BYTE(s, p) - ((cks % 256) + (FLR(cks / 256) % 256) + (FLR(cks / 65536) % 256) + FLR(cks / 16777216)) % 256) % 256
+      cks = (CKM * cks + CKC + _cpv) % 268435456
+      local _x = (cks + (cks % 16384) * FLR(cks / 16384)) % 268435456
+      _x = (_x * 257 + FLR(_x / 65536)) % 268435456
+      local b = (BYTE(s, p) - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
       p = p + 1
+      _cpv = b
       return b
     end
     for i = 1, nconst do
@@ -1827,12 +1844,13 @@ __FVARM__        else
 	let akc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 	let aseed = rng.int(1_048_576, 268_435_455) as u32;
 	let mut astate = aseed as u64;
+	// V19 R5-b：APH 载体表密封链换非线性折叠（镜像 al_lines 解码文本）。
 	let masked_alpha: Vec<String> = carrier
 		.alphabet
 		.iter()
 		.map(|&ch| {
 			astate = (akm as u64 * astate + akc as u64) % 268_435_456;
-			ch.wrapping_add(fold_key(astate)).to_string()
+			ch.wrapping_add(fold_key_nl(astate)).to_string()
 		})
 		.collect();
 	let aseed_e = ke.key_expr(aseed as i64, Some(("#APH", 94)), rng);
@@ -1842,7 +1860,7 @@ __FVARM__        else
 	manifest_key("APH_KM", akm as u64);
 	manifest_key("APH_KC", akc as u64);
 	let al_lines = format!(
-		"local APH = {{{}}}\n  local AL = {{}}\n  do\n    local ast = {}\n    for i = 1, 94 do\n      ast = ({} * ast + {}) % 268435456\n      AL[(APH[i] - (((ast % 256) + (FLR(ast / 256) % 256) + (FLR(ast / 65536) % 256) + FLR(ast / 16777216)) % 256)) % 256] = i - 1\n    end\n  end\n",
+		"local APH = {{{}}}\n  local AL = {{}}\n  do\n    local ast = {}\n    for i = 1, 94 do\n      ast = ({} * ast + {}) % 268435456\n      local _ax = (ast + (ast % 16384) * FLR(ast / 16384)) % 268435456\n      _ax = (_ax * 257 + FLR(_ax / 65536)) % 268435456\n      AL[(APH[i] - (((_ax % 256) + (FLR(_ax / 256) % 256) + (FLR(_ax / 65536) % 256) + FLR(_ax / 16777216)) % 256)) % 256] = i - 1\n    end\n  end\n",
 		masked_alpha.join(", "), aseed_e, akm_e, akc_e
 	);
 	let tkm = (rng.int(1_048_577, 33_000_001) | 1) as u32;
@@ -1854,11 +1872,12 @@ __FVARM__        else
 		tk_bytes.extend_from_slice(carrier.tokens[i].as_bytes());
 	}
 	tk_bytes.extend_from_slice(&CARRIER_SPECIALS);
+	// V19 R5-b：TKD 标符节密封链换非线性折叠（镜像 tk_lines 解码文本）。
 	let masked_tk: Vec<String> = tk_bytes
 		.iter()
 		.map(|&b| {
 			tkstate = (tkm as u64 * tkstate + tkc as u64) % 268_435_456;
-			b.wrapping_add(fold_key(tkstate)).to_string()
+			b.wrapping_add(fold_key_nl(tkstate)).to_string()
 		})
 		.collect();
 	let tkseed_e = ke.key_expr(tkseed as i64, Some(("#TKD", 60)), rng);
@@ -1868,7 +1887,7 @@ __FVARM__        else
 	manifest_key("TK_KM", tkm as u64);
 	manifest_key("TK_KC", tkc as u64);
 	let tk_lines = format!(
-		"local TKD = {{{}}}\n  local TK = {{}}\n  do\n    local tst = {}\n    local tb = {{}}\n    for i = 1, 60 do\n      tst = ({} * tst + {}) % 268435456\n      tb[i] = (TKD[i] - (((tst % 256) + (FLR(tst / 256) % 256) + (FLR(tst / 65536) % 256) + FLR(tst / 16777216)) % 256)) % 256\n    end\n    for i = 0, 9 do\n      TK[CHAR(tb[i * 5 + 1], tb[i * 5 + 2], tb[i * 5 + 3], tb[i * 5 + 4], tb[i * 5 + 5])] = CHAR(tb[50 + i + 1])\n    end\n  end\n",
+		"local TKD = {{{}}}\n  local TK = {{}}\n  do\n    local tst = {}\n    local tb = {{}}\n    for i = 1, 60 do\n      tst = ({} * tst + {}) % 268435456\n      local _tx = (tst + (tst % 16384) * FLR(tst / 16384)) % 268435456\n      _tx = (_tx * 257 + FLR(_tx / 65536)) % 268435456\n      tb[i] = (TKD[i] - (((_tx % 256) + (FLR(_tx / 256) % 256) + (FLR(_tx / 65536) % 256) + FLR(_tx / 16777216)) % 256)) % 256\n    end\n    for i = 0, 9 do\n      TK[CHAR(tb[i * 5 + 1], tb[i * 5 + 2], tb[i * 5 + 3], tb[i * 5 + 4], tb[i * 5 + 5])] = CHAR(tb[50 + i + 1])\n    end\n  end\n",
 		masked_tk.join(", "), tkseed_e, tkm_e, tkc_e
 	);
 
@@ -2309,7 +2328,8 @@ __FVARM__        else
 					let w = super::isa::OpMap::fused_tramp_code(t, k) as u16;
 					let tail = chain_epilogue(rng, &wk);
 					micro_fill.push_str(&format!(
-						"HW2[({w}+AV)%256]=function(E,a,b,c,d) local fv=E.bt.fv local fe=(fv[{k1}]-E.bt.fvm)%65536 local wa=fe%256 HW2[(wa+AV)%256](E,a,b,c,d) fe=((fe-wa)/256)%256 HW2[(fe+AV)%256](E,c,d,c,d); {tail} end ",
+						// V19 R5-b：fv 掩码镜像 fuse::fv_mask_nl（NL16，1-based 下标演化）。
+					"HW2[({w}+AV)%256]=function(E,a,b,c,d) local fv=E.bt.fv local _m=(E.bt.fvm+{k1}*(E.bt.fvm%251+1))%65536 _m=(_m+(_m%256)*((_m-(_m%256))/256))%65536 _m=(_m*257+((_m-(_m%64))/64))%65536 local fe=(fv[{k1}]-_m)%65536 local wa=fe%256 HW2[(wa+AV)%256](E,a,b,c,d) fe=((fe-wa)/256)%256 HW2[(fe+AV)%256](E,c,d,c,d); {tail} end ",
 						w = w,
 						k1 = k + 1,
 						tail = tail,
@@ -2705,7 +2725,9 @@ let xm3v = rng.int(1024, 999_999) as u64;
 			s.push_str(&cenv_off);
 			s.push_str(&xtec_off);
 			s.push_str(
-				") % 268435456 local v=Ct[j] local tv=TYP(v) local stj=(cbase+j*CKJ)%268435456 stj=(KM*stj+KC)%268435456 stj=(KM*stj+KC)%268435456 local pj=tv==\"string\" and CSJ or CNJ local stp=(cbase+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + stp else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stp = (KM * stp + KC) % 268435456 csb[si] = (BYTE(ns, cb) + stp % 256) % 256 si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stp = (KM * stp + KC) % 268435456 csb[si] = (BYTE(v, cb) + stp % 256) % 256 si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end end",
+				// V19 R5-b：常量段 ct/csb 密封链——stj/stp 换 fold_key_nl 同式非线性，
+				// 字符串字节流并入 _pv2 明文级联（与下方 CDEC 解码文本严格镜面）。
+				") % 268435456 local v=Ct[j] local tv=TYP(v) local _pv2 = 0 local stj=(cbase+j*CKJ)%268435456 stj=(KM*stj+KC)%268435456 stj=(KM*stj+KC)%268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local pj=tv==\"string\" and CSJ or CNJ local stp=(cbase+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + _sp % 65536 else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(ns, cb) + _spb % 256) % 256 _pv2 = BYTE(ns, cb) si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(v, cb) + _spb % 256) % 256 _pv2 = BYTE(v, cb) si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end end",
 			);
 			s
 		} else {
@@ -2995,7 +3017,8 @@ let chaff_lane = rng.int(1, 4) as usize;
 				base_env_s
 			));
 			s.push_str(
-				"local SCH = (\"\")[\"char\"] local C = {} local done = {} local MT = {} MT.__index = function(t, j) if done[j] then return rawget(t, j) end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local ty = (ct[j] - stj) % 65536 local pj=ty==tm[3] and CSJ or CNJ local stp=(base+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local v if ty == tm[2] then v = cn[j] - stp elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" for x = 1, l do stp = (KM * stp + KC) % 268435456 s = s .. SCH((csb[si] - stp % 256) % 256) si = si + 1 end if ty == tm[3] then return s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true rawset(t, j, v) return v end return setmetatable(C, MT) end",
+				// V19 R5-b：CDEC 解码镜像——非线性折叠 + _pv2 明文级联（与 boot 编码侧镜面）。
+				"local SCH = (\"\")[\"char\"] local C = {} local done = {} local MT = {} MT.__index = function(t, j) if done[j] then return rawget(t, j) end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local ty = (ct[j] - stj) % 65536 local pj=ty==tm[3] and CSJ or CNJ local stp=(base+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 local _pv2 = 0 local v if ty == tm[2] then v = cn[j] - _sp % 65536 elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 s = s .. SCH(_b) _pv2 = _b si = si + 1 end if ty == tm[3] then return s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true rawset(t, j, v) return v end return setmetatable(C, MT) end",
 			);
 			s
 		} else {

@@ -725,7 +725,8 @@ let mut chunk_info: Vec<(usize, usize, usize)> = Vec::new();
 			ks_state = (km2 * ks_state + kc2) % 268435456;
 			ks_state = (km3 * ks_state + kc3) % 268435456;
 			let ks_const: i64 = ks_state;
-			let kf = crate::vmgen::isa::fold_key(ks_const as u64) as i64;
+			// V19 R5-b：非线性折叠（镜像运行时文本 _ax 同式混洗后四字节求和）。
+			let kf = crate::vmgen::isa::fold_key_nl(ks_const as u64) as i64;
 			let mut xb: Vec<u8> = chunk
 				.iter()
 				.enumerate()
@@ -866,6 +867,8 @@ let start_word = all_words.len() + 1;
 			let add_unmask = rng.int(0, 1) == 1;
 			let trim_style = rng.int(0, 1) == 1;
 			let nkn = nm.take_avoid(CH_AVOID);
+			// V19 R5-b：kn 前的非线性混洗临时量（镜像 fold_key_nl）。
+			let nax = nm.take_avoid(CH_AVOID);
 			let byte_emit = if divmod_bytes {
 				let mut s = String::new();
 				for step in 0..4u16 {
@@ -984,7 +987,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				"function(b,C,{ra},{rb},{rc},{rd},{re}) \
 				 local {km}=(b[{kfa}]+b[{kfb}])%4294967296;local {kc}=(b[{kfc}]-b[{kfd}])%4294967296; \
 				 local {t}={{}}; local {g}={sw}; \
-				 local {kv}=b[{kg}](b); local {kn}=(({kv}%256)+bit32.extract({kv},8,8)+bit32.extract({kv},16,8)+bit32.extract({kv},24,4))%256; \
+			local {kv}=b[{kg}](b); local {ax}=(({kv})+(({kv})%16384)*((({kv})-(({kv})%16384))/16384))%268435456; {ax}=(({ax})*257+((({ax})-(({ax})%65536))/65536))%268435456; local {kn}=((({ax})%256)+((({ax})-(({ax})%256))/256)%256+((({ax})-(({ax})%65536))/65536)%256+((({ax})-(({ax})%16777216))/16777216))%256; \
 				 local {ti}=1; \
 				 {segs}\
 				 local {qc}=C[{idx}]~=nil and {da} or {db}; \
@@ -1001,6 +1004,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				kc = nkc,
 				kv = nkv,
 				kn = nkn,
+				ax = nax,
 				ti = nti,
 				kg = kg_slot,
 				kfa = kfrag[1],
