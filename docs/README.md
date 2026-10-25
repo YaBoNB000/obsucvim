@@ -57,7 +57,7 @@ obsucvim/
 | 目录 | 性质 | 内容 |
 | --- | --- | --- |
 | `docs/CURRENT-STATE.md` | **现役** | 唯一权威现状速查 |
-| `docs/engine/` | 现役设计 + 分析 | `ENGINE-VERSION.md`（逐轮台账，权威）、`MW1-MISTWEAVE.md`、`V16/V17/V19-*`、`implementation-plan.md`、`plan-resemblance-and-security.md`、`vm-l6-implementation.md`、`v15-*`、`luraph15-*`、`obfuscation-research.md`、`performance.md`、`offline-hardening-h4-roadmap.md`、`lura15-adoption-inventory.md`、`strong-env-bind-*` |
+| `docs/engine/` | 现役设计 + 分析 | `STRENGTH-ROADMAP.md`（**强度提升规划，重新开工前必读**）、`ENGINE-VERSION.md`（逐轮台账，权威）、`MW1-MISTWEAVE.md`、`V16/V17/V19-*`、`implementation-plan.md`、`plan-resemblance-and-security.md`、`vm-l6-implementation.md`、`v15-*`、`luraph15-*`、`obfuscation-research.md`、`performance.md`、`offline-hardening-h4-roadmap.md`、`lura15-adoption-inventory.md`、`strong-env-bind-*` |
 | `docs/hosting/` | 现役运维 | `HOSTING-V2-PLAN.md`（计划+实施记录）、`SCRIPT-KEYS.md`（卡密/托管接口全集）、`SECURITY-AUDIT.md`（控制台红队自测）、`EMAIL-SETUP.md`（163 邮箱验证码） |
 | `docs/redteam/` | 战役记录 | 真 Luraph v15 三轮突破、R028/R061–R064 各轮整改、H5-P0、plan-53/54 |
 | `docs/research/` | 研究存档 | `antidebug-20261009/`、`dynamic-r065-20261010/`、`env-recorder-20261011/`、`luraph-envcheck-analysis/`、`size-compression-20261021/` |
