@@ -186,11 +186,12 @@ def main():
 
         R073A = "b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b"  # 历史锚点：R073 及更早形态（冻结于 R075 系列之前的提交）
         R075PB = "a968a510b50a623b538c8a4814724feb39eecc87d79ac0583ad243e6354fabc5"  # 历史锚点：R075 终锚（M1 齐），R076 起被 M1-bb 改写
-        R076PB = "20ff221c64e34abafa857c96bbd32d1e85b286923de431a905ed769a5091b728"  # R076 终锚（M1-bb：R5-b 熵坍缩次批清零静态可常折面）；V19 §9.8
+        R076PB = "20ff221c64e34abafa857c96bbd32d1e85b286923de431a905ed769a5091b728"  # 历史锚点：R076 终锚（M1-bb），R077 起被 M2-R1 改写
+        R077PB = "fdcd689ea9868cd4ca3310e8f92b66d50ee083286dfc89bfa8e18cbe39d5e5a3"  # R077 终锚（M2-R1：SALT 全量入钥流三车道）；V19 §10
         ANCHOR_FLAGS = ["--preset", "v15", "--env-check", "--bind-executor"]
         auto5, error = build(work, ANCHOR_FLAGS, "67067", "khauto5")
-        check("auto default artifact == R076 final anchor (M1-bb: R5-b)",
-              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R076PB,
+        check("auto default artifact == R077 final anchor (M2: R1)",
+              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R077PB,
               (error or "")[:120])
         ok, _, detail = build_status(
             work, ANCHOR_FLAGS + ["--no-key-host"], "1", "khconflict")

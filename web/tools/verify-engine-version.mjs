@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R077",
+    note: "V19 M2 首包（R1 全量入钥流）：SALT 派生强化（三源 tostring + CLK 守卫采样，fold_key_nl 同式 NL-mix 替代 *31 线性）；bx/bdec、ct/csb(cbase/base)、km 三车道 + SALT 直加 → lane 专属 NL 像 _sv/_svk/_svq（幂二次整除，LC 常量各不相干、obf_num 覆盖、双镜面）；mu/mnp 镜面不对称悬案与 micro ms/_mt R6 纹理明载不入列；no-minify 调试通道 R076 起既有失真（非本批回归），交付 minify 通道为唯一口径",
+    size: 178733,
+    sha256: "fdcd689ea9868cd4ca3310e8f92b66d50ee083286dfc89bfa8e18cbe39d5e5a3",
+  },
+  {
     name: "R076",
     note: "V19 M1-bb（R5-b 熵坍缩次批）：字符串池 strseal 链（65521 域 NL+级联）、常量段 ConstLcg/mb 与 ct/csb-CDEC 两链（28-bit NL+级联）、oc_boot 16-bit 线性掩码（NL16+洗序后级联 _ocv）、fv 融合掩码 fuse::fv_mask_nl（NL16，1-based 下标演化）、APH 字母表/TKD 标符节/v15 分块 kn 折叠全换 fold_key_nl；新注入点一律幂二次 (x-(x%D))/D 整除（FLR 部分作用域未绑定）；R5 静态可常折面就此清零（相位三字节表除外，R3 已锁校验）",
     size: 177951,
