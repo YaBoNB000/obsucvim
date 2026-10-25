@@ -34,6 +34,10 @@ B85 = ("0123456789"
        "!#$%&()*+,-./:;<=>?@[]^")
 assert len(B85) == 85
 
+# 产品水印（obsucvim/src/main.rs OUTPUT_WATERMARK 逐字同款）：
+# 所有成功产物第一行铁律——PW-1 接管最外层输出边界后由本载体层复打。
+WATERMARK = "-- This file was obfuscated by Obsucvim.\n"
+
 def b85enc(data: bytes, alph: str = B85) -> str:
     pad = (-len(data)) % 4
     if pad:
@@ -328,7 +332,10 @@ def wrap(payload: bytes, lanes: int, seed: int, label: str) -> bytes:
     blob85 = [b85enc(c, alph) for c in ciphers]
     flens = [len(p) for p in blobs_payload]
 
-    return build_shell(rng, blob85, seeds, flens, alph).encode()
+    # 水印纪律：引擎《OUTPUT_WATERMARK》产品铁律（所有成功产物第一行）。
+    # PW-1 接管最外层后原水印随内层入帧，故载体层复打同一水印首行
+    # （注释行，零语义；与引擎压缩后加水印的口径一致）。
+    return (WATERMARK + build_shell(rng, blob85, seeds, flens, alph)).encode()
 
 def main():
     args = sys.argv[1:]
