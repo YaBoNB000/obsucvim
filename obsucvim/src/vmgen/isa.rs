@@ -402,6 +402,15 @@ pub(crate) fn fold_key(state: u64) -> u8 {
 		% 256) as u8
 }
 
+/// V19 R5-a（熵坍缩首批）：28-bit 全态非线性折叠（交叉半积 + 高位回混），
+/// 镜像为模板里同式 Lua 文本（double 精确域内：最大中间值 ~2^36 < 2^53）。
+/// 替代「四字节求和」线性折叠——读写两侧的仿射相消面就此灭绝（L5/R5 口径）。
+pub(crate) fn fold_key_nl(state: u64) -> u8 {
+	let mut x = (state + (state % 16384) * (state / 16384)) % 268_435_456;
+	x = (x * 257 + x / 65536) % 268_435_456;
+	(((x % 256) + ((x / 256) % 256) + ((x / 65536) % 256) + (x / 16_777_216)) % 256) as u8
+}
+
 pub fn num_to_dyadic(v: f64) -> (bool, u64, i32) {
 	let bits = v.to_bits();
 	let neg = bits >> 63 != 0;
@@ -660,5 +669,29 @@ mod tests {
 		let a = c.encode(b"payload-xyz");
 		let b = c2.encode(b"payload-xyz");
 		assert_ne!(a, b);
+	}
+
+	#[test]
+	fn fold_key_nl_pinned() {
+		// 手工复核（2026-10-25）：与模板 unmask_pre 同式 double 语义。
+		assert_eq!(fold_key_nl(0), 0);
+		assert_eq!(fold_key_nl(1), 2); // x=1 → 257 → 1+1
+		assert_eq!(fold_key_nl(16384), 128); // x=16384 → 4210688 → 0+64+64+0
+		assert_eq!(fold_key_nl(268_435_455), {
+			// 手算：state=2^28-1 ⇒ state%16384=16383, state/16384=16383
+			// x=(2^28-1+16383*16383)%2^28 → 逐位在下面展开核对
+			let x1 = (268_435_455u64 + 16383 * 16383) % 268_435_456;
+			let x2 = (x1 * 257 + x1 / 65536) % 268_435_456;
+			(((x2 % 256) + ((x2 / 256) % 256) + ((x2 / 65536) % 256) + (x2 / 16_777_216)) % 256)
+				as u8
+		});
+		// 与旧线性折叠的区分度（抽样 4096 态不得恒等且非仿射）
+		let mut diff = 0;
+		for g in 0..4096u64 {
+			if fold_key_nl(g) != fold_key(g) {
+				diff += 1;
+			}
+		}
+		assert!(diff > 3000, "nonlinear fold must diverge broadly, diff={diff}");
 	}
 }

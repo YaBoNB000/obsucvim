@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R075",
+    note: "V19 M1 终锚（R6+R3+R5-a 齐）：R6 指纹熔断 + R3 oracle 熄灭六车道 + R5-a 熵坍缩首批（stage-1 blob/微码载体/boot 名池 = 28-bit 非线性折叠+明文级联，双镜面钉测）；余账 R5-b（字符串/常量池链、oc_boot 16-bit、fv 掩码）见 V19 §9.6",
+    size: 175796,
+    sha256: "a968a510b50a623b538c8a4814724feb39eecc87d79ac0583ad243e6354fabc5",
+  },
+  {
     name: "R075-preview-b",
     note: "V19 M1-b 中间锚点：R3 oracle 熄灭六车道（_bp/_rp/_hp 校验期望值、微码 MZD、QF 折叠、osum/osum2 全部扣 ev_term 入库、运行期 EVK/EVKX/EVKZ/EVK_ 加回；探针 EVK 外置声明修复 do 块词法断层）；Off 件保留旧明文 oracle 并明示勿交付；终态 R075 待 R5 落地后钉",
     size: 175190,

@@ -185,10 +185,10 @@ def main():
               (error or "")[:120])
 
         R073A = "b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b"  # 历史锚点：R073 及更早形态（冻结于 R075 系列之前的提交）
-        R075PB = "d402d1826c293a0020cde2d68aaf21cd46015378285097e5305cf25c59f17000"  # M1-b 中间锚点（R3 六车道+探针外置）；R5 落地后终态 R075 重钉
+        R075PB = "a968a510b50a623b538c8a4814724feb39eecc87d79ac0583ad243e6354fabc5"  # R075 终锚（M1 齐：R6+R3+R5-a）；V19 §9.6
         ANCHOR_FLAGS = ["--preset", "v15", "--env-check", "--bind-executor"]
         auto5, error = build(work, ANCHOR_FLAGS, "67067", "khauto5")
-        check("auto default artifact == R075-preview-b anchor (M1-b interim)",
+        check("auto default artifact == R075 final anchor (M1: R6+R3+R5-a)",
               auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R075PB,
               (error or "")[:120])
         ok, _, detail = build_status(

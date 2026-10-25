@@ -655,3 +655,15 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
 - 修复：EVK 探针外置声明（build do 块词法断层→st2 壳 EVKZ 供桨修复）。
 - 门禁：单测 60 绿、no-bind 四件矩阵 RUN-OK + auto==off 恒等、bind fail-fast、
   六套件全绿。发布 wasm 1,240,190B（+1.4KB），`web/tools/obsucvim.wasm` 已刷新。
+
+## 26. R075（V19 M1 终锚，2026-10-25）— R6+R3+R5-a 齐
+
+锚点：**175,796B `a968a510b50a623b538c8a4814724feb39eecc87d79ac0583ad243e6354fabc5`**。
+
+- R5-a 熵坍缩首批：`fold_key_nl`（非线性+高位回混）+ 明文级联，stage-1 blob /
+  微码载体 / boot 名池三链同轨（双镜面钉测 fold_key_nl_pinned）。R5-b 余账
+  （字符串/常量池链、oc_boot、fv 掩码、相位三字节表）逐条明载于 V19 §9.6。
+- 门禁：单测 61 绿、六套件全绿、矩阵全绿、双构建恒等；发布 wasm 1,240,584B，
+  `web/tools/obsucvim.wasm` 已刷新。
+- 验收件第二轮已重出：v19-check evkey 174,679B `3a1f77f5…`（裸 luau fail-fast ✓、
+  TSRC 4576808 零命中）、ctl 171,738B `2b3009ff…`；真机回传中 → 正常即 M1 收口。

@@ -849,11 +849,16 @@ impl<'a> Ctx<'a> {
 			// g 初值以 EVKX 同式补齐。EV 常量不进产物。
 			base = (base + self.program.ev_term as u64) % 268_435_456;
 		}
+		// V19 R5-a：stage-1 blob —— 非线性折叠（fold_key_nl）+ 明文级联
+		// （前一明文字节并入 LCG 推进；跨 ksplit 边界连续携带，双镜面同构）。
 		let ksplit = blob.len().min(64);
 		let mut state = base;
+		let mut prev: u64 = 0;
 		for byte in blob.iter_mut().take(ksplit) {
-			state = (km * state + kc) % 268_435_456;
-			*byte = byte.wrapping_add(isa::fold_key(state));
+			state = (km * state + kc + prev) % 268_435_456;
+			let pt = *byte as u64;
+			*byte = byte.wrapping_add(isa::fold_key_nl(state));
+			prev = pt;
 		}
 		let mut hf: u64 = 0;
 		for &byte in blob.iter().take(ksplit) {
@@ -861,8 +866,10 @@ impl<'a> Ctx<'a> {
 		}
 		let mut state = (base + hf) % 268_435_456;
 		for byte in blob.iter_mut().skip(ksplit) {
-			state = (km * state + kc) % 268_435_456;
-			*byte = byte.wrapping_add(isa::fold_key(state));
+			state = (km * state + kc + prev) % 268_435_456;
+			let pt = *byte as u64;
+			*byte = byte.wrapping_add(isa::fold_key_nl(state));
+			prev = pt;
 		}
 		if self.scatter {
 			noise_audit(&format!(
@@ -2722,14 +2729,19 @@ mod dbg {
 			.fold(0u64, |h, &b| (h * 31 + b as u64) % 268_435_456);
 		let mut out = cipher.clone();
 		let mut state = base;
+		let mut prev: u64 = 0;
 		for b in out.iter_mut().take(split) {
-			state = (program.blob_km as u64 * state + program.blob_kc as u64) % 268_435_456;
-			*b = b.wrapping_sub(isa::fold_key(state));
+			state = (program.blob_km as u64 * state + program.blob_kc as u64 + prev)
+				% 268_435_456;
+			*b = b.wrapping_sub(isa::fold_key_nl(state));
+			prev = *b as u64;
 		}
 		let mut state = (base + prefix_fold) % 268_435_456;
 		for b in out.iter_mut().skip(split) {
-			state = (program.blob_km as u64 * state + program.blob_kc as u64) % 268_435_456;
-			*b = b.wrapping_sub(isa::fold_key(state));
+			state = (program.blob_km as u64 * state + program.blob_kc as u64 + prev)
+				% 268_435_456;
+			*b = b.wrapping_sub(isa::fold_key_nl(state));
+			prev = *b as u64;
 		}
 		out
 	}
@@ -3135,9 +3147,12 @@ mod dbg {
 			let ksplit = b.len().min(64);
 			let mut buf: Vec<u8> = b.clone();
 			let mut state = base;
+			let mut prev: u64 = 0;
 			for byte in buf.iter_mut().take(ksplit) {
-				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
-				*byte = byte.wrapping_sub(isa::fold_key(state));
+				state = (prog.blob_km as u64 * state + prog.blob_kc as u64 + prev)
+					% 268_435_456;
+				*byte = byte.wrapping_sub(isa::fold_key_nl(state));
+				prev = *byte as u64;
 			}
 			let mut hf: u64 = 0;
 			for &byte in b.iter().take(ksplit) {
@@ -3145,8 +3160,10 @@ mod dbg {
 			}
 			let mut state = (base + hf) % 268_435_456;
 			for byte in buf.iter_mut().skip(ksplit) {
-				state = (prog.blob_km as u64 * state + prog.blob_kc as u64) % 268_435_456;
-				*byte = byte.wrapping_sub(isa::fold_key(state));
+				state = (prog.blob_km as u64 * state + prog.blob_kc as u64 + prev)
+					% 268_435_456;
+				*byte = byte.wrapping_sub(isa::fold_key_nl(state));
+				prev = *byte as u64;
 			}
 			let mut p = 0usize;
 			let mut nregs = 0usize;

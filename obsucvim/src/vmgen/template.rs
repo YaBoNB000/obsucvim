@@ -1,7 +1,7 @@
 
 use crate::rng::Rng;
 use crate::vmgen::handlers;
-use crate::vmgen::isa::{fold_key, Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
+use crate::vmgen::isa::{fold_key, fold_key_nl, Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
 use crate::vmgen::strpool::StrPool;
 
 const OP_NAMES: [&str; N_OPS] = [
@@ -243,14 +243,13 @@ fn boot_names_block(rng: &mut Rng, names: &[(&str, &str)], obf_num: &dyn Fn(i64,
 	let nbd_c = rng.int(1_048_576, 268_435_455);
 	let mut st = nbd_seed as u64;
 	let mut arr: Vec<u8> = Vec::new();
+	// V19 R5-a：boot 名池链非线性折叠 + 明文级联（NBr 携带前一明文字节）。
+	let mut prev: u64 = 0;
 	for &b in &pool {
-		st = (nbd_m as u64 * st + nbd_c as u64) % 268_435_456;
-		let f = ((st % 256)
-			+ ((st / 256) % 256)
-			+ ((st / 65536) % 256)
-			+ (st / 16_777_216))
-			% 256;
+		st = (nbd_m as u64 * st + nbd_c as u64 + prev) % 268_435_456;
+		let f = fold_key_nl(st) as u64;
 		arr.push(((b as u64 + f) % 256) as u8);
+		prev = b as u64;
 	}
 	let ta = "NBa";
 	let mut out = format!(
@@ -259,12 +258,12 @@ fn boot_names_block(rng: &mut Rng, names: &[(&str, &str)], obf_num: &dyn Fn(i64,
 		arr.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ")
 	);
 	out.push_str(&format!(
-		"local NBs = {}\nfor NBi = 1, {} do\n  NBs = ({} * NBs + {}) % 268435456\n  {}[NBi] = ({}[NBi] - (((NBs % 256) + (FLR(NBs / 256) % 256) + (FLR(NBs / 65536) % 256) + FLR(NBs / 16777216)) % 256)) % 256\nend\n",
+		"local NBs = {}\nlocal NBr = 0\nfor NBi = 1, {} do\n  NBs = ({} * NBs + {} + NBr) % 268435456\n  local NBx = (NBs + (NBs % 16384) * FLR(NBs / 16384)) % 268435456\n  NBx = (NBx * 257 + FLR(NBx / 65536)) % 268435456\n  {}[NBi] = ({}[NBi] - (((NBx % 256) + (FLR(NBx / 256) % 256) + (FLR(NBx / 65536) % 256) + FLR(NBx / 16777216)) % 256)) % 256\n  NBr = {}[NBi]\nend\n",
 		obf_num(nbd_seed, rng),
 		pool.len(),
 		obf_num(nbd_m, rng),
 		obf_num(nbd_c, rng),
-		ta, ta
+		ta, ta, ta
 	));
 	for (v, name) in names {
 		let idx: Vec<String> = name
@@ -1526,15 +1525,24 @@ pub fn generate(
 		if v15 { if super_insn { 7 } else { 6 } } else { 5 },
 		if super_insn { format!("local TFV = {}", tags[7]) } else { String::new() }
 	);
+	// V19 R5-a：非线性折叠（交叉半积 (x%16384)*(x/16384) + 高位回混）+
+	// 明文级联 _pv（前一明文字节并入 LCG 推进，跨 ksplit 连续携带）。
+	// 编译侧镜像：compiler::finish / unmask_blob（isa::fold_key_nl + prev）。
+	// R4 锚点句式 "BSEED + (fi - 1) * BSTEP" 两处必须原样保留（EVKX splice 依赖）。
 	let unmask_pre = r#"s = decarrier(s)
     local n = #s
     local ksplit = n
     if ksplit > 64 then ksplit = 64 end
     local um = {}
     local g = (BSEED + (fi - 1) * BSTEP) % 268435456
+    local _pv = 0
     for i = 1, ksplit do
-      g = (BKM * g + BKC) % 268435456
-      um[i] = CHAR((BYTE(s, i) - (((g % 256) + (FLR(g / 256) % 256) + (FLR(g / 65536) % 256) + FLR(g / 16777216)) % 256)) % 256)
+      g = (BKM * g + BKC + _pv) % 268435456
+      local _x = (g + (g % 16384) * FLR(g / 16384)) % 268435456
+      _x = (_x * 257 + FLR(_x / 65536)) % 268435456
+      local _v = (BYTE(s, i) - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
+      um[i] = CHAR(_v)
+      _pv = _v
     end
     local hf = 0
     for i = 1, ksplit do
@@ -1542,8 +1550,12 @@ pub fn generate(
     end
     g = (BSEED + (fi - 1) * BSTEP + hf) % 268435456
     for i = ksplit + 1, n do
-      g = (BKM * g + BKC) % 268435456
-      um[i] = CHAR((BYTE(s, i) - (((g % 256) + (FLR(g / 256) % 256) + (FLR(g / 65536) % 256) + FLR(g / 16777216)) % 256)) % 256)
+      g = (BKM * g + BKC + _pv) % 268435456
+      local _x = (g + (g % 16384) * FLR(g / 16384)) % 268435456
+      _x = (_x * 257 + FLR(_x / 65536)) % 268435456
+      local _v = (BYTE(s, i) - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
+      um[i] = CHAR(_v)
+      _pv = _v
     end
     s = table.concat(um)
     __TAGS__local p = 1
@@ -2322,9 +2334,12 @@ __FVARM__        else
 			let sess_step = (rng.int(1, 255) | 1) as i64;
 			let mut state = at_seed as u64;
 			let mut encrypted = micro_carriers[i].clone();
+			let mut prev: u64 = 0;
 			for byte in &mut encrypted {
-				state = (at_km as u64 * state + at_kc as u64) % KEY_MOD as u64;
-				*byte = byte.wrapping_add(fold_key(state));
+				state = (at_km as u64 * state + at_kc as u64 + prev) % KEY_MOD as u64;
+				let pt = *byte as u64;
+				*byte = byte.wrapping_add(fold_key_nl(state));
+				prev = pt;
 			}
 			let km_e = ke.key_expr(at_km, None, rng);
 			let kc_e = ke.key_expr(at_kc, None, rng);
@@ -2354,8 +2369,10 @@ __FVARM__        else
 			micro_fill.push_str(&stmts.join(sep));
 			micro_fill.push(' ');
 			let mi = ["_mi", "_iq", "_kv"][rng.int(0, 2) as usize];
+			// V19 R5-a（微码载体同改）：非线性折叠 + 明文级联 _pv；
+			// 镜面 = 编译侧 encrypted 循环（同式 fold_key_nl + prev）。
 			micro_fill.push_str(&format!(
-				"do local _src={carrier} local _out=\"\" local _ch=(\"\")[\"char\"] local _g=({seed}) local _akm=({km}) local _akc=({kc}) for {mi}=1,#_src do _g=(_akm*_g+_akc)%268435456 local _v=(BYTE(_src,{mi})-((_g%256)+(FLR(_g/256)%256)+(FLR(_g/65536)%256)+FLR(_g/16777216))%256)%256 _mc=(_mc*257+_v)%268435456 _out=_out.._ch((_v+({ms}+{mi}*{mt})%256)%256) end {mb}=_out _src=nil _out=nil _g=nil _akm=nil _akc=nil end ",
+				"do local _src={carrier} local _out=\"\" local _ch=(\"\")[\"char\"] local _g=({seed}) local _akm=({km}) local _akc=({kc}) local _pv=0 for {mi}=1,#_src do _g=(_akm*_g+_akc+_pv)%268435456 local _x=(_g+(_g%16384)*FLR(_g/16384))%268435456 _x=(_x*257+FLR(_x/65536))%268435456 local _v=(BYTE(_src,{mi})-(((_x%256)+(FLR(_x/256)%256)+(FLR(_x/65536)%256)+FLR(_x/16777216))%256)%256)%256 _mc=(_mc*257+_v)%268435456 _pv=_v _out=_out.._ch((_v+({ms}+{mi}*{mt})%256)%256) end {mb}=_out _src=nil _out=nil _g=nil _akm=nil _akc=nil _pv=nil end ",
 				mi = mi,
 				carrier = lua_dstr(&encrypted),
 				seed = seed_e,
