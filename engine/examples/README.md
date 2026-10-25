@@ -1,3 +1,11 @@
+> **2026-10-25 R080 重生成**：静态弱点批次 1（审计 V-06/V-07/V-08：诱饵/惰性局部改接
+> 运行期槽探针、噪声改挂字面量长度与运行期余数）落地后，本目录 37 个示例已按
+> `--preset v15 --dialect luau --no-bind-executor --seed 42` 全量重生成。
+> 实测：**37/37** 与源语料 stdout+exit 一致；`luau-compile` 语法 0 失败；
+> 目录总字节 8,575,513 → 7,059,135 B（-17.6%，体积下降来自噪声去冗余，不是关保护）。
+> 同 seed 同构建字节级确定；改引擎后须跑 `bash tests/gen_examples.sh` 重生成，
+> 否则 `tests/wtf_port_test.sh` 的 flag-off 字节一致性门会红（本轮已验证恢复绿）。
+
 # 混淆示例（所有常用语法）
 
 > **2026-10-11 executor 绑定默认开启**：v15 产物默认携带 executor 认证守卫（裸 Luau 不可运行）。本目录示例是**语义形态**（`--no-bind-executor` 生成，37 个文件逐字节不变），用于运行等价对照；产品默认形态的绑定态样本见 `artifacts/targets/R067_target.luau.lua`。
