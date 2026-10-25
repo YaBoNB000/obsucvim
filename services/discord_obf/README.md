@@ -174,7 +174,7 @@ cargo build --release --locked --offline --manifest-path obsucvim/Cargo.toml
 python3 -m venv .venv
 .venv/bin/python -m pip install -r services/discord_obf/requirements.txt pytest==8.4.2
 
-TEST_OBSUCVIM_BIN="$PWD/obsucvim/target/release/obsucvim" \
+TEST_OBSUCVIM_BIN="$PWD/engine/target/release/obsucvim" \
   .venv/bin/python -m pytest services/discord_obf/tests -q
 ```
 
@@ -185,7 +185,7 @@ TEST_OBSUCVIM_BIN="$PWD/obsucvim/target/release/obsucvim" \
 启动 API（先设置前述三个环境变量）：
 
 ```bash
-export OBSUCVIM_BIN="$PWD/obsucvim/target/release/obsucvim"
+export OBSUCVIM_BIN="$PWD/engine/target/release/obsucvim"
 .venv/bin/gunicorn 'services.discord_obf.app:create_app()' \
   --bind 0.0.0.0:10000 --workers 1 --threads 4 --timeout 30
 ```

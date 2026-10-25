@@ -1,10 +1,10 @@
 # Allowlist: never send credentials, samples, local tooling or Git to the builder.
 **
-!obsucvim/
-!obsucvim/Cargo.toml
-!obsucvim/Cargo.lock
-!obsucvim/src/
-!obsucvim/src/**
+!engine/
+!engine/Cargo.toml
+!engine/Cargo.lock
+!engine/src/
+!engine/src/**
 !services/
 !services/discord_obf/
 !services/discord_obf/__init__.py

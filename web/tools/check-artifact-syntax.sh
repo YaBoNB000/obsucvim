@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 产物语法/加载校验（Luau 真编译器，不是正则猜测）
 #
-#   ./web/tools/check-artifact-syntax.sh                 # 校验 samples/obsucvim/suda-test/*.lua
+#   ./web/tools/check-artifact-syntax.sh                 # 校验 artifacts/samples/obsucvim/suda-test/*.lua
 #   ./web/tools/check-artifact-syntax.sh a.lua b.lua     # 校验指定文件
 #   RUN=1 ./web/tools/check-artifact-syntax.sh           # 额外在 Luau CLI 里跑一遍
 #
@@ -23,7 +23,7 @@ if [ "$#" -gt 0 ]; then
 else
   # 样本目录 2026-10-24 起不再入库（应主要求裁剪大体积测试件）；默认无件可验时直接跳过。
   shopt -s nullglob
-  FILES=("$ROOT"/samples/obsucvim/suda-test/*.lua)
+  FILES=("$ROOT"/artifacts/samples/obsucvim/suda-test/*.lua)
   shopt -u nullglob
   if [ ${#FILES[@]} -eq 0 ]; then echo "SKIP: 默认样本目录已裁剪，传入具体文件路径再校验" >&2; exit 0; fi
 fi

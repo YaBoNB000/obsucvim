@@ -34,9 +34,9 @@ jobs:
         run: cargo build --release --target wasm32-wasip1
 
       - name: Verify the R067 anchor
-        run: node web/tools/verify-engine-version.mjs obsucvim/target/wasm32-wasip1/release/obsucvim.wasm
+        run: node web/tools/verify-engine-version.mjs engine/target/wasm32-wasip1/release/obsucvim.wasm
 
       - uses: actions/upload-artifact@v4
         with:
           name: obsucvim-wasm
-          path: obsucvim/target/wasm32-wasip1/release/obsucvim.wasm
+          path: engine/target/wasm32-wasip1/release/obsucvim.wasm

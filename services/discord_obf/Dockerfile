@@ -1,7 +1,7 @@
 FROM rust:1.88-bookworm AS engine
 WORKDIR /build
-COPY obsucvim/Cargo.toml obsucvim/Cargo.lock ./
-COPY obsucvim/src ./src
+COPY engine/Cargo.toml engine/Cargo.lock ./
+COPY engine/src ./src
 RUN cargo build --release --locked --offline
 
 FROM python:3.12-slim-bookworm

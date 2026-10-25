@@ -53,8 +53,8 @@ for f in "$WEB"/tools/*.mjs "$WEB"/tools/*.luau "$WEB"/tools/obsucvim.wasm; do
   esac
   cp "$f" "$PKG/tools/$(basename "$f")"
 done
-cp "$WEB/SCRIPT-KEYS.md" "$PKG/SCRIPT-KEYS.md"
-cp "$WEB/docs/HOSTING-V2-PLAN.md" "$PKG/HOSTING-V2-PLAN.md"
+cp "$ROOT_REPO/docs/hosting/SCRIPT-KEYS.md" "$PKG/SCRIPT-KEYS.md"
+cp "$ROOT_REPO/docs/hosting/HOSTING-V2-PLAN.md" "$PKG/HOSTING-V2-PLAN.md"
 cp "$WEB/deploy/README-Windows.md" "$PKG/README-Windows.md"
 cp "$WEB/deploy/README-UPDATE.md" "$PKG/README-UPDATE.md"
 cp "$WEB/deploy/Start-Obsucvim.bat" "$WEB/deploy/Start-Obsucvim.cmd" "$WEB/deploy/Start-Obsucvim.ps1" "$PKG/"

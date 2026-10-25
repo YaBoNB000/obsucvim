@@ -1,0 +1,1778 @@
+# 实施计划（IMPLEMENTATION PLAN）
+
+> 回答两个问题：**将实施哪些混淆方法** + **目前到哪了**。
+> 活文档：**每完成一个里程碑（或混淆 pass）必须同步更新 §1 表格状态列 +
+> §2 进度表 + §3 里程碑勾选 + 更新日志**（四处一起改，不允许只记日志不改状态），
+> 并同步 `docs/archive/PROGRESS-history.md` / `HANDOFF.md` / `examples/README.md`，
+> **最后 commit + push 到 GitHub**（用户规矩 2026-08-23）。
+> 初版：2026-08-23 ｜ 最后更新：2026-10-07（R065 最小字符串 canary 示例 + R064 全 recipe superoperator fusion）
+> **当前状态：M0–M6 ✅；R064 seed bug 已修复，动态观察成本继续上升但同进程 trace 仍可能**
+
+---
+
+## 1. 实施清单（全部混淆方法，按层分组）
+
+> 状态图例：📐 设计完成 ｜ 🟡 部分设计 ｜ ⬜ 未开始 ｜ ✅ 已实现
+> 优先级：P0 = 商业级预设必需 ｜ P1 = 增强 ｜ P2 = 可选/延后
+
+### L1 词法层
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 名称混淆（局部/参数/upvalue/循环变量） | 作用域安全的随机重命名（符号表驱动，避开关键字/全局名/互影；隐式 `self` 固定名） | `mangle.rs` | P0 | ✅ M1 |
+| 随机命名风格混合 | 短名(2-4)/中名(5-8)/长名(9-15) 按比例混用（30/40/30%） | `mangle.rs` | P1 | ✅ M1 |
+| minify / 空白压缩 | **token 感知单行压缩**：复用词法器重发射，只在「双标识符边界 / `--` 成注释 / `1..2` 成坏浮点 / 数字-`..`-数字」等边界插空格（默认开，`--no-minify` 保留缩进形态） | `minify.rs` | P0 | ✅ 2026-08-23（19 单测 + 全语料双解释器验证） |
+
+### L2 字符串层
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| add8 算术密码（默认） | `enc=(b+key[i%24]+i)%256`，5.1/Luau 共用解密算术（% 同为 floor，实测） | `strings.rs` | P0 | ✅ M1 |
+| XOR 密码 | Luau 用 bit32.bxor；**5.1 用 256×256 查找表 XOR**（双方言同一密钥派生） | `strings.rs` | P1 | ⬜ |
+| 位置相关密钥流 | `key[i%24] + i`（位置+下标双重相关，每构建随机密钥） | `strings.rs` | P0 | ✅ M1 |
+| 密钥流源头 = LCG PRNG（状态机化） | mod 2²⁸，常数每构建随机，PRNG 发射成状态机（luraph15 同款） | `rng.rs`+`strings.rs` | P0 | 🟡 工具侧 PRNG 已有（M1 用于生成密钥）；「输出内 PRNG 状态机化」未做 |
+| 字符串拆分（unrolling） | 密文切 3 段字面量，运行时 concat | `strings.rs` | P0 | ✅ M1 |
+| 密钥碎片化嵌入 | 3 段拼接 + 运行时展开为字节表（输出无连续密钥） | `strings.rs` | P1 | ✅ M1 |
+| 全量字符串覆盖 | 全部 Str 节点（含表键/索引/插值模板）→ 解密调用 | 全 pass | P0 | ✅ M1 |
+
+### L3 控制流层
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 循环去糖 | ~~for/for-gen/repeat → while~~ **取消**：flatten 原生处理所有循环（块图直接收 for/repeat/while + break/continue 边），且旧去糖有 continue 语义缺陷 | ~~`desugar.rs`~~（存档） | — | ❌ M2 取消 |
+| CFG 扁平化（函数级状态机） | 块图 → 随机状态 ID + 随机分支序 + `while true` 分派（无 goto 形态）；**循环=嵌套子状态机**（循环体局部变量每轮 fresh，闭包捕获语义与原生 for 一致） | `flatten.rs` | P0 | ✅ M2 |
+| if 拆分（轻量档） | 单 if → do/end 内小状态机（同一套块图代码）——并入主扁平化：每个 if 即 cond 块+分支块 | `flatten.rs` | P1 | ✅ M2 |
+| 透明谓词 | 恒真算术条件 if（`b*b >= 0`） | `junk.rs` | P1 | ✅ M2 |
+| 垃圾代码注入 | 无副作用随机算术块（只碰新局部变量；修复了跨作用域引用 c 与 return 后注入两个 bug） | `junk.rs` | P1 | ✅ M2 |
+| Luau 专属去糖 | `//`→math.floor（AST Idiv 节点，打印时去糖）、复合赋值→普通赋值、反引号插值→string.format | `parser.rs` | P0 | ✅ M0（解析期完成） |
+| 类型注解/别名剥离 | 解析期丢弃（含函数类型 `->`/表类型/泛型/交集） | `parser.rs` | P0 | ✅ M0 |
+
+### L4 数值层
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 整数拆分 | 2-4 个带符号小项之和/差（大值用 `a*b+c` 积式；项值随机、非平凡、≠原值） | `numbers.rs` | P1 | ✅ M3 |
+| 常量补码编码 | 大基数减法（`85523 - q` 风格，luraph15 同款）——并入整数拆分的积式档（`a*b+c`，c 为小残差） | `numbers.rs` | P1 | ✅ M3 |
+| 浮点精确恒等变换 | 仅 `0+x / x+0 / x*1 / x/1`（任何拆分都改 IEEE 值，禁止拆分） | `numbers.rs` | P1 | ✅ M3 |
+| 浮点输出保真 | `%.17g`（Rust {:?} 最短往返）；Luau float 字面量补 `.0`；isfloat 标志；inf/NaN 特判 | `printer.rs` | P0 | ✅ M0 |
+
+### L5 整体加密层
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 全源码加密 + loadstring | 所有 pass 后整段加密切分（复用 L2 加性密钥流+新密钥+3~5 块），`loadstring(DEC(C1..CN))()`（实测双方言用 loadstring） | `body.rs` | P0 | ✅ M3 |
+
+### L6 自定义 VM 层（核心护城河）
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| ISA 设计（~40 条寄存器指令） | 加载/取值/赋值/算术/比较/跳转/调用/表/闭包 | `vmgen/isa.rs` | P0 | ✅ M4（41 条，含 CallE/CallM 多尾展开） |
+| SoA 字节码容器 | opcode/操作数分存平行数组（luraph14/15 同款，破坏 AoS 特征） | `vmgen/isa.rs` | P0 | ✅ M5（`[ncode][OC bytes][S0..S3 varint streams]`；pc 按指令步进） |
+| opcode 随机置换（每构建） | 随机置换表 + 死指令填充 | `vmgen/isa.rs` | P0 | ✅（置换表 + Nop 死指令填充，M4 续期） |
+| AST → 字节码编译器 | 原型树/upvalue/常量池/多值协议(nresults 0/-1)/尾调用；R064：child `CellKind::Up` descriptor 随 parent upvalue scatter permutation 对齐 | `vmgen/compiler.rs` | P0 | ✅ M4+续期（upvalue 单 cell 别名模型 + 循环变量 per-iteration 共享 cell + 5.1 构造器存储序 + 全变长展开 + R064 seed stability fix） |
+| 解释器模板生成（Lua 源码） | fetch-decode-execute + 随机二分决策树（2~4 层）；R064：protected-meta 原生回退、SEL 精确变参计数；23 种多步 handler recipe 编译为单记录 ordered superoperator（不跨 VM 指令、不重排 callback/error）；VM byte/sub/char primitive 从原生 string metatable/numeric slots 获取以绕过可替换全局 string 表 hook（不承诺阻断 native hook/同进程 trace） | `vmgen/template.rs` | P0 | ✅（兼容、变参与两层动态观察成本缓解，2026-10-07） |
+| 指令拆文件 + 一指令多形态（建议1） | 41 条指令各一个文件（`vmgen/handlers/`），每文件返回固定解释器代码、用哪个取哪个；每指令 2~3 个语义等价形态，每构建随机各选一形 + 分派叶序/H 定义序/内联调用链序每生成打乱 | `vmgen/handlers/*` + `vmgen/strpool.rs` | P0 | ✅ 增量⑧（旧内联 `branch_code` 全量迁出为各指令 f0 形态；调用族按 token 模板改名换形；v15 Return 单形态保 CPS 改写锚点） |
+| continue 扁平分派风格（Luau 档） | 叶 = `状态=handler(); continue`（luraph15 同款，5.1 用嵌套树） | `vmgen/template.rs` | P1 | 📐 |
+| 帧运行器入场原语解包 | 数字槽→局部变量一次性解包，槽号/局部名每构建随机 | `vmgen/template.rs` | P0 | ✅ M5（15 个宿主原语进 `P[1..80]` 随机槽；VM 顶 + `run` 入场各解包一次，顺序独立 shuffle） |
+| 普通/协程双帧运行器 + UL 跨 yield 传表 | 协程帧走 coroutine.wrap + setfenv；大结构跨 yield 成对传送 | `vmgen/template.rs` | P0 | 📐 |
+| 7-bit 分块操作数编码 | 7/14/21-bit 变长 + 128 进制重建 + 2³² 归一化（VM 档可选开） | `vmgen/compiler.rs`+`template.rs` | P1 | ✅ M5（7/14/21/28-bit 四档；解码无位运算；≥2³¹ 做 `v-2³²`） |
+| 状态元组位置传参（混函数引用） | 状态含原语指针，每构建顺序随机 | `vmgen/template.rs` | P0 | ✅ M5（`run` 解包 `W/SA/SB/SC/SD/C` 字段序每构建 shuffle；fetch 6 元组序 shuffle） |
+| 解码枢纽状态 + 私有解码辅助 | 解码主循环枢纽 ID 每构建随机；辅助函数运行器内私有 | `vmgen/template.rs` | P0 | ✅ M5（inline fetch / `hub()` 两风格；u16/r16/decarrier 声明序 shuffle；AL/TK 固定在 decarrier 之前） |
+| base-N 编码 + token 转义 | 字符类 ASCII 32..126 + 10 特殊字符→5 字符 token（pC 同款） | `vmgen/isa.rs` | P0 | ✅ M5（base-94 + 保留前缀 token） |
+| 元表/协程/pcall 透传宿主 | 不模拟，正确性优先 | `vmgen/compiler.rs` | P0 | ✅ M4（实测语料通过） |
+| 解释器自身再过 L1/L2/垃圾注入 | 模板生成后走同一套 pass（表名随机化） | 管线 | P0 | ✅ M4（含 L3/L4/L5/L7） |
+| 每帧新 Lua 闭包（CPS 帧模型） | 性能代价大 | — | P2(v2) | ⬜ |
+| 超级指令（算术+比较+分支融合） | 编码复杂度高 | — | P2(v2) | ⬜ |
+
+### L7 反篡改层
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 容器校验和 | 密文字节和 mod 质数（质数池随机）vs 构建期计算的内嵌期望值，不匹配→静默死循环陷阱（**v15 没有，我方差异化**） | `antidbg.rs` | P0 | ✅ M3 |
+| 时间陷阱 | 保护+解密+执行全程 os.clock 计时，超阈（5~15s 随机）→ 静默死循环（v15 没有，差异化） | `antidbg.rs` | P1 | ✅ M3 |
+| 错误重写状态机 | 未捕获错误 pcall 拦截，`[(:(%d+)]` 解析行号（双方言格式），+随机偏移重映射后 level 0 重抛（luraph15 nL 同款） | `antidbg.rs` | P1 | ✅ M3 |
+| 金丝雀自检 | 纯函数金丝雀（`((a*M)+C)%P == 期望`，常量种子随机），执行前校验，不匹配→静默陷阱 | `antidbg.rs` | P2 | ✅ M3 |
+
+### 平台 / CLI
+
+| 方法 | 说明 | Rust 模块 | 优先级 | 状态 |
+|---|---|---|---|---|
+| 双方言模式 | `--dialect 5.1\|luau`（解析/去糖/输出/VM 全链通） | 全模块 | P0 | ✅（含 for-in 方言差异：Luau 隐式 next 归一化） |
+| 种子确定性 | `--seed`（同 seed 逐字节一致，不同 seed 编码完全不同；默认时间种子） | `rng.rs` | P0 | ✅ M1 |
+| 预设 | low(L1+L2) / medium(+L3) / high(+L4+L5+L7，默认) / vm(全开) / max(=vm，v2 预留) | `main.rs` | P0 | ✅ M6（`--preset`；其后 `--no-*`/`--vm` 覆盖；默认 ≡ high；`tests/run_presets.sh` 405 项） |
+| v15 结构同族档（路线 A，对标样本结构指纹） | `--preset v15`（Luau/Roblox 专属，5.1 报错）；发射器换代路线见 `docs/engine/v15-structural-parity-plan.md`（P0/P1/P2 ✅，P3 增量 1 ✅，P3 扩容+P4–P8 待做） | `main.rs` + `vmgen/` | P1 | 🟡 P0–P3 增量 1 完成（2026-08-25）：指纹脚本 32 条（样本 32/32）+ CLI + 外壳换代 + 模块表铺开（65 原语槽 + 诱饵 LCG）+ **CPS 引导骨架**（初始化器/顶层机/continue 循环/单字符 handler 链/算术助手，指标随原型数线性扩展，指纹 11/32） |
+| 英文输出水印 | 最终输出加 `-- This file was obfuscated by Obsucvim.`；正文/种子不变，所有输出路径统一 | `main.rs` + `tests/watermark.rs` | P1 | ✅ 2026-10-08，4 个 CLI 集成测试与全矩阵通过 |
+| Discord HTTP 托管适配 | `/obf` 附件 → 白名单/验签/有界队列 → Rust CLI → 私密回传；Render Docker 配置 | `services/discord_obf/`（适配层 Python，核心 Rust 不变） | P1 | ✅ 本地实现/55 项测试；⬜ Render 与真实 Discord 联调 |
+| 强制测试工作流 | 每 pass 完成 → 混淆样本 → lua51+luau 语法+运行对比（语料 29 个文件 + 多种子回归） | `run_tests.sh`+`gen_examples.sh` | P0 | ✅ M0 起执行中（当前 204 项检查全绿 + 5 种子回归 0 失败） |
+
+---
+
+## 2. 目前到哪了（2026-08-25）
+
+| 阶段 | 进度 | 说明 |
+|---|---|---|
+| 环境（Rust 1.88 / lua51 5.1.5 / luau 0.735） | ✅ 100% | 工具链已**重建进仓库** `luraph/.tools/bin`（沙箱重置会抹掉 `/home/user/tools`，仓库内副本可持久化；重建方法见 HANDOFF §4） |
+| 调研 + 双方言语义实测 | ✅ 100% | `docs/engine/obfuscation-research.md` |
+| Luraph v15 分析（含动态分析共三轮） | ✅ 100% | `docs/engine/luraph15-analysis.md`（§11 25 项功能对比：采纳 20 / 延后 2 / 拒绝 2 / 我方独有 1） |
+| 全部混淆方法设计（L1–L7 + VM） | ✅ 100% | 本文件 §1 + research §2.6 + v15 报告 §8/§10 |
+| **Rust 混淆器代码** | ✅ **M0–M6 完成** | M6：`--preset low\|medium\|high\|vm\|max` + 产品 README + `docs/engine/performance.md`；官方矩阵 204 + 预设矩阵 405 全绿；R064 protected-meta / trailing-nil vararg、nested-upvalue seed fix、string-table hook bypass、full recipe micro superoperator fusion、R065 canary 及产品改名 obsucvim 记录在 §4（2026-10-07） |
+| 测试语料 + 矩阵 | ✅ 100% | **29 个语料文件**（20 共享 + 9 Luau 专属；M4 续期新增 8 个 stress_*：upvalues/coroutines/metamethods/multival/errors/bigtable/control/luau_vm）；非 VM 102 项 + VM 102 项 = **204 项全绿**（含 VM 双解释器交叉）；**多种子回归**（seeds 1/7/4242/31337/999999 × 全语料 × 双方言 × 双阶段）0 失败 |
+| 英文产物水印 | ✅ 完成 | 所有预设和 minify 开关；文件/stdout/Discord 一致；37 示例只新增头部；R066 编译运行与安全指纹通过 |
+| Discord / Render 试用服务 | ✅ 本地 / ⬜ 上线 | 验签、授权、排队、限额、清理、真实引擎集成测试通过；Docker/平台网络未验证，免费额度需部署时确认 |
+| 混淆示例 | ✅ M1+M2 产出 | `engine/examples/`（`tests/gen_examples.sh` 再生成） |
+
+**一句话：设计 100%，代码 M0–M6 完成（官方矩阵 204/204 + 预设 405/405 + 多种子 0 失败）。**
+
+---
+
+## 3. 里程碑（说「开始」后的执行顺序）
+
+| 里程碑 | 内容 | 验收标准（含强制工作流） |
+|---|---|---|
+| **M0 地基** ✅ 2026-08-23 | `cargo new` + rng/lexer/parser/ast/symtab/printer | 全语料 round-trip × 双解释器 0 错误 —— 通过 |
+| **M1 词法+字符串** ✅ 2026-08-23 | mangle(L1) + strings(L2) | 混淆样本双方言运行一致；明文字符串=0（除 loader 必要项）—— 通过 |
+| **M2 控制流** ✅ 2026-08-23 | flatten + junk(L3)（desugar 取消：flatten 原生处理 for/repeat/while/continue/break） | 同上；人工抽查输出为状态机形态、无原结构残留 —— 通过（矩阵 68/68；循环闭包捕获/continue/空区间 for/nested break 均有语料覆盖） |
+| **M3 数值+整体+反篡改** | numbers(L4) + body(L5) + antidbg(L7) | 同上；篡改密文段→触发陷阱 |
+| **M4 VM 最小可用** ✅ 2026-08-24 | vmgen: isa + compiler + template（41 指令覆盖全语料） | `--vm` 输出双方言运行一致（136/136 全绿，含 luau 交叉 + luau-compile 语法校验）；同 seed 逐字节一致 / 异 seed 编码完全不同（已验证）；无原生字节码可读结构（VM 容器 = 混淆解释器 + 加密字节码串） |
+| **M4 续期（VM 语义加固）** ✅ 2026-08-25 | 应力语料（8 个 stress_*）暴露并修复 9 类 VM/管线语义 bug：upvalue 单 cell 别名模型（消灭中间副本）/ 循环变量 per-iteration 共享 cell / CallT 表存储 off-by-one / GetTab 索引错误 / 尾部多值展开（return .../a,b=.../a,b=f()）/ 5.1 构造器存储序 / 打印机后缀括号 / 多目标赋值解析 / Luau for-in 隐式 next；语料 21→29，矩阵 136→**204 全绿** + 多种子回归（5 seeds）0 失败 | 见 §4 更新日志 2026-08-25 条目 |
+| **M5 VM 完整** ✅ 2026-08-25 | SoA 平行数组 + 完整 7/14/21-bit + base-94 载体/token + 解码枢纽/状态元组随机 + 帧入场原语解包 + 反编译抽查 | 同 seed 逐字节一致；异 seed 前 2KB 重合 9.5%；`luac51 -l` 仅见 L5 容器、无用户字符串；矩阵 204/204 + 5 种子回归 0 失败 |
+| **M6 产品化** ✅ 2026-08-25 | CLI `--preset` + README 产品文档 + `docs/engine/performance.md` | 全预设 × 全语料 × 双解释器：`tests/run_presets.sh` **405/405**；默认 ≡ high、`--preset vm` ≡ `--vm`；官方矩阵 204 仍绿 |
+| **R064 兼容与变参修复** ✅ 2026-10-07 | protected-meta GET/SET/operator/call 原生回退；v15/legacy makefn 用捕获 `SEL("#", ...)` 精确保留尾 nil 变参数量；`stress_multival` 加回归 | `cargo test` 32/32 + 1 ignored；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败 |
+| **R064 micro-shard trace 第一层缓解** ✅ 2026-10-07 | 10 种无用户回调边界的内部短序列 fuse 为单记录 superoperator；Call/Return、metamethod 和顺序敏感操作不融合；添加 v15/legacy 等价回归。仍保留同进程 trace 的客户端观察边界 | `cargo test` 35/35 + 1 ignored；`run_tests` 169/169；`run_presets` 370/370；multiseed 0 失败；H5-P0 PASS；S1–S5 5/5 |
+| **R064 第二轮深度自检与 seed 修复** ✅ 2026-10-07 | 发现 parent `upsrc` 置换发生在 child `CellKind::Up` descriptor 编码后，导致内层 closure 将 `fold_text` 错映射为 `MOD`；预计算 parent upvalue permutation 并重映射 child descriptor。 | 新增 `r064_seed_stability_test.sh`（24 历史失败/相邻 seeds PASS，接入 run_tests 与 multiseed）；42-seed、连续 1..128 与另抽 128 高范围 seeds 均 0 fail；cargo test 36/36 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0 |
+| **R064 全 recipe 动态 trace 缓解** ✅ 2026-10-07 | 所有 23 个多 primitive handler recipe 打包为一个 per-shard superoperator；原始序列按序 inline，保留 metamethod/callback/error semantics，不跨 VM instruction/call/return phase。R064 seed64075 trace 929,567→701,915→412,706（最终记录≈每次 shard invocation 一条）。 | cargo test 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；H2–H8/R061/H5-P0 PASS；S1–S5 5/5；D3 结构指纹仍 23/32（非安全 FAIL） |
+| **R064 replaceable string-table hook 缓解** ✅ 2026-10-07 | VM/v15 staging 的 `byte/sub/char` primitive 改由原生 string metatable 或 numeric slots 获取；复制 string 表 setfenv hook 不再截获 VM 内部 byte/sub/char，R064 stdout 不变。仅封闭 replaceable-library hook，不防 native C hook、debugger 或 decoded micro trace | 新增 `string_primitive_hook_test.sh` 接入 run_tests；minimal/R064 seed64075 copied-library hook hits 0/0/0；S1–S5 5/5 |
+| **R065 最小字符串 canary** ✅ 2026-10-07 | 源严格为 `local a = "bysuda"`（`artifacts/targets/R065_src.lua`）；v15 seed65065 产物 `artifacts/targets/R065_target.luau.lua`（168,788B）。仅为管线/常量封存 canary，非业务逻辑或 anti-trace 充分测试 | luau-compile 双过；源/产物 stdout 等价（均空）；明文 `bysuda` 不在产物中；S1–S5 5/5；短名审计全 ≤2 字母 |
+| **executor 认证绑定默认开启（底层保护层）** ✅ 2026-10-11 | `--bind-executor` 翻转为默认：v15 产物默认携带 EXG 守卫（`--no-bind-executor` 退出；非 v15 隐式降级、显式报错）；`--env-check` 默认形态随之 = tier-1+tier-2+守卫（与双开逐字节一致） | executor_guard 扩至 11/11（E6b SHA 锚=翻转前默认、E7 默认即绑定、E8 降级/报错）；tier2 20/20（新增默认==显式绑定×2）；169/169；370/370；multiseed 0；D 20/1 持平；legacy 五预设字节不变；37 示例（--no-bind）字节不变 |
+| **WTF-PORT Phase 2 Roblox/executor 档** ✅ 2026-10-11 | `--env-check --bind-executor` 双开：Enum/Random/task/成员调用/Instance/clonefunction 六组 + 27 引用身份全等；外部成员仅 `["字符串键"]`；既有组合 SHA 不变 | tier2 测试 18/18（忠实 mock EVD=0 + 9 钩子全杀）；169/169；370/370；guard 6/6；faithful 5/5；multiseed 0；D 20/1；H3/H4/H5-P0 PASS |
+| **WTF-PORT Phase 1 环境检查组** ✅ 2026-10-11 | `--env-check`（v15）：envcheck.rs 7 组随机化常量挑战 + 首尾身份全等，SLT/MZD 双 lane 无分支静默投毒；wtf_port_test.sh 含 noop 自证闸与 7 mock 击杀矩阵 | cargo 45+1+4；169/169（含 16/16）；370/370；multiseed 0；D 20/1 持平；H3/H4/H5-P0 PASS；S1–S5 5/5；开关关闭字节一致 |
+| **H3-6 调用窗口噪声修复** ✅ 2026-10-11 | `call_window_mask` + 活噪声重定位 + 构建期死寄存器/开窗互斥不变量；`call_window_noise_test.sh` 固化 9 历史失败 seed | 9/9 修复 + 300 随机 seed 0 失败；169/169；370/370；multiseed 0；H3 审计全 YES；legacy 15/15 字节不变；S1–S5 5/5 |
+| **产品改名 obsucvim** ✅ 2026-10-07 | 混淆引擎定名 obsucvim：crate/二进制 `luraph-rs`→`obsucvim`，工程目录 `luraph-rs/`→`engine/`，环境变量 `LURAPH_*`→`OBSUCVIM_*`，全仓库脚本/文档引用同步；仓库目录与远端名保持 luraph。原 Luraph v15 指代（样本/分析文档/对标描述）不动 | `obsucvim --version` → `obsucvim 0.2.0`；R065 seed65065 重生成逐字节一致；cargo test 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；defense_audit 20/1（唯一 D3 非安全 FAIL）；S1–S5 5/5 |
+| **英文输出水印** ✅ 2026-10-08 | 最终生成边界加英文单行注释；不改内部 printer/VM/RNG，历史 R065 靶标保留 | cargo 39+4 passed / 1 ignored；run_tests 169；presets 370；multiseed 0；Discord 55；R066 S1–S5 5/5；37 示例正文逐字节不变 |
+| **Discord HTTP 适配** ✅ 本地 2026-10-07 / ⬜ 上线 | `/obf file`、Render Docker、命令注册/部署教程；固定 v15 / Luau，不执行用户脚本 | pytest 55 passed，真实 Rust CLI + 模拟 Discord；cargo test 39 passed / 1 ignored；未部署/未 Docker build，未重跑解释器全矩阵 |
+
+**M0–M6 全部完成（2026-08-25）；R064 兼容/变参、seed 对齐、replaceable string-table hook bypass 与全 recipe micro superoperator fusion 均通过所列回归（2026-10-07）；同进程 trace 仍是客户端边界。**
+
+---
+
+## 4. 更新日志
+
+- **2026-10-11（src 注释剥离）**：应用户要求删除 `engine/src` 全部 71 个 .rs 模块的注释（3,155 条：行注释/文档注释/嵌套块注释；字符串字面量内的 `//` 保留——ast/lexer/parser 中的 Luau `//` 整除运算符不受影响），22,019 → 18,931 行。工具 `engine/tools/strip_rs_comments.py`（Rust 感知：raw string/r#标识符/字符字面量 vs 生命周期/嵌套块注释；含折磨自检）。**备份**：`/home/user/obsucvim-src-commented-20261011.tar.gz`（76 文件，SHA 抽检一致）+ git 历史 `0358615^` 前全部提交（恢复 = `git checkout 0358615 -- engine/src`）。验证（剥离后全矩阵）：cargo 47+1+4；executor_guard 11/11（E6b SHA 锚 `fcbba5a9…` 逐字节复现）；tier2 20/20；run_tests 169/169；presets 370/370；multiseed 0；R067 锚点（`--env-check --seed 67067`）逐字节复现——产物生成与剥离前逐字节一致（src 无 `line!()` 类宏，行号不进产物）。`tests/watermark.rs` 未动（测试 harness 非引擎模块）。**注意**：源内解释性文档已不存在，内部设计记录以 `docs/` 与 HANDOFF 为准。
+
+- **2026-10-11（executor 认证绑定默认开启——底层保护层）**：应用户决策，`--bind-executor` 从 opt-in 翻转为**默认开启**：v15（默认预设）产物一律携带 EXG 认证守卫，只在完整 Roblox executor 环境内正确运行。新增 `--no-bind-executor` 显式退出（语义矩阵/示例生成用它）；非 v15 管线隐式默认静默降级（legacy 五预设逐字节不变，实证），显式 `--bind-executor` 在非 v15 仍报错。`--env-check` 默认形态随之变为 tier-1+tier-2+守卫（与旧双开形态逐字节一致；`--env-check --seed 67067` 现恰等于 R067 靶标字节）。行为语义：防裸 Luau/半吊子桩（E2/E3 口径不变）；**不防探针感知桩**（R067 记录器战役实测，见 `research/env-recorder-20261011/REPORT-R067.md`）——默认开启的意义是把该攻击成本强加给所有产物使用者，而非消除该攻击类。测试：executor_guard 扩至 **11/11**（E6 加 SHA 锚 `fcbba5a9…`=翻转前默认字节、E7 默认构建==显式绑定+CLI 死亡、E8 非 v15 降级/报错）；tier2 **20/20**（新增"默认构建==显式绑定""env-check 默认形态==双开形态"）；运行等价矩阵全量改用 `--no-bind-executor`（run_tests/multiseed/gen_examples/defense_audit/charhook/env_bind/faithful/proto_enc/micro_fusion/string_primitive/protected_meta/call_window/r064_seed_stability/run_presets）。验证：cargo 47+1+4；run_tests 169/169；run_presets 370/370；multiseed FAIL=0；防御审计 20/1（D3 持平）；legacy 五预设与 37 示例（--no-bind）逐字节不变；Discord 服务随默认产出绑定态（其测试不运行产物，无需改）。
+
+- **2026-10-11（R067 记录器实测：exguard 被探针感知桩绕过）**：对 R067 绑定态产物跑记录器/智能桩战役（`research/env-recorder-20261011/REPORT-R067.md`）：①探针感知环境桩（getfenv(0) 影子重定向 + debug.info 分类 + getconstants 靠调用 + setupvalue no-op）在裸 Luau CLI 直接跑通产物（`suda`，17 闸门全过）；②D 级录放两阶段成功（buffer×30 + unpack×3，leftover=0）；③桩 seed 无关（seed 42 同沦陷）——一次逆向全部产物通杀。半吊子桩对照死于 gate 10。E2/E3 的 fail-closed 结论限定为朴素桩类；README-R067 的"只在完整 executor 内正确运行"声明已按实测修正。顺带发现 `OBSUCVIM_EXG_TRACE=1` 诊断构建生成期 parse error（未修，待独立增量）。加固提案（gate13 反 no-op / 探针去可调用化 / 调用计数 / identifyexecutor 折令牌 / getfenv 入 prims）见报告，未实施。研究零产线改动。
+
+- **2026-10-11（R067 绑定态 canary）**：源码 `print("suda")`（同 R066）以 `--env-check --bind-executor --seed 67067` 混淆为 `artifacts/targets/R067_target.luau.lua`：229,422 字节，SHA-256 `3775f3b557ca4c95ee16d9d013f290d735b6c022af23ac17f1d0b2339fc689f6`（对比 R066 tier-1 +38,553B = tier-2 六组 + 27 身份引用 + exguard）。验证：语法过、同 seed 逐字节确定、无明文 `suda`、E4 13 词零痕迹；裸 CLI 报错死亡（E2 口径内）、E3 半吊子桩被拒（STUBDEAD）；**本构建** ENVFRAG 工厂 × 忠实 Roblox mock 正向 EVD=0 + 9 破坏钩子全非零；executor_guard 6/6、tier2 18/18 复跑绿（无引擎改动）。R066 保留为 tier-1 canary 与记录器研究样本。诚实边界：真 executor 正向运行未实证（闭包内省裸 Luau 无法保真构造）；L1 反录制重放空缺不变（tier-2 未测录放）。详见 `artifacts/targets/README-R067.md`。
+
+- **2026-10-11（R066 源码更新）**：canary 源码改为 `print("suda")`（14 字节），同命令重混淆：190,869 字节，SHA-256 `e80ce06364dde17c449d86953a9d9f731eef4252345c11662372a297e6e3c892`；语法过、stdout 同源码、确定、无明文 `suda`、bit32 mock 静默死亡。
+
+- **2026-10-11（R066 canary 更新为当前产品形态）**：`artifacts/targets/R066_target.luau.lua` 以 `--env-check --seed 66066` 重生成（190,974 字节，SHA-256 `e2cb9423d1e02ba702bdc3489540b48a95b71b9b27f229f6e07998aab7c65e13`）——水印 + tier-1 环境检查组的完整产品形态展示。验证：语法过、stdout 同源码、同 seed 确定、干净克隆环境照常输出、bit32 错值 mock 静默死亡。上一版（H3-6 修复后水印 canary）由本版取代，历史哈希见 `artifacts/targets/README-R066.md`。
+
+- **2026-10-11（WTF-PORT Phase 2：Roblox/executor 档上线，`--env-check --bind-executor` 组合）**：tier-2 检查组并入 ENVFRAG 工厂（envcheck.rs `build(rng, tier2)`，仅在双开时发射——所有既有 flag 组合字节不变，SHA 对照实证）。新增 6 组：Enum 身份缓存（FromName/FromValue/属性三次调用同一 userdata + typeof 三态 + 锁定元表）、Random 确定性（固定种子 51018400 的三条精确值 + 随机种子的同流/Clone 分叉自洽）、task 语义（spawn 立即执行返回 thread、delay 返回未运行 thread + cancel、wait 类型错误）、成员调用形态（"Expected ':' not '.'" 前缀匹配×2）、Instance 面（typeof/ClassName/父子/信号 Connect-Disconnect 生命周期/销毁后 Parent 锁定）、clonefunction 条件探针；身份全等扩至 27 引用。外部对象成员一律 `["字符串键"]` 访问——sanitize_frag 会改掉非全局接收者后的标识符成员（本轮实证：`Random` 需同时加入两个保留列表否则 `.new` 被改名）。测试 `tests/wtf_port_tier2_test.sh` + `wtf_port_roblox_mock.luau`：忠实 Roblox mock 正向 EVD=0 + 9 个破坏钩子（无 game/Enum 不缓存/Random 值错/Clone 分叉断/task 返回 nil/点调用不报错/Disconnect 不翻转/销毁锁失效/检查中换函数）全部 EVD≠0；产物级：双开构建语法过/确定/CLI 静默死 + 三组既有组合 SHA 不变。mock 侧修复两个自身 bug（Random.new 点/冒号双态签名；Parent 代理表——rawset 后二次赋值绕过 __newindex 的经典坑）。验证：cargo 47+1+4；run_tests 169/169（含 tier2 18/18）；presets 370/370；executor_guard 6/6；faithful 5/5；multiseed 0；防御审计 20/1（D3 持平）；H3/H4/H5-P0 PASS。**诚实边界**：tier-2 全常量挑战——mock 环境死于语义不忠实，真环境录制重放照常通过（L1 空缺不变）；真机（Roblox/executor）验证未做，固定种子精确值依赖 Roblox PRNG 稳定。
+
+- **2026-10-11（WTF-PORT Phase 1：纯 Luau 环境检查组上线，`--env-check`）**：按用户决策废弃 CORE-ATTEST 方案、改用真 Luraph 环境校验载荷（WTF.txt）的检查类别重实现（非逐字移植，出处原因）。新增 `vmgen/envcheck.rs`：7 组随机化常量挑战（算术/位运算、string 含 \0、元表+闭包、buffer 全族含小端序与越界错误状态、table.freeze、协程、loadstring 编译形态）+ 首尾 17 项身份全等；组序/常数/乘子每构建随机（非固定模板）。工厂差值 d 恒 0 于干净环境（每项折叠 (实际-期望)=0，无需构建期环境镜像），经 **SLT 块钥匙流 + MZD 分散投毒**双 lane 无分支静默折叠（R061 形态，无 error oracle；ENVFRAG 调用走 PCAL，异常路径落入常数毒值）。接线镜像 EXGFRAG：ENVFRAG 静态发射（sanitize_frag 同方言）、EVD 随 RT 工厂尾参入密、系数 <2^16 保 double 精确。开关关闭与 HEAD 产物逐字节一致（全部 RNG 抽取在条件内）。新增 `tests/wtf_port_test.sh` + `wtf_port_mockgen.py`：4 seed 干净等价、确定性、双例字节一致、**noop mock 必须复现输出（harness 自证闸）**、7 个针对性 mock（bit32 错值/buffer 大端/buffer 缺函数/freeze 无效/loadstring 恒成功/coroutine 丢值/检查中掉包）全部静默击杀、无共享 oracle 签名。实施中发现并修复两个自身缺陷：①字符串键访问与净化改名的标识符字段脱节（`rawget(t,"v")` 类模式，改名不安全，单测封禁）；②`coroutine.running()` 主线程层 CLI 返回 nil 而 Roblox 返回 thread——跨合法变体不恒定，按 52 类误报移除该子检查并记入误报账本。验证：cargo 45+1 ignored+4 CLI；run_tests 169/169（含 wtf-port 16/16）；presets 370/370；multiseed FAIL=0；防御审计 20/1（唯一 D3 23/32 持平）；H3/H4-0/H5-P0 全 PASS；flag-on S1–S5 5/5；flag-on 体积 +4,983B（229,303→224,286? 实测 basics +4,983B）。**诚实边界**：全部为常量挑战——杀错误语义 mock 环境（L1 部分目标），不防真环境录制重放（CORE-ATTEST 归档后 L1 空缺仍在）；正确实现与真 Luau 工具照常通过。
+
+- **2026-10-11（H3-6 修复：死寄存器噪声避让动态调用结果窗口）**：v15 全展开调用（Call/CallE/CallM）的返回值运行期落位 `base+1..base+nout`，nout 编译期未知故从未保留该寄存器窗口；H3-4 噪声把重叠区间当作死寄存器写入，落在调用与消费点之间即静默覆盖返回值（`stress_multival` 约 0.7% seed 出错，9 个失败 seed 根因与消融证明见 `research/antidebug-20261009/root-cause/`）。实施（路线 2，`compiler.rs`）：`call_window_mask` 计算开窗区间（调用→下一 Call 家族/Return），窗口内活噪声确定性重定位到允许位（位置 0 恒允许，活性记账不变），并新增**构建期不变量**——任何指令不得在开窗内指向死寄存器，未来任何 pass 违反即构建失败。新增 4 个窗口单元测试 + `tests/call_window_noise_test.sh`（9 历史失败 seed + 4 相邻 seed）接入 run_tests 与 multiseed。验证：9/9 历史 seed 修复 + 300 随机 seed 0 失败；cargo 43+1 ignored + 4 CLI；run_tests 169/169；presets 370/370；multiseed FAIL=0；H3 审计全 YES（活性噪声保住）；防御审计 20/1（唯一 D3 结构分 23/32 持平）；S1–S5 5/5；**legacy 五预设 15/15 字节不变**（改动仅在 scatter 分支）；R065 存档 seed65065 重生成逐字节不变；37 个 v15 示例与 R066 靶标按新噪声布局重生成（字节变化为预期）。同类遗留：CallE/CallM/CallT 的未保留窗口仍在（本修复以避让而非保留收口），结构性收口（结果改走帧槽）留待独立增量。
+
+- **2026-10-08 英文输出水印**：所有成功生成的产物第一行为 `-- This file was obfuscated by Obsucvim.`。在 `main.rs` 最终输出边界统一添加，覆盖所有预设、minify/no-minify、文件/stdout 和 Discord 回传；不改 VM/RNG/payload。新增 `tests/watermark.rs` 4 个 CLI 集成测试；cargo 39 单测 + 4 集成通过（1 ignored），run_tests 169/169，presets 370/370，multiseed FAIL=0，Discord 55/55；37 个示例重生成后除头部外字节一致，R065 新输出亦严格等于水印加历史产物。R066 示例 Luau 编译/运行等价，S1–S5 5/5；Lua 5.1 仅验证注释语法，不宣称支持 5.1 目标。普通品牌注释可删除、不具备防篡改功能；会公开引擎名称并使源文件行号后移一行。
+
+- **2026-10-07（Discord HTTP `/obf` 托管适配）**：新增 Python API/有界队列/Ed25519 验签/私密 defer 和回传/白名单/频率与资源限制；Rust CLI 固定 v15/Luau，无 shell、不执行上传代码，子进程不继承 Token。新增 Render 配置、非 root Docker、单命令注册脚本、部署文档；源码/结果用临时目录，正常成功/失败清理。pytest **55 passed**（含实际 rlimit/超时/真实引擎 canary 与错误路径，Discord 模拟）；cargo test **39 passed / 1 ignored**。**未部署到 Render、未真实 Discord 联调、无 Docker 故未验镜像构建**；核心混淆代码未改，不把历史全矩阵结果当成本轮证据。免费平台冷启动可能超过 Discord 首响时限，重启丢内存任务。见 `services/discord_obf/README.md`。
+
+- **2026-10-07（产品改名 obsucvim）**：`Cargo.toml`/`Cargo.lock` 包名、release 二进制、工程目录（`git mv luraph-rs obsucvim`）、全部测试/工具脚本与文档中的 `luraph-rs` 路径/调用、`LURAPH_*` 环境变量前缀全部切换为 obsucvim/`OBSUCVIM_*`；README 标题、HANDOFF 产品名、strong-env-bind 文档中的命令示例同步。原商业 Luraph（v14/v15 样本/逆向分析文档/对标描述/第三方工具名）与仓库目录名 `luraph` 保持不动。改名零行为变化：R065 seed65065 产物重生成逐字节一致；全矩阵重跑通过（cargo test 39 + 1 ignored、run_tests 169/169、run_presets 370/370、multiseed 0、defense_audit 20/1 唯一 D3 非安全 FAIL、S1–S5 5/5）。
+- **2026-10-07（R064 全 recipe micro superoperator fusion）**：保留第一层 10 类 safe-handler fused ops，并将其余 23 种多 primitive `micro_recipe` 自动打包成一个 per-shard superoperator record；body 逐步执行原 primitive 片段，step lexical scopes 和原顺序不变，不跨 VM instruction/callback/call phase。R064 seed64075 临时同点 A/B：原始 929,567 → 第一层 701,915 → 全 recipe fusion 412,706 条记录（每阶段 412,706 shard calls，stdout一致；完整融合相对第一层 -41.20%、相对原始 -55.60%）。样本 r2 现 340,895B（较 native-capture-only 版本 326,848B +4.3%）。`cargo test` 39/39 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；H5-P0、静态攻击 S1–S5 PASS。诚实边界：one-record-per-handler 仍泄露已执行 handler 序列，不能阻止同进程 instrumentation；详见 R2 audit。
+- **2026-10-07（R064 动态 string-table hook 缓解）**：VM `PRIM_SRC` 的 byte/sub/char 从 native string metatable 获取；v15 module primitive fields 同样使用 native string indexing，CPS staging helper 改用已有 byte/char numeric slots 与 native sub。原因：R064 seed64075 在复制的全局 `string` 表 hook 下融合前后的 `byte` wrapper 曾看到 2,673,402 次调用。新增 `tests/string_primitive_hook_test.sh` 覆盖 minimal + 7KB R064 canary：复制表 wrapper 下 byte/sub/char hits 0/0/0，Luau stdout 不变。此举只绕过可替换库表 hook，native C hook / debugger / decoded micro trace 仍可观察；不宣称阻断动态 trace。自检：cargo test 36 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0；H2/H3/H4/H5/H6/H7/H8/R061 PASS；S1–S5 5/5。
+- **2026-10-07（R064 seed 稳定性修复）**：定位 R064 的 nested-upvalue scatter 错位——`CellKind::Up` child descriptor 在父 `upsrc` 置换前以旧索引编码；部分 seed 将 `fold_text` cell 读成 `MOD`。`Ctx` 预计算旧索引→runtime permutation，child descriptor 按父 permutation 映射；scatter 使用同一映射并保留主 RNG draw schedule。单测覆盖双射/确定性，新增 `r064_seed_stability_test.sh` 接入 run_tests/multiseed；24-seed regression PASS，当前 release 的 42-seed、连续 1..128 与另抽 128 高范围 R064 sweep 均 0 fail。完整矩阵：cargo test 36 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed FAIL=0。
+- **2026-10-07（R064 第二轮深度自检）**：全 recipe fusion 后 `R064_7kb_target_r2.luau.lua`（seed 64075，340,895B，SHA `ba07f782…`）通过 Luau compile/stdout；S1–S5 抵抗。micro record A/B 最新为 929,567→701,915→412,706；replaceable string-table hook 为 0/0/0。upvalue seed 错误已由上一条修复关闭。`defense_audit.sh` D12 PASS；D3 结构分数 23/32 仍是唯一非安全 FAIL；未测试真实 executor。报告 `docs/r064-deep-self-audit-r2.md`。
+- **2026-10-07（R064 micro-shard trace 缓解）**：`micro_recipe` 为 LoadK/Move/NewTab/Not/GetUp/SetUp/VarArgC/Jf/Jt/VarArgTab 融合单记录 superoperator：每种内部 handler 2–3 条记录降为 1 条；不跨 Call/Return、元方法、lazy decode 或顺序敏感边界。新增单测 + `micro_fusion_test.sh`（v15/legacy 输出一致）。不宣称阻止有同进程插桩能力的 trace；历史 906,284 条探针日志是融合前数据，本次没有冒充融合后总 trace。同步修正 R063 `KM` 子串误命中（完整 Lua identifier 检查），并重写 D12 时钟审计提取器从 RTFRAG 签名/调用位置匹配 CLK；D12 慢时钟、干净时钟及误报抽查通过。自检：cargo test 35 passed/0 failed/1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；H5-P0 PASS；S1–S5 5/5。`defense_audit.sh` 仍将 D3 结构指纹 23/32 记为 FAIL（结构相似度口径），D12 已 PASS。详见 `docs/r064-vuln-1-2-research.md` 与 `docs/r064-deep-self-audit.md`。
+- **2026-10-07（R064 protected-meta + trailing nil vararg）**：v15 micro GET 对字符串直接走原生 Luau indexing；`mget` 先验元表类型，受保护 table/userdata 的 GET/SET、算术/比较/连接/unary/callable 在 sentinel 不透明时回退到原生语义。新增 `protected_meta_compat_test.sh` 并接入 `run_tests.sh`。`makefn` 两路径改用精确 arity：legacy 捕获外层 `SEL`；v15 RTFRAG 从既有随机 primitive 槽 `P[slots[12]]` 捕获 `SEL("#", ...)`，不再用 `#all` 计数，并在 `stress_multival.lua` 覆盖尾 nil、forward、fixed+vararg 与闭包。验证：cargo test 32/32 + 1 ignored；run_tests 169/169；run_presets 370/370；multiseed 0 失败；保护元表回归通过。真实 executor 未在本地验证。详见 `docs/r064-deep-self-audit.md` 与 `docs/r064-vuln-1-2-research.md`。
+- **2026-09-23（增量55：自研防绕过——HBOOT 装配面收窄 + 阶段二可行性定
+  论）**。R025 突破点（可见层锚点注入读走 HBOOT 容器）的自研封堵。**可行
+  性探针结论**：可见层自覆盖哈希不可行——`debug.info(fn,"s")` 只返回块名
+  不返回源码体（实测），运行时无取源面；被动观测（锚点只读）物理上无法
+  被被观测代码感知，封堵只能缩小/隐藏装配面。**实施**（`template.rs`
+  boot 区）：`HB = table.concat(MH)` 从可见层具名语句收进 HBOOT 调用的
+  PCAL 闭包内部；HBOOT 调用返回后 `MH`/`HB` 即焚——闭包透传 HBOOT 多返
+  回值用变参包装 `(function(...) MH=nil HB=nil return ... end)(...)`
+  （`local x = f()` 会塌缩多值，已踩坑）。**彻底封堵路线（诚实标注）**：
+  `MH` 字节表仍由 metavm 在可见层重建（`MH[i]=CHAR(MM[..])`，真正锚
+  点）——彻底封堵需 metavm→HBOOT 之间加新加密层（架构级，单独立项）；
+  真执行器活体插桩仍是物理极限（R004）。存档
+  `docs/redteam/plan-54-r025-response.md`（阶段二节）。验证：169/169 + 370/370
+  + multiseed + 审计 + 32/32 + 5/5 + 钥匙 59 + 示例重生成 + R024/R025
+  靶标重建（裸 Luau 毒杀、语法过）。
+- **2026-09-23（增量54：R025 对抗回合——流偏置 + 双向校验和）**。R025 报
+  告（攻击方）靠可见层锚点注入还原载荷，第 5 节给出 8 条建议；本期按稳
+  定性原则采纳建议 1/5。**54-A**（建议1）：五流（W/SA/SB/SC/SD）各叠每
+  构建随机偏置（`compiler` 侧值不变，`template.rs` enc_body 编码叠
+  `+B_s`、bdec 解码减 `-B_s`，模 65536 镜像恒等）——解码后明文流值分布
+  均匀化，「负值只在某流」等统计判据失效。**54-B**（建议5）：原型校验和
+  单向 Σv 升级双累计——`compiler.rs` 新增 `operand_sums2`（pos = 流序
+  号*指令数 + 指令序号 1 基，Σ(pos·v) mod 2^32），`template.rs` parse 加
+  `__FOLDS2__` 位置加权阶梯（`p = p0` 复位读流）、返回 `ck2 = CK2`，BSS
+  烘焙 `OS2` 双值同验（任一失配 ⇒ PB 投毒）。**排查实录**：首轮实现全挂
+  （空程序也挂）——逐层插桩（PD 门控 → BSS 循环 → code_extra 分段）锁定
+  根因：新增 `CK2` 变量**未列入 parse 局部声明清单**，`CK2 = ck2` 变全局
+  赋值，Luau 受限全局环境下触发错误且错误对象为 nil（PCAL 捕获后
+  HBOOT-FAIL:nil → PD 死循环，表象 = 挂起 + 零输出）。教训存档：**往
+  parse 状态机加状态变量必须同步进局部声明清单**；「挂起 + 零输出」是
+  HBOOT 内部报错走 PD 的特征形态（后续排查直接挂 PD 门控诊断）。验证：
+  169/169 + 370/370 + multiseed + 审计 + 32/32 + 5/5 + 钥匙 59 + 示例重
+  生成 + R024/R025 靶标重建。建议 3（派发全置换）/2（噪声重设计）/6
+  （诱饵同构）按研究文档路线缓行；阶段二 = 可见层自覆盖哈希（封堵锚点
+  注入，真实突破点），探针实验先行。存档
+  `docs/redteam/plan-54-r025-response.md`。
+- **2026-09-22（增量53：稳定防绕过——钥匙面独立化）**。增量52 断崖协议
+  回退（提交 `c06757d`，真执行器常量解 nil、根因为镜像对齐风险）后的稳
+  定路线。稳定性原则 P1-P5（镜像整数精确/只用实证探针/失败安全/开关零
+  影响/本地可验）。实施：`template.rs` 早期段生成常量面独立系数族
+  (xm3, xm4) + 期望值 `xtec = token*xm3+xm4` 烘焙（obf_num）；
+  c_block_enc 常量基线偏移改用 `xtec_off`（块面保持 `xte`/xm1/xm2）；
+  cdec_inner 解码基线用 `xtok2*xm3+xm4`。效果：块面/常量面钥匙独立，
+  单面钥匙提取预言机推不出另一面折叠（B5 降级）；探针调用点与 51 完全
+  相同（零新运行期路径）⇒ 52 类错位结构上不可能。诚实评估：两面同源同
+  一令牌（抬的是部分钥匙泄漏场景成本）；B2 重放已被每运行 SALT 免疫；
+  B1 活体转储 = 物理极限（R004）。研究存档
+  `docs/redteam/plan-53-stable-antibypass.md`（威胁模型盘点 + 备选目录诚实标
+  注）。验证：开关关闭与 51 示例逐字节一致（--seed 42 cmp）+ 169/169
+  + 370/370 + 守卫 6/6 + 裸 Luau 毒杀无泄漏 + 字节级确定 + R024 靶标
+  重建。
+- **2026-09-22（增量51 收官：七轮真执行器实证修复——守卫正面打通）**。
+  增量51 移植后的真执行器适配全程（诊断靶字母编号 + 闸门子状态详情串
+  + 时间戳构建标记 + `diag_gateA`/`diag_gateH` 专项诊断脚本，纯明文带
+  剪切板复制）。七轮修复：① char 自举 A 门——`getmetatable("")` 返回保护
+  串（`__metatable="string"`），元表双形态路线全灭 ⇒ 加全局环境行为扫
+  描；② 元表键对 pairs 完全隐藏 + `getfenv(0)` 是 `__index` 代理 ⇒ 加字符
+  串字面量索引路线；③ **净化器点字段改名坑**——`("\0").char` 的 `.char`
+  被净化器改成随机名（点字段白名单仅保留字全局名后，括号字面量后字段
+  不在列）⇒ 改 `["char"]` 字符串下标（字符串字面量不被改名，㊾ 惯例）；
+  ④ 身份门与捕获点 `rawget` 改索引感知（代理环境 rawget 恒 nil）；⑤ H 门
+  `game`/服务是 userdata，ERD 类型门只认 table ⇒ 放行 userdata（rawget 限
+  table）；⑥ `gs:nil`/`gi:function` 矛盾 ⇒ ERD 持有者模式切换捕获值
+  （`PCALV`/`TYPV`/`RGETV`）；⑦ diag_gateH 实证（裸全局无钩、索引姿势全上
+  下文可用）⇒ 宿主四处查找（GetService/ClassName/Vector3.new/
+  Instance.new）ERD+内联索引双路回退收口。**最终真执行器零报错、输出逐
+  字正确**；负面实证仍全绿（裸 Luau/半吊子桩毒杀）。新增硬约束：守卫相
+  关发射改动必须过「净化后形态」检查（点字段改名类坑）；同 seed 诊断靶
+  必须带时间戳构建标记防新旧混淆。验证：真执行器正面通过 + 169/169
+  + 370/370 + multiseed 0 + 审计 21/21 + 守卫 6/6 + 开关关闭零回归。
+- **2026-09-21（增量51：IronBrew2 executor 认证守卫全量移植——藏深 +
+  负面实证 + 开关即回退）**。用户提供其 IronBrew2 项目
+  `AntiDumpGenerator.cs`，指令：全部照搬、隐藏必须很深很隐蔽、验收以语
+  法检查为准、随时可回退。新文件 `vmgen/exguard.rs`（守卫碎片发射器）+
+  `template.rs` 钥匙接线 + `main.rs --bind-executor` 开关。忠实移植：钥
+  匙库（加性掩码字节流 + token 描述符 + 缓存；char 自举 = 字符串元表表值
+  成员行为发现 `f(65)=="A"`，零名字锚点）、轻档身份门、重档全挑战（环境
+  分离金丝雀 / identifyexecutor 双调稳定 / 宿主语义 / 19 原语 C 分类 /
+  C 闭包隔离规则 / transcript 六折探针序列）、认证令牌
+  `(transcript+偏移) mod 2^32`、周期轻/重两档（jitter）、粘滞跳闸、
+  Seal A/B/C、GuardBindPayload VM 状态入封（并入 `probe(vmword)`，CDEC
+  每帧以原型号调用）。三处架构适配：守卫 = 加密碎片（wire 209，净化+
+  LZ+哈希链+base-94，可见层零痕迹，解密态内 API 名仍掩码）；拒绝 = 毒
+  杀（毒令牌 ⇒ 错钥静默，替换四个沉底循环）；令牌消费 = ㊿ 同形（BSS 预
+  补偿 `XTE`，RTFRAG 启动令牌投毒 SLT，CDEC 每帧折叠 `probe(q.sd)`）。
+  回退 = 不传开关（开关关闭与现役管线逐字节一致，与 R023 靶标 cmp 实
+  证）/ git revert。排查实录：先有鸡问题（VK 需 char、char 名经 VK）⇒
+  行为发现；HW[209] 存工厂本体需 boot 调用一次。诚实边界：正面等价仅真
+  执行器可验（裸 Luau 无保真内省桩）；全保真仿真仍可过（R004）。新增
+  `executor_guard_test.sh` 6 项接入 run_tests + 审计 D18。验证：169/169
+  + 370/370 + multiseed 0 + 审计 21/21 + 守卫 6/6 + 零回归实证。
+- **2026-09-21（增量㊿：载荷每次使用前检查强环境绑定——引导层闭包探针
+  CENVPROBE）**。需求：绑定态载荷（常量池）每次**使用前**都复检环境忠实
+  性（不只 boot 过一次门）。落地：`template.rs` 的 `cenv` 块在绑定态
+  （`env_slots` 存在）发射引导层闭包 `CENVPROBE`——bootstrap do 块内创建，
+  捕获块内环境槽 `b[..]`（setfenv 影子下 = 桩）与 TSTR/BYTE/PCAL，链形与
+  env_gate 同形镜像（Vector3.new×2 + typeof 双串折叠 + Vector2.new +
+  tostring(v3)，14 个每构建随机系数），参数另抽（`cea[5]`/`cec[9]`，独立
+  于 env_gate 的 `ea`/`ec`）；期望值 `cenv_exp` 入 manifest（`CENV_EXP`）。
+  闭包经 build 模板 `local CENVPROBE` + `{env_probe}` 占位、RTFRAG 调用与
+  `rt_src` 签名末位参数传入 RT 碎片；CDEC 每帧 `local cef = CENVPROBE()`
+  揉进 `base`；BSS 编码侧 `stj` 基线加 `+ cenv_exp`（obf_num）。**平台事实
+  存档**：Luau `getfenv(0)` 恒返回真 `_G`、setfenv 影子不可见 ⇒ G 基探针
+  无效（实测），闭包捕获是唯一能看见桩的形态。探针串尾必须带换行防与
+  后续 `do` 粘连。**测试**：`faithful_stub_test.sh` 扩为 5 项（忠实桩 4
+  + 哑桩负例：绑定态静默毒杀无载荷输出）。验证：忠实桩 5/5 + 169/169
+  + 370/370 + multiseed 0 + 32/32 + 5/5 + 钥匙 12 组 0 泄漏 + 审计 20/20
+  + 字节级确定 + 示例重生成。诚实边界：全保真桩仍可过（R004）；抬的是
+  哑桩→忠实仿真成本，每帧复检使运行中途换桩/下钩同样错钥。
+- **2026-09-19（增量㊾：物化去钩化——R021 char 钩子攻击封堵）**。
+  R021 报告核验：攻击方以 setfenv 钩子环境替换 `string.char`，在字符串
+  物化现场**逐字符截获常量池载荷**（我方独立复现成立：
+  `CHAR_HOOK_CAPTURED_PAYLOAD=true`）。根因：三处字符串物化点都用可见
+  层经块环境捕获的可钩 `string.char`——① parse 期 `const_loop`（boot 物
+  化全池，BSS 内）② 帧期惰性 `CDEC` ③ `MkStr` 短串 handler。Luau CLI
+  实证环境事实：真 `string` 表/`_G`/字符串元表全只读，唯一可行攻击路径
+  = setfenv 影子环境；而 `("")["char"]` 经字符串元表索引取 char，不调用
+  任何可钩函数、元表只读 ⇒ 完全免疫。修法：三处物化全改 `("")["char"]`
+  + 逐字节 `..` 拼接（内建运算不可钩）；数字常量走算术天然免疫。净化器
+  兼容要点：`.char` 点形态会被碎片净化改名（`("").char` → `("").EJ` 致
+  nil），必须用字符串字面量下标 `["char"]`（字面量不被改名）。新增
+  `charhook_test.sh` 接入 run_tests（164→168），审计新增 **D17**
+  （20/20）。**报告误报更正（诚实存档）**：`Pj` = v15 载体自始就有的 10
+  特殊字符 token 转义表（CARRIER_SPECIALS），每构建改名，报告把改名误判
+  为「R021 新增防御」；`888Hp` 0 命中；env `print` 钩子不生效（GFE(0)
+  直达真 `_G`，print 走它）。诚实边界：攻击者改钩其他观测面（最终使用
+  点）仍可截获——R004 同族；本增量封堵「物化函数钩子」这一最廉价向量；
+  HBOOT 碎片解码仍用可钩 CHAR（泄碎片源码、不泄载荷），列为后续候选。
+  验证：168/168 + 370/370 + multiseed 0 + 32/32 + 5/5 + 钥匙 55 全去字
+  面 + 审计 20/20 + 忠实桩 4/4 + 字节级确定 + 示例重生成 + 对照靶标
+  R022（单 local，自检 char 钩子截不到）。
+
+- **2026-09-19（增量㊽：常量池按需解码/延迟物化——帧明文窗口缩到
+  已触碰集）**。㊼ 的随机访问钥匙流是前置，本增量收口物化形态：
+  consts_safe 路径 CDEC 不再帧期全池解码——返回带 `__index` 的缓存
+  表：首次触碰常量 j 才按 `(基线 + j·CKJ)` 钥匙流 + `co[]` 字节偏移
+  单点解码，`rawset` 落缓存（命中走原生表查找快路径，无元方法开
+  销）；`done` 集合防 nil 常量重复解码（`rawset(t, j, nil)` 是 no-op
+  会造成反复触发）。急切路径（NaN/inf 程序）保持直传原形。**排查实
+  录**：首版在 functions 语料挂——stage-A 常量池散布
+  （`scatter_operands`）把真常量撒进带填充的池、空洞是 nil，字节码
+  操作数可引用池边界外 nil 洞；eager 形态 `C[越界]=nil` 天然容忍，
+  惰性 `__index` 必须镜像同款语义（`ct[j]==nil ⇒ nil`）。「散布空洞
+  容忍」从此是常量池改动的必测面（functions 语料为探针用例）。诚实
+  边界：攻击者在帧上下文内顺序触碰全部索引仍可强制全解（等价于完整
+  执行该帧，R004 同族，非新增能力）；__index 形态在碎片内可识别。
+  验证：164/164 + 370/370 + multiseed 0 + 32/32 + 5/5 + 钥匙 55 +
+  审计 19/19 + 忠实桩 4/4 + 碎片级机制实证 + 字节级确定 + 示例重生成。
+
+- **2026-09-19（增量㊼：常量池加固——每常量独立钥匙流（索引混淆 +
+  随机访问派生））**。现状校准（诚实起点）：常量池并非裸奔——构建期
+  blob 掩码（CKM/CKC + 每函数种子）→ boot 期以每运行 SALT 重编码为
+  ct/cn/csb/csl → 帧期 CDEC 以 SLTC（每运行 SALT + 链终值归零约束）
+  解码，全程在 HBOOT 掩码层内。剩余结构弱点：**每原型一条顺序 LCG
+  流**——攻击者重建流态后可自单一已知明文位置前推/后扫整池。修法：
+  常量 j 的字节流种子改为 `(基线 + j·CKJ) + 两步 LCG 扩散`——各常量
+  钥匙流相互独立；CKJ 为每构建钥匙（KT 装配、清单收录），经 BSS
+  `_lv1` 参数链（HBOOT 外参 → 内参）与 RTFRAG 参数链双侧穿线；干净
+  运行 SLTC≡SALT（链归零），编解码镜像严格同形。碎片级实证：
+  `OBSUCVIM_FRAG_SAN` 转储中 BSS(200)/RT(208) 双侧可见 `j·CKJ` 种子项
+  且 CKJ 同名。战略意义：钥匙流随机访问化是「按需解码/延迟物化」的
+  前置（下一增量候选——把全池一次物化改为触碰即解、缩小内存明文
+  窗口）。诚实边界：R004 上界不变（动态执行仍见解码值）；帧物化形态
+  本增量未动；不防掩码层整体被破后的转储。验证：164/164 + 370/370
+  + multiseed 0 + 32/32 + 5/5 + 钥匙 55 全去字面（+CKJ）+ 审计 19/19
+  + 忠实桩 4/4 + 字节级确定 + 示例重生成。
+
+- **2026-09-19（增量㊻：落地 R018 报告剩余建议——P2 多原型载荷 +
+  P0-1 AV 异构源 + P1 收窄为 pb 双消费前移）**。按「攻击报告建议 →
+  现状核对 → 自判断排期」实施三条：
+  ① **P2 多原型载荷**（靶标/语料形态，非机制改动）：语料新增
+  `multi_proto.lua`（互递归 + 闭包工厂 + varargs + 元表方法路由 +
+  常量池负载——块钥匙/链哈希/常量池分段的真实负载面）；交付 R019
+  多原型靶标（4 原型协作载荷）。诚实定位：不增强已交付产物，增强
+  攻击成本记账与验证真实性。
+  ② **P0-1 hI 去 tostring 化**：AV 取值源从单一 `tostring({})`
+  （结构唯一、重建解码器者一眼可认的锚点）改为异构三源：新表地址串、
+  新闭包地址串、os.clock 数值折字节（后者不经 TSTR）；折叠顺序每构建
+  打乱、进制基数/钟乘数每构建重抽 ⇒ 识别器每构建重训。消费链不变
+  （RPK1..5 / HW2 / BSS 实参同取 AV 局部）。诚实边界：地址源仍经
+  TSTR（去唯一锚点 ≠ 去 API）；运行期值对动态执行恒可观测（R004）。
+  ③ **P1 收窄为 pb 双消费前移**：pb（loadstring 原生性探针折叠）新揉
+  进 hqi 段表解掩种子——引导期第一个解码步骤同时绑定原生性探针与
+  环境值折叠（㊺ 的 ef1 项保留），挂钩换源在段表阶段即死；模式无关
+  （绑定/未绑定都消费；镜像假设 = 干净环境折叠值，与元种子消费同款、
+  无新增环境假设）。**第三不变量因子暂缓**（判断存档）：㊺ 修活 ef1
+  后元种子已双因子，同族不变量边际收益弱，而每个新因子 = 一个镜像
+  失配隐患面（㊺ 实证过这类静默死亡的代价）。
+  正向验证基建扩展：忠实桩新增 (d) pb 双消费存在性断言；矩阵
+  159→164（含新语料）。验证：164/164 + 370/370 + multiseed 0 +
+  32/32 + 5/5 + 钥匙 54(未绑定)/59(绑定)全去字面 + 审计 19/19 +
+  字节级确定 + 示例重生成。
+
+- **2026-09-19（增量㊺：绑定折叠前移——环境值绑定首次真实生效，双根
+  治：读前写 + 镜像错位）**。攻击样本 15 之后的诚实复查抓出我方环境
+  绑定自 ㊸ 起**整体是死代码**（此前「绑定生效」结论均未经正向运行
+  验证，只有「朴素桩必死」的负向断言）：① **读前写**——㊸ 把环境折叠
+  段 B/C 排到 metavm 种子消费点之后，ef1 恒以初值 0 被消费，而补偿
+  常数按「ef1 折出 env_exp」设计 ⇒ 绑定态产物在**目标运行时也解出
+  垃圾、PD 挂死**；② **镜像错位**——门运行期形态
+  `((S·ec5+EN3·ec6+EN6·ec7)·ec8)` 与 Rust 镜像分组
+  `((S+f_ty·ec5+f_ts·ec6)·ec7)` 系数错位 ⇒ 即便顺序修好，忠实环境
+  折出的 ef1 也不等于镜像期望。修法：段 B/C 前移到 hqi 解掩之前
+  （两处消费点都读得到终值）+ 镜像逐位对齐门形态 + **折叠前移**：
+  ef1 新增揉进 **hqi 段表解掩种子**——引导期**第一个**解码步骤即环境
+  绑定（对标样本 15「折在引导期最早期、死得早、无溯源点」），元钥匙
+  流消费保留 ⇒ 双独立死亡面；未绑定态种子纯常量、零 ef1 混入。
+  **正向验证基建首次落地**：`tests/faithful_stub_test.sh`（忠实桩 =
+  __tostring 元方法给 "x, y, z" + typeof 槽桩给 "Vector3" + 分量如实
+  回传 ⇒ 绑定态产物必须跑通且输出逐字一致；含「ef1 赋值早于全部消费
+  点」的顺序回归守卫 + hqi 前移消费存在性），接入 run_tests（156→159）。
+  排查方法论存档：Luau CLI getfenv(0) 恒返回真 _G（setfenv 影子不可见
+  / _G 冻结 / 协程环境不继承）⇒ 桩字符串语义必须走 __tostring 元方法；
+  CLI stdout 块缓冲 ⇒ 挂死诊断用 error 探针经 pcall 收回。诚实边界：
+  全保真桩仍能过（R004 定理）；㊸..㊹ 交付的所有 --bind-env 产物在真
+  机都会挂死，绑定态须以本增量后重新生成。朴素桩负例不变（D15）。
+  验证：159/159 + 360/360 + multiseed 0 + 32/32 + 5/5 + 钥匙全去字面
+  + 审计 19/19 + 字节级确定。
+
+- **2026-09-19（增量㊹：R018 攻击报告 P0-2 收口——可见层解码源清零）**。
+  R018 报告核验：攻击方以「一次运行 + gsub 手术」实际提取常量池载荷
+  （`nK[6]="onyx 7p3q"`，hex 交叉验证，证据合格）——攻击面 = 解码态
+  BSS 源以明文落地可见层，攻击者在「解码后、loadstring 前」对明文做
+  文本手术（链哈希管不到：哈希在 HBOOT 内已算完，手术发生在返回后）。
+  收口：BSS 的 loadstring + 三层工厂调用整体搬进 HBOOT 掩码层——解码
+  态源码永不落地可见层；要钩 BSS 必须先破 HBOOT 掩码（metavm 逆向 +
+  链哈希 + 碎片钥匙链）。排查实录（教训存档）：loadstring 返回 chunk
+  包装，BSS 工厂是三层嵌套（chunk→16 参工厂→7 参内层），旧可见调用
+  `sy()(16)(7)` 三层；搬运时写成两层导致静默错装（MPF 收到未调用工厂，
+  SALT=nil，症状 = RT 首行 nil 加法，极难定位）——定位用了运行时折叠
+  哈希比对（运行期 BSS 与构建态逐字节一致）+ 分层调用探针。验证：审计
+  19/19（新增 D16 可见层零解码源消费点 + proto_enc 残留黑名单加
+  `LS(BSS)`）+ 156/156 + 360/360 + multiseed 0 + 32/32 + 5/5 + 钥匙
+  52 全去字面 + 字节级确定。攻击成本变化：常量提取从「跑一次 + 一个
+  钩」升级为「破掩码层全家桶」。
+
+- **2026-09-19（增量㊸：环境绑定去中心化+语义强化——对照样本 15 的
+  「难绕过」形态）**。研究结论：样本的强绑定 = 构造期捕获（最小可见
+  足迹）+ 全部消费在密文内经槽间接 + 错环境失败形态是**静默垃圾执行**
+  （无报错无信号，分析者失去迭代反馈）。四刀落地：① 去中心化：废可见
+  env_gate 块；Vector3.new/Vector2.new/task.defer/typeof 进模块表高位槽
+  （5000-6000 段，与槽域 1..top 无碰撞，混入原语槽族）；引导经 `b[槽]`
+  间接调用，折叠拆三段散布在引导算术流中（产物绑定簇文本 = 样本级
+  最小足迹：各 1 处捕获）；② 语义加深：折叠 `typeof(v3)`（真运行时
+  "Vector3"；简单桩 "table" ⇒ 异值 ⇒ 钥匙污染）+ `tostring(v3)`（真
+  运行时 "x, y, z" 确定格式；无 __tostring 桩 = 地址串）+ 双调用点
+  （折叠串接）——桩必须实现通用语义而非单组参数；③ 毒药化：HBOOT
+  loadstring 失败 / BSS 装配失败（PCAL 包装）/ 碎片加载失败统一走
+  `PD` 静默循环（双 LCG 对形态，非 `while true do end` 字面）——错
+  环境与篡改同果：无报错、无信号、无限计算；朴素桩实测静默循环
+  （审计 D15）；④ 引导内部故障全部转静默路径；用户程序报错形态不变
+  （矩阵兼容）。附修：ef1 声明前移到引导前导（metavm 种子表达式发射
+  在 gate 之前，引用先于声明会被解析为全局、逃过 mangle、运行期
+  nil——又一例作用域/改名时序坑）。验证：审计升级 18/18（新增 D15
+  桩场景静默毒药）+ 156/156 + 360/360 + multiseed 0 + 32/32 + 5/5 +
+  字节级确定。诚实边界：构造期捕获仍是可见死因信号（产品需求：客户
+  端要知道加载失败）；全保真桩（typeof/tostring/分量全对）仍能过——
+  R004 定理（完全建模环境 = 无副作用动态执行）。
+
+- **2026-09-19（增量㊷：显在性复查——㊶ 后全词普查与收尾）**
+  方法：37 个现役示例 × 36 个敏感词，与样本 15 同口径对照（按例均值）。
+  结果一：保护色彩词簇清零——debug/print/warn/newproxy/loadstring/os/
+  _ENV 全部 0（= 样本水平）。㊶ 引入的 EV 裸引用表（type/pcall/rawget/
+  rawset/getmetatable/… 一长串内省词）是最后一处簇：改 `getfenv(1)`
+  环境整体克隆（`next` 遍历，零命名内省词），守卫改字符串索引 EV；
+  setfenv 影子环境感知经审计 D9（反挂钩）/D10（反指纹）行为级复验，
+  杀伤力不变。结果二：残留偏高项（getfenv/rawget/pcall/type 等 ~2-3/例）
+  全部溯源 = VM 原语管线（b/g 捕获表、HW2 别名环、EV 克隆自身），混在
+  60+ 原语族（buffer.*/coroutine.*/string.* 为主）内——可见 handler
+  架构的足迹（样本以全加密 VM 达成 0；架构差异，非保护残留）。
+  附修：审计 D5/D6 跨度扫描改括号层级感知（字符串内容里的 `[[`/`]]`
+  是噪声字符，裸配对切出假跨度导致误判）+ 零引用诱饵伪装串先探针
+  甄别剔除，真跨度 30 点篡改全拒。验证：审计 17/17 + 156/156 +
+  360/360 + multiseed 0 + 32/32 + 5/5 + 字节级确定。
+- **2026-09-19（增量㊶：保护代码隐藏专项——对照样本 15 的隐藏形态）**
+  自我审查发现可见层扎眼的保护痕迹：4 处裸 `while true do end`、
+  蜜罐元表词、守卫/闸门的 15 张 ASCII 码表与 8 张拼串数字表（转数字
+  = 纸老虎，一眼可解）。按样本形态「保护逻辑全在加密层内」整改五刀：
+  ① 守卫 IIFE（环境完整性/挂钩检测/蜜罐安装）整体搬进 HBOOT 掩码层，
+  文件零痕迹、生效时机不后移（碎片解码前）；② 守卫经 EV 参数（可见
+  引导以**裸全局引用**捕获的应用环境表）感知 setfenv 影子环境——
+  移层后曾失去挂钩杀伤力，EV 修复后审计 D9/D10 实证复原；③ staging
+  可见 debug.info 复检闸 + 全部拼串码表移除，校验失配改投毒形态
+  （sumslot +7919 → kg 钥匙流错位静默全错，无死循环 oracle）；
+  ④ 引导环境名（loadstring/tostring/debug/info/s/os/clock/newproxy）
+  从乱序 ASCII 码表改掩码字节数组 + LCG 折叠派生 + CHAR 多参成形，
+  值域不透明、与 base-94 机制同族；⑤ 蜜罐表经 HBOOT 第 5 返回值递出、
+  存进运行期不透明槽。附修：abort 去 `_ENV` 写（Luau 只读全局兼容）、
+  boot 局部数 200 上限（MB 分块 90→170）、sanitize 保留集补元方法名。
+  指纹三处（F14/F26/F27）按 P3c「安全优先」重标定并注释偏差。审计
+  升级：D11 改掩码层语义（零痕迹 + D9/D10 背书）、新增 D14 隐藏普查。
+  验证：语料×多种子 + 156/156 + 360/360 + multiseed 0 + 审计 17/17 +
+  32/32 + 5/5 + 钥匙 0 泄漏 + 字节级确定。
+- **2026-09-19（增量㊵：回应 R018 攻击方报告 P0——运行期钥匙全族每运行
+  化）**。攻击方建议把运行时值（BV）镜像进其重建模型的 `pbp_init`/
+  `qh0`/`g` 三处钥匙点。映射与对称性审查：`g`（meta_seed_full）与 hb/
+  hqi/HQ/MPM 掩码流均为**构建期掩码**——解密侧必须精确复算钥匙，每运行
+  值混入即破坏干净环境解密（对称定理）；`g` 上的 ㉛ 分裂乘积直参零和项
+  （pb 探针）已是该线的物理极限。可行切片落地：**块钥匙基 RPK1..5
+  （PS/PT/KM/KC/PB）与 BSS 实参全部混入每运行必变的 AV**（新表地址
+  折叠，boot 内前移计算）——消费两侧（BSS 运行期编码 / RT 运行期解码）
+  都从 boot 取同一运行期值，对称性天然成立。效果：运行期阶段全部钥匙
+  （AV 偏移基 + SALT + 链终值）每运行不同；静态重放 BSS/RT 阶段中间态
+  一次性；用户字节码三重运行期钥匙化（㊵ AV + B-3 SALT + ㉚ 链终值），
+  只能执行获取。诚实边界：构建期掩码流（hb/hqi/HQ/MPM）依定理仍可按
+  构建重放——重放得到的只是 VM 内核，不是用户字节码（元解码器必须可见，
+  基底定理边界，⑮ 已声明）。验证：冒烟 5 语料×3 种子 + 156/156 +
+  360/360 + multiseed 0 失败 + 审计 16/16（含 32/32、5/5、钥匙 0 泄漏）
+  + 字节级确定。
+- **2026-09-19（增量㊴：激活门退役——`--bind-key` 整体移除）**
+  增量⑱/⑳ 的输入绑定/激活门整体退役：功能代码（template.rs 门控
+  发射 `ak_gate`/激活哈希/`OBSUCVIM_BIND_DBG`、main.rs 选项与校验、
+  v15.rs `bind_passthrough` 变长参透传）、测试（`bind_gate_test.sh`、
+  multiseed 绑定扫描、审计 D7）、绑定态示例全部移除。原因：要求运行时
+  递送激活值与「混淆后直接可运行」冲突，长期仅演示存在、无实战参考
+  价值。**移除零影响证明**：未绑定形态是独立分支，剥离后 36 个示例与
+  移除前逐字节一致（sha256 全对）+ 156/156 + 360/360 + multiseed
+  0 失败 + 审计 16/16（D7 退役跳过）+ 32/32 + 5/5。原靶标程序更名
+  `tests/cases/real_shift.lua` 继续作真实逻辑语料。环境绑定
+  （`--bind-env`）不受影响。现役防线：结构层（⑲⑳㉚-㉟）+ 环境绑定
+  （㉑）+ 计时守卫（㉙/㊳）+ 反挂钩/反指纹闸。
+- **2026-09-18（增量㊳：计时守卫复通——反调试/反 trace 时序守卫上线）**
+  ㉙ 引入、㊱ 因作用域 bug 静默禁用的计时守卫，经用户拍板正式复通。
+  接线：引导模板 do 块内的遮蔽声明 `local CLK = OS_ and OS_[clock]`
+  改为对外层 `local CLK` 的赋值（㊱ 修复作用域后引用完全合法），RUN
+  装配把 `os.clock` 递入 RT 碎片。守卫语义（RT 碎片内）：每 128 个分派
+  步采样一次时钟；前 4 个采样窗建立**最小**基线；其后任一窗慢于基线
+  100 倍计一次，**连续两次** ⇒ SLT 与 SLTC 各投毒 +7777777 ⇒ 指令块与
+  常量池钥匙流错位 ⇒ 程序照跑但语义静默损坏（无可见比较/死循环
+  oracle）。触发路径首次实跑实证：`tests/defense_audit.sh` D12 从产物
+  RT 碎片**逐字抽出**守卫代码（按 `% 128 == 0` 锚点 + 平衡 end），
+  合成 10000 倍 tracer 时钟序列驱动 ⇒ 精确投毒 +7777777 各一次；干净
+  时钟 8 窗口 0 投毒。误报面验证：全语料 × 多种子（含 stress 长运行
+  用例、同产物重复 5 次）0 分歧 + 166/166 + 360/360 + multiseed 0 失败。
+  诚实声明：阈值（100 倍 / 两连窗 / 4 窗基线）沿用 ㉙ 设计未经真实
+  受攻击环境标定；极端负载机器上存在理论误报面，误报后果 = 静默损坏
+  （与攻击者同果，不可区分）——实战观察若出现可疑分歧，优先怀疑此处。
+- **2026-09-18（增量㊲：全项防御审计——13 防御点正/负向逐一实证）**
+  新增 `tests/defense_audit.sh`：每个防御点既验正向（干净输入正常
+  运行）又验负向（攻击/篡改/挂钩必须被拒且绝不产出正确输出）。
+  清单与结果（15 PASS / 0 FAIL）：D1 干净运行等价（基线）；D2 钥匙
+  去字面化（3 种子 × 52 钥匙 0 泄漏，`key_literal_check.py`）；D3 结构
+  指纹 32/32；D4 安全指纹 S1–S5 5/5（含 `tests/attack/` 脚本组）；
+  D5/D6 密文完整性 + 字节码防篡改——产物长串内 30 个字符互换真篡改点
+  （强制两点字符不同，防空互换盲点），源哈希链/校验和投毒保证 0 次正确
+  输出；D7 激活门 `--bind-key` 10/10（正确通行/错缺拒绝/无字面泄漏）；
+  D8 环境绑定 `--bind-env` 6/6（通用沙箱加载失败正是防御目的）；
+  D9 反挂钩闸——loadstring 换成 Lua 闭包 ⇒ Mc 层 `debug.info(...,"s")`
+  复检 `[C]` 失配 ⇒ 杀死（实测 timeout 无输出）；D10 反指纹闸——
+  `debug.info` 说谎（对 Lua 函数返回 `[C]`）⇒ `Dv5` 篡改旗标 ⇒ 杀死；
+  D11 蜜罐哨兵结构级验证（newproxy + `__tostring/__call/__metatable`
+  陷阱，外部不可触发，验存在性）；D12 计时守卫设计为显式关闭——验证
+  RUN 的 CLK 槽接外层显式 nil 局部 + RT 碎片内 `% 128` 守卫结构完好
+  （可复通，启用需评估误报）；D13 LZ 往返自检——debug 构建生成期
+  `#[cfg(debug_assertions)]` assert 编码即验 + 产物运行等价。
+  验证：审计全绿 + 166/166 + 360/360 + multiseed 0 失败。
+- **2026-09-17（增量㊱：引导层悬挂标识符修复——收口 v15 稀有崩溃）**
+  收口 ㉟ 遗留专项：~0.3% 种子×语料确定性「attempt to call a table
+  value」（basics seed=1 / real_algo seed=38）。根因三层：① `symtab.rs`
+  块作用域缺失（`Stmt::Do(b) => resolve_block(b)`，While/Repeat 体同）
+  → do 块内局部泄漏到块外；② 模板 `local CLK` 声明在引导 do 块内而
+  `RTFRAG(..., CLK, ...)` 在块外 → 悬挂引用，被 mangle 一致改名后运行时
+  实为未知全局（通常 nil，侥幸无害；RT 计时守卫因此被静默禁用）；
+  ③ v15 独有的 P3 scaffold 把解释器源码嵌进 `function(b,C,ra..re)`，
+  5 个填充参数名随机抽取，撞上改名后的悬挂名 → CLK 实参捕获 CPS 寄存器
+  table 值 → dE 首行 `lS and lS()` 崩。修复三层：A. template.rs do 块外
+  显式 `local CLK`；B. symtab.rs 给 Do/While/Repeat 体开作用域（根治，
+  兼治用户程序作用域泄漏误编译隐患）；C. v15.rs `Names::reserve` 使
+  scaffold 名字永不与解释器自由标识符相撞（整类封死）。排查方法：
+  零侵入两板斧（setfenv+_G 副本+补 debug.info 过反钩闸；可见层文本补丁
+  在 RT 工厂调用点打印 35 参类型，碎片不动哈希链完好）。验证：两大复现 ✓
+  + basics 300 种子 0 失败 + 全语料×16 种子 576/576 + multiseed 首次全绿
+  + 166/166 + 360/360 + 轮廓 32/32 + 安全 5/5 + 钥匙 52/52 + 字节级确定。
+  后续候选：计时守卫启用（一行改动）待评估计时抖动误报后由用户拍板。
+
+- **2026-09-17（增量㉟：自研压缩——碎片增量链）**
+  用户点题「做一个我们自己的压缩方法」。机制完全自研：HBOOT 解码链天然就
+  是压缩链——它在 loadstring 前握着每片解码态源码，故每片对「此前全部已
+  解码源码拼成的字典」做 4-gram 贪心 LZ 增量编码（两种操作流：字面段
+  00+长度+字节 / 字典回引 01+偏移+长度，全 2 字节小端；min_match=8），
+  字典随解码逐片生长（链头 = HBOOT 自身源码）。加密层不变：压缩流照旧
+  走逐片钥匙流 + base-94。debug 构建内嵌往返自检断言
+  （lz_chain_decode_check）。正确性证明链：往返断言 0 失败 + 运行期链终值
+  与构建期逐位一致（哈希 52bit 碰撞可忽略）+ 166/166 + 360/360 + 轮廓
+  32/32 + 安全 5/5 + 钥匙清洁。**排查副产品**：发现 v15 引导层稀有
+  （~0.3% 种子×语料）潜在 bug——确定性「attempt to call a
+  number/table」，legacy --vm 全过、先于本增量存在（㉛ 起可复现；㉚
+  300 种子干净）；已排除 MP 掩码/块编解码/链重建/ck 校验/staging fold，
+  列为下一优先专项。当前标准 multiseed 恰好命中（basics seed=1）。
+- **2026-09-16（增量㉞：自研压缩——一趟流水融合）**
+
+- **2026-09-16（R016 靶标重发：取消真实逻辑载荷）**
+  用户拍板：真实逻辑载荷体积太大（400KB），取消该形态。R016 重发为单打
+  印惯例形态（151KB，同种子字节级确定、轮廓 32/32）。代码层的三项改进
+  全部保留——① ㉜ VM 多赋值语义修复（统一存储）+ 模块表槽池扩容 +
+  `swap_multi` 回归语料；② ㉝ 词表长字符串化；③ ㉞ 一趟流水融合压缩。
+  「载荷尺寸抬升破解成本」结论记录在案，未来需要时可再启用大载荷形态
+  （管线已支持，容量/压缩均已就位）。
+- **2026-09-16（增量㉞：自研压缩——一趟流水融合）**
+  用户点题「自研」。发现 chunk handler 旧形态是两趟流水（词解码→concat
+  成段串→第二趟逐字节 XOR），而 XOR 钥匙 `(fold4(kv)+i) mod 256` 只随字
+  节序号线性变化、无状态推进 ⇒ 两趟可融合成趟：词解码位直接出 XOR 后字
+  节，序号游标跨槽段连续。配套两个 Lua 语义压缩形态：`string.byte(s,i,i+4)`
+  多返回值一次取 5 连字符；`string.char` 多参数整词 4 字节串一次入表。
+  踩坑两枚并修复：① string.char 多参数返回**单个**串、不能多赋值展开
+  （只写第一槽，余皆 nil）；② 词粒度表的索引截断只到词界、字节精度丢
+  失致尾部 padding 泄漏进载体（B+T 变体组合死循环，变体矩阵法定位）→
+  词数粗截 + 字节精截两段法。五变体（循环/提取/解掩/截断/词源）正交组
+  合逐对验证。R016：409KB → **400KB**；累计 443.9 → 400.1（-9.9%）。
+  诚实边界：体积大头仍是 ~137 个 staging handler 内联代码（拟态+变体设
+  计产物），再压需动结构参数待拍板。门禁：166/166 + 360/360 + 多种子 0
+  + 轮廓 32/32（语料 & R016）+ 安全 5/5 + 钥匙 54 组 0 泄漏 + 字节级确定。
+- **2026-09-16（增量㉝：词表挪进长字符串——十进制数字槽数组废除）**
+  用户拍板「挪进去」。P3b 词表原以十进制数字槽数组落盘（~11.5B/词），
+  改为每掩码词压 5 个连续区 base-94 字符（33..126，数字=字节-33，解码
+  纯 Horner 无查表）存进槽内长字符串（~5B/词）；逐位置掩码机制
+  （(bm0+g·bc0) mod 2^32）与 90 词/槽分片不变。R016：443KB → **409KB**。
+  诚实解剖：词表只是增量的一部分（十进制态 ~108KB）；大载荷体积大头 =
+  每载体 5 段 staging handler 内联解码代码（~137 个字段 ≈ 260KB，⑫ 变体
+  多样性 + 样本族形态的设计产物），继续压需动结构拟态参数，待拍板。
+  门禁：166/166 + 360/360 + 多种子 0 + 轮廓 32/32（语料 & R016）+ 安全
+  5/5 + 钥匙 0 泄漏（R016 大载荷 71 组）+ 同种子字节级确定。
+- **2026-09-16（增量㉜：R016 大载荷——真实逻辑靶标 + 多赋值语义修复 + 槽池扩容）**
+  用户拍板 P2-5：靶标从单打印换成真实逻辑载荷。R016 = 地形噪声 + A* 寻路
+  （二叉堆）+ 生态模拟（闭包计数器/贪心觅食）+ 中继路由 + 校验和聚合，
+  ~430 行多层嵌套；混淆输出 443KB（此前靶标 ~147KB），混淆态运行 12.4s
+  ——「解码可自动化、读懂不行」，攻击方移植后仍需逐函数读懂语义。大载荷
+  暴露两个真问题并修复：① **VM 多赋值语义 bug**——Assign 臂「求值一个存
+  一个」违反 Lua「RHS 全量求值后才允许第一个存储」，`t[i],t[m]=t[m],t[i]`
+  同表交换读到已覆写槽（堆排序类算法全灭；既有语料从未覆盖）→ 改为全
+  部值入寄存器后统一存储，新增语料 `swap_multi.lua`（7 族形态）锁死回归；
+  ② **模块表槽池枯竭**——样本尺度 1..=126 槽位被大载体分片槽占满、原语
+  槽抽取 panic → 池随载体规模扩容（+96 地板），原语抽取上界同步放开。
+  门禁：166/166 + 360/360 + 多种子 0 + 轮廓 32/32（语料 & R016）+ 安全
+  5/5 + 钥匙 54 组 0 泄漏 + 同种子字节级确定。靶标 R016（打印 `flint 7d2r`
+  等 7 行，seed 43987731）已交付。
+- **2026-09-15（增量㉛：R014 回合复盘——减法零化形清除 + 段表/程序字掩码）**
+  R014 被 3.5h 破解（纯静态离线、不执行目标；攻击工具 60% 固化）。三个
+  根因三刀：① **P0-1 减法零化形清除**——种子里 `(pb - 89621) * mix` 形态
+  被一眼读出「正常态恒零 → 整项可忽略」（89621 字面量还直接暴露）；改为
+  **分裂乘积直参形**：x = x_lo + x_hi·2^16 各自乘预混常量（单积 < 2^44，
+  七项和 < 2^47，double 精确），零化量折进总补偿常数 `SEED_COMP`（KT 装
+  配）——即攻击方建议 B 的形态；pb/环境值/激活值三路探针统一改写，89621
+  字面量归零。② **P2-6 hqi 段表掩码**——「最贵的一份结构信息白送」改为
+  加性 LCG 掩码落盘、引导期即解（解掩纯减法）。③ **P1-3 metavm 程序字
+  掩码**——R014 破解起点（208 个明文程序字 → Python 静态模拟 173,778 步
+  0.04s）；程序字每字 +(4096 + ks%2.64e8) 掩码（下界保证负跳转为正），
+  静态侦察只见无结构大整数，钥匙每构建重抽，攻击方固化的 L0 模拟器作废。
+  **诚实边界**：P0-2（FN 静态可解）属 R004 定律——boot 可读数据对完整
+  移植者必可读，此路无解；静态载荷防护 = 移植成本 + 环境绑定（真部署用
+  --bind-env）。载荷尺寸（P2-5：单打印靶标仅 142B 字节码）属靶标问题，
+  建议下轮换更大载荷。门禁：162/162 + 350/350 + 多种子 0 + 轮廓 32/32 +
+  安全 5/5 + 钥匙 54 组 0 泄漏 + 同种子字节级确定。靶标 R015
+  （`obsidian 2m9k`，seed 77120946）已交付。
+- **2026-09-14（增量㉚：B-2 源码自校验哈希链——哈希即钥匙）**
+  破解 AI 方案落地（用户拍板硬版本）：解释器自身源码哈希直接参与密钥
+  派生，攻击者除预映像攻击无路可走。① **链式碎片钥匙**：HBOOT 解码每片
+  前先对「此前全部已解码源码」的链值走一步 `rv*sh_mul` 揉进该片钥匙种子
+  ——篡改任何一片 ⇒ 其后全部碎片钥匙错位，链上无任何比较语句；② **链头
+  自包含**：可见引导把 `table.concat(MH)`（HBOOT 自身源码）作为 HB 参数
+  回传，HBOOT 先对它走链 ⇒ 换掉 HBOOT 即链头偏移；③ **双独立归零约束
+  惩罚**：链终值 (H1,H2) 交回 RT 碎片，`D_b=(H1·CB1+H2·CB2+CBC)%2^28`
+  揉进指令块钥匙流、`D_c=(H1·CC1+H2·CC2+CCC)%2^28` 揉进常量池钥匙流
+  （BSS 侧加密用裸 SALT）——源码未动则双偏移为 0 原样跑；任何一层源码
+  被改则解密结构完好、内容全错（攻击方约束之 4，无死循环/布尔标志可补）；
+  单约束 28bit、双约束合计 ~52bit 二预映像难度（约束之 1：期望哈希不落
+  明文常量，回填重算无目标）。哈希函数 = 双车道非线性字节步（模 2^26 附近
+  双素数、数据依赖乘法，Lua 5.1/Luau 逐位一致，全程 <2^52 精确）；每碎片
+  +14–22B 随机字母数字尾注（自由填充位 + 每构建熵，约束之 2）。㉙ 结论
+  「整 chunk 运行时自哈希原理不可行」被绕过：不需要 debug.info/文件回读
+  ——HBOOT 本来就在 loadstring 之前握着每片的明文源码。附带：BSS 校验和
+  失配惩罚从 `while true do end`（grep 可得）改为毒化块步长 PB（加密侧
+  偏移、解密侧不偏移 → 静默全错）。五层覆盖：HBOOT+53 碎片全进链；可见
+  脚手架不含解释器语义、由既有元钥匙流/探针/环境绑定守护（诚实边界）。
+  门禁：162/162 + 350/350 + 多种子 0 + 轮廓 32/32 + 安全 5/5 + 钥匙 46 组
+  0 泄漏 + 同种子字节级确定。靶标 R014 已交付。
+- **2026-09-13（增量㉙：反 trace 计时守卫 + 攻击方四问题收口）**
+  攻击方第 4 条「0 计时反 trace、逐指令 print 拖慢几个数量级无察觉」→
+  自适应基线计时守卫（RT 加密碎片蹦床内）：每 128 循环窗采样 os.clock，
+  前 4 窗取最小为基线，校准后任一窗 > 基线 100 倍且连续 2 窗 → 污染块
+  钥匙流 → 错钥静默死。自适应 → 设备无关不误伤慢机；100 倍+连续 2 窗 →
+  不误伤 GC。实测正常/重计算语料 0 误报。其余三条收口：① 整 chunk 运行时
+  自哈希经实证原理不可行（沙箱无 io；debug.info(f,'s') 只回截断预览），
+  可行替代 = 计时守卫 + ㉗/B-3 最小可见面；② 预编译字节码被 Luau 安全
+  模型禁止，㉘ 净化为其「至少」档替代；③ 89621 探针职责澄清为 loader
+  钩子检测，环境区分归 ㉑。门禁：162/162 + 350/350 + 多种子 0 + 轮廓
+  32/32 + 安全 5/5 + 钥匙 33 组 0 泄漏。
+- **2026-09-13（R011 回合复盘 + 增量㉘：碎片源码净化——可读名/注释清零）**
+  R011（Suda 靶标）被破，攻击方列出「最该马上修的 3 件事」，头号 = **解出
+  的碎片里满是可读名与设计意图注释**（parse/decarrier/nregs/upsrc/makefn/
+  bdec/CDEC，以及「-- 增量⑲: the trampoline lives INSIDE...」这类直接告诉
+  逆向者「这是自研混淆器、在迭代、trampoline 原理」的注释）——攻击方原话
+  「本次最大的礼物」。㉘ 落地碎片源码净化器 `sanitize_frag`（对全部 54 个
+  HQ 碎片 + HBOOT 元碎片，在加密前统一处理）：① 剥全部 `--` 注释（字符串
+  感知）；② 非保留标识符（局部/参数/**字段名**）按构建随机改名，跨碎片
+  一致映射；③ 空白折叠单行。保留字 = Lua 关键字 + 运行时固定全局名
+  （其 `.字段` 是标准库方法禁改，如 table.concat）+ 运行时 C 函数字段
+  （**table.pack 的 .n**——首轮误改它导致 `res.n` 读出 nil，加禁改名单修复）。
+  **关键修复：名字碰撞**——净化名若与已生成名碰撞会把两个不同标识符合并
+  成同一名字、悄悄破坏语义（多种子概率性触发，曾致 8 例失败）；改为维护
+  已用名集合、生成时合并避让，扩展扫描 90 组合 0 失败。净化名用 2–4 字符
+  短名生成器（碎片标识符集有限），体积代价从 +40% 压到 +17%
+  （bind_gate 136→159KB）。门禁：162/162 + 350/350 + 多种子 0 + 轮廓 32/32
+  + 安全 5/5 + 钥匙 33 组 0 泄漏。新增净化质量专项测试
+  （proto_enc_test 第 6 项：断言碎片无可读名/注释）。攻击方另两条（②
+  loadstring 入参是明文源码应输出预编译字节码、③ 完整性校验没覆盖可见层
+  锚点、以及 0 计时反 trace / 89621 环境指纹无区分度）记录在案，列后续。
+
+- **2026-09-10（选项B·B-3：状态链式按块解码——批量解码器消亡）**
+  ㉗ 之后剩余的最大口子：解码器 + 密文原型树若同时落入攻击方手里，仍可
+  离线逐原型全量解码（且密文钥匙流是**静态可推**的固定种子）。B-3 一次
+  性重构指令分发层：
+  **① 编译器基本块分割**（`compiler.rs::finish`）：leader = pc1 ∪ 跳转
+  目标 ∪ 跳转后落点；`VmProgram.block_starts` 逐原型输出。
+  **② BSS 按块编码 + 会话盐**：每块钥匙种子 = `pseed + proto*pstep +
+  block_start*pblock + SALT`；**SALT 是 boot 期随机折叠（新表地址）——
+  静态文件里不存在任何能推出块钥匙的材料**，批量解码器随之消亡；跨运行
+  钥匙全变，上一轮收集品一次性作废。块元数据（起点/长度/偏移/起点→块号
+  映射）随编码原型存储；常量池钥匙含 SALT 且与块钥匙不同构（无 pblock 项）。
+  **③ RT 碎片按块即需即解**：废除整流批量解码器；`bdec(E, bi)` 解单块进
+  **帧私有解码窗口**（E.ww/E.w0..w3）并挂帧级块缓存（E.bch，帧退即毁）；
+  取指附言（43 handler + 4 续行 + 4 执行器，5 形态多态）全部改窗口取指 +
+  跨界触发解码；`newE` 只解常量 + 入口块。指令流离开 env 槽（E 收缩，
+  AV/HW2 → E[23/24]）。
+  **安全语义**：任意时刻内存 = 密文块 + 已执行块的帧内缓存（收集全程序
+  必须全程活体跟踪每一块）；文件级/单次转储级/跨运行重放级解码全灭。
+  性能：块缓存摊薄解码，fib(25) 2.57s（优于 ㉗ 的 2.9s）。
+  踩坑记录：CDEC 漏参数（CHAR/UNP/TONUM）；Rust 2021 format! 隐式捕获
+  裸变量致 `{pblock}` 泄漏裸钥匙（钥匙扫描抓出，补显式参数）。
+  门禁：161/161 + 350/350 + 多种子 0 失败 + 轮廓 32/32 + 安全 5/5 + 钥匙
+  33 组 0 泄漏 + 环境绑定 6/6 + 激活门 10/10。诚实边界：全程活体跟踪仍可
+  逐块收集（对方建议书自认的边界）；常量池仍按帧全解（候选后续）。
+- **2026-09-10（Suda 回合复盘 + 选项B·增量㉗：运行时入密）**
+  Suda 靶标（`print("Suda")`，零信息量逻辑，纯防护层考验）被破。报告
+  （main：analysis_report/vm_extraction/methodology/recommendations 四件）
+  质量高、证据链真实：三个文本探针全插在**可见运行时表面**——① entry 的
+  `run(MPF,...)` 前转储密文树；② **可见 `newE` 内的 `DDEC` 调用点**后
+  转储全部解码流+常量池（`[4]="print"`/`[6]="Suda"` 明文落网）；③ 包装
+  可见蹦床的 `CT` 表确认执行。㉓ 堵的是 boot 窗口，**可见运行时表面
+  （newE 源码/蹦床/E 表）仍触碰解码数据**——诚实边界兑现为实际损失。
+  ㉗ 落地：`newE`/`makefn`/`run`+蹦床/`DDEC` **整体打包为加密运行时碎片
+  （wire 208）**，boot 期 `RTFRAG = HW[208]`、钥匙数值×4 + 不透明依赖值
+  ×16（原语表/环境函数/续行执行器 8 个离散函数值）装配出 `RUN`；可见层
+  只剩这一次函数值交接。CT/CX 表废除，续行/执行器改离散可见局部（去表
+  索引包装点）；蹦床从 `CT[i]`/`CX[i]` 索引改为离散上游值选择。DDEC
+  解码器键（PS/PT/KM/KC）即碎片工厂参数——解码器函数值不再经过可见层。
+  实测攻击面：TSRC 中 `newE = function`/`makefn(`/`run = function`/
+  `DDEC`/`CT[`/`CX[` 全部归零；三个探针点消失。要提取解码态必须破 HQ
+  碎片加密（五层引导链，每构建重建）。legacy 管线不动（makefn 保持可见）。
+  复测靶标 `artifacts/targets/Suda_r2_target.luau.lua`（同源、seed 2048）。门禁：
+  161/161 + 350/350 + 多种子 0 失败 + 轮廓 32/32 + 安全 5/5 + 钥匙 35 组
+  0 泄漏 + 环境绑定 6/6 + 激活门 10/10；fib(25) 2.9s 无性能回归。剩余
+  口子：可见装配局部（RPK/CTi）理论上可被更深的文本手术重绑定——B-3
+  （状态链式按页解码）列后续。
+- **2026-09-10（增量㉖：产品线收敛——Luau-only，5.1 不再支持）**
+  用户拍板：「5.1 不用管，每次混淆都按 luau 来」。落地：① `--dialect 5.1`
+  直接报错拒绝（历史产物不受影响）；② ㉕ 的 5.1 回落旧版 VM 分支删除，
+  默认装配只有一条路 = v15；③ 测试矩阵三个脚本（run_tests/run_presets/
+  multiseed）移除 5.1 相位与交叉验证，计数 265→161、480→350，多种子仍
+  0 失败；④ `gen_examples.sh` 不再生成 5.1 产物，`examples/` 删除
+  `*.5.1.lua`/`*.vm.5.1.lua`，每语料一个 `*.v15.luau.lua`（= 裸调用
+  产品形态）；⑤ 帮助文本/产品 README/示例说明同步。旧版轻量/VM 预设
+  保留（Luau 目标可用），仅 5.1 **目标**退场。
+- **2026-09-10（增量㉕：产品定位修正——默认即 v15）**
+  用户更正产品定位：v15 不是「特殊混淆版本」，**而是产品本身的形态**。
+  CLI 默认行为重写：① 默认方言 5.1 → **luau**；② 裸调用（无 `--preset`/
+  `--vm`）自动装配 **v15 管线**；③ 显式 `--dialect 5.1` 无预设时回落
+  **旧版 VM 管线**（v15 仅 Luau 可运行，5.1 侧最强既有形态，stderr 提示）；
+  ④ 显式 `--preset low|medium|high|vm|max|v15` 与 `--vm`/`--no-*` 旗标
+  历史语义完全不变（默认在参数循环后装配，单独旗标仍可覆盖）。帮助文本/
+  产品 README/示例说明同步。`--bind-key`/`--bind-env` 随默认 v15 不再
+  需要搭配 `--preset v15`。门禁：265/265 + 480/480 + 多种子 0 失败（默认
+  相位现为 v15/旧版 VM 本体，等价验证口径不变）。示例产物全量重生成。
+- **2026-09-10（R008 报告复盘 + 选项B·增量㉔：守卫钥匙化 + 环境值绑定 + 换源防污染）**
+  R008 报告真实观测（环境锁槽位 `[77]/[30]/[61]`、文件尺寸、双原型规模
+  均吻合）确认两条实际攻击动作：① 给 `task.defer`/`Vector3.new` 塞**哑桩**
+  骗过 ㉑ 存在性绑定；② 把可见布尔标志（`tY`=loadstring 原生性判定）
+  **补成通过**。（报告深层管线叙事沿用 R007 轮名词 `OY`/`yA`/`4GmoQ`/`px`，
+  均不存在于 R008 架构；且两靶标源程序与 R007 相同，「还原源码」与旧答案
+  不可区分——测试被源程序复用污染。）㉔ 落地：
+  **㉔-1 守卫结果钥匙化**——loadstring 原生性探测废除布尔标志与死循环
+  oracle（两者皆可补丁），探测结果折进元钥匙流（干净环境恒零项；失败/
+  被钩 → 钥匙流污染 → 错钥静默死亡）。S5 判据随形态校准（陷阱/钥匙污染
+  任一 = 探针结果被强制）。
+  **㉔-2 环境值绑定**——引导期用每构建随机参数调 `Vector3.new`/
+  `Vector2.new`，对 `.X/.Y/.Z` 分量做每构建随机系数线性折叠（整数精确，
+  float32 无损）揉进元钥匙流；哑桩折出垃圾 → 错钥死亡，桩必须忠实实现
+  构造语义。诚实边界：完整仿真的受控沙箱仍能过（R004 定律）。
+  **换源防污染**——新语料 `token_mix.lua`（交错混合+加权校验和+26 进制
+  编码，与 bind_gate 不同构）入矩阵；R010 双形态靶标（seed 910）用新源。
+  门禁：265/265 + 480/480 + 多种子 0 失败 + 轮廓 32/32 + 安全 5/5 + 钥匙
+  38 组 0 泄漏（含绑定态）+ 环境绑定 6/6（+2 形态检查）+ 激活门 10/10。
+- **2026-09-10（R008 回合复盘 + 选项B·增量㉓：解码窗口入密）**
+  R008 被破。自攻复现确认破解路径：㉒ 虽消灭了「解码态原型表常驻」，但
+  可见 boot 存在**解码态落地窗口**——解析结果 `PF` 是可见层局部变量
+  （Nop 自改写与 ENC 调用都在可见代码触碰它），攻击者对可见文本做手术、
+  在解码赋值后插入序列化转储即拿全程序明文（我方复现：单点插入、1422 条
+  键值全量转储、程序照常运行），或两处编辑直接禁用 ㉒。**零动态能力即可
+  破**。「即用即毁」在解码态于可见层出现过一次的情况下名存实亡。㉓ 根治：
+  **BSS 碎片（解析器）合体**——解析→校验→Nop 自改写→重编码→链原型树
+  全在同一个加密碎片内完成，只把**编码态树根**递回可见层；解码态原型表
+  从此未在可见代码中存在。可见侧失去 ZW 直写形态（F14/F27 口径按 P3c
+  安全优先先例校准，轮廓 32/32 仍全过）。门禁：255/255 + 465/465 +
+  多种子 0 失败 + 轮廓 32/32 + 安全 5/5 + 钥匙 35 组 0 泄漏。剩余口子
+  （诚实记录）：活帧解码碎片（调试器等价物）；「常驻解码器 + 密文树」
+  同时被深度转储仍可离线解码——堵它需状态链式按块解码（B-3 候选）。
+  新靶标 `artifacts/targets/R009_target.luau.lua`（seed 888）+ 绑定版交付破解 AI。
+- **2026-09-08（选项B·增量㉒：B-2 碎片即用即毁 —— 原型加密集散，终结「脱壳」概念）**
+  R007 以「干净运行+内存转储」100% 还原靶标，根因是 boot 后**平铺解码态
+  原型表 `PF`（全程序指令流+常量池）永久常驻**——一次转储拿走一切。㉒ 落地
+  R006 壁垒①（内存无完整字节码）：① boot 解析出 `PF` 后立即由新增加密
+  碎片 **ENC（wire 207）**逐原型把五条流（W/SA/SB/SC/SD，LCG 钥匙流加性
+  掩码）+ 常量池（整数加性掩码；非整数走 Luau 最短往返
+  `tostring`/`tonumber` 字节流；布尔/_nil_ 类型折叠）重编码为密文，同时
+  扫描 Closure 线码把父子原型树链成密文句柄（`ep.k`），只返回树根 `MPF`，
+  平表当场 `PF = nil`；② 新增 **DDEC（wire 206）**常驻解码碎片（工厂形态，
+  钥匙在 boot 期注入闭包上游值——钥匙表事后置 `nil` 也不受影响），每次调用
+  经 `newE` 按帧解出**全新**的流/常量表，帧退即毁；③ `makefn` 改收密文
+  原型句柄（`makefn(pf, ...)`），Closure handler 经当前帧 `E.k[b+1]` 取子
+  原型——闭包从此只捕获密文；④ 入口改 `run(MPF, ...)`。Nop 别名自改写
+  （F14/F27 形态）移入 boot `do` 块、ENC 之前，指纹不变。**任意时刻内存
+  只有密文 + 活帧的解码碎片，完整程序无处可转储**；攻击者必须对 43 个加密
+  分派点逐点插桩才能重建轨迹（无单一钩点，⑲ 红利）。常量掩码安全性由编译
+  期 `consts_mask_safe`（NaN/inf 才降级为池内明文、流仍加密）兜底。开销：
+  每调用一次解码一帧（fib(25) 实测 +2%）。新增 `tests/proto_enc_test.sh`
+  （5 项：模板形态/碎片数 54/嵌套闭包等价/常量往返/深递归）内嵌
+  run_tests.sh。门禁：255/255 + 465/465 + 多种子 0 失败 + 轮廓 32/32 +
+  安全 5/5 + 钥匙 35 组 0 泄漏 + 环境绑定 4/4 + 激活门 10/10。
+- **2026-09-06（转向「抬成本」验证·选项 C：真实逻辑样本替换极限样本）**
+  攻击方 R004 的结论是战略性的：第三方执行器环境下**不存在攻不破的
+  软件防御**，混淆的价值是把攻击边际成本从「5 分钟脚本」抬到「数周
+  单步」；且迷你 VM 被「直接运行 + 钩 loadstring 汇聚点」50ms 穿透，
+  Lua 层防御对掌控环境的攻击者透明。据此放弃在极限小样本上内卷，
+  转向真实场景验证：新增三个**带输入、有真实逻辑**的样本
+  （`real_string` Caesar 密码+元音统计、`real_algo` 表算法、
+  `real_ctrl` fib 记忆化+素数判定，均支持 `...` 变长参数 + 无参
+  默认值），入语料矩阵并生成 `--preset v15` 输出作攻击靶标。
+  实测发现 luau CLI 不转发命令行参数给 `...`（lua51 转发）——带参
+  路径仅交互演示、不入矩阵。矩阵扩容 204→228 / 405→450 全绿、
+  多种子 0 失败、三样本轮廓 32/32 + 安全 4/5 + 运行等价。后续：
+  去中心化 CPS + 输入绑定（攻击方 Q10 亲口最怕）列大工程候选；
+  常量用后即焚（循环击穿问题）与指令交织解密（打不败中心分派
+  钩子）暂缓。〔编号修订：输入绑定落地时占用 ⑱，见下条。〕
+- **2026-09-08（选项B·增量㉑：环境绑定 —— 防御叠层的最后一块）**
+  真实 Luraph v15 深侦确认其最外层防御 = 环境绑定（解释器原语表内嵌
+  `Vector3.new`/`Vector2.new`/`task.defer`，表构造对每个 RHS 求值，离开
+  Roblox 构造即失败）。落地同款机制为可选开关 `--bind-env roblox`（仅
+  v15，`v15.rs::module_fields` 加 `bind_env` 参数）：把目标运行时 API
+  嵌进原语槽，产物只在目标运行时可加载、通用分析沙箱在**加载期**即死
+  （任何解码都还没开始）。与 ⑱（已弃用、需传参）不同：环境绑定**不需
+  要用户传任何东西**，天然满足「混淆后直接可运行」。绑定态产物不进通用
+  运行等价矩阵（CLI 跑不动），只做语法校验 + 加载失败验证。新增
+  `tests/env_bind_test.sh`（4 项）内嵌 run_tests.sh。**至此防御叠层成形**：
+  环境绑定（挡沙箱动态）→ CPS 分散解码（挡静态提取）→ 反调试（藏最内层）。
+  门禁：250/250 + 465/465 + 多种子 0 失败 + 轮廓 32/32 + 安全 5/5。
+- **2026-09-08（存量缺陷清理：R007 回合后续，缩小内存可转储面）**
+  R007「干净运行+内存转储」得手的前提之一是 boot 后大量解混淆素材常驻
+  内存。清理：`HQ`（编码碎片）/`hqi`（碎片索引）在 `HW,BSS=LS(HBOOT)(...)`
+  返回后立即置 `nil`；`HW`（未重键 handler 副本）重键进 `HW2` 后置 `nil`；
+  `BSS`（解析器源码）`PF` 构建后置 `nil`；`KA/KB/KC/KM`+`CKM/CKC/BKM/
+  BKC/BSEED/BSTEP`+`OCt` 在 `v15_selfmod`（DF 诱饵求值后）统一置 `nil`。
+  内存转储拿不到编码碎片/解析器源码/钥匙装配材料，仅剩可执行 `HW2/CT/
+  CX/PF`。门禁全绿：246/246 + 465/465 + 多种子 0 失败 + 轮廓 32/32 +
+  安全 5/5 + 钥匙 31 组 0 泄漏。仍存天花板：`HW2` 可执行 handler 必须
+  常驻（分派热路径），「碎片即用即毁」列后续。
+- **2026-09-07（战略转向：放弃激活门 → 纯结构防护 + 零参数直接可运行）**
+  用户明确产品需求：混淆产物必须**零参数直接可运行**（丢进执行器即跑）。
+  ⑱⑳ 激活门要求运行时以第一个变长参递送激活值，而 Roblox 执行器注入/
+  游戏内 Script 由引擎直接执行、不递送变长参 → 带门产物「缺激活值」在引导
+  层崩溃、无法直接运行，与核心需求冲突。决策：**弃用激活门**——`--bind-key`
+  代码保留但标 DEPRECATED（仅加载器授权场景），默认形态 = 纯结构防护、
+  零参数直接可运行（`--preset v15`）。与真实 Luraph v15 同路线（其本就无
+  运行时防御），但本产品解释器/解析器/分派全入密。防护 = ⑲⑳ 结构层。
+  R007 靶标重建为无绑定直接可运行版（`artifacts/targets/R007_target.luau.lua`）。
+- **2026-09-07（红队侦察：真实 Luraph v15 样本静态逆向）**
+  以攻击者身份纯静态逆向 `main:luraph15.txt`（171,753 B）。测绘 227 字段
+  （73 原语槽 + 145 微 handler），载荷链 `RC`→gsub 转义→`buffer.fromstring`
+  →LCG(213,225) 逐字节 `bxor` 解码（散布 ~150 微 handler、常数全明文）。
+  **决定性发现：真实 v15 零运行时防御**（无 `debug`/`loadstring`/`[C]`/
+  `newproxy`），解释器明文可见，纯结构混淆。**结论：本产品在解释器加密/
+  运行时防御/输入绑定各轴全面领先，不引入其任何机制**；「嵌套多机
+  `x/xC/xL` 分派」仅繁琐混淆，⑲ 已用去中心化尾链覆盖咽喉点。无密码学
+  墙，卡点 = 需为每构建写专用 CPS 模拟器的工程繁琐墙。详见
+  `docs/redteam/redteam-luraph15-recon.md`。
+- **2026-09-07（选项B·增量⑳：激活值多因子化 —— 激活哈希去线性化）**
+  ⑱ 的激活折叠是线性 `h = h*31 + b`（mod 2²⁸）——代数结构可折叠，若 AK
+  装配链被破，短字典激活值可被符号求解/字典碰撞。⑳ 把激活哈希升级为
+  **双因子非线性**（v15=Luau，引导门直接用 `bit32`）：
+  `h ^= b; h = lrotate(h, rot); h ^= (h*mul + b) & 0xFFFFFFFF`，两组独立
+  参数（seed₁=0x811c9dc5/rot 7/mul 31，seed₂=0x01000193/rot 13/mul 37），
+  种子经 obf_num 发射（FNV 常量不落明文）。扰动项翻倍：
+  `seed += (ak1-AK1)*mix1 + (ak2-AK2)*mix2`——碰撞须同时满足两个非线性
+  哈希。AK1/AK2/mix1/mix2 全部 KT 查表装配（钥匙扫描 31 组 0 泄漏）。
+  Rust `activation_hash`（u32 rotate_left/wrapping_mul）与 Lua bit32 逐字节
+  镜像（同键三方核对一致 + 绑定门 10/10 实证）。未绑定输出字节级不变。
+  诚实声明：这是**成本抬升**不是密码学保证——fold 仍非抗碰撞哈希，激活
+  值应有授权码级熵；⑲⑳ 叠加后静态攻击面 = 破 KT 装配 + 双哈希反演。
+  门禁：246/246 + 465/465 + 多种子 0 失败 + 绑定门 10/10 + 钥匙扫描 31 组
+  0 泄漏 + cargo test 27。
+  **附带（S5 口径校准）**：安全指纹 S5 是 P3 时代口径（明文
+  `["loadstring"]` + `debug.info` 配对），P4 防御名运行时装配后恒红
+  属「防御变强的副产品」。按 F13 先例校准 `load_attack.py` 为结构配对：
+  (a) 原生性探针 `<pcall>(function() return f(x, y) end)`；(b) 静默陷阱
+  `if not v then while true do end end`——mangle/flatten/minify 后形状
+  不变，多种子实测恒 probe=1/trap=1。安全指纹首次 **34/34 × 5/5 全绿**。
+- **2026-09-07（选项B路线二·增量⑲：CPS 去中心化尾调用链 + 蹦床 —— 消灭全局 hook 咽喉点）**
+  R006 三壁垒之②「全局 hook 咽喉点消失」：中心 `while true do fetch
+  dispatch end` 是攻击方单点挂钩即可追踪全部指令的咽喉。⑲ 把它彻底拆掉：
+  **每条指令的分派逻辑搬进各自的加密 handler 尾部（尾链附言）**，可见解释器
+  收缩成一个无操作码语义的蹦床循环。**平台事实（决定性约束）**：Luau 官方
+  已删除正确尾调用（devforum 3307934「Tail calls were removed from
+  Luau... no plans to revive」），每调用积 1 个 C 侧帧、~20k 帧溢栈——纯尾链
+  跑不了任意循环/深递归。故采用**预算有界尾链 + 蹦床**：
+  - 每条链最多走 `CHAIN_BUDGET=16` 条指令（`E.b` 预算，耗尽空返回、整链
+    解开回落蹦床）；蹦床重置预算、轮转 4 个加密重入碎片之一（wire
+    301–304）从 `E.pc` 续跑；`pc` 改存 `E.pc`，跳转移位 `E.pc = b`。
+  - 每个非-Return handler 末尾接一条**多态尾链附言**（5 种语义等价形态 +
+    随机临时名）；Return handler 置 `E.done/E.out/E.total`，蹦床以
+    `U(E.out, 1, E.total)` 统一出口。
+  - **Call 家族两相拆分**（深递归不溢栈的关键）：链相位（参数打包 →
+    暂存 `E.cf/ca/cn/oa/ob/oc2/od` → `return` 解链回蹦床）+ 执行器碎片
+    （wire 305–308，蹦床在浅层 `callcap` 之后接标准尾链续跑）。调用点不再
+    位于链深处，用户递归每层帧剖面回到旧设计量级。
+  - **递归帧预算优化**（深度从旧设计贴线 `tail(5000)` 抬到 8000+）：
+    ① 选择性 prelude（每 handler 只绑 body+附言实际引用的 env，平均帧槽
+    29→个位数，word-boundary 扫描）；② 蹦床内联进 makefn 闭包（每层省 1
+    run 帧，`newE` 前向声明解循环依赖）；③ v15 `callcap` 用 `table.pack`
+    省 `w` 包装帧；④ 多返回捕获内联进执行器（`E.tp`）省 `callcap` 帧；
+    ⑤ E 构造移入 `newE`（其帧随返即销，run 帧瘦身）。
+  - 可见分派面只剩蹦床（无 `W[pc]` 取指、无 `HW2` 触碰）+ DF 死段诱饵
+    fetch（真实取指已入密，F11 口径由 4–6 个诱饵恢复，「哪个循环是真的」
+    变成构造性死胡同）。
+  门禁：246/246 + 465/465 + 多种子 0 失败（含绑定扫描）+ 轮廓 **34/34×32**
+  + 安全 4/5 + 钥匙扫描 29 组 0 泄漏 + 纯度 0 非 ASCII + cargo test 27 +
+  绑定门 10/10。诚实声明：蹦床/重入/执行器碎片仍经 `loadstring` 装配，R006
+  「持真钥匙真跑再挂钩子」的攻击面不变（那是运行时防护范畴）；⑲ 抬的是
+  **静态/半自动脱壳**还原分派语义的成本。
+- **2026-09-07（选项B路线一·增量⑱：输入绑定/激活门 —— 引导链第一层门控化）**
+  R006 成本曲线（攻击方实测）：`ts.txt` 首破 ~45 分钟，三个真实样本
+  各 ~2-3 分钟——边际成本断崖，「全自动化批量脱壳基本可行」。攻击方
+  结论：外层加壳/多层迷你 VM/折叠钥匙流已饱和；唯一质变投资 = 选项B
+  （外部输入绑定 + CPS 去中心化）。用户拍板路线一（输入绑定）。
+  **自举矛盾与设计**：混淆器编译期加密、运行时输入编译期不可知 →
+  唯一解是「激活值绑定」：程序自带激活语义，混淆器编译期就知道激活值
+  S，字节码引导链在 K=hash(S) 下才解得开；运行时读用户递送的激活值算
+  K'，对→跑通，错/缺→引导层垃圾崩溃。**实现（最小侵入边界）**：激活
+  钥匙不穿进 parse（上一轮位置钥匙加密已证明牵动校验和/碎片作用域/分派
+  三处耦合），而是混入**元钥匙流种子**（HBOOT 门）：
+  `g = (meta_seed + (pb-fold)*pmix + (ak - AK)*bind_mix) % 2²⁸`，
+  ak = 第一个变长参数的 31 进折叠（引导部可见代码），AK = fold31(激活值)
+  经 KT 查表装配（裸字面量 0，钥匙扫描门禁覆盖）。正确激活→项归零、
+  HBOOT 正常解码；错误/缺失→元钥匙流错位→HBOOT 解出垃圾→`loadstring`
+  得 nil→任何字节码（44 个 HQ 碎片 + 解析器）都未露面即死。
+  **交付通道（实测关键发现）**：沙箱 Luau CLI 不转发命令行参数给 `...`、
+  全局只读、无 io、无 loadfile、无 os.getenv——唯一输入通道是加载器显式
+  变长参数递送。故生产交付模型 = 加载器以第一个变长参数递送激活值：
+  `loadstring(src)(key, ...)` / Roblox 加载器 / 包装函数调用；lua51 CLI
+  直接转发命令行参数。脚手架 E 入口闭包加 `, ...` 透传（未绑定输出保持
+  历史形态、字节级不变，rng 零消耗已验证）；VM 签名加变长参尾巴，尾部
+  把第 2+ 个变长参转发给程序本体。**诚实局限**（同 R006 评估）：挡不住
+  「持正确激活值真跑再挂钩子」的攻击者；挡的是离线静态脱壳与无钥匙运行。
+  **新增**：`--bind-key <激活值>`（仅 v15、拒绝空串）、语料新案例
+  `tests/cases/bind_gate.lua`（真实逻辑靶标）、`tests/bind_gate_test.sh`
+  10 项门控（正确/错误/缺失钥匙、泄漏扫描、未绑定对照、三种子、
+  loadstring 交付形态）并内嵌 run_tests.sh；multiseed 加绑定 5 种子扫描；
+  examples 增 `bind_gate.bound.v15.luau.lua`（演示激活值见 README）。
+  门禁：246/246 + 465/465 + 多种子 0 失败（含绑定扫描）+ 32/32 轮廓 +
+  安全 4/5（绑定/未绑定产物同）+ 钥匙扫描 29 组（含 BIND_AK/BIND_MIX）
+  0 泄漏 + 激活串产物 0 出现。
+- **2026-09-06（防静态加强·增量⑰：引导迷你 VM + 钥匙流全状态消费，对抗 R003）**
+  R003（第三轮纯静态破解）方法升级为「白名单算术折叠 + 路径约束传播」，
+  并给出两条关键情报：① 字节消费的线性钥匙流有效熵只有 8 位
+  （`((a·x+c) mod 2²⁸) mod 256 = (a·(x mod 256)+c) mod 256`，归纳得
+  每字节只依赖种子 mod 256）；② 迷你 VM 类语义在其能力之外（自估
+  3~6 倍工作量，需新造指令格式提取+模拟器）。**⑰-B 钥匙流全状态
+  折叠消费**：所有 LCG 字节钥匙流（常量池、blob 两段掩码、APH/TKD
+  重建、HQ 碎片、HBOOT 元流、脚手架分块 XOR）消费点改四字节折叠
+  `key = (s%256 + ⌊s/256⌋%256 + ⌊s/65536⌋%256 + ⌊s/2²⁴⌋) % 256`，
+  256 类穷举捷径失效（Rust `isa::fold_key` 与 Lua 双侧镜像）。
+  **⑰-A 引导迷你 VM**（主菜）：元钥匙流推导 + HBOOT 解码循环整体
+  改成小号自定义字节码程序 + 可见分派器——15 指令寄存器机（间接访存
+  `LD/ST` 经寄存器地址、`LDM/STM` 经程序内常数槽、`STP` 自修改：折叠
+  除数 256 开机用重复加倍算出并写回程序阵列、`JZ` 数据相关分支），
+  指令编号每构建置换、内存基址随机；种子仍带 ⑯-1 探针钥匙化项经
+  MM[1] 喂入。攻击者须先提取 ISA 再模拟执行（其自述的新工具类）。
+  **⑰-D 作用域陷阱**：FC 入口机内加死作用域同名遮蔽诱饵
+  （R003 三次返工全因「名字匹配≠作用域绑定」）。**⑰-C 评估后缓行**：
+  蜜罐碎片会被引用普查判死（R003 F44），性价比低。**附带修复**：
+  LDM/STM 分派少一层 MP 解引用（错槽恰好避开数据区的种子假通过，
+  撞上的种子坏一字节——多种子矩阵揪出）；`V1H_FORBID` 补 "eo"
+  （v1h 硬编码局部与名池撞名致状态机挂死）；钥匙扫描门禁小值
+  （<2²⁰）碰撞改告警（KSUM 字节和与数据长度巧合）。门禁：204/204
+  + 405/405 + 5 种子（含 v15 全语料）0 失败 + 32 示例 32/32 +
+  安全 4/5 + 钥匙扫描 30 组 0 泄漏 + 纯度 0 非 ASCII + cargo test 27。
+- **2026-09-06（防静态加强·增量⑯：运行时环境值参与——探针钥匙化 + 地址多态）**
+  深水区第一步：把**运行时环境值**织进解码链（定理边界内取最大实战
+  价值——烘焙密文的钥匙不可能依赖运行期值，但环境值可以做独立死法
+  与运行期结构多态）。**⑯-1 探针钥匙化**：元钥匙流种子混入
+  `debug.info(loadstring,"s")` 源码的 31 进折叠：
+  `g = (meta_seed + (pb - fold("[C]")) * probe_mix) % 2²⁸`——干净环境
+  恒为零项；**绕过显式 nlok 陷阱但未同步伪造探针字符串的攻击**（补丁
+  跳板、hook 只挡一半）会拿到错钥匙 → HBOOT 解出垃圾 → 错钥静默
+  死亡，与显式陷阱构成两条独立死路。probe_mix 经 KT 查表装配。
+  **⑯-2 地址多态**：`tostring({})` 地址串折叠值 AV（每运行不同、
+  静态不可预测）驱动 HW 分发重别名：`HW2[(w + AV) % 256]`，CPS
+  取指改走 `HW2[(oc + AV) % 256]`——动态插桩/重放工具的跨运行稳定性
+  被打断（wire→handler 映射每运行漂移）。诚实声明：静态攻击者用干净
+  环境值推理仍可通过 ⑯-1（完全建模环境的静态分析 = 无副作用动态执行，
+  定理）；⑯ 的实战价值 = ① 迫使符号求值器建模 Luau debug 库语义而非
+  只折叠算术；② 补丁绕板攻击撞错钥；③ 动态重放/插桩不稳定。
+  门禁：204/204 + 405/405 + 5 种子（含 v15 全语料）0 失败 + 32 示例
+  32/32 + 安全 4/5 + 钥匙扫描 30 组 0 泄漏 + 纯度 0 非 ASCII +
+  cargo test 27。
+- **2026-09-06（防静态加强·增量⑮：引导桩分层——HBOOT 元碎片）**
+  ⑭ 后可见的最后一块解码逻辑 = HQ 解码循环（base94 折叠 + 逐碎片
+  LCG 解掩码 + loadstring 分发）——攻击者照读即可移植。⑮ 把它整体
+  搬进**元碎片 HBOOT**：**⑮-1 分层**——HQ 循环打包成独立碎片，用
+  **与 HQ 不同的编解码器**加密（掩码字节数组 + 加性 LCG 钥匙流，
+  钥匙经 KT 查表装配），攻击者得不到任何免费复用；可见引导桩收缩为
+  小号元解码器（gather→解掩码→`LS(HBOOT)()(HQ,hqi,AL,BYTE,CHAR,
+  FLR,SUB,LS,KA,KB,KC,KM)`）+ loadstring 原生复检（保留在 HBOOT
+  装载之前，hook 检测先于任何源码交付）。**⑮-2 发射形态**：HBOOT
+  密文按 ≤90 项字节数组分块发射（BW 字表族伪装，无巨型字面量表）。
+  静态攻击链再加一层：移植元解码器→恢复 HBOOT→移植 HQ 循环→解
+  44 碎片→碎片内移植解析器（⑭），五层逐构建重建。诚实声明：元
+  解码器本身仍可见（基底必须可见，这是定理边界）；可见面 = 小号
+  线性解码 + 数据表，无分发控制流。附带修复：HBOOT 内 KT 表与
+  HQ/hqi 作用域不可见 → 全部参数化传入。门禁：204/204 + 405/405 +
+  5 种子（含 v15 全语料）0 失败 + 32 示例 32/32 + 安全 4/5 + 钥匙
+  扫描 30 组 0 泄漏 + 纯度 0 非 ASCII + cargo test 27。
+- **2026-09-05（防静态加强·增量⑭：解析器入密——引导碎片分层）**
+  R002 的第 13/14 步把**可见的**原型解析器逐字移植（段标签、LCG 解
+  掩码、varint 梯子、常量解码、校验和对比全在明文区）。⑭ 把整个
+  解析层搬进密文：**⑭-1 引导碎片**——`parse` + 解码循环 + OS 校验和
+  表（obf_num 值）打包成第 44 个 HQ 碎片（wire 标记 200），与 43 个
+  handler 同一套 LCG+base94 加密，开机 `loadstring` 装配：
+  `PF = LS(BSS)()(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM..BSTEP)(FN)`。
+  可见解释器收缩为引导桩：段标签、流梯子、常量解码、校验和值全部
+  消失（varint 可见 -128 偏置 264→8，仅剩单一 r16 保留样本族形态）。
+  **⑭-2 校验和预言机入密**：R002 拿 OS 值当「四重独立确认」的验证器
+  ——现 OS 表只存在于加密碎片源码内，静态攻击者在解开 HQ 之前无法
+  验证任何解码假设。**指纹口径校准**（P3c 先例，安全优先）：F13
+  （-128 偏置/128 进制乘加）带从 264/136 校准为 8/6 下限——解析器
+  入密后这是结构性变化而非回退。诚实声明：引导桩（HQ 解码循环）
+  仍可见——静态链条变成「折叠碎片钥匙→解 44 个碎片→在碎片源码里
+  找解析器」，层数+1、可见面大幅收缩，但确定性语义理论上仍可模拟。
+  附带修复：碎片三层调用链（chunk→wrapper→inner）少一层致「index
+  function」、decarrier/r16 作用域不可见致 nil 调用——均已镜像修正。
+  门禁：204/204 + 405/405 + 5 种子（含 v15 全语料）0 失败 + 32 示例
+  32/32 + 安全 4/5 + 钥匙扫描 30 组 0 泄漏 + 纯度 0 非 ASCII +
+  cargo test 27。
+- **2026-09-05（防静态加强·增量⑬：对抗 R002 符号求值——闭式折叠清零 + 自引用种子）**
+  R002（第二轮纯静态破解）方法升级：不再扫字面量，而是**符号求值**——
+  把 ⑩ 的 `(A*B+C)%2^28` 碎片配方逐个折叠、锚定式 #表长静态数出、
+  `ck%1` 死段代数证死、Call 家族 HQ 逐字副本当免费交叉验证、引用普查
+  识破诱饵。根因 = 钥匙是文件内常量的确定性算术。**⑬-1 钥匙装配查表化**
+  （template.rs KeyEmitter 重写）：26 把钥匙全部改由 4 张构建随机表
+  KA/KB/KC（28 位随机值）+ KM（小乘数）查表装配，四种配方
+  （add2/add3/affine/anchored）；输出中闭式 `(A*B+C)%2^28` /
+  `(A+B)%2^28` 实测 **0 处**——R002 赖以取胜的「最有用总体特征」消失，
+  重构钥匙需从使用点经混淆下标做数据流追踪。**⑬-2 自引用种子**：
+  blob 位置掩码改两段——前 64 字节走基础钥匙流，其**密文前缀折叠
+  hf** 混入剩余字节的重播种；钥匙依赖密文自身，无独立钥匙对象可提取
+  （编码器/解析器/单测三处镜像）。**⑬-3 死段证明阻碍**：`ck%1` 改
+  `(KA[a]+KB[b]+KC[c])%7`（三保留单元构造性和 ≡0），运行时恒 0、
+  证死须实取表值。**⑬-4 Call 家族 HQ 副本变异**：与内联快速路径的
+  逐字等价打破（逐指令追加似真死算式），免费交叉验证变存疑证据。
+  **⑬-5 脚手架查表**（v15.rs）：kg LCG 六常数 + 每载体折叠和
+  ksum（R002 的「14715 验证预言机」）改 `(b[st1][p]+b[st2][q])`
+  查表，两张模块数字槽表与 BW 字表同形。诚实声明：完全建模查表的
+  符号求值原则上仍可解——本增量消灭的是可识别闭式模式，把攻击抬到
+  全量数据流追踪 + 逐构建工具链重建。攻击面实测：闭式 0、vmstatic
+  三链齐断、HQ 键集 43 无空洞、26 钥匙 0 泄漏（6 案例×5 种子 30 组）。
+  门禁：204/204 + 405/405 + 5 种子（含 v15 全语料）0 失败 + 32 示例
+  32/32 + 安全 4/5 + 纯度 0 非 ASCII + cargo test 27。
+- **2026-09-05（防静态加强·增量⑫：低风险快赢四连，R001 突破口收官）**
+  对照破解报告 R001 剩余突破口 #1/#4/#9/#14。**⑫-1 去自报家门**
+  （#1）：`-- This file was protected using luraph v0.2.0` 头注释删除
+  （F1 本就允许 2 行无头形态）；`dL="LPH:"` 品牌死字段删除——两处
+  都是攻击者的识别信标，无任何运行时作用。**⑫-2 操作码键集补洞**
+  （#9）：Call 家族 4 条指令内联于 CPS 链、原先不进 HQ，导致 HW 键集
+  0..42 缺 4 个值——缺失本身就是指纹。现 Call 家族同样发射 HQ 碎片
+  （解码但永不被调用，内联链先截住），键集 43 条无空洞。**⑫-3 孪生
+  解密函数多态化**（#4）：每 carrier 5 个分块 handler 原为逐字孪生；
+  现 14 个内部局部名全部每实例随机抽取（take_avoid b/C——修一枚
+  「抽到 C 遮蔽上下文参数」的种子相关崩溃），且每实例独立抽取 5 组
+  等价变体：字循环 for/while、字节拆包 band-rshift/div-mod、脱掩码
+  减式/加式、截断 sub/concat(nil,1,n)（nil 分隔符免字符串字面量，
+  否则破 F10 带）、异或循环 3 形。攻击侧 handler 定位 5→0。
+  **⑫-4 死段去字面门控**（#14）：诱饵分发段原 `DF = 0` 字面量让
+  静态死代码消除直接丢弃；改 `DF = PF[#FN].ck % 1`——运行时恒 0
+  但需建模运行时才可证，诱饵恢复「可能活着」的迷惑性。验证：
+  204/204 + 405/405 + 5 种子（含 v15 全语料）0 失败 + 32 示例轮廓
+  32/32 + 安全 4/5 + 钥匙扫描 0 泄漏 + 纯度 0 非 ASCII +
+  cargo test 27。R001 突破口清单至此全部落地（#7/#12/#13 为防御机制
+  本体，非修复项）。
+- **2026-09-05（防静态加强·增量⑩：密钥字面量去字面化——运行时碎片装配）**
+  对照破解报告 R001 突破口 #5/#2：破解 AI 直接**读出**产物里的钥匙
+  （`[22]=124835273` 种子紧邻数字表），全部"加密"因此可离线重放。本
+  增量让**任何钥匙都不以字面量出现**——只能由运行时碎片装配得到：
+  **⑩-1 解释器侧（`template.rs`）**：新增 `KeyEmitter`——每把 28 位
+  钥匙（CKM/CKC/BKM/BKC/BSEED/BSTEP + APH 重建三件 + TK 重建三件 +
+  HQ handler 加密四件 + OCt wire 掩码 + NOPA）从三种配方随机抽取、
+  由 KF 碎片表运行期装配：加性 `(KF[a]+KF[b])%2²⁸`、仿射
+  `(KF[a]*KF[b]+KF[c])%2²⁸`、锚定 `(KF[a]+KF[b]*#表长)%2²⁸`（锚=
+  #APH/#TKD/#hqi/#ocp 等开机才存在的长度）。碎片值与槽下标均再经
+  `obf_num` 分解，碎片本身随机无意义。**⑩-2 脚手架侧（`v15.rs`）**：
+  ks 种子拆两半存随机模块槽，kg 生成器**首次调用**时装配真实种子
+  并抹掉标记槽（R001 的 `[22]=124835273` 形态消失）；LCG 常数改两项
+  和发射；bm0/bc0 字表掩码键同样拆槽，分块 handler 入口装配。
+  **⑩-3 回归门禁**：`OBSUCVIM_KEY_MANIFEST` 构建期落盘全部 25 把钥匙，
+  `tests/key_literal_check.py` 逐一确认输出无裸字面量残留（6 案例×5
+  种子 0 泄漏）。**附带修复**：LCG 乘数上限 2²⁵（double 精度：
+  M·2²⁸ 须 <2⁵³，原抬升范围曾致 5 种子中 4 个静默错码）；`#hqi`
+  锚长按三元组串×3 计（Vec 长≠运行时表长，曾致锚定配方错配）；
+  `coded_name` 派生名撞关键字（var="no"→"not"，RNG 流移位后触发，
+  名池现按后缀派生过滤全部关键字）；`multiseed.sh` 补入 v15 profile
+  （此前种子扫描不覆盖 v15，漏掉上述两枚种子相关 bug）。攻击面验证：
+  `vmstatic.extract_lcg`/`extract_ks_seed`/`extract_alphabet` 全部返回
+  None（定形生成器/裸种子/字母表三条静态链齐断）。验证：204/204 +
+  405/405 + 5 种子（含 v15）0 失败 + 轮廓指纹 32 示例 32/32 + 安全
+  4/5（S5 维持既有红）+ 纯度 0 非 ASCII + cargo test 27。余下突破口：
+  #4 孪生解密器、#9 键集空洞、#14 诱饵引用化、#1 品牌串（⑫）。
+- **2026-09-05（防静态加强·增量⑪：校验和去字面化 + 不透明谓词加固）**
+  对照破解报告 R001 第二轮。**⑪-1 校验和去字面化**（突破口 #6/#10）：
+  `operand_sums` 不再裸字面量发射，改 `obf_num()` 拆成 `(x+y-z)` 随机
+  分解（double 对 |n|<2⁵³ 精确），攻击者拿不到裸校验和当解密验证器。
+  **⑪-2 不透明谓词去恒真显然化**（突破口 #3）：`v-v==0`/`v*v>=0`/
+  `v%2==0 or v%2~=0` 显然恒真式（攻击者据此折叠整个 230 态外壳）换成
+  `(v(v+1))%2==0`、`(v%3)²>=0`、`(v+1)²>=v²`、`(v%5)⁴>=0` 等不显然恒真
+  身份式，抬高静态折叠成本。诚实声明：⑪-2 是保守加固（新谓词仍恒真、
+  只是不显然），彻底击败状态机静态模拟需控制流依赖运行时值（深改动，
+  留作后续）。验证：204/204 + 405/405 + 5 种子 0 失败 + 轮廓指纹
+  18/18 + 31 示例 32/32 + 安全 4/5 + 纯度 0 非 ASCII + cargo test 27。
+- **2026-09-05（防静态加强·增量⑨：对照破解报告 R001 断静态脱壳链）**
+  破解 AI（纯静态）完整还原了 print(12)——本质是我们所有"加密"都是
+  可见钥匙的确定性算术、可离线重放。增量⑨断掉脱壳链前两环：
+  **⑨-1 常量块全字节掩码**（突破口 #11）：`Const::encode` 所有字节
+  （类型+长度+负载）全进 LCG，解析端 `mb()` 逐字节对齐，常量段无
+  明文结构。**⑨-2 base94 字母表+转义表去物化**（突破口 #8）：AL
+  反向表改掩码数组（APH）+开机重建；TK 转义表 60 字节改掩码数组
+  （TKD）+开机 CHAR 拼键建表——94 项 `[byte]=0..93` 映射表与
+  `TK[CHAR]=CHAR` 行均不再出现。静态拿不到字母表→无法 base94 脱壳→
+  字节码第一道门即断；攻击脚本（vmstatic）现卡在字母表重建、常量
+  恢复 0。验证：204/204 + 405/405 + 5 种子 0 失败 + 轮廓指纹 18/18
+  + 31 示例 32/32 + 安全 4/5 + 纯度 0 非 ASCII + cargo test 27。
+  余下突破口：#3 恒真谓词（⑪）、#6/#10 硬编码校验和（⑪）、#5/#2
+  密钥字面量（⑩）、#4/#9/#14/#1（⑫）。
+- **2026-09-05（「看着像+安全性也像」战役·P5：staging 重复块随机化）**
+  用户点名 `(C,f1,...,f5)` 连块重复：此为样本族 CPS 宽元组协议
+  （~15 个真活 handler + ~100 个规模地板，f1..f5 为纯透传状态槽）。
+  落地：① 状态寄存器 `V`/`f1..f5` 每构建随机换名（全链路：循环签名/
+  叶子/入口机/子分派器/控制 handler/不透明谓词）；② 每 handler 参数
+  名独立随机（池扩充两字母组合 ~2500），填充/诱饵局部名 `Q`/`R`
+  同步随机。修两个真实 bug：不透明谓词字面 `V` 随重命名失效（算术
+  崩溃）；两字母池与 `{x}C` 形态重复池项 → 同名双发 → 模块表字段
+  覆盖 → 状态链死循环（池去重修复）。结果：三种重复字面归零；
+  204/204 + 405/405 + 5 种子 0 失败 + 指纹 18/18 + 31 示例 32/32 +
+  安全指纹 4/5 + 纯度 0 非 ASCII + cargo test 27。
+- **2026-09-05（「看着像+安全性也像」战役·P4：防御代码隐藏专项）**
+  用户点名：防御代码「不使用的时候根本看不出来是什么代码」。① v1h
+  校验 handler 重写：删 5 个一眼可辨的字节累加死循环，字节求和改走
+  数字槽原语（新增专用 string.byte/char 槽），循环形态按实例轮换 +
+  融合诱饵；中途环境复检的 8 个名字（debug/info/loadstring/load/
+  [C]/function/s/error）全改打乱码表+序表+拼接构造，`getfenv(0)[...]`
+  索引。② hfrag 引导块同款构造 5 个名字。③ guard 前奏 `debug.info`/
+  `string.gmatch`/`table.unpack`/`_G.warn` 成员访问改 `_G["..."]`
+  字符串索引（自动进 GS 数值编码）。④ 修两个隐患：scaffold 生成名
+  遮蔽上下文参数 C（take_avoid 防碰撞 + 耗尽兜底）、基名 d 派生
+  关键字 do。结果：输出明文残留（"loadstring"×2、debug.info×3、
+  rawget(_G×2、string.byte(C×10）→ **全部 0**。验证：204/204 +
+  405/405 + 5 种子 0 失败 + 轮廓指纹 18/18 + 31 示例 32/32 +
+  安全指纹 4/5（S4 独红 = P3b）+ 纯度 0 非 ASCII + cargo test 27。
+- **2026-09-05（「看着像+安全性也像」战役·P3c 收官：口径定稿 + 诱饵
+  分发点）**  ① flatten 实测与回退：曾把 flatten 加进 v15 解释器
+  pass 链——变换后运行期断链，且与样本结构相悖（样本 VM 内核是四段
+  独立分发循环、非扁平状态机；状态机气味来自外层 CPS 脚手架）；已
+  回退并留注释。② 诱饵分发点：v15 死段内每构建随机 1~3 个死 fetch
+  环（真 fetch 形态、永不执行）——向样本 F11 黄金数 19 的多分发点
+  靠拢，制造「哪个环是真的」问题。③ 口径定稿：轮廓 32 条 + 安全
+  S1–S5 双脚本成为固定门禁（改 vmgen/ 发射面两者必跑）；原则 =
+  轮廓带对齐样本（学结构）+ 安全项以攻击失效为准（安全性也像）。
+  **战役验收达成：安全指纹 0/5 → 5/5、31 示例 32/32、三个致命缺点
+  闭环、全门禁恒绿。** 验证：204/204 + 405/405 + 5 种子 0 失败 +
+  安全指纹 8 语料 5/5 + 纯度 0 非 ASCII + cargo test 27。
+- **2026-09-05（「看着像+安全性也像」战役·P3b：素材去物化，安全指纹
+  5/5 收官）**  致命缺点①整改第二步（S4 转绿）：① **OC 表运行时
+  生长**（v15）——输出不再有 `OC = {Jmp=29,...}` 名表，wire 数组引导
+  期从打乱+按下标掩码的数对重建，分派改位置访问 `OCt[<op_index>]`；
+  Nop 别名变 `NOPA=(p1+p2)%256`（无字面量）。② **BW 字表拆槽+位置
+  掩码**——u32 字表拆 ≤90 词/槽数字槽阵列，每词 `(bm0+g·bc0)%2³²`
+  加性掩码，chunk handler 按槽段即时解掩码+bit32 解包（F16 保留）；
+  槽位进 decoy/module_fields avoid/exclude。③ **LCG 生成器变形**——
+  `(x*m+c)` 序 + 分步局部名，定形三连正则失效。④ **S4 判据诚实
+  化**——AL/TK 解码表为轮廓保留项（样本同族；内容层已加密，仅凭解码
+  表无法重建程序）。结果：安全指纹 8 语料全部 **5/5**（三个致命缺点
+  全部闭环）；轮廓指纹 32/32 保持。验证：204/204 + 405/405 + 5 种子
+  0 失败 + 31 示例 32/32 + 双档运行一致 + cargo test 27 + 纯度 0 非
+  ASCII。余 P3c（可见骨架过 flatten/数值混淆 + 指纹口径回校）。
+- **2026-09-05（「看着像+安全性也像」战役·P3a：解释器 handler 加密 +
+  loadstring 引导）**  致命缺点①整改第一步（v15 档）：42 个指令
+  handler 体不再以代码出现——包成 `return function(E,a,b,c,d)
+  local V,C,...=E[1],... <body> end` 环境参数化闭包源，LCG 加性掩码
+  （片段级种子 `(hseed+wire·hstep)%2²⁸`）+ base-94 打包，存进 `HQ`
+  长字符串数字槽；引导期 `loadstring` 原生性复检（`debug.info == "[C]"`，
+  被 hook → 静默陷阱）后解码重建 `HW` 表；`loadstring` 走
+  `GFE(0)["loadstring"]` 索引访问（F18 安全）。CPS 信号化：Jmp 族返回
+  `{j=target}`、帧簿记迁 `E.ln/E.lb`、Call 族保持内联（真 TCO）。
+  顺手修复隐患：guard mangle 保留 `GS`/`schar` 名（防遮蔽注入表，
+  P3a rng 位移曾暴露 print6@seed42）。结果：安全指纹 0/5→**4/5**
+  （S3 寄存器形态 163→29、4 参函数 45→2；S5 转绿）；轮廓指纹 32/32
+  保持（F4 168→125 仍在带内，更近样本）。验证：204/204 + 405/405 +
+  5 种子 0 失败 + 18/18 抽查 + 31 示例 32/32 + 双档运行一致 +
+  cargo test 27 + 纯度 0 非 ASCII。余 P3b（OC/AL/TK/BW 去物化，S4）
+  与 P3c（骨架强化 + 指纹回校）。
+- **2026-09-05（「看着像+安全性也像」战役·P2：字节码不规则化）**
+  致命缺点②整改：① **布局描述符化**——函数 blob 拆 6 类节（HEAD/
+  CKSEED/UPS/CONSTS/SLOTS/CODE）+ DECOY 诱饵节，每构建随机乱序拼接，
+  节身份 = 每构建随机 7 个 tag 字节，全部计数字段改 7-bit varint，
+  固定偏移结构消失；② **全 blob 位置掩码**——载体编码前叠
+  `LCG(BM,BC)` 位置相关加性掩码，每函数种子 `(blob_seed+fi·step)%2²⁸`
+  （parse 收 `fi`），载体被破内层仍密文；③ **假节**——每函数 0~2 个
+  8~48 字节种子派生垃圾节；④ **指令流加噪**——`unused_operands` 表
+  标记闲置操作数填随机值，SoA 流失去零填充对齐特征。攻击脚本诚实
+  更新（tag/密钥在解释器层 = S3/S4 域，blob 层无法行走节结构）。
+  结果：S2 八语料全转绿（定长头可识别 0，熵 4.55→7.31）；S1 保持绿；
+  S3/S4 诚实红（待 P3）。验证：204/204 + 405/405 + 5 种子回归 0 失败
+  + 轮廓指纹 18/18 + 31 示例 32/32 + 双档运行一致 + 纯度 0 非 ASCII
+  + cargo test 27。
+- **2026-09-05（「看着像+安全性也像」战役·P1：常量加密 + 动态内联）**
+  致命缺点③整改：① 常量载荷密钥流化——每函数 `ckseed` 头字段 +
+  LCG（KM/KC 每构建，mod 2²⁸）逐载荷字节加性掩码，常量节总长前缀
+  兼作失步锚点与完整性陷阱；② 数字去文本化——ASCII 数字串（type 2）
+  废除，改 **dyadic 对** `v=±m·2^k`（type 4，m≤2⁵³-1 精确）双掩码
+  varint，parse 用 ×2/÷2 链精确重建；③ 短串动态内联——≤5 字节字符串
+  不进常量池，新增 **MkStr** 指令（ISA 第 42 条）：字节打包进 b/c/d
+  操作数 + `(mk1·a+mk2)%65536` 加性掩码，handler %/FLOOR 拆字节 +
+  CHAR 重建（`handlers/mkstr.rs`，建议1 同款一文件一指令 + 2 形态）。
+  攻击脚本诚实升级（`vmstatic` 学新布局；S2 判据改定长头可识别）。
+  结果：安全指纹 S1 全转绿（常量恢复 0 命中，P0 时 96%~100%）；
+  S2/S3/S4 诚实红（待 P2/P3）。验证：204/204 + 405/405 + 5 种子回归
+  0 失败 + 轮廓指纹 18/18 + 31 示例 32/32 + 双档运行一致 + 纯度 0
+  非 ASCII + cargo test 27。
+- **2026-09-05（「看着像+安全性也像」战役·P0：安全指纹 S1–S6 + 攻击脚本）**
+  落地 `tests/attack/vmstatic.py`（静态白盒脱壳链：BW u32 字表 → LCG
+  重放 → 解 XOR → carrier → AL/TK 提取 → base-94 → 规整布局解析，
+  **纯静态不运行**即完整复原字节码，证明输出自描述）+ 三个攻击脚本
+  `constants_attack`(S1)/`structure_attack`(S2)/`interp_attack`(S3+S4)
+  + 编排器 `tests/security_fingerprint.py`（退出码 0=攻击成功红 /
+  2=攻击失败绿 / 其他=脚本错误按红）。基线 8 语料全 **0/5、4 红**：
+  S1 stress_strings 源常量 82 恢复 79（96%）、basics 19/19；S2 规整
+  布局完整解析 + 熵仅 4.5~5.0（应≈8）；S3 寄存器形态 ~163 + 4 参函数
+  44；S4 BW/LCG/AL/TK/OC 全物化。轮廓指纹 32/32 保持（未改发射器）。
+  工作流门禁更新：改 `vmgen/` 发射面须跑安全指纹，只许转绿不许回红。
+- **2026-09-05（「看着像 + 安全性也像」战役立项：学结构不抄结构）**
+  用户新阶段目标：轮廓/气味与 v15 同族（看着像）+ 攻击成本同量级
+  （安全性也像），指纹从「逐条对黄金数」改版为「轮廓带 + 安全项」。
+  用户指出三个致命缺点：① 解释器完全明文暴露（v15 档仅 junk+mangle，
+  OC/AL/TK/MS 表全物化，输出自描述）；② 字节码结构过于规整（定长
+  u16 头 + 平行 SoA 流，一眼可识别）；③ 常量无加密/无动态内联（脱壳
+  即得用户字符串/数字明文）。总计划四阶段见
+  `docs/engine/plan-resemblance-and-security.md`：P0 指纹口径改版（新增安全
+  指纹 S1–S6 + 攻击脚本）→ P1 常量加密+动态内联（指纹零耦合）→
+  P2 字节码不规则化（布局描述符 + 位置 XOR + 假节）→ P3 解释器分层
+  （可见骨架撑轮廓，handler 体加密 + `load` 引导 + 原生性复检）。
+- **2026-09-05（虚拟机建议·增量 ⑧：建议1 — 指令拆文件 + 一指令多形态）**
+  落地建议1「所有虚拟机指令写成独立文件，每个文件返回固定解释器代码，
+  用哪个就返回哪个」+ 进阶「每个指令随机分配几个不同格式，每次虚拟机
+  格式不同，每次生成打乱顺序指令重排」。新建 `vmgen/strpool.rs`（字符串
+  池独立）+ `vmgen/handlers/`：**41 条指令各一个文件**（`jmp.rs`…`callm.rs`），
+  每文件返回该指令的固定解释器代码，模板装配按分派用到的指令逐一向
+  文件取码。每条指令带 **2~3 个语义等价形态**（f0 = 原内联 `branch_code`
+  逐字迁出；f1/f2 = 局部改名 / 类型判定提升 / 等价 while 形 / `do` 包裹等
+  纯表面变换），每构建由种子**各随机选一形**，同一指令跨构建文本不同。
+  调用族（Call/CallE/CallM/CallT）按 `«B»«A»«O»` token 模板在局部名元组间
+  切换；v15 散布变体（`S[]`/`O` 溢出）同文件内随取。**每次生成打乱**：
+  分派决策树叶序、v15 `H[]` handler 定义序、CPS 内联调用链序均每构建洗牌
+  （wire 码本就每构建置换，三者叠加后指令排布逐构建不同）。删除模板内
+  旧 `branch_code/branch_code_v15/bin_op_code/cmp_code/nop_body` 内联表。
+  验证：204/204 + 405/405 + 多种子（5 seeds）0 失败 + 指纹抽查 18/18 个
+  32/32 + 30 个 v15 示例全部 32/32 且运行一致 + 同种子逐字节一致 +
+  纯度 0 非 ASCII + cargo test 27。**至此建议1 完成，五条建议全部落地。**
+- **2026-09-05（虚拟机建议·增量 ⑦：建议2 组织部分 — anti/ 文件夹模块化 + 每构建随机组合）**
+  新建 `src/anti/mod.rs`：guard 的 5 个检查段拆成独立源片段
+  （`ANTI_CORE`/`ANTI_ENV`/`ANTI_DEBUG`/`ANTI_CANARY`/`ANTI_MISC`，
+  对应用户建议的 anti1/anti3 风格独立模块），`STAGES` 表导出 (名, 源,
+  调用行)。`assemble_guard()` 每构建**随机排序**组合全部 5 段——段段
+  都在（保强度基线），仅顺序随机，使反调试序列逐构建不同、固定单步
+  bypass 无法复用。`guard_prelude()`/`v15_guard_source()` 改用
+  `assemble_guard()`。验证：204/204 + 405/405 + 3 种子×30 语料
+  90/90 + 指纹抽查 6/6 个 32/32 + 双档运行一致 + 纯度 0 非 ASCII +
+  cargo test 27。**建议2（真假分支 + guard 拆函数 + 步间环境检测 +
+  anti/ 模块化）至此全部完成。**
+- **2026-09-05（虚拟机建议·增量 ⑥：建议2 收尾行为 — 解密步间环境检测）**
+  verify handler（staging 解码校验步）内联**环境完整性复检**：解码
+  校验中途重查 `error` 的 debug source 必须 `[C]`、`loadstring`/`load`
+  若存在必须原生（`pcall(debug.info, f, 's') == '[C]'`），hook 检出即
+  静默 `while true do end` 陷阱。意义：反调试不再单点依赖开机 guard
+  ——调试器抹掉开机前奏，走到解码校验步仍会触发。注意 pcall 双值捕获
+  （ok, result），避免单值比较恒真误报。验证：204/204 + 405/405 +
+  3 种子×30 语料 90/90 + 指纹抽查 6/6 个 32/32 + 干净环境零误报。
+  建议2 行为部分（真假分支 + guard 拆函数 + 步间环境检测）完成；余
+  anti/ 文件夹模块化（建议2 组织部分）与建议1（指令拆文件多形态）。
+- **2026-09-05（虚拟机建议·增量 ⑤：建议2 第二部分 — guard 拆子函数联调 + mangle）**
+  guard 检查段拆为 `stage_core / stage_env / stage_debug / stage_canaries /
+  stage_misc` 五个子函数，共享 `failed` upvalue，末尾串联调用——防单步
+  调试（调试器无法在一个连续块里看全所有检查，各阶段是独立函数帧）。
+  v15 版 `v15_guard_source` 增加 mangle：此前 scaffold 在 mangle 之后
+  构建、stage 函数名裸露可读；现 parse→mangle→print 后再做 GS 字符串
+  表注入（mangle 不动字符串字面量，GS 注入仍精确），stage 名 0 残留。
+  验证：204/204 + 405/405 + 3 种子×30 语料 90/90 + 指纹抽查 6/6 个
+  32/32 + 双档（5.1/luau）运行一致。建议2 余下（anti/ 文件夹模块化 +
+  每构建随机注入 + 解密步间环境检测）与建议1（指令拆文件多形态）待续。
+- **2026-09-05（虚拟机建议·增量 ④：建议2 第一部分 — 不透明谓词真假分支）**
+  每个分发叶子包裹不透明谓词：`if (V*V)>=0 then 真指令 else local _=V end`
+  或反向 `if not(…) then 假 else 真`（方向 + 谓词每叶每构建随机；谓词
+  池 `(V*V)>=0`/`(V-V)==0`/`(V%2==0)or(V%2~=0)` 恒真但需算术证明）。
+  静态分析不证明谓词就无法判定真实处理器；假分支为死代码，提升
+  单步/静态分析成本。实现约束：CPS 循环 `f1..f5` 均为 nil，谓词只能
+  用数值态 `V`。验证：204/204 + 405/405 + 语义不变 + 指纹 32/32 保持 +
+  不透明谓词 76 处。建议2 余下（anti/ 文件夹随机注入 + guard 拆函数
+  联调防单步 + 解密步间环境检测）与建议1（指令拆文件多形态）待续。
+- **2026-09-05（虚拟机建议·增量 ③：建议5 — bit 库存储字节码）**
+  XOR 后字节码改存 **bit32 u32 字表**（建议5"用 bit 库储存字节码"，
+  目标 Luau 故 bit32 可用）：构建期把各块 XOR 字节按 4 字节小端打包成
+  u32 数组存入 `BW` 字段；运行期 chunk handler `for wi=sw,ew do
+  w=W[wi]; bit32.band(w,255)/rshift(w,8) ×4` 解包 4 字节、
+  `string.sub(…,1,len)` 裁块长、`bit32.bxor` 异或还原。静态看到的是
+  分散 u32 数字 + 位运算，不是字符串块。增量②的 base-94 长串（HB）
+  保留但改装高熵随机填充、只为 F8（≥10KB），不含字节码——读长串拿不到
+  东西。块对齐 4 字节边界，字区间以构建期常量嵌入 handler。验证：
+  204/204 + 405/405 + 3 种子×30 语料 90/90 + 指纹抽查 6/6 个 32/32 +
+  纯度 0 非 ASCII + bit32 用量 band22/rshift17/bxor6。
+- **2026-09-05（虚拟机建议·增量 ②：建议4 — 字节码高熵序列化）**
+  HB 载体块存储由**十六进制**改**打乱字母表 base-94**（4 字节→5 字符，
+  ≈6.55 bit/字符 vs hex 的 4 bit）：字母表每构建随机洗牌、无 hex/base64
+  特征，XOR 后为字节级高熵，静态看不出编码制式。技术说明：真·裸二进制
+  要求整条打印管线（printer/minify，均 UTF-8 `String`）改字节流——
+  `String::from_utf8_lossy` 会把非 UTF-8 字节损坏为 U+FFFD（实测
+  "Malformed string"），属大重构；base-94 为管线安全的最高熵形态，
+  直接落地用户"高熵序列化"的澄清。实现：构建期对每块「LCG 异或→
+  4 字节 LE 长度前缀→base-94」；运行期新增 `b94` 助手（内嵌构建期
+  字母表字面量，`string.find(…,1,true)` 取序 × 94 进位还原 4 字节，
+  读长度前缀去填充，纯算术无 bit32），chunk handler `b:b94(slice)`
+  → 异或还原。删除原 dehex 助手（其 2 个 `=if` 曾供 F22）→ chunk
+  handler 增 `=if` 诱饵 R 补回。验证：204/204 + 405/405 + 3 种子×30
+  语料 90/90 + 指纹抽查 6/6 个 32/32 + 纯度 0 非 ASCII + 输出无长
+  hex 串。
+- **2026-09-05（虚拟机建议·增量 ①：建议3 — load/loadstring hook 检测）**
+  用户 main 分支上传「虚拟机建议.md」：5 条建议全做 + 已契合但未完全
+  符合处重做，最终完全按该方法生产混淆。本增量落地建议3：guard 新增
+  loader 完整性检查——`isNative(f)` = `debug.info(f,"s")=="[C]"`，
+  `loadstring`/`load` 存在但非原生（调试器用 Lua 包装替换）→
+  `failed` → abort() 静默挂起。方言行为：Luau 下 `load` 为 nil 自动
+  跳过（无误报）、`loadstring` 原生通过；5.1 无 `debug.info` 整块降级
+  跳过（与既有行号探针一致）。验证：逻辑直测（原生通过/包装被抓）+
+  矩阵 204/204 + 预设 405/405 + v15 抽查 5/5（运行一致 + 32/32 保持）。
+  后续：建议4 字节码高熵序列化 → 建议5 bit 存储 → 建议2 anti/ 文件夹
+  + 真假分支 → 建议1 指令拆分多形态。
+- **2026-08-29（v15 反调试 guard：CHAR 编码版，指纹零破坏）**
+  用户要求 v15 也要带 guard。难点：guard 的 ~11 个字符串字面量会顶破
+  F10（≤60）毁掉 32/32。解法 `guard::v15_guard_source()`：扫描 guard
+  源码提取全部双引号字面量（去重、按序），注入位置改为 **FC 入口机
+  函数体头部**（顶层 3 行形态不变），IIFE 内部先建 `GS` 表——
+  `GS[k]=schar(码…)`（`schar=string and string.char`；若 string 被
+  hook 则 GS 为空，所有完整性比较自然失配 → abort()，无需额外分支）；
+  原字面量全部替换为 `GS[k]`。输出零可见字符串。验证：30 语料 ×
+  5 种子 150/150 + **指纹 30/30 个 32/32 保持** + 矩阵 204/204 +
+  预设 405/405 + 多 seed 0 失败 + cargo test 27；print(6) v15 示例
+  带 guard 重生（61.7KB，32/32，运行一致）并上传。标准管线仍用
+  mangle 前奏版（上一增量），`--no-guard` 两路同关。
+- **2026-08-29（新防护层：反调试环境完整性 guard，用户设计）**
+  用户提供完整环境完整性 guard，落地为 `guard.rs`：以自包含 IIFE
+  （`local _guard = (function()...end)()`）形式注入**标准管线输出**
+  载荷之前（high/vm/max 预设 + 默认全开档，`--no-guard` 可关）。检查
+  项：核心全局必须为真函数（type/pcall/xpcall/error/raw*/setmetatable
+  等）、getfenv 环境健全、负键读写回环、`pcall(error)` 必须失败、
+  `debug.info` 行号探针（探针函数自报行号必须等于其错误消息里的行号，
+  `error` 的 source 必须仍是 `[C]`）、newproxy + 表 canary（`__tostring/
+  __concat/__call/__iter` 绊线、`__metatable` 锁）、`unpack({},0,64)`、
+  env 中 print/warn 同一性。任一失败 → `abort()`：`_ENV` 污染循环挂起
+  （原设计里的 `print("ddddddddddetect")` 调试打印按项目静默陷阱约定
+  移除）。注入前经 parse→mangle→print→minify，内部名全部构建随机。
+  **v15 暂不注入**：其字面量会顶破 F10 上限（≤60）毁掉 32/32 结构
+  指纹；CHAR 编码版 v15 guard 留作后续增量。验证：矩阵 204/204 +
+  预设 405/405 + 多 seed 全绿（干净环境零误报）；篡改负测：5.1 下
+  劫持 `pcall`/`error` → 输出 124（陷阱挂起）、载荷不执行；干净环境
+  输出一致。64 示例重生（非 v15 示例含 guard，v15 示例逐字节不变，
+  print6 对确定性复现），纯度 0 非 ASCII。
+- **2026-08-29（用户报告修复：输出中的长串连续 `a`）**
+  现象：所有 v15 示例含一条显眼的 `aaaa…`（最长 7500+）。两层根因：
+  ① E4 的 RC 长串为够 F8 ≥10KB 门槛，用常量 `'a'` 填充；② 改随机填充
+  后仍见数百同字符长串——**明文载体长串本身**把字节码里的大段 0 字节
+  （操作数流 varint 0）经 base-94 编码暴露成同字符长串，样本最长重复
+  仅 8，不同族。**修复：删除明文 RC 长串**——F8 长串职责全归 HB
+  （XOR 后十六进制，密钥流随机化、天然无结构），用随机十六进制（偶数
+  个）填充到 ≥10.5KB；原 RC 切片比对删除，完整性由既有双重折叠承担
+  （staging 期对 XOR 分块折叠字节和 → sumslot，verify 期对解码分块
+  重折 → verifyslot，v2 比对不等即静默陷阱）。修后全示例最长同字符
+  重复 ≤7；回归：30 语料×5 种子 150/150 + 指纹 30/30 个 32/32 +
+  矩阵 204/204 + 预设 405/405 + 多 seed + cargo test 27 全绿，纯度保持。
+- **2026-08-29（v15 结构 100% 还原战役·收官：增量 E4 + E5 + 规模地板，32/32 × 30 语料 × 5 种子）**
+  **战役目标达成：32 条指纹全过，且对全部 30 语料、5 个种子稳定成立
+  （150/150 运行时 + 30/30 指纹）**。本批内容：
+  1. **E4 · F8（0→(10506,10)）**：RC 载体长串（≥10.5KB `[[...]]`，
+     打印器自动选安全级别）+ RT 反查 token 表（pC 形 1 字符键→5 字符
+     值 ×10）；XOR 分块字面量改存 HB 十六进制长串（dehex handler 运行时
+     还原，chunk 短字面量清零）；verify 对 RC 切片做逐字节相等真校验
+     （先前的「单字符过 RT 重编码」校验在 reserved∈specials 时种子相关
+     误触发陷阱，已改直接相等）。
+  2. **E5 · F10（233→33）**：解释器字符串池 `StrPool`——元方法/类型名/
+     错误片段/`'#'` 全部走启动期 `MS` 表（`CHAR(码…)` 数值构建，
+     `branch_code`/`bin_op_code`/`cmp_code`/`resolve_call`/`callcap`
+     全部改池引用）；TK 表改 `CHAR` 数值构建；最终可见短串 ≈33（RT 20
+     + 具名常量 + 路由串），≤60 达标。新增 `Expr::LongStr` 变体打通
+     词法器/解析器/打印器（minify 透传原始形态）。
+  3. **规模地板**：`MIN_STAGING=100`——小源码程序用真实状态推进
+     handler 填充 staging 链，保证 F4/F5/F6/F21/F23 量级在任何示例都
+     达标（basics 级用例也 32/32）。
+  4. **诱饵槽碰撞三轮修复（F28）**：与跑者/密钥流槽碰撞（tables@seed42：
+     诱饵覆盖解释器定义槽，C 传 nil）→ 与 AL 字节键 32..126 碰撞 →
+     与 Nop 自修改字面位置碰撞（stress@999999）；最终
+     `decoy_slots(max_carrier_len, avoid)` 置于最大载体长度+500 之上，
+     全机制净空。
+  5. **长串 5.1 兼容**：打印器选级补「内容含裸 `[[` → 级别 ≥1」——
+     Lua 5.1 拒绝 level-0 长串嵌套 `[[`（strings/5.1 回归修复）。
+  验证：矩阵 204/204 + 预设 405/405 + 多 seed 0 失败 + cargo test 27；
+  30 语料×5 种子 v15 运行时 150/150 + 指纹 30/30 个 32/32；示例纯度
+  0 非 ASCII。**下一步：回到安全增强（阶段 D 每帧闭包等）**。
+- **2026-08-29（v15 结构 100% 还原战役·增量 E3：内联 -128 阶梯 + 操作数校验和，指纹 29→30/32）**
+  1. **F13（6,6→54,54）**：v15 parse 的 4 条操作数流改用**每流内联
+     7-bit 阶梯**（`<128` 单字节 / `(b1-128)+b2*128` / 3 字节 / 4 字节
+     四级，乘加重建无位运算），另加**校验重读**：解码后 `p` 回卷重走
+     4 流再折叠 `ck`（8 份内联阶梯 + 保留的 `r16` = 9 份，`-128`×54、
+     `*128/*16384/*2097152`×54）。
+  2. **真操作数完整性校验**：编译器对每原型折叠全部线操作数之和
+     （mod 2^32，`VmProgram.operand_sums`），模板在解码环生成 `OS`
+     表；parse 重读折叠的 `ck` 与之比对，不等即篡改 → 静默陷阱
+     （无 `os.clock`，F18 安全）。
+  3. **种子碰撞修复**（tables.lua@seed42 回归）：诱饵 LCG 槽原在
+     脚手架内按 `auxslot+100` 就地计算，可与 `r1/r2/ks/kg` 抽取撞车
+     （诱饵覆盖解释器定义槽 → 状态机读到单位返回函数，C 表传 nil）。
+     抽为 `v15::decoy_slots(n, avoid)`：避开跑者/密钥流槽并排除出
+     原语槽抽取；多种子×全语料 90/90 验证。
+  验证：30 语料 + 3 额外种子×30 + 矩阵 204/204 + 预设 405/405 + 多
+  seed 5×8 全绿；cargo test 27 过；示例纯度保持。剩余 2 条：
+  F8（RC 长串 + pC 表）/F10（字符串隐匿 233→≤60）。
+- **2026-08-29（v15 结构 100% 还原战役·增量 E2：宽参数 handler + Luau if 表达式，指纹 27→29/32）**
+  1. **F6 宽参数（1→109）**：脚手架状态元组 3→5 填充槽，全部 staging
+     handler 签名扩为 `function(b,C,p1..p5)`（7 参）；返回轮换 5 槽；
+     CPS 叶/循环/中分发器/顶机同步穿透 `f1..f5`。
+  2. **F22 if 表达式（0→18）**：解析器实现 Luau if-expr（`if c then v
+     elseif... else e`，无 end）；新 `Expr::IfExpr` 变体打通 clone/
+     symtab/numbers-pass/打印器（非 Top 上下文自动加括号）/VM 编译器
+     （条件级联：Jf 跳测 + Jmp 汇合）；fold handler 诱饵与控制 handler
+     改用 `=if` 形态。用户源码 if 表达式在 v15/普通 Luau 档均语义一致。
+  验证：30 语料 + 矩阵 204/204 + 预设 405/405 + 多 seed 5×8 全绿；
+  示例纯度保持。剩余 3 条：F8（RC 长串 + pC 表）/F10（字符串隐匿
+  233→≤60）/F13（内联 -128 阶梯）。
+- **2026-08-29（v15 结构 100% 还原战役·增量 E1：脚手架形态 + 复合赋值，指纹 17→27/32）**
+  用户拍板「先结构 100% 还原，再搞安全」。E1 一批 10 条指纹翻绿：
+  1. **复合赋值折叠（F24 0→119）**：Luau 目标打印器把 `x = x op y`
+     折叠为 `x op= y`（仅纯左值：标识符/无调用点索引链，结构等价判定，
+     左值求值次数不变）；`print_chunk_luau` 新入口，5.1 不受影响。
+  2. **CHUNKS 3→5**：每载体 5 分块，staging 链扩容——具名函数 80→114
+     （F4/F21）、`return N,` 74→108 + 独立 ID 107（F5）。
+  3. **融合条件下沉（F23 9→111）**：fold/chunk handler 内诱饵局部
+     `local Q=cond and A or B`（A/B 取状态 ID 两半区），返回保持纯
+     数字开头不伤 F5。
+  4. **fetch 形扫描（F11 1→13）**：verify handler 对首载体 5 分块做
+     `local v=T[Q];if v` 字节和扫描；CPS fetch 重构 `local oc=W[pc];if oc`。
+  5. **包装形态（F12）**：entry builder 多赋值 `=N,function(...)`。
+  6. **诱饵 LCG 槽（F28）**：2 个 `268435456` 函数槽停在
+     `auxslot+100/101` 高位（避开 C 槽区间与原语槽抽取，静态零引用）。
+  7. **元组槽路由（F31/F30）**：顶机经 `b[J[4]](b,...)` 调子分发器、
+     中分发器经 `b[K[7]](b,...)`；J 表 `[4]=,[7]=` 补布局。
+  8. **命名字段写（F26）**：entry builder `b.{ehandler}=C[entryslot]`。
+  验证：30 语料 + 矩阵 204/204 + 预设 405/405 + 多 seed 5×8 全绿；
+  64 示例重生、纯度保持 0 非 ASCII。剩余 5 条：F6（宽参数）/F8（RC
+  长串）/F10（字符串隐匿）/F13（内联阶梯）/F22（if 表达式）。
+- **2026-08-29（bug 修复：v15 输出混入繁体中文/特殊字符）**
+  根因：词法器把所有字符串字面量解析为 `is_binary=false`，v15 的载体
+  blob（`\ddd` 转义字面量）经 `parse_expr` 重词法→重打印时，打印器走
+  UTF-8 直通分支，把恰好构成合法 UTF-8 的密文字节还原成 CJK/特殊
+  字符（违反「输出纯 ASCII」纯度规则）。修复：词法器为「数值/十六
+  进制转义产生 ≥0x80 字节」的字符串打 `high_bytes` 标志（短字符串 +
+  反引号插值两条路径），解析器据此设 `is_binary=true`，打印器对高字
+  节一律 `\ddd` 转义；源码原生 UTF-8（非转义）不受影响仍直通。验证：
+  64 示例 0 非 ASCII + 30 语料 v15 全过 + 矩阵 204/204 + 预设 405/405
+  + 多 seed 0 失败；指纹保持 17/32；非 v15 示例 0 变更。
+- **2026-08-28（v15 结构同族：阶段 A 完成——操作数散布，安全收尾项）**
+  操作数散布落地（样本 §10.4 / 防御 D1 家族）：每函数寄存器经随机置换
+  σ 散布进 ~50% 密度物理槽（单寄存器操作数直接写散布值；范围型操作经
+  blob 内槽表 S 翻译）；常量散布进带填充（nil/诱饵数字）的更大常量池；
+  upsrc 每函数随机置换、GetUp/SetUp 走逆映射，父帧寄存器引用在 makefn
+  里经父帧 S 翻译；新增**溢出表 O** 解决「nres=255 返回值超过寄存器
+  分配数」的散布越界（Call/CallE/CallM 无界写 + Return lastbase 读 +
+  尾部展开值读带 `S 缺位 → O` 回退）。效果：寄存器/常量/upvalue 操作数
+  共享同一不透明数字空间，静态寄存器恢复失去小整数锚点；全部随机面在
+  载体编码 blob 内，输出不可见。验证：30 语料 + 多 seed 5×8 + 矩阵
+  204/204 + 预设 405/405 全绿；`tail(5000)` 通过；非 v15 档 0 变更；
+  新增单测 `scatter_layout_properties`。
+- **2026-08-28（v15 结构同族：阶段 C 完成——执行 CPS 化）**
+  在真 TCO 地基上重做 CPS 分发：`run` 分发改为每指令一个 `H[OC.*]`
+  handler（CPS 形态）；`Return` handler 返回信号 `{out, total}`、循环侧
+  `return U(r[1],1,r[2])` 尾调用解包；**Call 系（Call/CallE/CallM/CallT）
+  内联进 CPS 循环**——实测真 TCO 只省「闭包→run」层，CPS 经 `H[Call]()`
+  仍每调用叠一帧、`tail(5000)` 仍溢栈，内联 Call 系后递归不再叠该帧。
+  验证：`tail(5000)` 通过；30 语料 + 多 seed 5×8 + 矩阵 204/204 +
+  预设 405/405 全绿；30 个 v15 示例再生成 + 语法全过；非 v15 示例 0 变更。
+  指纹 F4 90→133（H 表 42 个 `=function(`）。阶段 C 收官，剩余为
+  F11/F5 等指纹收尾打磨（结构同族细化，非新风险）。
+- **2026-08-28（v15 结构同族：增量 7 — 控制码融合条件形态）**
+  控制 handler 的控制码选择改为样本族融合条件形态
+  `local h=(V>=sdone) and 2 or 1`（行为与显式 if/else 完全等价，纯
+  语法形态对齐，F23 样本风格落地一处）。验证：30 语料 + 矩阵 204/204
+  + 预设 405/405 全绿；30 个 v15 示例再生成 + 语法全过。
+- **2026-08-28（v15 结构同族：安全增量 S1 — 密钥流状态机化）**
+  用户明确优先级：**安全 > 结构**。消灭最高危差距——增量 6 的载体 XOR
+  曾用 `(K1*i+K2)%256`、K1/K2 明文常量写在每个分块 handler（找到一个即
+  读出密钥）。改为样本 `[96]` 同款：**KSC 槽**（LCG 状态，播种）+
+  **KG 槽**（3 步 LCG 状态机，常数内嵌状态转移体）；分块 handler 运行时
+  调 `b[KG](b)` 取密钥，**解码点无任何密钥常量**；构建期同一套 3 步 LCG
+  生成密钥流，往返一致。验证：30 语料 + 多种子 5×8 零失败；矩阵 204/204
+  + 预设 405/405 全绿；非 v15 示例 0 变更；`268435456` 仅现于 KG（1 处）。
+  安全对账表见 `docs/engine/v15-pipeline-rewrite.md` §6。
+- **2026-08-28（v15 结构同族：P4 增量 6 — 载体密钥流混淆）**
+  `v15.rs::scaffold`：每个载体分块构建期用位置相关密钥流
+  `(K1*i+K2)%256` + bxor 加密（K1/K2 每构建随机），分块 handler 运行时
+  经 `bit32.bxor(string.byte(seg,i),(K1*i+K2)%256)` 解回——存储字面量
+  不再是可直接 base-94 解码的明文，攻击者须先还原密钥流。XOR 往返精确
+  （30 语料 + 多种子 5×6 验证）。指纹 15→16/32（F16 PASS：%256=55、
+  bxor=52）。架构注记：样本长串形态（可打印）与 XOR（任意字节）经我方
+  UTF-8 输出管线互斥，本档优先安全；长串需打印器字节流改造，列为后续。
+  验证：矩阵 204/204 + 预设 405/405；30 个 v15 示例再生成 + 语法全过。
+- **2026-08-28（v15 结构同族：P3-A 增量 5 — 顶层机族扩容）**
+  `v15.rs::scaffold`：FC 与 CPS 循环之间插入子分发器层（样本第二分发层
+  形态：while 旗标 + 范围树，两区间均汇入状态驱动 CPS 循环，路由任意
+  状态正确）；新增 2 个附加机初始化器（样本 KL/M/zL 机族，起始 ID 在
+  分发区间外，F32 PASS）。调用链 = 顶层机 → 子分发器 → CPS 循环 →
+  handler 链，三层分发与样本同构。指纹 14→15/32（F4=90、F20=9 while）。
+  验证：30 语料 + 多种子 5×6；矩阵 204/204 + 预设 405/405；30 个 v15
+  示例再生成 + 语法全过。
+- **2026-08-28（v15 结构同族：P3-B 增量 4 — 字面量自修改 + 分号 + 命名族）**
+  ① `VmProgram.nop_sites`（与 `fns` 平行，`finish()` 定型期采集）→ 模板
+  解析后发射 `local <W>=PF[k].W; <W>[p]=<别名字面量>` 定值写回（样本
+  `J[Q]=12` 形态；F14=76/F27=19 PASS）。② 打印机语句间发射 `;`
+  （minify 保留，F11 `...;if` 形态基础；全预设输出形态变更，语义矩阵
+  验证）。③ mangle 增 `v15` 模式（1–2 字符/53 字母表/80/20），脚手架
+  保留名（b/C/p1..p3/E/V）进 reserved 防遮蔽。④ v15 预设关 numbers
+  （实测：数值拆分改写自修改常量与状态常数，毁 F5/F14 形态）。
+  指纹 13→14/32；F11/F14 正则对齐 ≤2 字符命名族（样本单字符 32/32 保持）。
+  验证：30 语料 + 多种子 5×6；矩阵 204/204 + 预设 405/405；30 个 v15
+  示例再生成 + 语法全过；非 v15 示例因分号/数值开关全部重新生成。
+- **2026-08-28（v15 结构同族：P3-B 增量 3 — 执行侧安全三件套）**
+  ① **Nop 别名自修改**（`isa.rs`/`template.rs`）：OpMap 确定性派生第二个
+  Nop wire 值（**不耗 rng，legacy 输出逐字节零变化，已验证**）；分发树加
+  NopA 叶；加载期把偶数下标 Nop 位改写为别名——字节码装载时自变异，
+  opcode 编码流内不稳定。② **死循环段**：site1 形态永不到达 fetch 树。
+  ③ **双数字槽运行器**（`v15.rs::scaffold`）：解释器迁入 `[r1]`、入口经
+  `[r2]` 路由（样本 [73]/[18] 形态；索引调用显式传 self），模块表函数槽 4 个。
+  `functions` 语料：158 字段/87 =function(/71 槽/8 while，指纹 12→13/32。
+  验证：30 语料 + 多种子 5×6 一致；矩阵 204/204 + 预设 405/405 全绿；
+  30 个 v15 示例再生成 + 语法全过；非 v15 示例零变化。
+- **2026-08-27（v15 结构同族：P3 增量 2 — staging 细拆 + 校验陷阱）**
+  每原型 = 字节和折叠 handler（构建期常数和）+ 3 分块存储 handler
+  （入口构造期 `..` 拼回）；定义/入口构造拆为两个 handler；新增校验
+  阶段：v1 对存储分块跑字节和循环重折叠、v2 比对——不匹配 = 静默
+  `while true do end`（实测篡改 1 字节即挂起；长度保持型篡改也拦，
+  因折叠基于字节和；无 os.clock，F18 安全）。`functions` 语料：157
+  字段 / 78 具名函数 / 74 returns / 73 IDs / 143 方法调用 / 72 continue，
+  指纹 11→12/32。验证：30 语料 + 多种子 5×6 一致；矩阵 204/204 +
+  预设 405/405 全绿；30 个 v15 示例重新生成 + luau-compile 全过。
+- **2026-08-25（v15 结构同族：P3 增量 1 — CPS 引导骨架）**
+  `vmgen/v15.rs::scaffold`：boot 换代为初始化器（`return true,<s0>,
+  nil×10`）+ 顶层机（FC 形态，控制码协议）+ CPS 循环（二叉范围树 +
+  `continue` 叶集中单函数）+ 单字符 staging handler 链（每原型 1 个：
+  载体入上下文表 + 校验和经 mul32/mod2³² 助手折叠，真实调用）+ 解释器
+  定义 handler（过 junk/mangle 的模板以文本嵌入，VM 名按 mangle 后符号
+  查回）+ 控制码 handler。状态池 3..236 每构建随机、元组填充序洗牌、
+  脚手架名走 53 字母表族。实测（functions 语料）：103 字段 / 24 具名
+  函数 / 20 returns / 19 IDs / 55 方法调用 / 18 continue——随原型数
+  线性扩展；指纹 10→11/32。验证：29 语料 + 多种子 5×6 一致；矩阵
+  204/204 + 预设 405/405 全绿。
+- **2026-08-25（v15 结构同族：P2 模块表铺开）**
+  `vmgen/v15.rs`：65 原语数字槽（槽号 1..126 稀疏洗牌；`Vector3.new`/
+  `Vector2.new` Roblox 专属、Luau CLI 缺失、表构造期求值会崩 → 不发射，
+  `vector.create` 覆盖 F19）+ 2 诱饵 LCG 工厂槽（状态机化 `%268435456`
+  写入、`function(b,b,b,u)` 参数遮蔽、静态零调用 → F15/F25/F28）+
+  1 可变常量槽 `[N]=0` + 10 具名常量字段（AL/BL/EL/PL/QL/cL/dL/gL/h/s，
+  h = 死常数表）。全字段洗序混存，boot 名 = 字母表基字母 + `C` 后缀。
+  指纹 **10/32**（F9 69 槽/66 原语槽 + F15/17/19/25/28/29 + F1/2/18）；
+  F3 = 80 字段，量级差由 P3 handler 群补齐。验证：29 语料 × v15 一致；
+  多种子 5×4 零失败；官方矩阵 204/204 + 预设矩阵 405/405 全绿。
+  附带：`engine/tools/rebuild_tools.sh` 工具链一键重建脚本（沙箱
+  重置两次后的应对）。
+- **2026-08-25（v15 结构同族：P1 外壳换代）**
+  `main.rs` v15 分支：解释器块先过 junk/mangle/strings/numbers 再包壳，
+  产物 = 3 行 `return setmetatable({XX=function(b)...end end},{}):XX()(...);`
+  （boot 名每构建随机两大写字母、裸字段名、结尾分号）。v15 档关
+  strings（F10 过渡）/body/antidbg（F2/F18）。指纹 F1/F2/F18 PASS；
+  20 共享+应力语料 + 9 个 `luau_*` 在 v15 档全部输出一致；官方矩阵
+  204/204 + 预设矩阵 405/405 全绿。**核心路径修复**：`strings.rs`
+  加载器引用 Ident 由空名+sym 绑定改为实名（二次 resolve 按名查找，
+  空名会退化成坏全局并打印空）；`symtab.rs` `resolve_func_body` 先
+  clear `param_syms`（resolve 幂等，壳内二次 resolve 需要）。
+- **2026-08-25（v15 结构同族：路线 A 拍板 + P0 落地）**
+  对 `artifacts/samples/luraph15.txt` 二轮全文详读（自研块级解析器），
+  `docs/engine/v15-structural-parity-plan.md` 大幅修订：§0.1 黄金数订正（227 字段/
+  73 槽/28 字面量/3 行文件…）、§0.2 新增指纹 F21–F32（命名族/if 表达式/
+  融合条件返回/复合赋值/参数遮蔽/模块表自变异/自修改/诱饵/不透明算术/
+  cell 布局/元组槽 makefn/初始化器族）、§1.1 五处架构修正（iL=mul32、
+  执行内联在 [18]/[73]、LCG 是诱饵、真实密钥一次式、cell 布局）、
+  P 阶段重写（3–4.5 周）。**用户拍板路线 A**（Roblox 克隆档，弃 5.1）。
+  P0 落地：`engine/tests/v15_fingerprint.py`（32 条，样本 32/32 PASS /
+  现 `vm` 产物 1/32）+ `--preset v15` CLI（Luau 门控，5.1 报错；P0 stub
+  走 vm 管线，发射逻辑待 P1 换代）。官方矩阵 204/204 + 预设矩阵 405/405
+  仍全绿。工具链沙箱重置后按 HANDOFF §4 重建进仓库 `.tools`。
+- **2026-08-25（M6 收官：CLI 预设 + 产品文档 + 性能）**
+  `--preset low|medium|high|vm|max`（其后 `--no-*`/`--vm` 覆盖）。
+  默认无 `--preset` ≡ `high`（L1–L5+L7，与旧行为逐字节一致）；
+  `vm` ≡ 旧 `--vm`；`max` 当前 = `vm`（v2 CPS/超级指令预留，加 junk
+  会顶 VM 模板 200-local 上限）。新增 `tests/run_presets.sh`（405 项
+  全绿）+ `tests/bench_presets.sh` + `docs/engine/performance.md`；README
+  重写为产品文档。版本 0.1.0 → 0.2.0。官方矩阵 204 仍绿。
+- **2026-08-25（M5 收官：SoA + 完整 7-bit + 载体 + 枢纽/原语解包）**
+  按 HANDOFF §7 建议顺序一次落地 M5 全部剩余项（编码器/`template.rs`
+  同步改，改完跑矩阵 + 多种子）：
+  1. **SoA 平行数组**：函数码流从「op+4 变长操作数」交错改为
+     `[ncode u16][OC × ncode][S0..S3 各 ncode 条 varint]`；跳转目标从
+     字节偏移改为 **1 基指令下标**（不再需要变长 fixpoint）。
+  2. **7-bit 完整档**：7/14/21/28-bit 四档（`v<128 / <16384 / <2097152`），
+     128 进制重建，`v≥2³¹` 做 `v-2³²` 归一化；模板 `r16` 无位运算。
+  3. **base-94 + token 转义**：每构建洗牌 ASCII 32..126 抽出 1 个保留
+     字符作 token 前缀（碰撞不可能）+ 10 个 5 字符 token（v15 pC 同款
+     特殊字符集）；4 字节 LE 长度前缀；`parse` 先 `decarrier` 再拆 SoA。
+  4. **解码枢纽 / 状态元组**：fetch 在 inline / `hub()` 两风格间随机；
+     6 元组（oc,t1..t4,pc'）返回序每构建 shuffle；`run` 解包
+     `W/SA/SB/SC/SD/C` 字段序 shuffle；u16/r16/decarrier 声明序 shuffle
+     （AL/TK 表固定在 decarrier 之前——Lua local 作用域从声明行起）。
+  5. **帧入场原语解包**：15 个宿主原语（`string.byte/sub/char`、
+     `getfenv/unpack/math.floor/type/error/getmetatable/rawget/rawset/
+     setmetatable/select/pcall/tonumber`）写入 `P[1..80]` 随机槽；
+     VM 顶解包一次供 parse/decarrier，`run` 入场再解包一次（独立顺序）。
+  6. **反编译抽查**：`luac51 -l` 仅见 L5 容器加载器；输出不含用户
+     字符串（`hello user` 检索为假）；同 seed 逐字节一致 / 异 seed
+     前 2KB 重合 9.5%。
+  **验收**：矩阵 **204/204 全绿**；多种子 `{1,7,4242,31337,999999}`
+  **0 失败**。opcode 名表与 SoA 数组不可同名（初版都叫 `OC`，
+  `OC.Jmp` 被冲成 nil——数组改名 `W`）。
+- **2026-08-25（M4 续期：VM 语义加固 + 工具链重建 + 语料扩容）**
+  **背景**：沙箱重置抹掉 `/home/user/tools` 与部分 /tmp 工件 → 工具链整体
+  **重建进仓库** `luraph/.tools/bin`（持久化）：Rust 1.88（npm @rustbin）、
+  lua51/luac51 5.1.5（GitHub codeload 镜像源码编译）、Luau 0.735（g++
+  直编，无 cmake；自写最小 main 复刻官方 CLI 运行环境：loadstring/
+  collectgarbage/require 文件 rehook/**luaL_sandbox**）。
+  **新发现（双方言/解释器环境）**：
+  1. **官方 luau CLI 沙箱化全局表**（0.600+ 均如此）：`luaL_sandbox` 使
+     `_G` 只读 → 任何顶层**新建**全局赋值 = `attempt to modify a readonly
+     table`。语料清理：loops.lua 的 `shadowtest` 全局测试改为「local 遮蔽
+     已有全局 `math`」的等价测试。
+  2. **for-in 方言差异**：Luau 支持 `for k,v in t`（隐式 `next`，语言级
+     扩展）；5.1 迭代器必须是可调用（裸 table → 运行时 call-a-table 错误，
+     属正确行为）。处理：parser 在 Luau 档把单非调用迭代器归一化为
+     `next, t`；5.1 档原样透传（VM 与宿主同错）。
+  **语料扩容 21→29**（新增 8 个 stress_*：upvalues/coroutines/metamethods/
+  multival/errors/bigtable/control + luau_vm），直接暴露 **9 类真 bug**
+  （全部修复并回归）：
+  1. **upvalue 单 cell 别名模型**（最重要）：旧模型 materialize = GetUp
+     值副本 + 写回转发，跨嵌套层写/读失同步（`g()` 的写不回传 main 的
+     cell、孙层读陈旧值）→ 改为**描述符 0xC000|upidx 别名**：materialize
+     只是作用域别名，闭包直接引用父帧的 cell 对象，全层共享同一规范
+     cell（精确 5.1 单 cell 语义，无中间副本）。
+  2. **循环变量/循环体局部 = per-iteration 共享 cell**：V[slot] 存
+     `{1=value}` cell 表（描述符 0x8000|slot），同一迭代创建的所有闭包
+     绑定同一 cell + 循环体自身读写同 cell（fresh per iteration）；
+     未被捕获的循环局部复用固定寄存器（无 per-iteration 寄存器增长）。
+  3. **CallT 表存储 off-by-one**：`t[n+i]` 的 n 在循环内自增 → 尾调用
+     进表产生空洞（`{9, f()}` → `{9,1,nil,2}`）→ 固定 n + `V[c+1]=n+nout`。
+  4. **GetTab 索引错误缺失**：非 table 且无 metatable 时静默 nil → 改
+     `error('attempt to index a ... value', 0)`（5.1 语义；有 mt 无
+     __index → nil，同样对齐）。
+  5. **尾部多值展开边界**：Assign 的 nil 填充公式在尾调用/尾变长展开后
+     仍对已覆盖目标补 `= nil`（真实语料 `k = next(t, k)` 必中）→
+     展开时 assigned = 全部目标。
+  6. **`return ...` / `a, b = ...` / `a, b = f()` 全变长展开**：原实现
+     只取第一个 vararg；现 Return(base,255,c=1,pre) 走 varargs、Local/
+     Assign 走 VarArgTab 取前缀；多余值「求值即弃」（保副作用）。
+  7. **5.1 表构造器存储序**（luac -l 实测）：位置字段（SETLIST）在**所有
+     具名字段之后**落表 → 重复键时位置字段必胜；Luau 为源码序最后写入
+     胜。VM 编译器按方言分支（5.1 延迟数组存储）。
+  8. **打印机后缀括号**：`(5).nope` 打出 `5.nope`（双方言皆非法 token）
+     → 新增 Ctx::Suffix（仅 Ident/Dot/Index/Call/Method 可裸写后缀）。
+  9. **parser 多目标赋值** `a, b = ...` 原本不支持（首个目标后只认 `=`）。
+  **验收**：官方矩阵 **204/204 全绿**（非 VM 102 + VM 102，含交叉）；
+  **多种子回归** seeds {1, 7, 4242, 31337, 999999} × 29 语料 × 双方言 ×
+  （非 VM + VM + 5.1→luau 交叉）= **0 失败**；最小用例集（upvalue 链/
+  循环捕获/next 遍历/多值/构造器重复键）逐项 diff 通过。
+  **待办**：GitHub token 失效 → push 挂起，重连后补推。
+- **2026-08-24（M4 L6 VM 最小可用 → M4 收官）** `vmgen/{isa,compiler,template}.rs`：
+  L6 私有字节码 VM 落地。41 条寄存器指令（9B 定长编码）+ 每构建 opcode
+  随机置换；AST→字节码编译器（寄存器分配/常量池/upvalue 活引用+写回
+  转发+循环捕获快照双机制/CallE/CallM/CallT 多尾展开/`__call` 元方法/
+  repeat-until 条件作用域）；解释器模板生成（makefn 闭包帧模型，输出再过
+  全套混淆管线）。双方言差异实测处理：Luau 冻结 `_G`（改 `getfenv(0)`）、
+  `#` 元方法 5.1/Luau 差异（运行期探测）。连带修复：symtab 分支作用域 +
+  同作用域重声明遮蔽（mangle×VM 模板交互地雷）；L7 时间陷阱阈值按密文
+  尺寸缩放（VM 容器 300KB 误杀）。矩阵扩至 **136/136 全绿**（非 VM 68 +
+  VM 68，含 VM 输出 luau 交叉 + luau-compile 语法校验）；种子确定性验证
+  （同 seed 逐字节一致 / 异 seed 前 2KB 仅 8.6% 重合）。全部语义坑与
+  调试方法论：`docs/engine/vm-l6-implementation.md`。
+- **2026-08-23（M3/L7 antidbg 完成 → M3 收官）** `antidbg.rs`：L7 反篡改
+  容器层（L5 之后）。四项防御全部落地：① 金丝雀自检（纯函数，执行前
+  校验，种子随机常量）② 容器校验和（密文字节和 mod 随机质数 vs 构建期
+  期望值，解密前拦截，篡改→静默死循环）③ 错误重写（pcall 拦截未捕获
+  错误，`[(:(%d+)]` 行号解析兼容 5.1 `:3:` 与 Luau `(3,17)` 双方言格式，
+  +随机偏移重映射，level 0 重抛）④ 时间陷阱（保护+解密+执行全程
+  os.clock，5~15s 随机阈值）。所有陷阱静默 `while true do end`（无
+  消息、无退出码提示）。实测：篡改密文字节→挂起 ✓、篡改金丝雀期望值
+  →挂起 ✓、未捕获错误行号 3→85852 重映射 ✓。踩坑：DEC 调用参数是
+  块局部变量 Ident 而非 Str 字面量，校验和须经 sym 表解析回字节。
+  **M3 验收**：矩阵 68/68 全绿（L1+L2+L3+L4+L5+L7 全开默认），
+  篡改/错误重写专项验证通过。
+- **2026-08-23（M3/L5 body 完成）** `body.rs`：L5 整体加密。流水线最外层
+  （strings→numbers 之后）：打印当前程序（minify 紧凑形态）→ 全新
+  24B 密钥加性加密（复用 L2 密码学，`%` 双方言 floor 语义共用）→
+  密文切 3~5 块 Str 字面量 → 复用 L2 加载器（密钥 3 段+字节表+DEC
+  变参解密函数）→ 最终语句 `loadstring(DEC(C1..CN))()`。输出中不再
+  有任何程序结构/明文——只有密文字符串。CLI：--no-body。
+  注意：loadstring 加入容器保留名（防容器局部变量遮蔽全局加载器）。
+  矩阵 68/68 全绿（默认开）。
+- **2026-08-23（M3/L4 numbers 完成）** `numbers.rs`：数字字面量重写。
+  整数 → 2~4 个带符号随机项之和/差（|v|<1e6）或 `a*b+c` 积式（|v|≥1e6，
+  a∈[100,1e4]、c∈[100,2a) 小残差）；0/±1 保留；浮点仅恒等包裹
+  （0+x / x+0 / x*1 / x/1，任何拆分改 IEEE 值）。CLI：--no-numbers。
+  **顺带修复打印机既有 bug**：Idiv 去糖 `math.floor(l / r)` 的操作数用
+  Ctx::Top 不加括号——此前操作数是裸字面量侥幸正确，数字拆分成 Bin 后
+  `1 + 7 // 2` 类表达式必错（luau_idiv 语料暴露）→ 改 Ctx::Bin(Div)。
+  踩坑记录：decompose_int 首项符号在构造时被丢弃（acc 与输出不同步，
+  小值必炸）→ 首项强制 Add。单测 23/23（含 2000 种子小值压力），
+  矩阵 68/68 全绿。
+- **2026-08-23（L1 minify 补齐）** `minify.rs`：输出层 token 感知单行压缩
+  （L1 词法层至此全量）。实现 = 用目标方言词法器重 lex 打印器输出再按
+  最小空白规则重发射：默认零空格，仅在 ① 双标识符/关键字/数字边界
+  （`localx`、`else if`→`elseif`、`1end`…）② `-`+`-`（`a - -b`→`--`
+  成注释吞行，edge 语料真实暴露）③ `..` 与数字/`.` 相邻（`1..2` 被
+  Luau 当坏浮点，basics 语料真实暴露）时插空格。字符串按
+  `print_string_bytes` 字节精确重编码。默认开（`--minify`/`--no-minify`）。
+  踩坑记录：①`- - 5`→`--5` 注释吞掉整行 ②`1..2`→Malformed number
+  ③Rust `{:?}` 数字归一化（`1.5e10`→`15000000000.0`，与打印机一致，值不变）。
+  单测 19/19（含 token 序列不变、`--`/`..` 边界、幂等性），矩阵 68/68 全绿，
+  --no-flatten 全语料 + 同 seed 复现 通过。
+- **2026-08-23（M2 完成）** flatten(L3) + junk(L3) 完成，**desugar 取消**：
+  flatten 直接以块图处理 for/repeat/while/continue/break。核心设计：
+  ① 每个函数体=一个 `while true` + 随机 ID + 乱序分支的状态机；
+  ② **循环=嵌套子状态机**——循环体块成为独立分派（循环节点的不透明块），
+  循环体局部变量（含 for 循环变量）声明在 per-pass 作用域（每轮重新
+  `local`），闭包捕获循环变量的语义与原生 for 完全一致（每轮 fresh）；
+  ③ break/continue 是纯图边：continue→体尾（for/while=重入=增量/重判条件，
+  与 Luau continue 语义一致；repeat 的 until 检查块在内部分派内，
+  repeat+continue 也正确）；④ for-numeric 按原生顺序执行：区间检查在
+  体前（空区间 0 次迭代）、循环变量每轮 fresh、增量在体后；
+  ⑤ 作用域安全提升：被其他分支/跨分支闭包/循环体引用的 local 提升到
+  机器顶部（mangle 保证名字与全局名不相撞，提升不会遮蔽全局）。
+  修复的既有 bug：junk 的 `d = c+1-1` 跨作用域引用 c（c 在 if 内声明）、
+  junk 在 return 后注入（Lua 语法错误）、旧 flatten 的 in_loop 判定把
+  循环前 init 块局部变量整体丢弃（变全局引用 → nil 运算）。
+  语料新增 `loops.lua`（共享）+ `luau_loops.lua`（Luau continue 边界）。
+  矩阵 68/68 全绿（含 --no-flatten 路径全语料通过）。
+  下一步：M3 = numbers(L4) + body(L5 整体加密) + antidbg(L7)。
+- **2026-08-23（M1 完成）** mangle(L1) + strings(L2) 完成：名称混淆（含
+  self keep_name 规则）、加性密钥流字符串加密（密钥 3 段拆分）、17 个语料的
+  混淆示例生成到 `engine/examples/`。矩阵 62/62 全绿。新发现：local function
+  自引用双方言可见；转义数字合并陷阱；FuncDecl 点链对象需走 symtab。
+  下一步：M2 = L3 控制流（desugar + CFG 扁平化 + junk）。
+- **2026-08-23（M0 完成）** Rust 骨架 + lexer/parser/symtab/printer 完成；
+  17 个测试语料 × 双方言 62 项检查全绿（round-trip 语义等价验证通过）；
+  新增方言发现：`\x` 转义差异、5.1 无 coroutine.close、Luau CLI 无 TCO、
+  0.735 无花括号函数体。下一步：M1 = mangle(L1) + strings(L2)。
+- **2026-08-23（第二轮）** luraph15 动态分析完成（样本真实运行于 Luau CLI）：
+  四段式流水线角色分工验证、变长指令动态确认、~190 万 op/s 性能基线。
+  设计新增：每段独立分发循环、1~2 个死代码分发器（VMC 随机面）、
+  fetch 点数量每构建随机。字节级格式重实现判定为非必需（v3 可选）。
+- **2026-08-23** 初版：实施清单定稿（吸收 luraph15 两轮分析的全部采纳项）；
+  进度 = 设计 100% / 代码 0%。
+字节级格式重实现判定为非必需（v3 可选）。
+- **2026-08-23** 初版：实施清单定稿（吸收 luraph15 两轮分析的全部采纳项）；
+  进度 = 设计 100% / 代码 0%。
+；
+  进度 = 设计 100% / 代码 0%。

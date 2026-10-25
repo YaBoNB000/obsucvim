@@ -1,34 +1,54 @@
 # obsucvim
 
-商业级 Lua 混淆器（对标 [Luraph](https://lura.ph/)）。把用户脚本编译成**私有字节码**，
-由随文件分发的「Lua 写的混淆解释器」执行——标准反编译器拿不到原生 5.1/Luau
-字节码，也还原不出源码结构。每个 `--seed` 的 VM（指令置换、派发树、操作数
-编码、命名、载体字母表）都不同。
+商业级 **Luau 混淆器**（对标 [Luraph](https://lura.ph/)）。Rust 引擎把用户脚本编译成
+**私有字节码**，由随文件分发的「Lua 写的加密解释器」执行——标准反编译器拿不到原生
+Luau 字节码，也还原不出源码结构。每个 `--seed` 的 VM（指令置换、派发树、操作数编码、
+命名、载体字母表）都不同。
 
-- **双目标**：Lua 5.1 与 Luau，同一条管线，官方矩阵双方言交叉验证
-- **本体**：Rust，std-only，零第三方 crate
+- **目标方言**：**Luau / Roblox**（产品线 Luau-only；Lua 5.1 目标自 2026-09-10 起停止支持）
+- **本体**：Rust，std-only，零第三方 crate（`engine/`，71 个模块，~1.98 万行）
 - **纵深**：L1 名称/压缩 → L2 字符串加密 → L3 控制流扁平化 → L4 数值 →
-  L5 整段加密容器 → **L6 私有 VM** → L7 反篡改（金丝雀 / 校验和 /
-  行号重映射 / 时间陷阱）
+  L5 整段加密容器 → **L6 私有 VM** → L7 反篡改（金丝雀 / 校验和 / 行号重映射 / 时间陷阱）
+  → 环境绑定 / 环境检查 / executor 认证守卫 / 宿主钥
+- **交付形态**：CLI + React 控制台 + 托管服务（卡密、双产物发布、验卡）+ Discord `/obf`
 
-## Discord 机器人（HTTP / 免费托管试用）
+> **当前状态以 [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) 为准**（引擎 **R079**、
+> 锚点 178,551 B / `ccf5d083…`）。本文只讲产品与用法，不重复状态。
 
-新增 `/obf file:<附件>` 服务：Discord HTTP 交互 → Rust 引擎 → 私密回传文件。
-提供 Render Docker 配置、命令注册脚本、白名单/排队/资源限制；当前固定 v15 / Luau。
-**本地测试完成，尚未部署/真实 Discord 联调**；免费实例冷启动可能使首次命令失败。
-见 [部署教程](services/discord_obf/README.md)。服务依赖 Python，混淆器本体仍为 Rust。
+---
+
+## 仓库布局
+
+```
+engine/          Rust 引擎（CLI + L6 私有 VM）、官方测试矩阵、示例
+web/             控制台（React/Vite）+ 托管服务（Node）+ 引擎 WASM + 全部验证套件
+docs/            文档：CURRENT-STATE / engine / hosting / redteam / research / archive
+artifacts/       证据与产物：targets（历轮靶标）/ samples / redteam / legacy-lph
+services/        Discord HTTP /obf 适配
+release-assets/  Windows 发布包（部署契约路径，勿移动）
+```
+
+完整地图与阅读顺序：[`docs/README.md`](docs/README.md)。
+接手干活先读 [`HANDOFF.md`](HANDOFF.md)。
+
+---
 
 ## 构建
 
-需要 `rustc`/`cargo` ≥ 1.88。本仓库沙箱把工具链放在 `.tools/bin`（`gitignored`）：
+需要 `rustc`/`cargo` ≥ 1.88。仓库沙箱把工具链放在 gitignored 的 `.tools/bin`：
 
 ```bash
-cd obsucvim
-export PATH=/home/user/luraph/.tools/bin:$PATH   # 使用仓库内置工具链时
+cd engine
+export PATH=/home/user/obsucvim/.tools/bin:$PATH   # 使用仓库内置工具链时
 CARGO_NET_OFFLINE=true cargo build --release
 ```
 
 沙箱外：系统 Rust 即可，不必离线。重建 `.tools` 的步骤见 `HANDOFF.md` §4。
+
+**引擎 WASM**（控制台/托管用）：`web/tools/build-engine-wasm.sh`（编译 + 锚点校验 +
+安装，锚点不符拒装）；版本自检 `node web/tools/verify-engine-version.mjs`。
+
+---
 
 ## 用法
 
@@ -38,137 +58,121 @@ CARGO_NET_OFFLINE=true cargo build --release
 -- This file was obfuscated by Obsucvim.
 ```
 
-水印在压缩后添加，`--no-minify` 也保留；代码正文不变。这是可删除的普通注释，不是防篡改机制。示例见 `handoff/R066_target.luau.lua`。
+水印在压缩后添加，`--no-minify` 也保留；代码正文不变。这是可删除的普通注释，
+不是防篡改机制。
 
 ```bash
 # 默认 = v15 管线（产品形态，Luau/Roblox）——零参数、直接可运行
-# ㉖ 起产品线 Luau-only：Lua 5.1 目标不再支持
 ./target/release/obsucvim --seed 42 in.lua out.lua
 # 显式写法等价：
 ./target/release/obsucvim --preset v15 --seed 42 in.lua out.lua
 
-# 旧版轻量/VM 预设（Luau 目标显式选择，后面的 --no-* / --vm 会覆盖）
+# 旧版轻量/VM 预设（legacy，后面的 --no-* / --vm 会覆盖）
 ./target/release/obsucvim --preset low    --seed 42 in.lua out.lua
 ./target/release/obsucvim --preset medium --seed 42 in.lua out.lua
 ./target/release/obsucvim --preset high   --seed 42 in.lua out.lua
 ./target/release/obsucvim --preset vm     --seed 42 in.lua out.vm.lua
 ./target/release/obsucvim --preset max    --seed 42 in.lua out.vm.lua
 
-# 增量⑱ 输入绑定/激活门 (--bind-key) 已于 ㊴ 整体退役移除
+# 加固开关（v15）
+--env-check         环境检查组（tier-1 纯 Luau 语义；配合 --bind-executor 发射 tier-2）
+--bind-executor     executor 认证绑定（v15 默认开启）
+--no-bind-executor  退出认证绑定（运行等价矩阵/示例生成必用）
+--bind-env roblox   环境绑定（产物只在目标运行时可加载）
+--super-insn        函数级超指令融合（默认关）
 ```
 
 | 预设 | 打开的层 | 典型体积 | 适用 |
 |---|---|---|---|
-| **默认（= `v15`）** | v15 架构全防护（Luau/Roblox） | ~150 KB | **产品形态**：零参数直接可运行 |
+| **默认（= `v15`）** | v15 架构全防护（Luau/Roblox） | ~150–180 KB | **产品形态**：零参数直接可运行 |
 | `low` | L1 + L2（legacy） | ~源码量级 | 名称/字符串不可读即可 |
 | `medium` | low + L3（legacy） | 数 KB–数十 KB | 还要打散控制流 |
 | `high` | medium + L4 + L5 + L7（legacy） | 数十 KB | 商业级非 VM：整段密文 + 反篡改 |
-| `vm` | high + L6（legacy） | ~130–160 KB | 旧版 VM（Lua 5.1 时代产物） |
+| `vm` | high + L6（legacy） | ~130–160 KB | 旧版 VM |
 | `max` | 当前 = `vm`（legacy） | 同 `vm` | 旧版最强档 |
-| `v15` | Luraph-v15 结构同族（Luau/Roblox） | ~150 KB | 显式写法，等同默认 |
 
-### 产品形态：混淆后零参数直接可运行（默认即 v15）
-
-**核心承诺**：默认产物（v15 管线）**不需要任何参数**，丢进 Luau CLI 或
-Roblox 执行器即可直接运行，输出与源码逐字节一致。防护来自**结构层 +
-运行时防御叠层**（⑲⑳㉑㉒㉓㉔）：
-
-- **加密解释器**：43 个指令 handler + 字节码解析器全部加密成碎片，运行时
-  经 `loadstring` 装配，可见代码里没有指令语义；
-- **去中心化尾链 + 蹦床**（⑲）：没有中心 `while..dispatch` 分派循环，
-  每条指令的分派散在各加密 handler 尾部的尾链附言里，全局 hook 咽喉点消失；
-- **多层编码 + 每构建随机**：载体、转义、钥匙表、指令编号、槽位、命名
-  每个 `--seed` 全量重随机。
-
-此形态与真实 Luraph v15 同属「纯结构防护」路线（真实 v15 本就无运行时
-防御，见 `docs/redteam-luraph15-recon.md`），但本产品把解释器/解析器/分派
-全部入密，结构强度更高。
-
-### [㊴ 退役] 增量⑱：输入绑定 / 激活门（`--bind-key`）
-
-曾把引导链第一层门控到「变长参递送的激活值」上（错/缺钥匙即引导层崩溃）。
-因要求运行时传参、产物无法直接运行，与产品核心需求冲突，**㊴ 起整体退役：
-功能代码、`tests/bind_gate_test.sh`、绑定态示例均已移除**（移除经字节级
-验证对未绑定产物零影响）。现役防线 = 结构层（⑲⑳㉚-㉟）+ 环境绑定
-（㉑）+ 计时守卫（㉙/㊳）+ executor 认证绑定（增量51，2026-10-11 起
-v15 默认开启，`--no-bind-executor` 退出）。详见
-`docs/plan-resemblance-and-security.md`。
-
-### 增量㉑：环境绑定（`--bind-env roblox`，仅 v15）
-
-真实 Luraph v15 的最外层防御。把目标运行时 API（`Vector3.new`/
-`Vector2.new`/`task.defer`）嵌进解释器原语槽——表构造对每个 RHS 求值，
-于是产物**只在目标运行时可加载**：在通用分析沙箱（luau CLI 等，
-`Vector3`/`task` 为 nil）里**加载期即 `index nil` 崩溃**，任何解码都还没
-开始。与 ⑱ 不同：**不需要用户传任何参数**，目标运行时自带这些 API，
-天然「混淆后直接可运行」；只有非目标沙箱跑不了。
-
-```bash
-./target/release/obsucvim --preset v15 --dialect luau --bind-env roblox in.lua out.lua
-```
-
-绑定态产物不进通用运行等价矩阵（CLI 跑不动是设计目的），只做语法校验 +
-加载失败验证（`tests/env_bind_test.sh`，已内嵌 run_tests.sh）。
-**诚实边界**：挡的是非目标运行时；若攻击方用 Roblox 环境（或桩了这些
-API 的模拟器）运行则不拦，退化为 ⑲⑳ 结构防护 + 反调试。它是「抬门槛」，
-与叠层其余层叠加。
-
-同 `--seed` → 输出逐字节一致；不同 seed → 编码完全不同。  
-分层开关：`--no-mangle` / `--no-minify` / `--no-strings` / `--no-flatten` /
-`--no-junk` / `--no-numbers` / `--no-body` / `--no-antidbg` / `--vm`。
+同 `--seed` → 输出逐字节一致；不同 seed → 编码完全不同。
+分层开关：`--no-mangle` / `--no-minify` / `--no-strings` / `--no-flatten` / `--no-junk` /
+`--no-numbers` / `--no-body` / `--no-antidbg` / `--no-guard` / `--vm`。
 
 Luau 输入支持 `//`、`continue`、复合赋值、反引号插值、类型注解（解析期剥离）。
+
+### 输入侧加层：MW-1「雾织」
+
+可选的自研源级变换器，串接在引擎之前（`源码 → MW-1 → 引擎 v15`）：
+
+```bash
+python3 web/tools/mistweave.py in.lua weaved.lua --seed 20261025 --num-fog 0.55 --blocks 6
+python3 web/tools/mistweave-selftest.py          # 门禁 11/11
+```
+
+详见 [`docs/engine/MW1-MISTWEAVE.md`](docs/engine/MW1-MISTWEAVE.md)。
+
+---
+
+## 控制台 / 托管
+
+```bash
+cd web
+npm install
+npm run engine     # 引擎+账户+卡密+发布服务（默认 127.0.0.1:8787）
+npm run dev        # 控制台（Vite，/api 代理到 8787）
+```
+
+接口与部署见 [`docs/hosting/SCRIPT-KEYS.md`](docs/hosting/SCRIPT-KEYS.md)、
+[`docs/hosting/HOSTING-V2-PLAN.md`](docs/hosting/HOSTING-V2-PLAN.md)、
+`web/deploy/README-Windows.md`（Windows 一键包）。
+
+Discord 机器人（HTTP 交互、Render Docker、免费托管试用）：`services/discord_obf/`
+——本地测试完成，**尚未部署 / 未做真实 Discord 联调**。
+
+---
 
 ## 验证
 
 ```bash
-cd obsucvim
-bash tests/run_tests.sh      # 官方矩阵：全语料 × 双方言 ×（high + vm + v15）
-                             #   + ⑱ 绑定门控 10 项 + ㉑ 环境绑定 4 项 = 250 项
-bash tests/run_presets.sh    # 预设 × 全语料（465 项）
-bash tests/multiseed.sh      # VM/编码改动必跑（含绑定 5 种子扫描）
-bash tests/bind_gate_test.sh # 增量⑱ 激活门独立跑法（已内嵌 run_tests.sh）
-bash tests/env_bind_test.sh  # 增量㉑ 环境绑定独立跑法（已内嵌 run_tests.sh）
-bash tests/bench_presets.sh  # 性能快照（见 docs/performance.md）
-bash tests/gen_examples.sh   # 重生成 obsucvim/examples/
+cd engine
+bash tests/run_tests.sh      # 官方矩阵：全语料 × 方言 ×（high + vm + v15）
+bash tests/run_presets.sh    # 预设 × 全语料
+bash tests/multiseed.sh      # VM/编码改动必跑
+bash tests/defense_audit.sh  # 防御审计 D1–D20
+bash tests/gen_examples.sh   # 重生成 engine/examples/
+
+cd ../web
+node tools/verify-engine-version.mjs   # 引擎锚点（R079）
+node tools/test-hosting.mjs            # 托管套件
+python3 tools/test-loader.py           # loader 套件
 ```
 
-当前（2026-09-08）：官方矩阵 **250/250**（含 ⑱ 绑定门控 10 项 + ㉑ 环境
-绑定 4 项），预设矩阵 **465/465**，多种子回归 0 失败（含绑定扫描），
-轮廓指纹 32/32，安全指纹 5/5。
+最近一次记录的全绿口径：官方矩阵、预设矩阵、多种子失败 0、防御审计、轮廓/安全指纹，
+以及托管八套件（数字见 `docs/CURRENT-STATE.md` §7）。
+**本沙箱没有 Rust 工具链与 Lua 解释器**，只能跑 WASI 引擎与锚点校验（见同一文档 §8）。
 
-## 性能（摘要）
+---
 
-完整表：`docs/performance.md`。数量级（Lua 5.1.5，`--seed 42`）：
+## 文档
 
-- 混淆：非 VM 2–9 ms；VM ~15 ms
-- `high` 运行约 4–16×；`vm` 小脚本约 20–100×，热表循环可到数百倍
-- `vm` 容器有一份解释器骨架，再小的脚本也约 130 KB+
-
-要帧时间就用 `high`；要 VM 护城河就用 `vm`/`max`。
-
-## 约束
-
-- 输出是 **5.1 兼容 Lua 源码**（无 goto / 位运算 / `//`）
-- 共享语料/用户脚本若要双方言交叉一致：不要顶层新建全局（Luau CLI
-  `luaL_sandbox` 只读）、不要依赖重复键表构造器的存储序
-- 自包含脚本的流密码密钥**必然可恢复**——壁垒是每构建唯一 + 提取成本，
-  不是密码学不可破（见 `docs/obfuscation-research.md` §2.2.1）
-
-## 仓库
-
-| 路径 | 内容 |
+| 入口 | 内容 |
 |---|---|
-| `HANDOFF.md` | 零上下文交接（新会话/AI 先读） |
-| `PROGRESS.md` | 里程碑进度 |
-| `docs/implementation-plan.md` | L1–L7 清单 + 里程碑 + 更新日志 |
-| `docs/performance.md` | 预设性能数据 |
-| `docs/vm-l6-implementation.md` | VM 实现笔记（动 `vmgen/` 前必读） |
-| `docs/obfuscation-research.md` | 混淆调研 + 双方言实测 |
-| `docs/luraph15-analysis.md` | Luraph v15 样本分析 |
-| `docs/luraph15-defense-analysis.md` | Luraph v15 防御手段全解析（安全导向） |
-| `obsucvim/` | Rust 本体（`src/vmgen/` = L6） |
-| `obsucvim/tests/` | 矩阵 / 预设 / 多种子 / 语料 |
-| `obsucvim/examples/` | 全语料混淆示例 |
+| [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) | **唯一权威现状**：版本、锚点、收摊令、V19/MW-1、已知边界 |
+| [`docs/README.md`](docs/README.md) | 文档总索引 + 目录布局 + 历史路径映射 |
+| [`HANDOFF.md`](HANDOFF.md) | 交接：用户硬性要求、环境、验收口径、坑 |
+| [`docs/engine/ENGINE-VERSION.md`](docs/engine/ENGINE-VERSION.md) | 引擎逐轮台账（R0xx 决策与证据） |
+| [`docs/engine/implementation-plan.md`](docs/engine/implementation-plan.md) | L1–L7 实施清单与更新日志 |
+| [`docs/engine/vm-l6-implementation.md`](docs/engine/vm-l6-implementation.md) | VM 实现笔记（动 `engine/src/vmgen/` 前必读） |
+| [`docs/engine/plan-resemblance-and-security.md`](docs/engine/plan-resemblance-and-security.md) | 安全设计总纲 |
+| [`docs/hosting/`](docs/hosting/) | 托管系统、卡密接口、控制台安全审计、邮箱接入 |
+| [`docs/redteam/`](docs/redteam/) · [`docs/research/`](docs/research/) | 红队战役与研究存档 |
+| [`docs/archive/`](docs/archive/) | 历史流水（**勿当现状读**） |
 
-当前里程碑：M0–M6 完成。
+---
+
+## 约束与诚实边界
+
+- 输出是 **Luau 源码**（v15 产物用 `buffer`/`bit32`/`typeof`/`setfenv`，Lua 5.1 无法运行）。
+- 自包含脚本的流密码密钥**必然可恢复**——壁垒是每构建唯一 + 提取成本，
+  不是密码学不可破（见 `docs/engine/obfuscation-research.md` §2.2.1）。
+- 纯静态拆解已有真实失守先例（V19 立项原因），修复纲领 R1–R6 **未全部落地**。
+- 绑定态产物（`--bind-env` / `--bind-executor` / `--env-check`）只在目标运行时可用，
+  通用分析沙箱里加载期即失败——这是设计目的，不是缺陷。
+- 真机（Roblox / Delta / Synapse）正向验证依赖用户回传；沙箱内只有自编 Luau + 宿主 mock。

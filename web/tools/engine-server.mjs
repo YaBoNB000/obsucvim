@@ -6,7 +6,7 @@
  *
  * 选项映射与前端 buildCliArgs() 一致（产品形态固定 v15）。
  * 环境变量：
- *   OBSUCVIM_BIN   obsucvim 二进制路径（默认 <repo>/obsucvim/target/release/obsucvim）
+ *   OBSUCVIM_BIN   obsucvim 二进制路径（默认 <repo>/engine/target/release/obsucvim）
  *   PORT           监听端口（默认 8787，仅 127.0.0.1，由 Vite dev 代理）
  *   LUAUC          luau-compile 路径（默认 <repo>/.tools/bin/luau-compile，可选语法校验）
  *   SMTP_*         163 邮箱 SMTP 配置（SMTP_PASS 必须由服务端私密环境变量提供）
@@ -329,7 +329,7 @@ function ensureDefaultFolder(ownerEmail) {
 }
 
 /* 原子写：先写临时文件再 rename。断电/崩溃只会留下旧文件，不会留下半截 JSON。
- * 单实例下足够；多实例部署仍需要真正的数据库（见 docs/HOSTING-V2-PLAN.md Phase 6）。 */
+ * 单实例下足够；多实例部署仍需要真正的数据库（见 docs/hosting/HOSTING-V2-PLAN.md Phase 6）。 */
 function saveState() {
   const payload = JSON.stringify(state);
   const tmp = `${STATE_FILE}.${process.pid}.tmp`;
