@@ -627,3 +627,20 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
 - Bind 态真机待验：验收件 `samples/obsucvim/v19-check/`（evkey+对照两件，
   同种子 20261025）；Dev 档（`OBSUCVIM_V19_EVKEY_DEV`）仅本地机制验证，
   构建时 stderr 明示禁止交付。
+
+## 24. R075-preview-a（V19 M1-a 中间锚点，2026-10-25）— EVKEY 默认翻 On + R6 指纹熔断
+
+路线「3」合并轮第一批。锚点（`--preset v15 --env-check --bind-executor --seed 67067`）：
+**174,163B `5ebefd82b3f1cc618ceef4636c4bcaf6eb0992a1685202d0d67e96f679f033c2`**。
+
+- EVKEY 默认翻 On（exguard::resolve_ev_mode，单测钉死）：未设旋钮=自动档
+  （v15+key-host⇒Bind；缺链⇒Off+stderr 明示勿交付）；=0 强制关；=1 显式 Bind；
+  DEV 档不变（禁交付）。R3/R5 未落地，终态锚点 R075 待钉。
+- 口径变更：**Off 件自本轮起不再承诺 R073 逐字节恒等**（R6/R3/R5 为无条件
+  硬化）；R073 锚点行保留为历史对照（仅旧提交可复现）。
+- R6 指纹熔断（结构面，对失守表 L0/L2/L4/L6）：KeyEmitter 4 方言×随机名；
+  `_MXF`→随机构名+15..18 参抖动+1–2 个形态等价 decoy；载体三连格洗牌。
+  no-bind 矩阵：自动 Off==显式 Off 逐字节恒等、五件 luau 输出恒等；bind 件
+  裸 luau fail-fast；同种子双构建恒等；TSRC 4576808 零命中。
+- 门禁：单测 60 绿；六套件全绿；verify 命中 R075-preview-a。
+- 发布 wasm 1,238,826B（+15.0KB，R6/旋钮代码），`web/tools/obsucvim.wasm` 已刷新。

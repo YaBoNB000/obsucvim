@@ -199,3 +199,67 @@ hook 篡改环境走静默失步投毒，缺 API 非真环境走 fail-fast 干�
 - **M1（R6 指纹熔断 + R3 oracle 熄灭 + R5 熵坍缩）**：开工与否待拍板。
 - R2（bdec 懒解层 + 编译期可证前缀折叠）按 §7.4 定案排 M3 轮。
 - v18-check 4 件真 Delta 复检仍在排队。
+
+## 9. M1-a 实装：EVKEY 默认翻 On + R6 指纹熔断（2026-10-25，路线「3」合并轮）
+
+用户拍板路线 3：EVKEY 翻默认与 M1 合并一轮做，终态只出一轮新锚点 R075、
+一次真机验收。本段是第一批（M1-a）落地记录；R3/R5 随后批次，R075 终钉。
+
+### 9.1 EVKEY 默认语义（exguard::resolve_ev_mode，单测钉死）
+
+| 旋钮状态 | 判定 |
+|---|---|
+| 未设 `OBSUCVIM_V19_EVKEY`（自动档） | v15 + key-host 链齐备 ⇒ **Bind**；v15 缺链 ⇒ Off + stderr 明示「Off 件 R3 oracle 不熄灭，勿作交付件」；非 v15 ⇒ Off（静默） |
+| `=0/off/false` | 强制 Off（即便链齐备） |
+| `=1/on/true/bind/空串` | 显式 Bind（非 v15 报错；Bind 缺 keyhost 由 resolve_ev_term 报错，同旧版） |
+| `OBSUCVIM_V19_EVKEY_DEV=<n>` | 开发档（旋钮显式开或未设均 honored）；零安全，禁交付 |
+| 其余取值 | 明确报错（不静默脑补） |
+
+落点兑现既定方向「key-host delta 直接当底层，永远开启」：默认构建命令
+（`--preset v15 --env-check --bind-executor`）经 v16-a 自动注入 delta 宿主模型
+⇒ 自动档天然 Bind。**口径变更声明**：自本轮起 Off 件不再承诺与 R073 逐字节
+恒等（R6/R3/R5 是无条件引擎硬化）；R073 锚点冻结于历史提交，verify 脚本
+R073 行仅作历史对照。
+
+### 9.2 R6 指纹熔断落地清单（语义零变，全经门禁矩阵复证）
+
+对应失守表 L0/L2/L4/L6 的文本指纹面（minify 条件下仍然成立的**结构**指纹）：
+
+1. **KeyEmitter 家族化**：`(function(d) local s=(NUM+…)%268435456 for…` 单一
+   模板 → 4 方言（for / while / 分解累加 / repeat-guard）× 随机局部名。
+   四种方言与 Rust 镜像逐点同态（加法模 2^28 可交换/可结合，repeat 的
+   #d==0 边界与 for 零迭代等价），TSRC 实测四方言分布 31/19/16/13。
+2. **`_MXF` 唯一性打散**：工厂名随机构（`_FQ{hex}`）、签名尾挂 0–3 个死参
+   ⇒ 参数数在 15..=18 抖动（被拆件的检测条件正是「参数数==15 的唯一函数」）；
+   伴生 1–2 个**形态等价副本**（13–17 参 decoy）分流正则命中。实测本种子
+   高参数带：13/14/18（无 15）。
+3. **载体三连格拆散**：`_mb{i} local _ms{i}=… local _mt{i}=…` 同序三连 →
+   逐 shard 语句顺序洗牌 + 连接符多态 + 循环变量改名；shard 块发射顺序不动
+   （`_mc` 滚动累加的编译/运行两侧顺序严格一致，一动俱动）。
+
+minify 吸收说明：产物默认走 minify，模板层名随机构（`_FQ/_xw/_mb*xx`）会被
+minifier 再抹一次——名字层面本就轮不到我们负责；R6 的有效载荷是
+**参数计数/语句顺序/表达式方言/decoy 分流**这些 minify 抹不掉的结构面。
+（诚实口径：R6 只抬每样本人工解析成本，不改变密钥存在性，§3 原文不废。）
+
+### 9.3 M1-a 门禁证据
+
+- 单测 **60 绿**（新增 resolve_ev_mode_default_auto）；wasm 1,238,826B。
+- no-bind 矩阵（`--preset v15 --no-bind-executor`，seed 20261025）：
+  自动 Off == 显式 Off **逐字节恒等**；auto/off/dev7/dev8/devauto 五件 luau
+  实跑输出与原文恒等；dev7≠dev8（密钥流差异在）；自动回落 stderr 文案在。
+- 交付路径（bind 全自动 Bind）：裸 luau fail-fast 干净拒绝（探针文案）；
+  同种子双构建逐字节恒等；TSRC：`4576808` 字面量 0 命中、decoy×2、
+  工厂 18 参、探针在。
+- 六套件全绿 + verify 命中新中间锚点 **R075-preview-a**
+  （174,163B `5ebefd82…`，seed 67067 bind 探针）。
+
+### 9.4 M1 余账（按序推进，全部落地后钉 R075 终锚点 + 一次真机验收）
+
+- **M1-b = R3 oracle 熄灭**：`_bp/_rp/_hp` 三段 `_bc/_rc/_hc` 期望值、
+  微码 `MZD` 期望值、`PZ3/RTQCKX`、`PZ4/RTPCX`、osum/osum2 暴露面——
+  全部在 EVKEY 激活件中混 EVK/EVKX 后存储（Off 件保留旧明文形态并明示
+  非交付）；EVK 向 st2 闭包（`{sigtail}`）穿线。
+- **M1-c = R5 熵坍缩首批**：stage-1 blob LCG 折叠换 28-bit 非线性 + 明文级联
+  （`unmask_pre` 与 compiler::finish 双镜面同步）；评估 shard `_ms/_mt`
+  仿射对（L5 病灶）的级联化改造。字符串池链（L9）视预算并进或单列。

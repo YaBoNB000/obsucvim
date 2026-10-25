@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R075-preview-a",
+    note: "V19 M1-a 中间锚点：EVKEY 默认翻 On（自动档：v15+key-host⇒Bind，缺链⇒Off+警告）+ R6 指纹熔断（KeyEmitter 4 方言、_FQ 工厂随机构 15..18 参抖动+等价 decoy、载体三连格洗牌）；R3/R5 未落地，终态 R075 待钉；Off 自本轮起不再承诺 R073 逐字节恒等",
+    size: 174163,
+    sha256: "5ebefd82b3f1cc618ceef4636c4bcaf6eb0992a1685202d0d67e96f679f033c2",
+  },
+  {
     name: "R073",
     note: "体积收敛 R073：_mx 微解释器工厂化（5 份同源体→1 共享函数体+薄包装）+ HW2 别名表折叠；打印探针 231,571→171,881B，md 滚动方言/全 kind 注册不变",
     size: 171881,

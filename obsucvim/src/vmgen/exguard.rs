@@ -37,9 +37,13 @@ pub fn ev_fold(kh: &KeyHost) -> u32 {
 	((a.wrapping_mul(31).wrapping_add(kh.k3c)) % M28) as u32
 }
 
-/// V19 原型旋钮（OBSUCVIM_V19_EVKEY）的形态：
-/// Off=关闭（产物与 R073 逐字节恒等）；Bind=真宿主测量（密钥显式不进产物）；
+/// V19 旋钮（OBSUCVIM_V19_EVKEY）的形态：
+/// Off=关闭；Bind=真宿主测量（密钥显式不进产物）；
 /// Dev(n)=开发档（常量进产物，仅用于本地矩阵机制验证，零安全性，禁止交付）。
+/// M1 起默认自动档（resolve_ev_mode 的 None 分支）：v15 + key-host 链齐备
+/// ⇒ Bind；否则回落 Off 并 stderr 明示（Off 件 R3 oracle 不熄灭，非交付形态）。
+/// R075 起 Off 不再承诺与 R073 逐字节恒等（R6/R3/R5 是无条件引擎硬化，
+/// R073 锚点冻结于 51f9e01 之前的历史提交）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum EvKeyMode {
 	Off,
@@ -50,6 +54,69 @@ pub enum EvKeyMode {
 impl EvKeyMode {
 	pub fn on(self) -> bool {
 		!matches!(self, EvKeyMode::Off)
+	}
+}
+
+/// V19 M1：旋钮环境变量 → 模式解析（默认翻 On 的唯一入口，钉测试）。
+/// - 未设置（None）= 自动档：v15+keyhost ⇒ Bind；v15 无 keyhost ⇒ Off + 警告；
+///   dev 变量在自动档同样 honored（显式设置即视为开发意图）。
+/// - "0"/"off"/"false" ⇒ 强制 Off；"1"/"on"/"true"/"bind"/"" ⇒ Bind（或 Dev）；
+///   显式开但非 v15 ⇒ 报错；Bind 但无 keyhost ⇒ 由 resolve_ev_term 报错。
+/// - 其余取值 ⇒ 明确报错（宁错杀不静默）。
+pub fn resolve_ev_mode(
+	var: Option<&str>,
+	dev: Option<&str>,
+	v15_ready: bool,
+	keyhost_ready: bool,
+) -> Result<EvKeyMode, String> {
+	let dev_mode = |d: &str| -> Result<EvKeyMode, String> {
+		if !v15_ready {
+			return Err("OBSUCVIM_V19_EVKEY 目前只接 --preset v15".to_string());
+		}
+		let n: u32 = d
+			.trim()
+			.parse()
+			.map_err(|_| "OBSUCVIM_V19_EVKEY_DEV 必须是非负整数".to_string())?;
+		eprintln!(
+			"[V19-EVKEY] DEV 开发档 ({n})：EV 常量进产物，零安全性，禁止交付"
+		);
+		Ok(EvKeyMode::Dev(n))
+	};
+	match var {
+		None => match dev {
+			Some(d) => dev_mode(d),
+			None => {
+				if v15_ready && keyhost_ready {
+					Ok(EvKeyMode::Bind)
+				} else if v15_ready {
+					eprintln!(
+						"[V19-EVKEY] 自动档：缺 key-host 链（--key-host delta），回落 Off；\
+						Off 件 R3 oracle 不熄灭，勿作交付件"
+					);
+					Ok(EvKeyMode::Off)
+				} else {
+					Ok(EvKeyMode::Off)
+				}
+			}
+		},
+		Some(v) => {
+			let t = v.trim().to_ascii_lowercase();
+			if t == "0" || t == "off" || t == "false" {
+				return Ok(EvKeyMode::Off);
+			}
+			if !(t.is_empty() || t == "1" || t == "on" || t == "true" || t == "bind") {
+				return Err(format!(
+					"OBSUCVIM_V19_EVKEY 取值无法识别：{v}（0=关 / 1=Bind）"
+				));
+			}
+			if !v15_ready {
+				return Err("OBSUCVIM_V19_EVKEY 目前只接 --preset v15".to_string());
+			}
+			match dev {
+				Some(d) => dev_mode(d),
+				None => Ok(EvKeyMode::Bind),
+			}
+		}
 	}
 }
 
@@ -683,5 +750,42 @@ mod tests {
 		assert_eq!(resolve_ev_term(EvKeyMode::Dev(7), None).unwrap(), 7);
 		assert!(resolve_ev_term(EvKeyMode::Dev(0), None).is_err());
 		assert!(resolve_ev_term(EvKeyMode::Dev(268_435_456), None).is_err());
+	}
+
+	#[test]
+	fn resolve_ev_mode_default_auto() {
+		// 自动档：v15+keyhost ⇒ Bind（M1 翻默认）；v15 无 keyhost ⇒ Off 回落；
+		// 非 v15 ⇒ Off。
+		assert_eq!(resolve_ev_mode(None, None, true, true).unwrap(), EvKeyMode::Bind);
+		assert_eq!(resolve_ev_mode(None, None, true, false).unwrap(), EvKeyMode::Off);
+		assert_eq!(resolve_ev_mode(None, None, false, true).unwrap(), EvKeyMode::Off);
+		assert_eq!(resolve_ev_mode(None, None, false, false).unwrap(), EvKeyMode::Off);
+		// 显式 0/off/false ⇒ 强制 Off（即便链齐备）。
+		for v in ["0", "off", "FALSE"] {
+			assert_eq!(
+				resolve_ev_mode(Some(v), None, true, true).unwrap(),
+				EvKeyMode::Off,
+				"explicit off {v}"
+			);
+		}
+		// 显式 1/on/bind/空串 ⇒ Bind；dev 优先；非 v15 显式开 ⇒ 报错。
+		for v in ["1", "on", "bind", "True", ""] {
+			assert_eq!(
+				resolve_ev_mode(Some(v), None, true, true).unwrap(),
+				EvKeyMode::Bind,
+				"explicit on {v}"
+			);
+		}
+		assert_eq!(
+			resolve_ev_mode(Some("1"), Some("7"), true, false).unwrap(),
+			EvKeyMode::Dev(7)
+		);
+		assert_eq!(
+			resolve_ev_mode(None, Some("9"), true, false).unwrap(),
+			EvKeyMode::Dev(9)
+		);
+		assert!(resolve_ev_mode(Some("1"), None, false, true).is_err());
+		assert!(resolve_ev_mode(Some("banana"), None, true, true).is_err());
+		assert!(resolve_ev_mode(Some("1"), Some("xyz"), true, true).is_err());
 	}
 }

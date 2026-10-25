@@ -184,11 +184,12 @@ def main():
               artifact_auto is not None and artifact_auto == artifact_expl,
               (error or "")[:120])
 
-        R073A = "b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b"
+        R073A = "b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b"  # 历史锚点：R073 及更早形态（冻结于 R075-preview-a 之前的提交）
+        R075PA = "5ebefd82b3f1cc618ceef4636c4bcaf6eb0992a1685202d0d67e96f679f033c2"  # M1-a 中间锚点（EVKEY 默认翻+R6）；R3/R5 落地后终态 R075 重钉
         ANCHOR_FLAGS = ["--preset", "v15", "--env-check", "--bind-executor"]
         auto5, error = build(work, ANCHOR_FLAGS, "67067", "khauto5")
-        check("auto default artifact == R073 keyed anchor",
-              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R073A,
+        check("auto default artifact == R075-preview-a anchor (M1-a interim)",
+              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R075PA,
               (error or "")[:120])
         ok, _, detail = build_status(
             work, ANCHOR_FLAGS + ["--no-key-host"], "1", "khconflict")

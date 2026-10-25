@@ -513,27 +513,16 @@ fn main() -> ExitCode {
 				.key_host
 				.as_deref()
 				.and_then(vmgen::exguard::keyhost_profile);
-			// V19 R4-proto：OBSUCVIM_V19_EVKEY=1 打开宿主 EV 进 blob 密钥流。
-			// Bind（默认）= 真宿主测量现算现折，产物无 EV 常量；
-			// OBSUCVIM_V19_EVKEY_DEV=<n> = 开发档（常量进产物，仅机制验证）。
-			let ev_mode = if std::env::var("OBSUCVIM_V19_EVKEY").is_ok() {
-				if !(opts.do_vm && opts.do_v15) {
-					return Err("OBSUCVIM_V19_EVKEY 目前只接 --preset v15".to_string());
-				}
-				if let Ok(dev) = std::env::var("OBSUCVIM_V19_EVKEY_DEV") {
-					let v: u32 = dev.parse().map_err(|_| {
-						"OBSUCVIM_V19_EVKEY_DEV 必须是非负整数".to_string()
-					})?;
-					eprintln!(
-						"[V19-EVKEY] DEV 开发档 ({v})：EV 常量进产物，零安全性，禁止交付"
-					);
-					vmgen::exguard::EvKeyMode::Dev(v)
-				} else {
-					vmgen::exguard::EvKeyMode::Bind
-				}
-			} else {
-				vmgen::exguard::EvKeyMode::Off
-			};
+			// V19 M1：EVKEY 默认翻 On——宿主 EV 进 blob 密钥流是默认形态。
+			// 未设旋钮 = 自动档（v15+key-host 链齐备 ⇒ Bind，否则回落 Off+警告）；
+			// OBSUCVIM_V19_EVKEY=0 强制关；=1 显式 Bind（缺链报错）；
+			// OBSUCVIM_V19_EVKEY_DEV=<n> = 开发档（常量进产物，仅机制验证，禁交付）。
+			let ev_mode = vmgen::exguard::resolve_ev_mode(
+				std::env::var("OBSUCVIM_V19_EVKEY").ok().as_deref(),
+				std::env::var("OBSUCVIM_V19_EVKEY_DEV").ok().as_deref(),
+				opts.do_vm && opts.do_v15,
+				keyhost_prof.is_some(),
+			)?;
 			let ev_term = vmgen::exguard::resolve_ev_term(ev_mode, keyhost_prof.as_ref())?;
 			if ev_mode.on() {
 				vmgen::manifest_key("EVKEY_TERM", ev_term as u64);

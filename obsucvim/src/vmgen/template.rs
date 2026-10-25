@@ -187,17 +187,41 @@ impl<'a> KeyEmitter<'a> {
 			}
 		};
 
-		format!(
-			"(function(d) local s=({seed}+({anchor_expr}))%{modulus} for i=1,#d do s=(s*{mul}+#d[i]+i*{step}+{bias})%{modulus} end return ({encoded}+s)%{modulus} end)({data})",
-			seed = seed,
-			anchor_expr = anchor_expr,
-			modulus = KEY_MOD,
-			mul = mul,
-			step = step,
-			bias = bias,
-			encoded = encoded,
-			data = data_expr,
-		)
+		// V19 R6-a（指纹熔断）：KeyEmitter 文本模板家族化——同一状态递推以
+		// 4 种方言 + 随机局部名发射，消灭「(function(d) local s=(NUM+…」
+		// 跨件恒定正则锚点（L0/L2 失守根因之一）。四种方言数学上严格同态
+		// （加法模 M 可交换/可结合；repeat 的 #d==0 边界与 for 零迭代等价），
+		// Rust 侧镜像（上方 state 递推）不变。
+		let vn_p = ["d", "p", "v"][rng.int(0, 2) as usize];
+		let vn_s = ["s", "k", "w", "q"][rng.int(0, 3) as usize];
+		let vn_i = ["i", "j", "n"][rng.int(0, 2) as usize];
+		let m = KEY_MOD;
+		match rng.int(0, 3) {
+			0 => format!(
+				"(function({p}) local {s}=({seed}+({anchor}))%{m} for {i}=1,#{p} do {s}=({s}*{mul}+#{p}[{i}]+{i}*{step}+{bias})%{m} end return ({enc}+{s})%{m} end)({data})",
+				p = vn_p, s = vn_s, i = vn_i, m = m,
+				seed = seed, anchor = anchor_expr, mul = mul, step = step,
+				bias = bias, enc = encoded, data = data_expr,
+			),
+			1 => format!(
+				"(function({p}) local {s}=({seed}+({anchor}))%{m} local {i}=1 while {i}<=#{p} do {s}=(({s}*{mul})+({bias}+{i}*{step}+#{p}[{i}]))%{m} {i}={i}+1 end return ({s}+({enc}))%{m} end)({data})",
+				p = vn_p, s = vn_s, i = vn_i, m = m,
+				seed = seed, anchor = anchor_expr, mul = mul, step = step,
+				bias = bias, enc = encoded, data = data_expr,
+			),
+			2 => format!(
+				"(function({p}) local {s}=(({anchor})+({seed}))%{m} for {i}=1,#{p} do {s}=({s}*{mul}+#{p}[{i}])%{m} {s}=({s}+{i}*{step}+{bias})%{m} end return ({enc}+({s}))%{m} end)({data})",
+				p = vn_p, s = vn_s, i = vn_i, m = m,
+				seed = seed, anchor = anchor_expr, mul = mul, step = step,
+				bias = bias, enc = encoded, data = data_expr,
+			),
+			_ => format!(
+				"(function({p}) local {i}=0 local {s}=({seed}+({anchor}))%{m} repeat {i}={i}+1 if {i}<=#{p} then {s}=({i}*{step}+({s}*{mul}+(#{p}[{i}]+{bias})))%{m} end until {i}>=#{p} return (({enc})+{s})%{m} end)({data})",
+				p = vn_p, s = vn_s, i = vn_i, m = m,
+				seed = seed, anchor = anchor_expr, mul = mul, step = step,
+				bias = bias, enc = encoded, data = data_expr,
+			),
+		}
 	}
 
 	fn dead_zero(&mut self, rng: &mut Rng) -> String {
@@ -969,12 +993,17 @@ fn micro_tree(items: &[(u8, String)]) -> String {
 	)
 }
 
+// V19 R6-a：工厂形态多态——名随机构、签名尾挂 0..=3 个死参（签名计数
+// 每篇产物在 15..=18 间抖动，「参数数==15 的唯一函数」正则锚点灭绝；
+// 另有形态等价副本 decoy 分流命中数，见发射点）。死参永不参与语义。
 fn micro_factory_source(
 	kinds: &[usize],
 	variant: u8,
 	lit: &MicroLits,
 	nop: &str,
 	rng: &mut Rng,
+	fname: &str,
+	dead_params: &[&str],
 ) -> (String, Vec<usize>) {
 	let mut items: Vec<(usize, String)> = kinds
 		.iter()
@@ -1012,14 +1041,30 @@ fn micro_factory_source(
 				.collect::<String>() + "end",
 		}
 	};
+	let mut extra = String::new();
+	for dp in dead_params {
+		extra.push(',');
+		extra.push_str(dp);
+	}
 	let src = format!(
-		"local function _MXF(E,a,b,c,d,o,R,N,zB,zM,zS,zC,z1,z2,z3) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE(zB,o)-(zM+o*zS)%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE(zB,ip)-(zM+ip*zS)%256)%256 local d2=(BYTE(zB,ip+1)-(zM+(ip+1)*zS)%256)%256 local d3=(BYTE(zB,ip+2)-(zM+(ip+2)*zS)%256)%256 ip=ip+3 local DK={{d1,d2,d3}} local op,x,y=DK[z1],DK[z2],DK[z3] {dispatch} end for _ti=1,3 do T[_ti]=nil end DK=nil for _oi=1,4 do O[_oi]=nil end end ",
+		"local function {fname}(E,a,b,c,d,o,R,N,zB,zM,zS,zC,z1,z2,z3{extra}) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE(zB,o)-(zM+o*zS)%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE(zB,ip)-(zM+ip*zS)%256)%256 local d2=(BYTE(zB,ip+1)-(zM+(ip+1)*zS)%256)%256 local d3=(BYTE(zB,ip+2)-(zM+(ip+2)*zS)%256)%256 ip=ip+3 local DK={{d1,d2,d3}} local op,x,y=DK[z1],DK[z2],DK[z3] {dispatch} end for _ti=1,3 do T[_ti]=nil end DK=nil for _oi=1,4 do O[_oi]=nil end end ",
+		fname = fname,
+		extra = extra,
 		dispatch = dispatch,
 	);
 	(src, order)
 }
 
-fn micro_shard_wrapper(index: usize, shard: &MicroShard, order: &[usize]) -> String {
+#[allow(clippy::too_many_arguments)]
+fn micro_shard_wrapper(
+	_index: usize,
+	shard: &MicroShard,
+	order: &[usize],
+	fname: &str,
+	wname: &str,
+	snames: &(String, String, String),
+	dead_args: &[String],
+) -> String {
 	let mut logical_pos = [0usize; 3];
 	for (physical, logical) in shard.field_perm.iter().enumerate() {
 		logical_pos[*logical] = physical + 1;
@@ -1030,12 +1075,21 @@ fn micro_shard_wrapper(index: usize, shard: &MicroShard, order: &[usize]) -> Str
 		.collect::<Vec<_>>()
 		.join(",");
 	format!(
-		"local _mx{i}=function(E,a,b,c,d,o,R,N) return _MXF(E,a,b,c,d,o,R,N,_mb{i},_ms{i},_mt{i},{{{csv}}},{p1},{p2},{p3}) end ",
-		i = index,
+		"local {w}=function(E,a,b,c,d,o,R,N) return {f}(E,a,b,c,d,o,R,N,{mb},{ms},{mt},{{{csv}}},{p1},{p2},{p3}{x}) end ",
+		w = wname,
+		f = fname,
+		mb = snames.0,
+		ms = snames.1,
+		mt = snames.2,
 		csv = csv,
 		p1 = logical_pos[0],
 		p2 = logical_pos[1],
 		p3 = logical_pos[2],
+		x = if dead_args.is_empty() {
+			String::new()
+		} else {
+			format!(",{}", dead_args.join(","))
+		},
 	)
 }
 
@@ -1090,6 +1144,7 @@ fn micro_variant_dispatch(
 	head_args: &str,
 	tail_args: &str,
 	rng: &mut Rng,
+	w_names: &[String],
 ) -> String {
 	let mut order: Vec<usize> = (0..variants.len()).collect();
 	rng.shuffle(&mut order);
@@ -1108,9 +1163,9 @@ fn micro_variant_dispatch(
 			format!("elseif {}==E.md", v.shard)
 		};
 		out.push_str(&format!(
-			"{cond} then _mx{shard}({head},{offset}{tail}) ",
+			"{cond} then {wname}({head},{offset}{tail}) ",
 			cond = cond,
-			shard = v.shard,
+			wname = w_names[v.shard],
 			offset = v.offset,
 			head = head_args,
 			tail = tail_args,
@@ -2092,6 +2147,22 @@ __FVARM__        else
 			micro_shards.push(new_micro_shard(rng, i as u8));
 		}
 		let mut micro_carriers: Vec<Vec<u8>> = vec![Vec::new(); n_micro_shards];
+		// V19 R6-a（指纹熔断）：微码面名随机构——工厂/包装/载体三连名逐件
+		// 随机，消灭 _MXF/_mx{i}/_mb{i}/_ms{i}/_mt{i} 跨件恒定锚点（L0/L4/L6）。
+		let mxf_name = format!("_FQ{:03x}", rng.int(0, 4095));
+		let mxf_dead: Vec<&'static str> =
+			["_dq1", "_dq2", "_dq3"][..rng.int(0, 3) as usize].to_vec();
+		let mut wrapper_names: Vec<String> = Vec::with_capacity(n_micro_shards);
+		let mut shard_names: Vec<(String, String, String)> =
+			Vec::with_capacity(n_micro_shards);
+		for i in 0..n_micro_shards {
+			wrapper_names.push(format!("_xw{:02x}{}", rng.int(0, 255), i));
+			shard_names.push((
+				format!("_mb{:02x}{}", rng.int(0, 255), i),
+				format!("_ms{:02x}{}", rng.int(0, 255), i),
+				format!("_mt{:02x}{}", rng.int(0, 255), i),
+			));
+		}
 		for (name, wire) in &items {
 			if let Some(recipe) = micro_recipe(name) {
 				let mut variants = Vec::with_capacity(n_micro_shards);
@@ -2111,7 +2182,7 @@ __FVARM__        else
 				} else {
 					chain_epilogue(rng, &wk)
 				};
-				let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng);
+				let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng, &wrapper_names);
 				micro_fill.push_str(&format!(
 					"HW2[({wire}+AV)%256]=function(E,a,b,c,d) {route}; {tail} end ",
 					wire = *wire as u16,
@@ -2146,6 +2217,7 @@ __FVARM__        else
 				&format!("E,{},{},{},{}", z[3], z[4], z[5], z[6]),
 				",_r,_r.n",
 				rng,
+				&wrapper_names,
 			);
 			let post_tail = chain_epilogue(rng, &wk);
 			micro_fill.push_str(&format!(
@@ -2172,7 +2244,7 @@ __FVARM__        else
 				);
 				variants.push(v);
 			}
-			let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng);
+			let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng, &wrapper_names);
 			micro_fill.push_str(&format!(
 				"HW2[({wire}+AV)%256]=function(E,a,b,c,d) {route}; return end ",
 				wire = *wire as u16,
@@ -2210,7 +2282,7 @@ __FVARM__        else
 						);
 						variants.push(v);
 					}
-					let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng);
+					let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng, &wrapper_names);
 					micro_fill.push_str(&format!(
 						"HW2[({w}+AV)%256]=function(E,a,b,c,d) {route}; return end ",
 						w = super::isa::OpMap::fused_tail_code(t, j) as u16,
@@ -2260,18 +2332,38 @@ __FVARM__        else
 			manifest_key(&format!("MICRO_AT_SEED_{}", i), at_seed as u64);
 			manifest_key(&format!("MICRO_SESSION_COEF_{}", i), sess_coef as u64);
 			manifest_key(&format!("MICRO_SESSION_STEP_{}", i), sess_step as u64);
-			micro_fill.push_str(&format!(
-				"local _mb{shard} local _ms{shard}=(SALT%256+(CHQ%256)*({coef})+{shard}*17)%256 local _mt{shard}=({sstep}) do local _src={carrier} local _out=\"\" local _ch=(\"\")[\"char\"] local _g=({seed}) local _akm=({km}) local _akc=({kc}) for _mi=1,#_src do _g=(_akm*_g+_akc)%268435456 local _v=(BYTE(_src,_mi)-((_g%256)+(FLR(_g/256)%256)+(FLR(_g/65536)%256)+FLR(_g/16777216))%256)%256 _mc=(_mc*257+_v)%268435456 _out=_out.._ch((_v+(_ms{shard}+_mi*_mt{shard})%256)%256) end _mb{shard}=_out _src=nil _out=nil _g=nil _akm=nil _akc=nil end ",
-				shard = i,
+			// V19 R6-a：载体三连 local 格拆散——三句顺序洗牌、连接符多态、
+			// 循环变量改名；「_mb{i} local _ms{i}=… local _mt{i}=…」格式指纹灭绝。
+			// 语义不变：三个 local 彼此独立，do 块发射顺序仍按 shard 序
+			// （_mc 滚动累加顺序编译/运行两侧严格一致，一动俱动）。
+			let (mb, ms, mt) = shard_names[i].clone();
+			let stmt_mb = format!("local {mb}");
+			let stmt_ms = format!(
+				"local {ms}=(SALT%256+(CHQ%256)*({coef})+{shard}*17)%256",
 				coef = coef_e,
-				sstep = step_e,
+				shard = i
+			);
+			let stmt_mt = format!("local {mt}=({sstep})", sstep = step_e);
+			let mut stmts = vec![stmt_mb, stmt_ms, stmt_mt];
+			rng.shuffle(&mut stmts);
+			let sep = [" ", "; ", "\n"][rng.int(0, 2) as usize];
+			micro_fill.push_str(&stmts.join(sep));
+			micro_fill.push(' ');
+			let mi = ["_mi", "_iq", "_kv"][rng.int(0, 2) as usize];
+			micro_fill.push_str(&format!(
+				"do local _src={carrier} local _out=\"\" local _ch=(\"\")[\"char\"] local _g=({seed}) local _akm=({km}) local _akc=({kc}) for {mi}=1,#_src do _g=(_akm*_g+_akc)%268435456 local _v=(BYTE(_src,{mi})-((_g%256)+(FLR(_g/256)%256)+(FLR(_g/65536)%256)+FLR(_g/16777216))%256)%256 _mc=(_mc*257+_v)%268435456 _out=_out.._ch((_v+({ms}+{mi}*{mt})%256)%256) end {mb}=_out _src=nil _out=nil _g=nil _akm=nil _akc=nil end ",
+				mi = mi,
 				carrier = lua_dstr(&encrypted),
 				seed = seed_e,
 				km = km_e,
 				kc = kc_e,
+				ms = ms,
+				mt = mt,
+				mb = mb,
 			));
 		}
-		// R073：工厂化发射——先出一份共享 _MXF，再按 shard 出薄包装。
+		// R073 工厂化发射 + V19 R6-a 形态多态：共享体随机名 + 尾挂死参抖动
+		// 参数数（15..=18）；形态等价副本分流「唯一 15 参函数」正则命中。
 		{
 			let mut kinds_set: std::collections::HashSet<usize> =
 				std::collections::HashSet::new();
@@ -2282,10 +2374,49 @@ __FVARM__        else
 			kinds_all.sort_unstable();
 			if !kinds_all.is_empty() {
 				let variant = rng.int(0, 1) as u8;
-				let (fsrc, order) = micro_factory_source(&kinds_all, variant, &micro_lits, &nop, rng);
+				let (fsrc, order) = micro_factory_source(
+					&kinds_all,
+					variant,
+					&micro_lits,
+					&nop,
+					rng,
+					&mxf_name,
+					&mxf_dead,
+				);
 				micro_fill.push_str(&fsrc);
 				for (i, shard) in micro_shards.iter().enumerate() {
-					micro_fill.push_str(&micro_shard_wrapper(i, shard, &order));
+					let dead_args: Vec<String> = mxf_dead
+						.iter()
+						.map(|_| rng.int(0, 268_435_455).to_string())
+						.collect();
+					micro_fill.push_str(&micro_shard_wrapper(
+						i,
+						shard,
+						&order,
+						&mxf_name,
+						&wrapper_names[i],
+						&shard_names[i],
+						&dead_args,
+					));
+				}
+				let n_decoy = 1 + rng.int(0, 1) as usize;
+				for j in 0..n_decoy {
+					let pn = 13 + rng.int(0, 5) as usize;
+					let ps: Vec<String> = (1..=pn).map(|k| format!("p{}", k)).collect();
+					let s_j = rng.int(1_048_576, KEY_MOD - 1);
+					let m_j = 33 + rng.int(0, 224);
+					let c_j = rng.int(1, 65_535);
+					let j2 = rng.int(1, KEY_MOD - 1);
+					micro_fill.push_str(&format!(
+						"local function {dn}({ps}) local s=({sj})%{m} for i=1,#p2 do s=(s*{mj}+BYTE(p2,i)+i*{cj})%{m} end return (s+{j2})%{m} end ",
+						dn = format!("_FQ{:03x}d{}", rng.int(0, 4095), j),
+						ps = ps.join(","),
+						sj = s_j,
+						m = KEY_MOD,
+						mj = m_j,
+						cj = c_j,
+						j2 = j2,
+					));
 				}
 			}
 		}
