@@ -183,6 +183,19 @@ v1 EVK=0 ≠ 4576808 → blob LCG 失步 → 装载期死循环。
    旋钮关锚点 R073 恒等（171,881B `b67a06e3…`）；单测 59 绿；
    verify/artifact-runtime/exguard-precheck 全绿。
 
-**待回传（v2）**：`samples/obsucvim/v19-check/kkksu-mini.v19evkey.hard.lua`
-（172,358B sha `f6c1f45e…`）真 Delta 结果；异常则跑 `diag-evk.lua`
-（明文诊断，逐行 OK/MISMATCH），按 k2a/k2b/k3c/EVK 四值定位。
+**v2 真机验收（2026-10-25，已收口）**：用户回传「正常了」——按既定口径即
+`kkksu-mini.v19evkey.hard.lua`（172,358B sha `f6c1f45e…`）真 Delta 实跑
+正常打印（`kkksu-mini:1,1,2,3,5,8,13,21,34,55`）；对照件此前已验收。
+⇒ **R4 通道成立**：宿主 EV 真值已进入 blob 密钥流装载链，探针算式与取值
+通道（LKP 同源两级查找）与真机一致（k2a/k2b/k3c → EVK=4576808）；
+hook 篡改环境走静默失步投毒，缺 API 非真环境走 fail-fast 干净拒绝。
+原型一阶段（R1 组件验证）至此收口。
+
+### 8.1 遗留决策点
+
+- **EVKEY 翻默认**：既定方向「key-host delta 直接当底层，永远开启」；但 Bind
+  依赖 key-host 链齐备（delta 注入前提 = bind_executor + executor_guard），
+  默认语义待拍板（严格 = 缺链直接报错 / 自动 = 缺链回落关）。
+- **M1（R6 指纹熔断 + R3 oracle 熄灭 + R5 熵坍缩）**：开工与否待拍板。
+- R2（bdec 懒解层 + 编译期可证前缀折叠）按 §7.4 定案排 M3 轮。
+- v18-check 4 件真 Delta 复检仍在排队。
