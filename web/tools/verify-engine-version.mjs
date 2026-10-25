@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R078",
+    note: "V19 M2 首包真机收口（判别飞行 WS1/WS2/WS3 裁决）：R077 三车道 lane NL 像在真 Delta 定罪（call-nil），判定性回退 R076「+ SALT/SLT/SLTC 直加」线性注入；三源 SALT 强派生 + CLK 守卫保留。本发布 wasm = R077 二进制 + S2 数据段等长手术（rustc 通道不可用期产物，源码 R078 已同义落盘 obsucvim/src/vmgen/template.rs，rustc 恢复后重编刷锚）；NL 像重做登记 R1 余账（V19 §12）",
+    size: 178268,
+    sha256: "04572e910c7f7bb18da864bb2a51bf161fccc05e15ef0791dd95d9d4ca2654fe",
+  },
+  {
     name: "R077",
     note: "V19 M2 首包（R1 全量入钥流）：SALT 派生强化（三源 tostring + CLK 守卫采样，fold_key_nl 同式 NL-mix 替代 *31 线性）；bx/bdec、ct/csb(cbase/base)、km 三车道 + SALT 直加 → lane 专属 NL 像 _sv/_svk/_svq（幂二次整除，LC 常量各不相干、obf_num 覆盖、双镜面）；mu/mnp 镜面不对称悬案与 micro ms/_mt R6 纹理明载不入列；no-minify 调试通道 R076 起既有失真（非本批回归），交付 minify 通道为唯一口径",
     size: 178733,

@@ -4,8 +4,8 @@
 
 | 件 | 构建 | 裸 luau（已实测） | 真 Delta（实跑结果） |
 |---|---|---|---|
-| `kkksu-mini.v19evkey.hard.lua` (178,974B, sha `c61cdc5c…`) | `--preset v15 --env-check --env-check --bind-executor` + `OBSUCVIM_V19_EVKEY=1`（R077 形态：M1 全部 + R5-b + **M2-R1**：SALT 三源强派生、三车道 lane 专属 NL 像入钥流） | **干净拒绝**（缺 API 文案，不挂死） | **2026-10-25 回传：报错** `qpTaFNJmHnfMMWNVP:3: attempt to call a nil value`（LocalScript Line 3 ×7 帧）。诊断件判据全绿（k2a/k2b/k3c/EVK 4576808 MATCH）⇒ EVKEY 环境底钥层成立，嫌疑切为「bind/exguard 共用链 vs evkey 专属线」 |
-| `kkksu-mini.v19ctl.hard.lua` (177,109B, sha `1af735bc…`) | 同上但旋钮关（EVKEY=0；R077 纹理、旧明文 oracle） | 精确缺 API 拒绝（既有行为） | **需跑（调试对照）**：上三轮同型件已验收 ✓，但本轮它升级为分界实验——正常 ⇒ evkey 专属线故障；同错 ⇒ bind 共用链故障 |
+| `kkksu-mini.v19evkey.hard.lua` (178,509B, sha `6add3d1b…`) | `--preset v15 --env-check --env-check --bind-executor` + `OBSUCVIM_V19_EVKEY=1`（R078 形态：M1 全部 + R5-b + **M2-R1 修复轮**：SALT 三源强派生保留 + CLK 守卫、三车道回退 R076 线性直加注入） | **干净拒绝**（缺 API 文案，不挂死） | **2026-10-25 第五轮（R078）判定性修复件**：真机判别飞行 WS2 同字节件已回传 **正常 ✓**（`6add3d1b…` 与 diff-flight 判别件逐字节恒等） |
+| `kkksu-mini.v19ctl.hard.lua` (176,644B, sha `a537cdcf…`) | 同上但旋钮关（EVKEY=0；R078 纹理、旧明文 oracle） | 精确缺 API 拒绝（既有行为） | **需跑（收口对照）**：R078 判定性修复后首件 ctl |
 | `diag-evk.lua` (2,407B 明文诊断) | — | 打印各通道存在性与折叠值 | **已回传全绿 ✓**：k2a=1143546169 OK / k2b=1317214663 OK / k3c=22 OK / EVK=4576808 MATCH-4576808（执行器名 "Delta"，isStudio=0，checkcaller=1） |
 
 ## 验收历史
@@ -16,8 +16,14 @@
   M1 合并轮（EVKEY 默认 On + R6 + R3 + R5-a）真机全部成立。
 - 第三轮（R076/M1-bb 终态，176,057B `5b7d1dbd…`）：**通过 ✓**（2026-10-25 用户回传「正常」），
   R5-b 七链在真 Delta 全部成立 ⇒ **M1-bb 真机收口，静态可常折面清零真机定案**。
-- 第四轮（本目录现件，R077/M2-R1）：**evkey 件真机报错（assign to call nil @ inner chunk line 3），
-  调查进行中**；diag-evk 首次动用，判据全绿（EVK=4576808 与构建期假设逐位吻合）。
+- 第四轮（R077/M2-R1 首包）：**evkey/ctl 双件真机同错 call-nil**；判别飞行
+  WS1（盐单回退）挂、WS2（车道恒等）**正常 ✓**、WS3（全回退）**正常 ✓**
+  ⇒ **三车道 lane NL 像定罪，盐区无罪**。R077 定案「病灶窄判」非全局回退。
+- 第五轮（本目录现件，R078/M2-R1 修复轮）：**evkey 件 = WS2 判别件同字节**已真机
+  **正常 ✓**；三车道回退 R076 直加，三源 SALT 强派生 + CLK 守卫保留。
+  发布引擎为 R077 wasm + S2 数据段手术件（rustc 通道恢复期产物；源码 R078 已
+  同义落盘，rustc 恢复后重编刷锚）。NL 像重做登记 R1 余账（V19 §12）。
+- 第四轮（原记录留档）：evkey 件真机报错（assign to call nil @ inner chunk line 3）；diag-evk 首次动用，判据全绿（EVK=4576808 与构建期假设逐位吻合）。
   本地交叉取证：commit==源码==wasm==验收件三方恒等（sha 互验）；R076↔R077 模板 diff 仅 61 行
   （三源 SALT 派生 + CLK 守门 + _sv/_svk/_svq 三车道），其中 CLK 守门作用域分析为短路安全
   （TYP(nil)≠"function" 不触发），浮点 SALT 镜面双 realized 算术一致性复核通过；

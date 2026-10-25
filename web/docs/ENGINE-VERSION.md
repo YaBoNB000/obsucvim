@@ -716,3 +716,15 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
   no-bind fib 全绿、TSRC 静默、bind 干净拒绝）；判别飞行件落档
   `samples/obsucvim/v19-check/diff-flight/`（sha 见 §11.5/V19 文档）。
 - 手术工具 `web/tools/wasm-data-surgery.py`；源码修复待 rustc 通道恢复。
+
+## §30 R078 判定性修复（2026-10-25，判别飞行裁决收口）
+
+- 判别飞行真机回传：WS1（盐单回退）挂、WS2（车道恒等）正常、WS3（全回退）
+  正常 ⇒ **R077 三车道 lane NL 像定罪**，盐三源+CLK 守卫无罪保留。
+- R078 = 三车道回退 R076 线性直加（template.rs 九处清零，与 R076 模板 diff
+  仅余注记+盐块）；发布 wasm = R077 + S2 数据段手术（sha `84135546…`）。
+  源码等价落盘；rustc 恢复后重编 wasm 并以新锚冲销（verify-engine-version
+  R078 条目与 test-artifact-runtime R078PB 锚同步更新）。
+- R078 终锚 178,268B `04572e91…`（seed 67067 bind，双构建恒等）。
+- 第五轮：evkey `6add3d1b…`（=WS2 同字节，真机 ✓）；ctl `a537cdcf…` 收口。
+- R1 余账：NL 像重做（先解剖根因）、CLK 守门惰性正名（接签名或删宣称）。
