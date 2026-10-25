@@ -1,4 +1,0 @@
-ee019d8afb8fa7987aa6cdbd2b9074b4f52aec094eab217923594db67a2af70e  Kkksu-mid.v18fusion-trace.hard.lua
-b2b41d2180acfc380f3c9fef81e07ccb8c2e3734442c4b8851de87049daea659  Kkksu-mid.v18fusion.hard.lua
-530ed62cd853c9ae991bcacb3b5f62d40c3fb90b698f977b0a3eba2e3b74160b  Kkksu.v18fusion-trace.hard.lua
-4db86d4772a6a4d7515863ccb52949fbdf4270643f6bcb2b24fb8aab1edf0883  Kkksu.v18fusion.hard.lua

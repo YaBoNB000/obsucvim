@@ -1,9 +1,0 @@
-[Obsucvim] this executor lacks APIs the hardened build requires: identifyexecutor,checkcaller,iscclosure,islclosure,newcclosure,debug.getconstants,debug.getupvalues,debug.getproto,debug.setupvalue,game,Instance,Vector3,task, - use the compatible build (--no-bind-executor) here, or a Synapse-class executor
-stacktrace:
-[C] function error
-./Kkksu-mid.v17fusion.hard.lua:3
-./Kkksu-mid.v17fusion.hard.lua:3
-./Kkksu-mid.v17fusion.hard.lua:3
-./Kkksu-mid.v17fusion.hard.lua:3
-./Kkksu-mid.v17fusion.hard.lua:3
-./Kkksu-mid.v17fusion.hard.lua:3
