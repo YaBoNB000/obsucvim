@@ -90,16 +90,42 @@ def main():
             check("probe flight %s -> mirage" % name,
                   rc == 0 and FIB not in out, out[:90])
 
-        # 5. 篡改回退：密文段改字节 → 帧校验失败 → 幻径
-        data = bytearray(pathlib.Path("w1.lua").read_bytes())
-        pos = len(data) // 3
-        for k in range(8):
-            data[pos + k] = (data[pos + k] + 17) % 128 + 32
-        pathlib.Path("true_lane_tamper.lua").write_bytes(
-            STUB_TRUE.encode() + b"\n" + bytes(data))
-        rc, out = run_luau("true_lane_tamper.lua")
-        check("tamper: blob byte edit under true env -> mirage (no fib)",
-              rc == 0 and FIB not in out, out[:90])
+        # 5. 篡改回退（紊壳后语义化定位，与壳形无关）：找全文件最长 alphabet
+        #    连跑（=某条车道密文段），中点 8 字符在 alphabet 集内映射改字
+        #    （保证语法不烂、解码照常）→ 真帧校验失败 → 幻径。
+        ALPH = ("0123456789"
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                "abcdefghijklmnopqrstuvwxyz"
+                "!#$%&()*+,-./:;<=>?@[]^")
+        aset = set(ALPH)
+        txt = pathlib.Path("w1.lua").read_text()
+        best_s = best_e = 0
+        s0 = None
+        for idx, ch in enumerate(txt):
+            if ch in aset:
+                if s0 is None:
+                    s0 = idx
+            else:
+                if s0 is not None and idx - s0 > best_e - best_s:
+                    best_s, best_e = s0, idx
+                s0 = None
+        if s0 is not None and len(txt) - s0 > best_e - best_s:
+            best_s, best_e = s0, len(txt)
+        ok = best_e - best_s >= 64
+        if ok:
+            mid = best_s + (best_e - best_s) // 2
+            buf = list(txt)
+            for k in range(8):
+                buf[mid + k] = ALPH[(ALPH.index(buf[mid + k]) + 17) % 85]
+            pathlib.Path("true_lane_tamper.lua").write_text(
+                STUB_TRUE + "\n" + "".join(buf))
+            rc, out = run_luau("true_lane_tamper.lua")
+            check("tamper: blob edit under true env -> mirage (no fib)",
+                  rc == 0 and FIB not in out,
+                  ("run=%dB " % (best_e - best_s)) + out[:80])
+        else:
+            check("tamper: blob edit under true env -> mirage (no fib)", False,
+                  "ciphertext run not located")
 
         # 6. 体积口径打印（预算参考：引擎件 180–200KB 为旧约束）
         sz = pathlib.Path("w1.lua").stat().st_size
