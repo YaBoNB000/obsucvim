@@ -1,11 +1,11 @@
-# v19-check：V19 真机验收（第六轮 = R079/M2-P1 定案修复：evkey 已验 ✓，ctl 待真机）
+# v19-check：V19 真机验收（第六轮 = R079/M2-P1 定案修复：**evkey/ctl 双件真机全收 ✓**）
 
 两件同种子（20261025）、同输入（`src-kkksu-mini.lua`，斐波那契打印）：
 
 | 件 | 构建 | 裸 luau（已实测） | 真 Delta（实跑结果） |
 |---|---|---|---|
 | `kkksu-mini.v19evkey.hard.lua` (178,792B, sha `3904533e…`) | `--preset v15 --env-check --bind-executor`（R079 形态：盐三源强派生 + CLK 守卫保留；**P1 车道解剖定案**——bx `_sv` 车道（字节流 st 注入）双折叠独罪、落定恒等线性注入（LC 常量保留）；ct `_svk` / km `_svq` 车道折叠真机无罪、原式复辟） | **干净拒绝**（缺 API 文案，不挂死） | **已真机 ✓**（与 diff-flight 三轮 L1 判别件**逐字节恒等**，2026-10-25 用户回传「1 正常」） |
-| `kkksu-mini.v19ctl.hard.lua` (176,927B, sha `6530e016…`) | 同上但旋钮关（EVKEY=0；R079 纹理、旧明文 oracle） | 精确缺 API 拒绝（既有行为） | **待真机**（R079 首件 ctl） |
+| `kkksu-mini.v19ctl.hard.lua` (176,927B, sha `6530e016…`) | 同上但旋钮关（EVKEY=0；R079 纹理、旧明文 oracle） | 精确缺 API 拒绝（既有行为） | **正常 ✓**（2026-10-25 用户回传；**R079 第六轮双件全收、P1 完全收口**） |
 | `diag-evk.lua` (2,407B 明文诊断) | — | 打印各通道存在性与折叠值 | **已回传全绿 ✓**：k2a=1143546169 OK / k2b=1317214663 OK / k3c=22 OK / EVK=4576808 MATCH-4576808（执行器名 "Delta"，isStudio=0，checkcaller=1） |
 
 ## 验收历史
@@ -29,7 +29,8 @@
   got nil)`、L3（杀 km 保 bx/ct）挂 call-nil ⇒ **bx `_sv` 字节流车道双折叠
   为唯一病根，ct `_svk` / km `_svq` 折叠真机无罪**。R079 = bx 车道恒等落定、
   ct/km 折叠原式复辟（R077 熵卖点拿回两条车道）。evkey 件 = L1 判别件同字节
-  已真机 ✓；ctl 件（`6530e016…`）待真机。发布 wasm = R077 + l1 数据段手术
+  已真机 ✓；ctl 件（`6530e016…`）真机 **正常 ✓**——**第六轮双件全收、P1
+  完全收口**。发布 wasm = R077 + l1 数据段手术
   （`95f69c99…`，rustc 恢复后重编刷锚）。
 - 第四轮（原记录留档）：evkey 件真机报错（assign to call nil @ inner chunk line 3）；diag-evk 首次动用，判据全绿（EVK=4576808 与构建期假设逐位吻合）。
   本地交叉取证：commit==源码==wasm==验收件三方恒等（sha 互验）；R076↔R077 模板 diff 仅 61 行
