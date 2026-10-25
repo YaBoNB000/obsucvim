@@ -162,8 +162,6 @@ node web/tools/wasi-runner.mjs '{"wasmPath":"<abs>/web/tools/obsucvim.wasm",
 
 ## 10. 下一步（若被要求继续）
 
-> 强度提升的完整规划见 [`engine/STRENGTH-ROADMAP.md`](engine/STRENGTH-ROADMAP.md)
-> （2026-10-25 立项：R0 判据与工具链 → R1 CLK/镜像 → R2 bx 车道 → R3 执行门控）。
 
 按优先级，且**每一项都要先确认是否仍在 §34 收摊令范围内**：
 
