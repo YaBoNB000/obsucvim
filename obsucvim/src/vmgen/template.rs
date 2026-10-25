@@ -2713,12 +2713,41 @@ let xm3v = rng.int(1024, 999_999) as u64;
 		let const_str_step_e = obf_num(const_str_step as u64, &mut h7_rng);
 		manifest_key("CONST_NUM_STEP", const_num_step as u64);
 		manifest_key("CONST_STR_STEP", const_str_step as u64);
-		// V19 M2 R078 定案（真机判别飞行 WS1/WS2/WS3 裁决）：R077 三车道 lane
-		// NL 像在真 Delta 定罪（WS1 盐单回退仍挂、WS2 车道恒等正常、WS3 全回退
-		// 正常），回退 R076「+ SALT/SLT/SLTC 直加」线性注入形态；盐三源强派生
-		// 保留（WS3 证其无害）。R1 余账：NL 像重做待根因剖析（候选：65521 质域
-		// 映射键失步/双镜面 realized 算术差），登记 V19 §12，修复前不得重启。
-		// mu/mnp 上值车道、micro ms/_mt 纹理维持 M2 不入市结论。
+		// V19 M2 R079 定案（P1 车道解剖：F1/F2 半折叠 + L1/L2/L3 车道切真机裁决，
+		// 2026-10-25）：bx 车道（_sv，字节流 st 注入）双折叠在真 Delta 独罪——
+		// L1 杀 bx 折叠即正常，L2/L3 保之则分别在 char/index 下游暴雷；F1 一级
+		// 独存复现原型 call-nil、F2 二级独存 index-nil-'VY'。bx 车道去折叠落定
+		// 恒等线性注入（_sv=(SALT/SLT+LC)%2^28，LC 常量原位保留，幂二次整除不涉
+		// 此车道）；ct（_svk）、km（_svq）车道折叠真机无罪、原式复辟保留（L1 件
+		// 两车道折叠同存且真机正常）。盐三源强派生 + CLK 守卫维持。
+		// 注：mu/mnp upvalue 车道镜面不对称（EP 编码含 bz 项而 makefn 解码无），
+		// 不入列，明载为 P3 悬案；micro ms/_mt 属 R6 运行时纹理，不入列。
+		let r1lc_bx = rng.int(1, KEY_MOD - 1);
+		let r1lc_ct = rng.int(1, KEY_MOD - 1);
+		let r1lc_km = rng.int(1, KEY_MOD - 1);
+		manifest_key("R1LC_BX", r1lc_bx as u64);
+		manifest_key("R1LC_CT", r1lc_ct as u64);
+		manifest_key("R1LC_KM", r1lc_km as u64);
+		let sv_bx_ep = format!(
+			"local _sv=(SALT+{})%268435456 ",
+			obf_num(r1lc_bx as u64, rng)
+		);
+		let sv_bx_rt = format!(
+			"local _sv=(SLT+{})%268435456 ",
+			obf_num(r1lc_bx as u64, rng)
+		);
+		let sv_ct_ep = format!(
+			"local _svk=(SALT+{})%268435456 _svk=(_svk+(_svk%16384)*((_svk-(_svk%16384))/16384))%268435456 _svk=(_svk*257+((_svk-(_svk%65536))/65536))%268435456 ",
+			obf_num(r1lc_ct as u64, rng)
+		);
+		let sv_ct_rt = format!(
+			"local _svk=(SLTC+{})%268435456 _svk=(_svk+(_svk%16384)*((_svk-(_svk%16384))/16384))%268435456 _svk=(_svk*257+((_svk-(_svk%65536))/65536))%268435456 ",
+			obf_num(r1lc_ct as u64, rng)
+		);
+		let sv_km_ep = format!(
+			"local _svq=(SALT+{})%268435456 _svq=(_svq+(_svq%16384)*((_svq-(_svq%16384))/16384))%268435456 _svq=(_svq*257+((_svq-(_svq%65536))/65536))%268435456 ",
+			obf_num(r1lc_km as u64, rng)
+		);
 		let c_block_enc = if consts_safe {
 			let cenv_off = if cenv_active {
 				format!(" + {}", obf_num(cenv_exp_v as u64, rng))
@@ -2726,7 +2755,12 @@ let xm3v = rng.int(1024, 999_999) as u64;
 				String::new()
 			};
 			let mut s = String::from(
-				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 for j = 1, m do co[j] = si local cbase = (PS + i * PT + SALT + qf * CQC + ((bz%65521)*((i*KI+j*NI+qf)%65521))%268435456",
+				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 ",
+			);
+			// V19 M2 R1：ct/csb 车道 SALT 直加 → lane 专属 NL 像 _svk（与 CDEC 镜像）。
+			s.push_str(&sv_ct_ep);
+			s.push_str(
+				"for j = 1, m do co[j] = si local cbase = (PS + i * PT + _svk + qf * CQC + ((bz%65521)*((i*KI+j*NI+qf)%65521))%268435456",
 			);
 			s.push_str(&cenv_off);
 			s.push_str(&xtec_off);
@@ -2864,7 +2898,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _sn=0 for _si=1,3 do local _so=(_si<3) and {{}} or function() end local _ts=TOSTR(_so) for _i=1,#_ts do _sn=(_sn*31+BYTE(_ts,_i))%268435456 _sn=(_sn+(_sn%16384)*((_sn-(_sn%16384))/16384))%268435456 end end SALT=(_sn*257+((_sn-(_sn%65536))/65536))%268435456 if TYP(CLK)==\"function\" and TYP(PCAL)==\"function\" then local _cko,_ckv=PCAL(CLK) if _cko and TYP(_ckv)==\"number\" then SALT=(SALT+(_ckv%65536))%268435456 end end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local bz=(BD+(pf.iz1%65521)*(1+(i+FQ)%65521)+(pf.iz2%65521)*(1+(i+KQ)%65521))%268435456 pf.iz1=nil pf.iz2=nil local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS+(bz%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(bz%65521)*CI2)%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + SALT + qf * CQB + ((bz%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(bz%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(bz%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _sn=0 for _si=1,3 do local _so=(_si<3) and {{}} or function() end local _ts=TOSTR(_so) for _i=1,#_ts do _sn=(_sn*31+BYTE(_ts,_i))%268435456 _sn=(_sn+(_sn%16384)*((_sn-(_sn%16384))/16384))%268435456 end end SALT=(_sn*257+((_sn-(_sn%65536))/65536))%268435456 if TYP(CLK)==\"function\" and TYP(PCAL)==\"function\" then local _cko,_ckv=PCAL(CLK) if _cko and TYP(_ckv)==\"number\" then SALT=(SALT+(_ckv%65536))%268435456 end end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local bz=(BD+(pf.iz1%65521)*(1+(i+FQ)%65521)+(pf.iz2%65521)*(1+(i+KQ)%65521))%268435456 pf.iz1=nil pf.iz2=nil local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS+(bz%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} {svkm}local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(bz%65521)*CI2+(_svq%65521))%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 {svbx}for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + _sv + qf * CQB + ((bz%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(bz%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(bz%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2905,6 +2939,8 @@ let chaff_lane = rng.int(1, 4) as usize;
 			csj = const_str_step_e,
 			cw = closure_cond,
 			cblock = c_block_enc,
+			svbx = sv_bx_ep,
+			svkm = sv_km_ep,
 			cfields = c_fields_enc,
 			xteoff = xte_off,
 			enc_lanes = enc_lanes,
@@ -3018,8 +3054,10 @@ let chaff_lane = rng.int(1, 4) as usize;
 			);
 			s.push_str(&tag_decode_rt);
 			s.push_str(probe_call);
+			// V19 M2 R1：CDEC base 的 SLTC 直加 → 同式 NL 像 _svk（与编码侧镜面）。
+			s.push_str(&sv_ct_rt);
 			s.push_str(&format!(
-				"local pzc=((PZ2%65521)*((fi+KQ)%65521)+(PZ3%65521)*((QF[fi]+KI)%65521)+(PZ4%65521)*((fi+NQ)%65521)+(MZD%65521)*((QF[fi]+NI)%65521))%268435456 local base = (PS + fi * PT + SLTC + QF[fi] * CQC + pzc{}) % 268435456 ",
+				"local pzc=((PZ2%65521)*((fi+KQ)%65521)+(PZ3%65521)*((QF[fi]+KI)%65521)+(PZ4%65521)*((fi+NQ)%65521)+(MZD%65521)*((QF[fi]+NI)%65521))%268435456 local base = (PS + fi * PT + _svk + QF[fi] * CQC + pzc{}) % 268435456 ",
 				base_env_s
 			));
 			s.push_str(
@@ -3080,7 +3118,8 @@ let chaff_lane = rng.int(1, 4) as usize;
 			cache_pack = cache_pack,
 		);
 		let bdec_src = format!(
-			"local function bdec(E, bi) local pf=E.bt local fi=((pf.sx-PM-1)%65521)+1 E.er=E.er+1 local wm=(E.er*WM+bi*WB+fi)%65536 local c = E.bch[bi] if c then local om=c[8] for wx=1,#c[1] do {remask} end c[8]=wm E.ww, E.w0, E.w1, E.w2, E.w3 = {cache_hit} E.bp, E.be = c[6], c[7] E.br=wm return end {wipe} local qi=QF[fi] local fkm=2*((KM+qi*FQ+fi*FI)%16000000)+1 local fkc=(KC+qi*KQ+fi*KI)%268435456 local fpb=(PB+qi*BQ+fi*BI)%268435456 local frp=3+((qi*RQ+fi*RI)%7) local s0 = pf.bs[bi] local l = pf.bl[bi] local pzb=((PZ1%65521)*((fi+FQ)%65521)+(PZ3%65521)*((qi+KI)%65521)+(PZ4%65521)*((bi+RI)%65521)+(MZD%65521)*((s0+RQ)%65521)+(E.pg%65521)*((s0+fi+RP)%65521))%268435456 local st = (PS + fi * PT + s0 * fpb + SLT + QF[fi] * CQB + pzb) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do {dec_lanes} if i%frp==0 then st=(st+qi*RS+(s0+i-1)*RP)%268435456 end end {normalize} for wx=1,#u0 do u0[wx]=(u0[wx]+wm)%256 u1[wx]=(u1[wx]+wm)%65536 u2[wx]=(u2[wx]+wm)%65536 u3[wx]=(u3[wx]+wm)%65536 u4[wx]=(u4[wx]+wm)%65536 end {store} E.ww, E.w0, E.w1, E.w2, E.w3 = u0, u1, u2, u3, u4 E.bp, E.be = s0, s0 + l - 1 E.br=wm end",
+			"local function bdec(E, bi) local pf=E.bt local fi=((pf.sx-PM-1)%65521)+1 E.er=E.er+1 local wm=(E.er*WM+bi*WB+fi)%65536 local c = E.bch[bi] if c then local om=c[8] for wx=1,#c[1] do {remask} end c[8]=wm E.ww, E.w0, E.w1, E.w2, E.w3 = {cache_hit} E.bp, E.be = c[6], c[7] E.br=wm return end {wipe} local qi=QF[fi] local fkm=2*((KM+qi*FQ+fi*FI)%16000000)+1 local fkc=(KC+qi*KQ+fi*KI)%268435456 local fpb=(PB+qi*BQ+fi*BI)%268435456 local frp=3+((qi*RQ+fi*RI)%7) local s0 = pf.bs[bi] local l = pf.bl[bi] local pzb=((PZ1%65521)*((fi+FQ)%65521)+(PZ3%65521)*((qi+KI)%65521)+(PZ4%65521)*((bi+RI)%65521)+(MZD%65521)*((s0+RQ)%65521)+(E.pg%65521)*((s0+fi+RP)%65521))%268435456 {svbx}local st = (PS + fi * PT + s0 * fpb + _sv + QF[fi] * CQB + pzb) % 268435456 local t0, t1, t2, t3, t4 = {{}}, {{}}, {{}}, {{}}, {{}} local x = pf.bx local off = pf.bo[bi] for i = 1, l do {dec_lanes} if i%frp==0 then st=(st+qi*RS+(s0+i-1)*RP)%268435456 end end {normalize} for wx=1,#u0 do u0[wx]=(u0[wx]+wm)%256 u1[wx]=(u1[wx]+wm)%65536 u2[wx]=(u2[wx]+wm)%65536 u3[wx]=(u3[wx]+wm)%65536 u4[wx]=(u4[wx]+wm)%65536 end {store} E.ww, E.w0, E.w1, E.w2, E.w3 = u0, u1, u2, u3, u4 E.bp, E.be = s0, s0 + l - 1 E.br=wm end",
+			svbx = sv_bx_rt,
 			cache_hit = cache_hit,
 			remask = cache_remask,
 			wipe = wipe_current,

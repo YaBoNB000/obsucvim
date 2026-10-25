@@ -748,3 +748,22 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
   全绿（未动刀复建 `c61cdc5c`/`1af735bc` 命中、双构建恒等、no-bind fib、
   TSRC 静默、bind 裸 luau 干净拒绝），落档 samples v19-check/diff-flight
   待真机回传；判读表见 samples README 与 V19 文档 §11.5。
+
+## §33 R079 定案修复（2026-10-25，P1 车道解剖收口）
+
+- 三轮车道切真机回传：**L1（杀 bx `_sv` 折叠）正常 ✓** / L2 挂（`argument #1
+  to 'char' (number expected, got nil)`）/ L3 挂（call-nil）⇒ bx 字节流车道
+  双折叠唯一病根；ct `_svk` / km `_svq` 折叠无罪。结合 F1/F2 双挂分裂
+  （两级折叠各罪、毒化不同下游），R077 NL 像解剖三级收口（区→级→车道）。
+- R079 = bx 车道恒等落定（`_sv=(SALT/SLT+LC)%2^28`，LC 常量原位保留）+
+  ct/km 车道折叠原式复辟（R077 熵卖点拿回两条车道）；template.rs 单点手术
+  （R077 基 + bx 两侧折叠段清零），发布 wasm = R077 + l1 数据段手术件
+  `95f69c99…`（1,249,048B；发布 wasm 升级 = 增量覆盖 `C:\Obsucvim\tools\
+  obsucvim.wasm`；rustc 恢复后重编刷锚）。
+- **终锚 178,551B `ccf5d0839fef962a8a0c031d745d869dff7a861b6590fe8e267d93f5cf63c045`**
+  （verify-engine-version R079 条目 / test-artifact-runtime R079PB 已同步）。
+- 门禁六套件 27 PASS/0 FAIL（纯净 luau）；EVKEY no-bind 矩阵 AUTO/0/DEV
+  逐字节恒等（`23af1be8…`）、fib 全打印、=1 no-bind 组合规格内明确报错；
+  TSRC `4576808` 零命中 + 语法静默；bind 裸 luau 干净拒绝；ctl 双构建恒等。
+- 第六轮验收件：evkey 178,792B `3904533e…`（=L1 判别件同字节，真机 ✓）、
+  ctl 176,927B `6530e016…` 待真机一票即 P1+第六轮完全收口。

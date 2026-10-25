@@ -188,11 +188,12 @@ def main():
         R075PB = "a968a510b50a623b538c8a4814724feb39eecc87d79ac0583ad243e6354fabc5"  # 历史锚点：R075 终锚（M1 齐），R076 起被 M1-bb 改写
         R076PB = "20ff221c64e34abafa857c96bbd32d1e85b286923de431a905ed769a5091b728"  # 历史锚点：R076 终锚（M1-bb），R077 起被 M2-R1 改写
         R077PB = "fdcd689ea9868cd4ca3310e8f92b66d50ee083286dfc89bfa8e18cbe39d5e5a3"  # 历史锚点：R077（三车道 NL 像在真 Delta 定罪，R078 判定性回退）；V19 §11/§12
-        R078PB = "04572e910c7f7bb18da864bb2a51bf161fccc05e15ef0791dd95d9d4ca2654fe"  # R078 终锚（车道回退 R076 直加 + 盐三源保留）；V19 §12
+        R078PB = "04572e910c7f7bb18da864bb2a51bf161fccc05e15ef0791dd95d9d4ca2654fe"  # 历史锚点：R078（三车道全回退），R079 起被 P1 车道解剖定案改写
+        R079PB = "ccf5d0839fef962a8a0c031d745d869dff7a861b6590fe8e267d93f5cf63c045"  # R079 终锚（bx _sv 车道折叠独罪→恒等、ct/km _svk/_svq 折叠无罪复辟）；V19 §11.5/§13
         ANCHOR_FLAGS = ["--preset", "v15", "--env-check", "--bind-executor"]
         auto5, error = build(work, ANCHOR_FLAGS, "67067", "khauto5")
-        check("auto default artifact == R078 final anchor (M2: R1 lane fix)",
-              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R078PB,
+        check("auto default artifact == R079 final anchor (M2: P1 lane verdict)",
+              auto5 is not None and hashlib.sha256(auto5.encode()).hexdigest() == R079PB,
               (error or "")[:120])
         ok, _, detail = build_status(
             work, ANCHOR_FLAGS + ["--no-key-host"], "1", "khconflict")

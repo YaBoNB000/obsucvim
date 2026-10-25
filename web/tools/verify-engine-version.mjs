@@ -42,6 +42,12 @@ const wasm = process.argv[2] || path.join(TOOLS, "obsucvim.wasm");
 
 const ANCHORS = [
   {
+    name: "R079",
+    note: "V19 M2 P1 车道解剖定案（F1/F2 半折叠双挂分裂 + L1/L2/L3 车道切真机裁决，2026-10-25）：bx 字节流车道 _sv 双折叠真 Delta 独罪（L1 杀之即正常；L2/L3 保之则 char/index 下游暴雷；F1 一级独存=原型 call-nil、F2 二级独存=index-nil-'VY'），bx 落定恒等线性注入（_sv=(SALT/SLT+LC)%2^28，LC 常量保留）；ct _svk / km _svq 车道折叠真机无罪、原式复辟（L1 件两车道折叠同存正常）。盐三源 + CLK 守卫维持。本发布 wasm = R077 二进制 + l1 数据段等长手术（rustc 通道恢复期产物，源码 R079 已同义落盘 obsucvim/src/vmgen/template.rs，rustc 恢复后重编刷锚）",
+    size: 178551,
+    sha256: "ccf5d0839fef962a8a0c031d745d869dff7a861b6590fe8e267d93f5cf63c045",
+  },
+  {
     name: "R078",
     note: "V19 M2 首包真机收口（判别飞行 WS1/WS2/WS3 裁决）：R077 三车道 lane NL 像在真 Delta 定罪（call-nil），判定性回退 R076「+ SALT/SLT/SLTC 直加」线性注入；三源 SALT 强派生 + CLK 守卫保留。本发布 wasm = R077 二进制 + S2 数据段等长手术（rustc 通道不可用期产物，源码 R078 已同义落盘 obsucvim/src/vmgen/template.rs，rustc 恢复后重编刷锚）；NL 像重做登记 R1 余账（V19 §12）",
     size: 178268,
