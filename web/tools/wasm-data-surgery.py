@@ -4,7 +4,7 @@
 # S2: 三车道 lane NL 像 -> 恒等线性（piece1 去括号翻转、piece2 尾巴置空格；
 #     bx_ep/bx_rt 共用 120B piece2（_sv 名）、ct_ep/ct_rt 共用 129B（_svk 名）、
 #     km_ep 独有 129B（_svq 名）——实测数据段字面量合并布局）
-# 用法: wasm-data-surgery.py <in.wasm> <out.wasm> s1|s2|s1s2|f1|f2
+# 用法: wasm-data-surgery.py <in.wasm> <out.wasm> s1|s2|s1s2|f1|f2|l1|l2|l3
 import sys, hashlib
 
 SRC, DST, MODE = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -99,6 +99,29 @@ if 'f1' in MODE:
     do_f('f1')
 if 'f2' in MODE:
     do_f('f2')
+
+# ---------- L1/L2/L3（P1 三轮：车道切；F1/F2 双挂裁定后按 piece2 车道各杀一条） ----------
+# 每模式只把指定车道 piece2 的双折叠整段置空格（恒等，piece1 括弧原样闭合），
+# 其余两条车道折叠原样保留。map：l1=bx 车道(_sv)、l2=ct 车道(_svk)、l3=km 车道(_svq)。
+LANE_NM = {'l1': b'_sv', 'l2': b'_svk', 'l3': b'_svq'}
+
+def do_lane(mode):
+    nm = LANE_NM[mode]
+    old = b')%268435456 ' + fold1(nm) + fold2(nm)
+    i = data.find(old)
+    if i < 0:
+        raise SystemExit(f"[{mode}] {nm.decode()} piece2 原文未找到（基件非 R077 形态？）")
+    if data.find(old, i + 1) >= 0:
+        raise SystemExit(f"[{mode}] {nm.decode()} piece2 多处出现 @{i}（放弃保险）")
+    core = b')%268435456 '
+    new = core + b' ' * (len(old) - len(core))
+    assert len(new) == len(old)
+    data[i:i + len(old)] = new
+    log.append(f"[{mode}-{nm.decode()}lane] @{i} {len(old)}B")
+
+for _m in ('l1', 'l2', 'l3'):
+    if _m in MODE:
+        do_lane(_m)
 
 open(DST, 'wb').write(bytes(data))
 print('\n'.join(log))
