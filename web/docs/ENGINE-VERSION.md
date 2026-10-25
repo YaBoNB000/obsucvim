@@ -726,5 +726,6 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
   源码等价落盘；rustc 恢复后重编 wasm 并以新锚冲销（verify-engine-version
   R078 条目与 test-artifact-runtime R078PB 锚同步更新）。
 - R078 终锚 178,268B `04572e91…`（seed 67067 bind，双构建恒等）。
-- 第五轮：evkey `6add3d1b…`（=WS2 同字节，真机 ✓）；ctl `a537cdcf…` 收口。
+- 第五轮：evkey `6add3d1b…`（=WS2 同字节）；ctl `a537cdcf…`——**双件真机
+  全收 ✓（2026-10-25）**，M2 首包 R078 态定案；判别飞行件撤档（存档 58c3895）。
 - R1 余账：NL 像重做（先解剖根因）、CLK 守门惰性正名（接签名或删宣称）。

@@ -5,7 +5,7 @@
 | 件 | 构建 | 裸 luau（已实测） | 真 Delta（实跑结果） |
 |---|---|---|---|
 | `kkksu-mini.v19evkey.hard.lua` (178,509B, sha `6add3d1b…`) | `--preset v15 --env-check --env-check --bind-executor` + `OBSUCVIM_V19_EVKEY=1`（R078 形态：M1 全部 + R5-b + **M2-R1 修复轮**：SALT 三源强派生保留 + CLK 守卫、三车道回退 R076 线性直加注入） | **干净拒绝**（缺 API 文案，不挂死） | **2026-10-25 第五轮（R078）判定性修复件**：真机判别飞行 WS2 同字节件已回传 **正常 ✓**（`6add3d1b…` 与 diff-flight 判别件逐字节恒等） |
-| `kkksu-mini.v19ctl.hard.lua` (176,644B, sha `a537cdcf…`) | 同上但旋钮关（EVKEY=0；R078 纹理、旧明文 oracle） | 精确缺 API 拒绝（既有行为） | **需跑（收口对照）**：R078 判定性修复后首件 ctl |
+| `kkksu-mini.v19ctl.hard.lua` (176,644B, sha `a537cdcf…`) | 同上但旋钮关（EVKEY=0；R078 纹理、旧明文 oracle） | 精确缺 API 拒绝（既有行为） | **2026-10-25 回传：正常 ✓**（R078 判定性修复后首件 ctl；V19 M2 首包双件全收） |
 | `diag-evk.lua` (2,407B 明文诊断) | — | 打印各通道存在性与折叠值 | **已回传全绿 ✓**：k2a=1143546169 OK / k2b=1317214663 OK / k3c=22 OK / EVK=4576808 MATCH-4576808（执行器名 "Delta"，isStudio=0，checkcaller=1） |
 
 ## 验收历史
@@ -45,30 +45,10 @@ LoadStr 等注入点作用域并无 FLR 绑定（裸跑 `attempt to call a nil v
 
 纪律：Dev 档（`OBSUCVIM_V19_EVKEY_DEV`）产物零安全性，严禁交付。
 
-## diff-flight/（R077 故障判别飞行件，2026-10-25 落档）
+## diff-flight/（R077 故障判别飞行件，已撤档）
 
-ctl 件真机回传：**同错 `attempt to call a nil value`** ⇒ 嫌疑从 evkey 专属线切至
-**bind 共用链 / R1 共有改造**（EP SALT 三源强派生 + 三车道 lane NL 像）。
+判别飞行已收口（WS1 挂 / WS2 正常 / WS3 正常 ⇒ 三车道 lane NL 像定罪，V19 §12），
+三件判别件撤离本目录以清仓；档案存于 git 历史 commit `58c3895`（三件 +
+sha/判读表全录），手术工具 `web/tools/wasm-data-surgery.py` 随树保留。
+取证全书与判读表见 `web/docs/V19-EXISTENCE-HARDENING.md` §11/§12。
 
-取证定案（详 `web/docs/V19-EXISTENCE-HARDENING.md` §11）：61 行模板 diff 逐项定性；
-R076→R077 bind 壳（HBOOT/EXGFRAG/BSSF/exguard）**零变更**；CLK 守门惰性（EP chunk
-签名不含 CLK/PCAL，恒不触发）；本地复现显现非确定性彩票族，三大驱动（指针串/时钟/
-缺真全局）逐一钉死排除。
-
-本目录三件为 **wasm 数据段等长手术**判别件（引擎源码未动，rustc 通道不可用期的
-应急判别手段；构建链可复现：sha 对照件复建命中 `c61cdc5c`/`1af735bc`）：
-
-| 件 | 手术 | sha256 前16 | 作用 |
-| --- | --- | --- | --- |
-| `diff-flight/kkksu-mini.ws1evk.hard.lua` | S1：EP SALT 回 R076 单源派生 | `19c9fdb83313616e` | 判别 SALT 三源/时钟门区 |
-| `diff-flight/kkksu-mini.ws2evk.hard.lua` | S2：三车道 lane NL 像回恒等线性 | `6add3d1b3e3d7a40` | 判别 _sv/_svk/_svq 车道 |
-| `diff-flight/kkksu-mini.ws3evk.hard.lua` | S1+S2 全回退 | `2a926c2d518f15a9` | 判别两区共谋 |
-
-验证链（每件均过）：未动刀 wasm 复建命中对照 sha；手术 wasm 建 no-bind 件本地
-**完整打印 fib**；TSRC dump 语法静默；bind 件裸 luau **既有文案干净拒绝**。
-
-手术工具存档：`web/tools/wasm-data-surgery.py`（等长替换，含唯一性/多处出现保险）。
-
-**熵诚实声明**：WS1 的 SALT 退化为 R076 单源 tostring 派生、WS2 的三车道退化为
-线性直加——判别件熵低于 R077 设计目标，仅作病灶定位，不作交付态；判罪后须
-源码落同义修复并重出正牌 wasm。
