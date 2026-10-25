@@ -644,3 +644,14 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
   裸 luau fail-fast；同种子双构建恒等；TSRC 4576808 零命中。
 - 门禁：单测 60 绿；六套件全绿；verify 命中 R075-preview-a。
 - 发布 wasm 1,238,826B（+15.0KB，R6/旋钮代码），`web/tools/obsucvim.wasm` 已刷新。
+
+## 25. R075-preview-b（V19 M1-b 中间锚点，2026-10-25）— R3 oracle 熄灭
+
+锚点：**175,190B `d402d1826c293a0020cde2d68aaf21cd46015378285097e5305cf25c59f17000`**。
+
+- R3 六车道（明细与词法断层修复记录见 V19-EXISTENCE-HARDENING.md §9.4）：
+  `_bp/_rp/_hp/MZD/QF/osum` 期望值全部扣 ev_term 入库、运行期 EVK 系加回；
+  Off（显式 =0 或缺链回落）件保留旧明文 oracle，属非交付形态。
+- 修复：EVK 探针外置声明（build do 块词法断层→st2 壳 EVKZ 供桨修复）。
+- 门禁：单测 60 绿、no-bind 四件矩阵 RUN-OK + auto==off 恒等、bind fail-fast、
+  六套件全绿。发布 wasm 1,240,190B（+1.4KB），`web/tools/obsucvim.wasm` 已刷新。

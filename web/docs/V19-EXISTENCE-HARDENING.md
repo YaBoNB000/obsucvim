@@ -254,12 +254,34 @@ minifier 再抹一次——名字层面本就轮不到我们负责；R6 的有�
 - 六套件全绿 + verify 命中新中间锚点 **R075-preview-a**
   （174,163B `5ebefd82…`，seed 67067 bind 探针）。
 
-### 9.4 M1 余账（按序推进，全部落地后钉 R075 终锚点 + 一次真机验收）
+### 9.4 M1-b 实装：R3 oracle 熄灭六车道（2026-10-25）
 
-- **M1-b = R3 oracle 熄灭**：`_bp/_rp/_hp` 三段 `_bc/_rc/_hc` 期望值、
-  微码 `MZD` 期望值、`PZ3/RTQCKX`、`PZ4/RTPCX`、osum/osum2 暴露面——
-  全部在 EVKEY 激活件中混 EVK/EVKX 后存储（Off 件保留旧明文形态并明示
-  非交付）；EVK 向 st2 闭包（`{sigtail}`）穿线。
+六条校验车道的期望值一律**先扣 ev_term 再入库**，运行期由探针现算的
+EVK/EVKX/EVKZ/EVK_ 原位加回——静态常折只能得到错位期望值，oracle 过筛
+能力在 EVKEY 激活件上熄灭（默认交付形态=自动 Bind，故默认熄灭；显式
+Off 件保留旧明文 oracle，stderr 已明示勿作交付件）：
+
+| 车道 | 存储点（编译/模板期） | 运行期加回点 | EV 名 |
+|---|---|---|---|
+| `_bp` 校验 | `phase_checksum - ev_term`（mod 2^28） | `BD=(_bc-(_BSSPCX_+EVKX))` | BSS 外层参数 EVKX |
+| `_rp` 校验 | `rt_phase_checksum - ev_term` | `PZ4=(_rc-(_RTPCX_+EVKZ))` | st2 壳尾参 EVKZ |
+| `_hp` 校验 | `hb_phase_checksum - ev_term` | `_he=(_hc-((…)+EVK_))` | vault 第 9 槽 EVK_ |
+| 微码 `MZD` | `micro_chaff_expected - ev_term` | `MZD=(_mc-(…+EVK))` | build 层 EVK |
+| QF 折叠 | `qf_checksum - ev_term`（RTQCKX 车道） | `PZ3=(_qk-(_RTQCKX_+EVKZ))` | EVKZ |
+| osum/osum2（L10） | 各扣 ev_term（mod 2^32） | `d1/d2=(pz.ck…-(OS+EVKX))%2^32` | EVKX |
+
+**真机前修复（词法断层）**：EVK 探针的 `local EVK` 原在 build 块 `do…end`
+内层（HBOOT/vault/微码消费同层无碍），但 st2 壳调用 `RTFRAG(…,EVK)` 在块外
+⇒ EVK 出作用域为 nil，Dev 件执行期「number and nil」崩。修复=外层预声明
+`local EVK = 0`、探针只做赋值（Dev 同理）。教训留档：**往装载链引新消费点
+时先核对该名的词法层（本仓 build 骨架是个大 do 块）。**
+
+门禁：单测 60 绿；no-bind 矩阵 auto/off/dev7/dev8 全 RUN-OK 且 auto==off
+逐字节恒等；bind 件裸 luau fail-fast；六套件全绿；verify 命中
+**R075-preview-b**（175,190B `d402d182…`，seed 67067 bind 探针）。
+R075 终钉仍待 M1-c（R5）。
+
+### 9.5 M1 余账（按序推进，全部落地后钉 R075 终锚点 + 一次真机验收）
 - **M1-c = R5 熵坍缩首批**：stage-1 blob LCG 折叠换 28-bit 非线性 + 明文级联
   （`unmask_pre` 与 compiler::finish 双镜面同步）；评估 shard `_ms/_mt`
   仿射对（L5 病灶）的级联化改造。字符串池链（L9）视预算并进或单列。

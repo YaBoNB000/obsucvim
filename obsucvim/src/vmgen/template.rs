@@ -1291,6 +1291,10 @@ pub fn generate(
 	env_check: bool,
 	guard: bool,
 	ev_mode: super::exguard::EvKeyMode,
+	// V19 R3：oracle 熄灭——EVKEY 激活件的一切校验期望值先扣 ev_term 再入库，
+	// 运行期由探针现算的 EVK/EVKX 加回（Off=0 时全部公式退化为旧形，逐字节
+	// 不变于此项；R6 形状硬化不受影响）。
+	ev_term: u32,
 ) -> String {
 	let ev_on = ev_mode.on();
 	// V19 R4-proto（OBSUCVIM_V19_EVKEY）：Bind=真宿主探针现算 EVK；
@@ -1299,9 +1303,9 @@ pub fn generate(
 	let evhk_unpack = if ev_on { ",EVK_" } else { "" };
 	let evk_probe: String = match ev_mode {
 		super::exguard::EvKeyMode::Off => String::new(),
-		super::exguard::EvKeyMode::Dev(v) => format!("local EVK = {} ", obf_num(v as u64, rng)),
+		super::exguard::EvKeyMode::Dev(v) => format!("EVK = {} ", obf_num(v as u64, rng)),
 		super::exguard::EvKeyMode::Bind => String::from(
-			"local EVK = 0 do local _eko, _ekv = PCAL(function() local _env = GFE(0) local _gg = _env and _env[\"getgenv\"] local _cen = nil if TYP(_gg) == \"function\" then local _gok, _gv = PCAL(_gg) if _gok and TYP(_gv) == \"table\" then _cen = _gv end end local _cen1 = _cen local _vn = nil if _cen1 ~= nil then _vn = _cen1[\"Vector3\"] end if _vn == nil and TYP(_env) == \"table\" then _vn = _env[\"Vector3\"] end if TYP(_vn) ~= \"table\" then return nil end local _nw = _vn[\"new\"] if TYP(_nw) ~= \"function\" then return nil end local _v = _nw(1, 2, 3) local _a = 7 local _s = TSTR(_v) for _i = 1, #_s do _a = (_a * 31 + BYTE(_s, _i)) % 2147483647 end local _tf = nil if _cen1 ~= nil then _tf = _cen1[\"typeof\"] end if _tf == nil and TYP(_env) == \"table\" then _tf = _env[\"typeof\"] end if TYP(_tf) ~= \"function\" then return nil end local _s2 = _tf(_v) if TYP(_s2) ~= \"string\" then return nil end local _b = 7 for _i = 1, #_s2 do _b = (_b * 31 + BYTE(_s2, _i)) % 2147483647 end local _c = 0 local _gm = nil if _cen1 ~= nil then _gm = _cen1[\"game\"] end if _gm == nil and TYP(_env) == \"table\" then _gm = _env[\"game\"] end if TYP(_gm) == \"table\" or TYP(_gm) == \"userdata\" then local _gs = _gm[\"GetService\"] if TYP(_gs) == \"function\" then local _gok2, _rs = PCAL(_gs, _gm, \"RunService\") if _gok2 and _rs ~= nil then local _isf = _rs[\"IsStudio\"] if TYP(_isf) == \"function\" then local _iok, _iv = PCAL(_isf, _rs) if _iok and _iv == true then _c = _c + 1 end end end end end local _ckf = nil if _cen1 ~= nil then _ckf = _cen1[\"checkcaller\"] end if _ckf == nil and TYP(_env) == \"table\" then _ckf = _env[\"checkcaller\"] end if TYP(_ckf) == \"function\" then local _cok, _cr = PCAL(_ckf) if _cok and _cr == true then _c = _c + 2 end end local _idf = nil if _cen1 ~= nil then _idf = _cen1[\"identifyexecutor\"] end if _idf == nil and TYP(_env) == \"table\" then _idf = _env[\"identifyexecutor\"] end if TYP(_idf) == \"function\" then local _iok2, _n1 = PCAL(_idf) if _iok2 and TYP(_n1) == \"string\" then _c = _c + #_n1 * 4 end end return ((_a * 31 + _b) % 268435456 * 31 + _c) % 268435456 end) if not (_eko and TYP(_ekv) == \"number\") then error(\"[Obsucvim] this executor lacks APIs the hardened build requires: Vector3/typeof/game/checkcaller/identifyexecutor, - use the compatible build (--no-bind-executor) here, or a Synapse-class executor\", 0) end EVK = _ekv end "
+			"do local _eko, _ekv = PCAL(function() local _env = GFE(0) local _gg = _env and _env[\"getgenv\"] local _cen = nil if TYP(_gg) == \"function\" then local _gok, _gv = PCAL(_gg) if _gok and TYP(_gv) == \"table\" then _cen = _gv end end local _cen1 = _cen local _vn = nil if _cen1 ~= nil then _vn = _cen1[\"Vector3\"] end if _vn == nil and TYP(_env) == \"table\" then _vn = _env[\"Vector3\"] end if TYP(_vn) ~= \"table\" then return nil end local _nw = _vn[\"new\"] if TYP(_nw) ~= \"function\" then return nil end local _v = _nw(1, 2, 3) local _a = 7 local _s = TSTR(_v) for _i = 1, #_s do _a = (_a * 31 + BYTE(_s, _i)) % 2147483647 end local _tf = nil if _cen1 ~= nil then _tf = _cen1[\"typeof\"] end if _tf == nil and TYP(_env) == \"table\" then _tf = _env[\"typeof\"] end if TYP(_tf) ~= \"function\" then return nil end local _s2 = _tf(_v) if TYP(_s2) ~= \"string\" then return nil end local _b = 7 for _i = 1, #_s2 do _b = (_b * 31 + BYTE(_s2, _i)) % 2147483647 end local _c = 0 local _gm = nil if _cen1 ~= nil then _gm = _cen1[\"game\"] end if _gm == nil and TYP(_env) == \"table\" then _gm = _env[\"game\"] end if TYP(_gm) == \"table\" or TYP(_gm) == \"userdata\" then local _gs = _gm[\"GetService\"] if TYP(_gs) == \"function\" then local _gok2, _rs = PCAL(_gs, _gm, \"RunService\") if _gok2 and _rs ~= nil then local _isf = _rs[\"IsStudio\"] if TYP(_isf) == \"function\" then local _iok, _iv = PCAL(_isf, _rs) if _iok and _iv == true then _c = _c + 1 end end end end end local _ckf = nil if _cen1 ~= nil then _ckf = _cen1[\"checkcaller\"] end if _ckf == nil and TYP(_env) == \"table\" then _ckf = _env[\"checkcaller\"] end if TYP(_ckf) == \"function\" then local _cok, _cr = PCAL(_ckf) if _cok and _cr == true then _c = _c + 2 end end local _idf = nil if _cen1 ~= nil then _idf = _cen1[\"identifyexecutor\"] end if _idf == nil and TYP(_env) == \"table\" then _idf = _env[\"identifyexecutor\"] end if TYP(_idf) == \"function\" then local _iok2, _n1 = PCAL(_idf) if _iok2 and TYP(_n1) == \"string\" then _c = _c + #_n1 * 4 end end return ((_a * 31 + _b) % 268435456 * 31 + _c) % 268435456 end) if not (_eko and TYP(_ekv) == \"number\") then error(\"[Obsucvim] this executor lacks APIs the hardened build requires: Vector3/typeof/game/checkcaller/identifyexecutor, - use the compatible build (--no-bind-executor) here, or a Synapse-class executor\", 0) end EVK = _ekv end "
 		),
 	};
 	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
@@ -2424,11 +2428,15 @@ __FVARM__        else
 		let chaff_micro_e = obf_num(chaff_micro as u64, rng);
 		let micro_chaff_expected =
 			(micro_checksum as i64 + qf_checksum * chaff_micro as i64) % KEY_MOD;
-		let micro_expected_e = ke.key_expr(micro_chaff_expected, None, rng);
+		// V19 R3（oracle 熄灭）：EVKEY 激活件先扣 ev_term 再入库，运行期 +EVK 加回；
+		// 静态常折只能得到错位期望值 ⇒ 校验 oracle 熄灭。Off 件（ev_term=0）退化旧形。
+		let micro_stored = (micro_chaff_expected - ev_term as i64).rem_euclid(KEY_MOD);
+		let micro_expected_e = ke.key_expr(micro_stored, None, rng);
 		micro_fill.push_str(&format!(
-			"_mc=(_mc+CHQ*({chaff}))%268435456 MZD=(_mc-({expected}))%268435456 ",
+			"_mc=(_mc+CHQ*({chaff}))%268435456 MZD=(_mc-({expected}{evadd}))%268435456 ",
 			chaff = chaff_micro_e,
 			expected = micro_expected_e,
+			evadd = if ev_on { "+EVK" } else { "" },
 		));
 		manifest_key("MICRO_CK", micro_checksum);
 		manifest_key("MICRO_CHAFF_CK", micro_chaff_expected as u64);
@@ -2701,14 +2709,19 @@ let xm3v = rng.int(1024, 999_999) as u64;
 		} else {
 			""
 		};
+		// V19 R3（oracle 熄灭，L10 失守根因）：osum/osum2 期望值先扣 ev_term
+		// 再入库；运行期解析环 +EVKX 加回。静态侧拿到的差分永远错位 ev_term。
+		let os_adj = |s: u64| -> u64 {
+			(s as i64 - ev_term as i64).rem_euclid(4_294_967_296) as u64
+		};
 		let os_list = operand_sums
 			.iter()
-			.map(|s| obf_num(*s, rng))
+			.map(|s| obf_num(os_adj(*s), rng))
 			.collect::<Vec<_>>()
 			.join(", ");
 		let os_list2 = operand_sums2
 			.iter()
-			.map(|s| obf_num(*s, rng))
+			.map(|s| obf_num(os_adj(*s), rng))
 			.collect::<Vec<_>>()
 			.join(", ");
 		let mut zw_inner = String::new();
@@ -2765,7 +2778,9 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.map(|v| obf_num(*v as u64, rng))
 			.collect::<Vec<_>>()
 			.join(",");
-		let qf_checksum_e = ke.key_expr(qf_checksum, None, rng);
+		// V19 R3：QF 折叠校验（_qk 对 RTQCKX）扣 ev_term；运行期 +EVKZ 加回。
+		let qf_stored = (qf_checksum - ev_term as i64).rem_euclid(KEY_MOD);
+		let qf_checksum_e = ke.key_expr(qf_stored, None, rng);
 		let chaff_mul_e = obf_num(chaff_mul as u64, rng);
 		let chaff_coeff_e: Vec<String> = chaff_coeffs
 			.iter()
@@ -2872,9 +2887,16 @@ let chaff_lane = rng.int(1, 4) as usize;
 		{
 			phase_checksum = (phase_checksum * 257 + v as i64) % KEY_MOD;
 		}
-		let phase_checksum_e = ke.key_expr(phase_checksum, None, rng);
+		// V19 R3：/_bp 校验期望值先扣 ev_term；运行期 +EVKX 加回（BSSKCX 占位
+		// 在 fragment 内被换名，EVKX 为 BSS 外层参数、内层闭包词法可达）。
+		let phase_ck_stored = (phase_checksum - ev_term as i64).rem_euclid(KEY_MOD);
+		let phase_checksum_e = ke.key_expr(phase_ck_stored, None, rng);
 		manifest_key("BSS_PHASE_CK", phase_checksum as u64);
-		let phase_parse = "local di=1 while di<=#FN_ do local pz=parse(FN_[di],di) PF_[di]=pz local d1=(pz.ck-OS[di])%4294967296 local d2=(pz.ck2-OS2[di])%4294967296 pz.iz1=((d1%65536)*(1+(PS+di*KM)%65521)+FLR(d1/65536)*(1+(PT+di*KC)%65521))%268435456 pz.iz2=((d2%65536)*(1+(PT+di*KM)%65521)+FLR(d2/65536)*(1+(PS+di*KC)%65521))%268435456 di=di+1 end".to_string();
+		let phase_parse = if ev_on {
+			"local di=1 while di<=#FN_ do local pz=parse(FN_[di],di) PF_[di]=pz local d1=(pz.ck-(OS[di]+EVKX))%4294967296 local d2=(pz.ck2-(OS2[di]+EVKX))%4294967296 pz.iz1=((d1%65536)*(1+(PS+di*KM)%65521)+FLR(d1/65536)*(1+(PT+di*KC)%65521))%268435456 pz.iz2=((d2%65536)*(1+(PT+di*KM)%65521)+FLR(d2/65536)*(1+(PS+di*KC)%65521))%268435456 di=di+1 end".to_string()
+		} else {
+			"local di=1 while di<=#FN_ do local pz=parse(FN_[di],di) PF_[di]=pz local d1=(pz.ck-OS[di])%4294967296 local d2=(pz.ck2-OS2[di])%4294967296 pz.iz1=((d1%65536)*(1+(PS+di*KM)%65521)+FLR(d1/65536)*(1+(PT+di*KC)%65521))%268435456 pz.iz2=((d2%65536)*(1+(PT+di*KM)%65521)+FLR(d2/65536)*(1+(PS+di*KC)%65521))%268435456 di=di+1 end".to_string()
+		};
 		let phase_rewrite = if zw_inner.is_empty() {
 			"local _nz=PB%2 _nz=_nz-_nz".to_string()
 		} else {
@@ -2915,7 +2937,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			program = phase_stored.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
 			mask = phase_mask,
 			step = phase_step,
-			expected = "BSSKCX",
+			expected = if ev_on { "(BSSKCX+EVKX)" } else { "BSSKCX" },
 			dispatch = phase_dispatch,
 			dispatch_arm = String::new(),
 		);
@@ -3051,6 +3073,13 @@ let chaff_lane = rng.int(1, 4) as usize;
 		} else {
 			(sig_tail, xtfb_line, 0, 0)
 		};
+		// V19 R3：EVKEY 激活件在 st2 壳尾参加 EVKZ（调用点传 EVK），
+		// PZ3/PZ4 的下文校验改从 EVKZ 加回，oracle 期望值本体错位入库。
+		let sig_tail = if ev_on {
+			format!("{sig_tail}, EVKZ")
+		} else {
+			sig_tail
+		};
 		let bdec_assign = bdec_src.replacen("local function bdec", "bdec = function", 1);
 		let makefn_assign =
 			makefn_decl.replacen("local function makefn", "makefn = function", 1);
@@ -3087,7 +3116,9 @@ let chaff_lane = rng.int(1, 4) as usize;
 			rt_phase_checksum = (rt_phase_checksum * 257 + v as i64) % KEY_MOD;
 		}
 		let rt_phase_poison = rng.int(1, KEY_MOD - 1);
-		let rt_phase_checksum_e = ke.key_expr(rt_phase_checksum, None, rng);
+		// V19 R3：/_rp 校验期望值扣 ev_term；运行期 +EVKZ 加回。
+		let rt_phase_ck_stored = (rt_phase_checksum - ev_term as i64).rem_euclid(KEY_MOD);
+		let rt_phase_checksum_e = ke.key_expr(rt_phase_ck_stored, None, rng);
 		let rt_phase_poison_e = ke.key_expr(rt_phase_poison, None, rng);
 		manifest_key("RT_PHASE_CK", rt_phase_checksum as u64);
 		manifest_key("RT_PHASE_POISON", rt_phase_poison as u64);
@@ -3119,8 +3150,18 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE,MZD{sigtail}) local SEL=P[{select_slot}] local PZ1=(H1*CB1+H2*CB2+CBC)%268435456 local PZ2=(H1*CC1+H2*CC2+CCC)%268435456 local SLTC=SLT local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local CNJ,CSJ={cnj},{csj} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end local PZ3=(_qk-RTQCKX)%268435456 {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end local PZ4=(_rc-RTPCX)%268435456 local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE,MZD{sigtail}) local SEL=P[{select_slot}] local PZ1=(H1*CB1+H2*CB2+CBC)%268435456 local PZ2=(H1*CC1+H2*CC2+CCC)%268435456 local SLTC=SLT local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local CNJ,CSJ={cnj},{csj} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end {pz3_line} {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end {pz4_line} local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
+			pz3_line = if ev_on {
+				"local PZ3=(_qk-(RTQCKX+EVKZ))%268435456"
+			} else {
+				"local PZ3=(_qk-RTQCKX)%268435456"
+			},
+			pz4_line = if ev_on {
+				"local PZ4=(_rc-(RTPCX+EVKZ))%268435456"
+			} else {
+				"local PZ4=(_rc-RTPCX)%268435456"
+			},
 			select_slot = slots[12],
 			xtfb = xtfb_line,
 			qf = qf_expected,
@@ -3380,7 +3421,9 @@ let chaff_lane = rng.int(1, 4) as usize;
 			hb_phase_checksum = (hb_phase_checksum * 257 + v as i64) % KEY_MOD;
 		}
 		let hb_phase_poison = rng.int(1, KEY_MOD - 1);
-		let hb_phase_checksum_e = ke.key_expr_with_data(hb_phase_checksum, None, "FN_", rng);
+		// V19 R3：/_hp 校验期望值扣 ev_term；运行期 +EVK_（vault 第 9 槽）加回。
+		let hb_phase_ck_stored = (hb_phase_checksum - ev_term as i64).rem_euclid(KEY_MOD);
+		let hb_phase_checksum_e = ke.key_expr_with_data(hb_phase_ck_stored, None, "FN_", rng);
 		let hb_phase_poison_e = ke.key_expr_with_data(hb_phase_poison, None, "FN_", rng);
 		manifest_key("HBOOT_PHASE_CK", hb_phase_checksum as u64);
 		manifest_key("HBOOT_PHASE_POISON", hb_phase_poison as u64);
@@ -3435,7 +3478,11 @@ let chaff_lane = rng.int(1, 4) as usize;
 				.join(","),
 			mask = hb_phase_mask,
 			step = hb_phase_step,
-			expected = hb_phase_checksum_e,
+			expected = if ev_on {
+				format!("({})+EVK_", hb_phase_checksum_e)
+			} else {
+				hb_phase_checksum_e
+			},
 			poison = hb_phase_poison_e,
 			dispatch = hb_phase_dispatch,
 			hpret_decl = hpret_decl,
@@ -3679,7 +3726,7 @@ let f_ty = fold31("Vector3Vector3");
   local PD = function() local z0, z1 = 0, 1 while z0 < 4294967296 do z0 = (z0 * 1103515245 + 12345) % 268435456 z1 = (z1 * 80659 + 95050511) % 268435456 if z0 == z1 and z0 == 123456789 then break end end end
   local MPF
   local CLK
-  local CENVPROBE{xtok_decl}{env_decl}
+  local CENVPROBE{xtok_decl}{env_decl}{evk_decl}
   {hboot_fill}{exg_fill}{env_fill}do
     local LS = GFE(0)[{v_ls}]
     local TSTR = GFE(0)[{v_ts}]
@@ -3760,6 +3807,13 @@ let f_ty = fold31("Vector3Vector3");
 		xtok_decl = xtok_decl,
 		xtok_extract = xtok_extract,
 		env_decl = env_decl,
+		evk_decl = if ev_on {
+			// V19 R3：探针外置声明——EVK 必须活在 do 块之外，st2 壳调用
+			// （RTFRAG(...,EVK)）与 micro MZD 都在不同词法层消费它。
+			"\n  local EVK = 0"
+		} else {
+			""
+		},
 		env_frag_decl = env_frag_decl,
 		env_extract = env_extract,
 		env_fill = env_fill,
@@ -3861,9 +3915,11 @@ let f_ty = fold31("Vector3Vector3");
 		run_unpack = String::new();
 		run_soa = String::new();
 		let call_tail = format!(
-			"{}{}",
+			"{}{}{}",
 			if executor_guard { ", XTOK, XPROBE" } else { "" },
-			if env_check { ", EVD" } else { "" }
+			if env_check { ", EVD" } else { "" },
+			// V19 R3：EVKEY 激活件把 build 层 EVK 传进 st2 壳（尾参 EVKZ）。
+			if ev_on { ", EVK" } else { "" }
 		);
 		format!(
 			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE, MZD{}) RTFRAG = nil",

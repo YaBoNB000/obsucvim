@@ -582,6 +582,7 @@ fn main() -> ExitCode {
 				opts.env_check,
 				opts.do_guard,
 				ev_mode,
+				ev_term,
 			);
 			if std::env::var("OBSUCVIM_VM_TSRC").is_ok() {
 				let path = std::env::var("OBSUCVIM_VM_TSRC_PATH")
