@@ -4,7 +4,7 @@
 # S2: 三车道 lane NL 像 -> 恒等线性（piece1 去括号翻转、piece2 尾巴置空格；
 #     bx_ep/bx_rt 共用 120B piece2（_sv 名）、ct_ep/ct_rt 共用 129B（_svk 名）、
 #     km_ep 独有 129B（_svq 名）——实测数据段字面量合并布局）
-# 用法: wasm_surgery_v2.py <in.wasm> <out.wasm> s1|s2|s1s2
+# 用法: wasm-data-surgery.py <in.wasm> <out.wasm> s1|s2|s1s2|f1|f2
 import sys, hashlib
 
 SRC, DST, MODE = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -71,6 +71,35 @@ if 's1' in MODE:
     do_s1()
 if 's2' in MODE:
     do_s2()
+# ---------- F1/F2（P1 车道解剖；作用于 R077 病件 wasm） ----------
+# piece2 结构:')%268435456 ' + FOLD1 + FOLD2（全等长改写：杀哪级就把哪段置空格）
+def fold1(nm: bytes) -> bytes:
+    return nm + b'=(' + nm + b'+(' + nm + b'%16384)*((' + nm + b'-(' + nm + b'%16384))/16384))%268435456 '
+def fold2(nm: bytes) -> bytes:
+    return nm + b'=(' + nm + b'*257+((' + nm + b'-(' + nm + b'%65536))/65536))%268435456 '
+
+def do_f(mode):
+    # 校验基件确是 R077 病件三车道形态
+    for nm in (b'_sv', b'_svk', b'_svq'):
+        old = b')%268435456 ' + fold1(nm) + fold2(nm)
+        i = data.find(old)
+        if i < 0:
+            raise SystemExit(f"[{mode}] {nm.decode()} piece2 原文未找到")
+        if data.find(old, i + 1) >= 0:
+            raise SystemExit(f"[{mode}] {nm.decode()} piece2 多处出现 @{i}")
+        f1, f2 = fold1(nm), fold2(nm)
+        if mode == 'f1':
+            new = b')%268435456 ' + f1 + b' ' * len(f2)
+        else:
+            new = b')%268435456 ' + b' ' * len(f1) + f2
+        data[i:i + len(old)] = new
+        log.append(f"[{mode}-{nm.decode()}] @{i} {len(old)}B")
+
+if 'f1' in MODE:
+    do_f('f1')
+if 'f2' in MODE:
+    do_f('f2')
+
 open(DST, 'wb').write(bytes(data))
 print('\n'.join(log))
 print("out sha:", hashlib.sha256(bytes(data)).hexdigest()[:16], "size:", len(data))

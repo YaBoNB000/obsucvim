@@ -47,8 +47,20 @@ LoadStr 等注入点作用域并无 FLR 绑定（裸跑 `attempt to call a nil v
 
 ## diff-flight/（R077 故障判别飞行件，已撤档）
 
-判别飞行已收口（WS1 挂 / WS2 正常 / WS3 正常 ⇒ 三车道 lane NL 像定罪，V19 §12），
-三件判别件撤离本目录以清仓；档案存于 git 历史 commit `58c3895`（三件 +
-sha/判读表全录），手术工具 `web/tools/wasm-data-surgery.py` 随树保留。
-取证全书与判读表见 `web/docs/V19-EXISTENCE-HARDENING.md` §11/§12。
+判别飞行一轮已收口（WS1 挂 / WS2 正常 / WS3 正常 ⇒ 三车道 lane NL 像定罪到区，
+V19 §12），一轮三件档案存于 git 历史 commit `58c3895`。手术工具
+`web/tools/wasm-data-surgery.py` 随树保留（含 f1/f2 模式）。
+
+**二轮（P1 车道解剖：定罪区→定到步）现件**——均作用于 R077 病件（wasm
+`0f8dc517`）数据段等长手术，三车道 piece2 同构处理：
+
+| 件 | 手术 | sha256 前16 | 语义 |
+| --- | --- | --- | --- |
+| `diff-flight/kkksu-mini.F1evk.hard.lua` (178,764B) | F1：只保一级折叠（16384 域），杀二级 | `253ed8ed0cb278ec` | fold₁ 独存 |
+| `diff-flight/kkksu-mini.F2evk.hard.lua` (178,729B) | F2：只保二级折叠（65536 域），杀一级 | `5bf8f5d0c39c2d23` | fold₂ 独存 |
+
+判读：F1 正常 F2 挂 ⇒ 病在二级（65536 域）；反之病在一级（16384 域）；双挂 ⇒
+共谋（再分车道切）；双正常 ⇒ 病在组合相位。回传格式同前：`1.<报错/正常>`
+`2.<报错/正常>`。验证链同 §11.4（双构建恒等、no-bind fib、TSRC 静默、
+bind 裸 luau 干净拒绝）。
 
