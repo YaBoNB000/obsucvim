@@ -22,6 +22,16 @@ use std::process::ExitCode;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const OUTPUT_WATERMARK: &str = "-- This file was obfuscated by Obsucvim.\n";
 
+/// R081（2026-10-25）：executor 认证绑定恒开。
+/// 发布件是 wasm32-wasip1 —— 该目标下 `--no-bind-executor` 不可用（硬报错），
+/// 未绑定产物在发布通道里物理不可生产。
+/// 原生构建保留该旗标：运行等价矩阵与 `tests/gen_examples.sh` 需要一个能在
+/// 裸 Luau 下跑、用于「语义是否等价」的对照产物，这类产物不上线。
+#[cfg(target_arch = "wasm32")]
+const DEV_UNBIND_ESCAPE: bool = false;
+#[cfg(not(target_arch = "wasm32"))]
+const DEV_UNBIND_ESCAPE: bool = true;
+
 struct Options {
 dialect: &'static str,
 	input: String,
@@ -182,8 +192,9 @@ Options:
                          Roblox executor 环境内正确运行（identifyexecutor/
                          getgenv/闭包内省语义全认证），其他环境错钥静默死亡。
                          绑定态产物只做语法校验。非 v15 管线自动降级为关闭。
-  --no-bind-executor     显式关闭 executor 认证绑定（等价于 2026-10-11 前
-                         的默认产物；运行等价测试矩阵用此旗标）。
+  --no-bind-executor     R081 起**仅原生开发构建**可用（运行等价矩阵/示例生
+                         成用）；发布件（wasm32-wasip1）传入即硬报错——线上
+                         没有任何关闭绑定层的入口。
   --super-insn           V17 函数级超指令融合（Phase-1b 已接发射端，默认关，
                          仅 --preset v15）：按每个函数的指令流数据统计/选择
                          top-4 白名单相邻对，塌缩为 fused 记录（trampoline
@@ -325,6 +336,17 @@ fn main() -> ExitCode {
 				opts.bind_given = true;
 			}
 			"--no-bind-executor" => {
+				// R081：发布件（wasm32-wasip1）里绑定层恒开，关闭入口物理不存在。
+				// 原生开发构建保留该旗标，供语义等价矩阵与 examples 生成；
+				// 该产物不进发布通道（线上只分发 wasm）。
+				if !DEV_UNBIND_ESCAPE {
+					eprintln!(
+						"error: --no-bind-executor has been removed (R081)\n  \
+						\tthe executor attestation layer is always on in release builds;\n  \
+						\tunbound artifacts are no longer producible."
+					);
+					return ExitCode::FAILURE;
+				}
 				opts.bind_executor = false;
 				opts.bind_given = true;
 			}

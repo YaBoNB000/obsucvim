@@ -78,7 +78,7 @@ CARGO_NET_OFFLINE=true cargo build --release
 # 加固开关（v15）
 --env-check         环境检查组（tier-1 纯 Luau 语义；配合 --bind-executor 发射 tier-2）
 --bind-executor     executor 认证绑定（v15 默认开启）
---no-bind-executor  退出认证绑定（运行等价矩阵/示例生成必用）
+--no-bind-executor  R081 起仅原生开发构建可用（矩阵/示例生成）；发布件传入即报错
 --bind-env roblox   环境绑定（产物只在目标运行时可加载）
 --super-insn        函数级超指令融合（默认关）
 ```

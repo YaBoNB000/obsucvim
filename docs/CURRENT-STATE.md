@@ -18,10 +18,11 @@
 | 项 | 值 |
 | --- | --- |
 | 版本 | **R080**（静态弱点批次 1：审计 V-06/V-07/V-08，2026-10-25） |
-| 引擎 wasm | `web/tools/obsucvim.wasm`，1,302,019 B，sha256 `7458cb1f33905174e798d5e5fd5516e8b5a59ad4780d743227032bce1dd4cb86` |
+| 引擎 wasm | `web/tools/obsucvim.wasm`，1,302,319 B，sha256 `a019dc83057ad7722100ca289915704a4cbc5fc6df4a6a4778b3ded59195ebc3` |
 | 锚点命令 | `print("suda") --preset v15 --env-check --bind-executor --seed 67067` |
 | 锚点结果 | **179,643 B** / `1b1056221c386f5a7232153e5d5f6f63a2e68cc4c51f5e6e7165a46b8b5c7135` |
 | 自检 | `node web/tools/verify-engine-version.mjs` → `verdict: R080` |
+| 绑定层 | **恒开**（R081）：发布件无关闭入口，托管服务只出加固件 → 见 §11 |
 | 上一版 | R079：178,551 B / `ccf5d083…c045`（wasm 1,249,048 B / `95f69c99…f40a`，历史锚保留在自检表内） |
 
 **构建通道已恢复（2026-10-25）**：仓库内 `.tools/`（gitignored）重建了 rustc 1.88 +
@@ -35,7 +36,7 @@ cargo + wasm32-wasip1 std（`@rustbin/*` npm 包）+ lua51 + luau 0.735。
 
 ---
 
-## 3. 停止令与恢复令
+## 4. 停止令与恢复令
 
 - **恢复令（2026-10-25 第二批）**：用户指令「先读仓库内所有 md 再开始优化」——
   静态弱点优化线**重新立项**，依据 `docs/engine/AUDIT-20261025-v19evkey.md` 的 V-01..V-10，
@@ -61,14 +62,14 @@ cargo + wasm32-wasip1 std（`@rustbin/*` npm 包）+ lua51 + luau 0.735。
 - 零参数可运行：丢进 Luau CLI / Roblox 执行器即可跑，输出与源码逐字节一致。
 - 防护构成：结构层（加密解释器 + 去中心化尾链/蹦床 + 每构建全量随机：载体、转义、
   钥匙表、指令编号、槽位、命名）+ 环境绑定 `--bind-env roblox` + 计时守卫 +
-  executor 认证绑定（`--bind-executor`，v15 **默认开启**，`--no-bind-executor` 退出）
+  executor 认证绑定（`--bind-executor`，v15 **恒开**；R081 起发布件没有关闭入口）
   + 环境检查 `--env-check`（tier-1 纯 Luau 语义 / tier-2 Roblox+executor 档）+ 宿主钥恒开。
 - 每份产物首行固定水印：`-- This file was obfuscated by Obsucvim.`（普通注释，非防篡改）。
 - 确定性：同一 `--seed` 输出逐字节一致（本地实测 sha256 相同）；不同 seed 全量重随机。
 - 预设：`v15`（默认，Luau/Roblox）、legacy `low`/`medium`/`high`/`vm`/`max`。
   典型体积：`v15` ~150–180 KB 起，legacy `vm` ~130 KB 起。
 
-**改引擎/跑矩阵时一律加 `--no-bind-executor`**：语义回归测的是管线，绑定态由
+**改引擎/跑矩阵时一律加 `--no-bind-executor`（原生开发构建专用）**：语义回归测的是管线，绑定态由
 executor 守卫与 tier2 专测覆盖。
 
 ---
@@ -114,7 +115,7 @@ executor 守卫与 tier2 专测覆盖。
 - 服务端：`web/tools/engine-server.mjs`（单文件，3,954 行）。账户 / 卡密 / 脚本 / 发布 /
   验卡 / webhook / 外部应用 / 审计 / 指标等 60+ 路由；引擎优先原生二进制，缺失时回落
   WASI（`web/tools/obsucvim.wasm` + `wasi-runner.mjs`）。
-- 发布双产物：`safe`（`--env-check --no-bind-executor`）与 `hard`（完整加固）；
+- 发布**单产物**（R081）：只有完整加固件；旧 `safe`（兼容版）已下线；
   明文 loader 先跑 `web/tools/attest.luau`（25 项执行器/Roblox 证明，永不报错），
   按能力请求对应件。发布作业异步（`POST /api/publish` → `GET /api/publish/<jobId>`），
   失败退还额度、崩溃重试 3 次。
@@ -177,3 +178,19 @@ node web/tools/wasi-runner.mjs '{"wasmPath":"<abs>/web/tools/obsucvim.wasm",
 2. V19 **M1（R6 指纹熔断 + R3 oracle 熄灭 + R5 熵坍缩）** —— 待用户拍板。
 3. EVKEY 是否翻默认（严格 = 缺链报错 / 自动 = 缺链回落关）—— 待用户拍板。
 4. 托管侧：关系化存储 → 外部验卡前端 → 告警规则 → 多节点。
+
+---
+
+## 11. 绑定层恒开（R081，2026-10-25 用户指令）
+
+**「bind-executor 为默认永远开启」**——本轮把三处入口全部收口：
+
+| 层 | 旧行为 | 现行为 |
+| --- | --- | --- |
+| 引擎发布件（wasm32-wasip1） | `--no-bind-executor` 可关 | **硬报错**，发布件无关闭入口 |
+| 原生开发构建 | 可关 | 仍可关（语义矩阵/示例生成用，产物不上线） |
+| 托管服务 / 控制台 | 默认走 `--no-bind-executor`（兼容版） | 恒传 `--bind-executor --bind-env roblox`，`hardening` 入参保留但无效 |
+| 发布产物 | 双变体 `safe`(兼容) + `hard`(加固) | **单变体** `hard`；旧客户端要 `safe` 一律落到加固件 |
+
+锚点未变（绑定态字节与 R080 逐字节一致）：179,643 B / `1b105622…c7135`。
+

@@ -126,7 +126,8 @@ CI 模板在 `web/tools/ci/build-engine.yml`（`.github/workflows/` 无写权限
    设计看 `docs/engine/`。剥离工具 `engine/tools/strip_rs_comments.py`（Rust 感知，
    勿用 sed：字符串里的 `//` 是 Luau 整除运算符）。
 9. 绑定态产物（`--bind-env` / `--bind-executor` / `--env-check`）**不进运行等价矩阵**：
-   只做语法校验 + 裸 Luau「干净拒绝」验证。矩阵/示例生成一律 `--no-bind-executor`。
+   只做语法校验 + 裸 Luau「干净拒绝」验证。矩阵/示例生成用 `--no-bind-executor`，
+   该旗标 R081 起只在原生开发构建里可用（发布 wasm 传入即硬报错）。
 10. `--no-key-host` 已在 R070 移除（恒开）；`--key-host` 保留但传与不传等价。
 11. 调试 VM 三板斧（完整工具箱见 `docs/engine/vm-l6-implementation.md` §6）：
     `OBSUCVIM_VM_RAW=1` 出未混淆解释器 → 在分派出插入 `io.write` 追踪

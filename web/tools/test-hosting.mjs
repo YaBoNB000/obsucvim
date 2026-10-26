@@ -271,9 +271,10 @@ async function main() {
       check("batch publish stored the release", (rel.data.releases || []).some((r) => r.version === "v9"));
     }
 
-    /* ---------------- dual artifacts: hardened + compatible ---------------- */
+    /* ---------------- single artifact: hardened only (R081) ---------------- */
 
-    // 用一次全新的发布来验证（前面的发布已经被后续版本覆盖成「最新版本」）。
+    // R081（2026-10-25 用户指令「bind-executor 为默认永远开启」）：兼容版下线，
+    // 每次发布只有一份 hardened 产物；服务端没有任何路径能产出未绑定件。
     const dual = await api("POST", "/api/publish", { scriptId, version: "vdual", source: SOURCE }, cookie);
     let dualJob = null;
     for (let i = 0; i < 200; i++) {
@@ -283,34 +284,30 @@ async function main() {
       await sleep(150);
     }
     const dualVariants = dualJob?.result?.variants ?? {};
-    check("publish stores both variants", Boolean(dualVariants.safe) && Boolean(dualVariants.hard),
+    check("publish stores exactly one variant", Object.keys(dualVariants).join(",") === "hard",
       JSON.stringify(Object.keys(dualVariants)));
-    // 体积不是可靠指标（引擎的随机化本身就有 ±40 KB 抖动，同种子下加固层
-    // 也可能让某些段变小）。这里断言的是服务端事实：两个变体各自的标签。
-    check("variants are labelled by protection level",
-      dualVariants.safe?.label === "compatible" && dualVariants.hard?.label === "hardened",
-      `${dualVariants.safe?.label} / ${dualVariants.hard?.label}`);
+    check("the only variant is labelled hardened", dualVariants.hard?.label === "hardened",
+      String(dualVariants.hard?.label));
 
-    const safeFetch = await api("POST", "/api/releases/fetch", { scriptId, token: validate.data.token, variant: "safe" });
     const hardFetch = await api("POST", "/api/releases/fetch", { scriptId, token: validate.data.token, variant: "hard" });
-    check("compatible variant fetchable", safeFetch.data?.variant === "safe" && safeFetch.data.code.length > 100);
     check("hardened variant fetchable", hardFetch.data?.variant === "hard" && hardFetch.data.code.length > 100);
-    check("variants differ byte-wise", safeFetch.data.sha256 !== hardFetch.data.sha256);
-    check("variant hashes match the job report",
-      safeFetch.data.sha256 === dualVariants.safe.sha256 &&
+    check("variant hash matches the job report",
       hardFetch.data.sha256 === dualVariants.hard.sha256,
-      `${String(safeFetch.data.sha256).slice(0, 8)}/${String(dualVariants.safe?.sha256).slice(0, 8)}`);
-    check("hardened payload differs from the compatible one",
-      hardFetch.data.code.length !== safeFetch.data.code.length,
-      `${safeFetch.data.code.length} vs ${hardFetch.data.code.length}`);
+      `${String(hardFetch.data.sha256).slice(0, 8)}/${String(dualVariants.hard?.sha256).slice(0, 8)}`);
+
+    // 旧客户端可能仍显式要 safe / 传垃圾变体：一律落到唯一产物，而不是报错或降级。
+    const safeFetch = await api("POST", "/api/releases/fetch", { scriptId, token: validate.data.token, variant: "safe" });
+    check("legacy 'safe' request resolves to the hardened artifact",
+      safeFetch.data?.variant === "hard" && safeFetch.data.sha256 === dualVariants.hard.sha256,
+      String(safeFetch.data?.variant));
 
     const noVariant = await api("POST", "/api/releases/fetch", { scriptId, token: validate.data.token });
-    check("fetch defaults to the compatible variant", noVariant.data?.variant === "safe");
+    check("fetch defaults to the hardened variant", noVariant.data?.variant === "hard");
 
     const bogusVariant = await api("POST", "/api/releases/fetch", {
       scriptId, token: validate.data.token, variant: "nonsense",
     });
-    check("unknown variant falls back to compatible", bogusVariant.data?.variant === "safe");
+    check("unknown variant falls back to hardened", bogusVariant.data?.variant === "hard");
 
     /* ---------------- attestation is always served with the loader ---------------- */
 

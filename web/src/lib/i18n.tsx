@@ -135,7 +135,7 @@ const zh = {
   "docs.limitApi": "服务端接口",
   "docs.limitApiV": "同源服务端 API：/api/obfuscate（需登录）",
   "docs.vm": "选项契约（对齐 obsucvim CLI）",
-  "docs.vmDesc": "预设 v15（产品默认）/ low..max（legacy）；变换开关一一对应 CLI 的 --no-* 旗标；executor 认证绑定默认开启（--no-bind-executor 退绑）。",
+  "docs.vmDesc": "预设 v15（产品默认）/ low..max（legacy）；变换开关一一对应 CLI 的 --no-* 旗标；executor 认证绑定恒开（R081 起发布件无法关闭）。",
   "docs.checklist": "接入清单",
   "docs.rust": "Rust 侧（wasm-bindgen）",
   "docs.ts": "前端侧（engine.ts）",

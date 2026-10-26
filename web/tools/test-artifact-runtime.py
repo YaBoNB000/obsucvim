@@ -37,6 +37,13 @@ WASM = TOOLS / "obsucvim.wasm"
 RUNNER = TOOLS / "wasi-runner.mjs"
 PRELUDE = TOOLS / "luau-roblox-prelude.luau"
 
+# R081（2026-10-25）：发布 wasm 拒绝 --no-bind-executor（绑定层恒开）。
+# 本脚本第 1 段要的正是「未绑定产物在裸 Luau 里跑通」这一对照，只能由
+# **原生开发构建**产出——该构建保留测试用旗标，产物从不进发布通道。
+# 发布件（wasm）留给第 2–4 段的绑定态断言。
+NATIVE = pathlib.Path(os.environ.get("ENGINE_BIN")
+                      or (TOOLS.parent.parent / "engine" / "target" / "release" / "obsucvim"))
+
 SOURCE = 'print("suda")\n'
 EXPECTED = "suda"
 SEEDS = ["1", "2", "3", "20261022", "424242", "987654"]
@@ -53,16 +60,27 @@ def find_luau():
 
 
 def build_status(workdir, flags, seed, name):
-    """Returns (ok, artifact, detail). detail carries engine stderr on failure."""
-    args = flags + ["--seed", seed, "/work/input.lua", f"/work/{name}.lua"]
-    cfg = {"wasmPath": str(WASM), "workDir": str(workdir), "args": args}
-    cfg_path = workdir / "cfg.json"
-    cfg_path.write_text(json.dumps(cfg))
-    proc = subprocess.run(
-        ["node", str(RUNNER), cfg_path.read_text()],
-        capture_output=True, text=True, timeout=300,
-    )
+    """Returns (ok, artifact, detail). detail carries engine stderr on failure.
+
+    含 `--no-bind-executor` 的构建走原生开发件（R081 后发布 wasm 拒绝该旗标），
+    其余仍走发布 wasm —— 这样「绑定态行为」断言测的始终是线上那一份字节。
+    """
     out = workdir / f"{name}.lua"
+    if "--no-bind-executor" in flags and NATIVE.exists():
+        proc = subprocess.run(
+            [str(NATIVE), *flags, "--seed", seed,
+             str(workdir / "input.lua"), str(out)],
+            capture_output=True, text=True, timeout=300,
+        )
+    else:
+        args = flags + ["--seed", seed, "/work/input.lua", f"/work/{name}.lua"]
+        cfg = {"wasmPath": str(WASM), "workDir": str(workdir), "args": args}
+        cfg_path = workdir / "cfg.json"
+        cfg_path.write_text(json.dumps(cfg))
+        proc = subprocess.run(
+            ["node", str(RUNNER), cfg_path.read_text()],
+            capture_output=True, text=True, timeout=300,
+        )
     if not out.exists() or out.stat().st_size == 0:
         detail = (proc.stderr or proc.stdout or "").strip()
         return False, None, f"engine rc={proc.returncode} {detail[:240]}"

@@ -848,3 +848,23 @@ off 态产物锚点不变。verify 锚表以同锚点置顶 R072 行（R071 保�
 - **诚实边界**：V-01/V-02/V-03/V-04/V-05 未实施 → 静态可解性与「运行时秘密入钥流」
   在本版**没有改善**，审计 §1 结论仍成立；`--vm` 相位 37 项失败为既有缺陷
   （R079 与 R080 完全一致，同日两侧对跑取证）。
+
+## §38 R081 绑定层恒开（2026-10-25 用户指令「bind-executor 为默认永远开启」）
+
+指令把 executor 认证绑定从「默认开启、可显式关闭」改为**恒开**，三处入口同轮收口：
+
+| 层 | 改动 |
+| --- | --- |
+| 引擎发布件 | `--no-bind-executor` 在 `wasm32-wasip1` 构建里**硬报错**（exit≠0，文案写明确）；原生开发构建保留该旗标，供语义矩阵与 `gen_examples.sh` |
+| 托管服务 `engine-server.mjs` | `buildCliArgs` 恒为 `--preset v15 --env-check --bind-executor --bind-env roblox`；`hardening` 入参保留但不再影响参数 |
+| 发布流水线 | `RELEASE_VARIANTS` 收敛为单元素 `hard/hardened`；旧 `safe`(compatible) 下线；抓取接口把 `safe`/未知变体一律解析到加固件 |
+| 控制台 `engine.ts` | `DEFAULT_OPTIONS.hardening=true`；`buildCliArgs` 不再有 `--no-bind-executor` 分支 |
+| 开发工具 | `probe-matrix.mjs` 改按产品形态跑（只看能否产出）；`test-artifact-runtime.py` / `mistweave-selftest.py` 需要「未绑定产物在裸 Luau 跑通」的对照，改走原生开发件（`ENGINE_BIN` 或 `engine/target/release/obsucvim`） |
+
+- **锚点不变**：绑定态输出与 R080 逐字节相同 → 179,643 B / `1b105622…c7135`；
+  wasm 二进制变为 1,302,319 B / `a019dc83…95ebc3`（只多了参数校验分支）。
+- 取证：wasm 传 `--no-bind-executor` → `error: --no-bind-executor has been removed (R081)`；
+  传绑定参数正常出件；`node web/tools/test-hosting.mjs` **76/76 通过**（含新的单变体断言）。
+- 已知代价（诚实记）：兼容版下线后，宿主 API 对不上的执行器会拿到走错钥路径的产物
+  ——这正是 2026-10-23 事故的成因。本轮按用户明确指令执行，不再提供退绑降级；
+  若后续要缓解，只能加强隔离（提高宿主覆盖率/更宽容的探针），不能重开退绑。

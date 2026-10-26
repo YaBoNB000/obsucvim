@@ -17,7 +17,10 @@ export interface ObfuscationOptions {
   body: boolean;
   vmSealStrings: boolean;
   seed: string;
-  /** 环境证明（env-check + bind-env + bind-executor），仅在确认执行器支持时开启。 */
+  /**
+   * 历史字段（保留接口兼容）。R081 起 bind-executor 恒开：无论传什么，
+   * 生成参数都带 `--bind-executor --bind-env roblox`，引擎侧也拒绝关闭。
+   */
   hardening?: boolean;
 }
 
@@ -31,21 +34,19 @@ export const DEFAULT_OPTIONS: ObfuscationOptions = {
   body: true,
   vmSealStrings: true,
   seed: "",
-  hardening: false,
+  hardening: true,
 };
 
 /**
- * 环境证明（--env-check / --bind-env / --bind-executor）默认关闭：
+ * 环境证明（--env-check / --bind-env / --bind-executor）**恒开**（R081）。
  * 它们会在运行时核验 Roblox/执行器的具体 API（debug.getconstants、getupvalues、
- * typeof(game)…），任何一项对不上不是跳过而是自我投毒，脚本会直接跑不起来。
- * 只有确认目标执行器支持时才打开。
+ * typeof(game)…），不满足的宿主拿到的产物会走错钥路径。
+ * 这正是要的效果：没有「关掉守卫换兼容」的选项，未绑定产物不再可生产。
  */
 export function buildCliArgs(o: ObfuscationOptions): string[] {
   const args: string[] = ["--preset", "v15", "--env-check"];
-  // 这两层要求宿主 API 形状完全一致，缺一项就会自我投毒，默认不开。
-  // 引擎默认是绑定执行器，所以必须显式 --no-bind-executor。
-  if (o.hardening) args.push("--bind-executor", "--bind-env", "roblox");
-  else args.push("--no-bind-executor");
+  // R081：绑定层恒开，不再根据 o.hardening 分支（该字段仅为接口兼容保留）。
+  args.push("--bind-executor", "--bind-env", "roblox");
   if (o.seed) args.push("--seed", o.seed);
   args.push(o.minify ? "--minify" : "--no-minify");
   if (!o.mangle) args.push("--no-mangle");

@@ -43,32 +43,21 @@ const ENGINE_TIMEOUT_MS = 60_000;
 
 /* ---------------- 选项 → CLI 参数（与前端 buildCliArgs 对齐） ----------------
  *
- * 固定不动的两层：
- *   --env-check   纯 Luau 语义自检（buffer/bit32/string/元表/协程/freeze），
- *                 只比较运行期前后取到的函数是否同一个，宿主差异不会误伤。
- *   --no-bind-executor
- *                 引擎默认值是「绑定执行器」，它会核验 debug.getconstants /
- *                 getupvalues / setupvalue / getproto(s) 等一整套 API，任何一项
- *                 对不上不是跳过而是自我投毒，整个脚本直接崩（2026-10-23 事故）。
- *                 所以这里恒定显式关闭，没有任何开关能打开它。
+ * R081（2026-10-25 用户指令「bind-executor 为默认永远开启」）：绑定层恒开，
+ * 服务端**没有任何路径**能产出未绑定件。R081 起发布 wasm 传入
+ * `--no-bind-executor` 会直接硬报错；本服务因此只发一条命令形态：
  *
- * 执行器证明 + Roblox 环境绑定改由 attest.luau 承担：它总是被注入到用户代码
+ *   --env-check --bind-executor --bind-env roblox
+ *
+ * `hardening` 入参保留仅为接口兼容，传 false 也不会改变参数（引擎侧同样拒绝）。
+ * 兼容旧版的 `safe` 变体已下线：过去它靠关掉守卫换取「任何执行器都能跑」，
+ * 代价是产物没有 executor 认证面——现在这条路被封死。
+ *
+ * 执行器证明 + Roblox 环境绑定仍由 attest.luau 承担：它总是被注入到用户代码
  * 之前、和用户代码一起混淆，做同样的探测但**永不报错**，结果以
- * getgenv().OBS_Attested / OBS_Attest 的形式交给脚本，并随验卡上报服务端。
- * 换句话说：证明永远在、证据永远在，但宿主不合规不会让脚本死掉。 */
-/* 两种构建模式，都不是「可选优化」：
- *   hardening=false → 兼容版：`--env-check --no-bind-executor`
- *   hardening=true  → 加固版：`--env-check --bind-executor --bind-env roblox`（原始保护，一层不少）
- * 加固版只有在 loader 的证明层确认宿主支持时才下发，否则会自我投毒。
- * 注意：引擎的默认值就是绑定执行器，所以两种模式都必须显式写明。 */
-function hardeningEnabled(o) {
-  return Boolean(o && o.hardening === true);
-}
-
+ * getgenv().OBS_Attested / OBS_Attest 的形式交给脚本，并随验卡上报服务端。 */
 function buildCliArgs(o) {
-  const args = ["--preset", "v15", "--env-check"];
-  if (hardeningEnabled(o)) args.push("--bind-executor", "--bind-env", "roblox");
-  else args.push("--no-bind-executor");
+  const args = ["--preset", "v15", "--env-check", "--bind-executor", "--bind-env", "roblox"];
   const seed = normalizeSeed(o.seed);
   if (seed) args.push("--seed", seed);
   args.push(o.minify ? "--minify" : "--no-minify");
@@ -560,15 +549,11 @@ function sweepPublishJobs() {
 }
 
 /* 真正的流水线。调用方已经校验过入参与额度。 */
-/* 每个版本产两份产物，保护一点不丢：
- *   hard = 原来的完整加固（--env-check + --bind-executor + --bind-env roblox）
- *   safe = 兼容版（--env-check + --no-bind-executor），任何执行器都能跑
- * 客户端由 loader 先用证明层判断宿主能力，再决定取哪一份。宿主谎报只会让自己
- * 拿到跑不起来的 hard 版本，无法借此获得任何好处。 */
-const RELEASE_VARIANTS = [
-  { name: "safe", label: "compatible" },
-  { name: "hard", label: "hardened" },
-];
+/* 每个版本只产一份产物（R081：绑定层恒开，兼容版下线）：
+ *   hard = 完整加固（--env-check + --bind-executor + --bind-env roblox）
+ * 列表结构保留成数组，是为了不让下游读代码的地方一夜之间全改；
+ * 但只有一个元素，扩容回未绑定变体是明确禁止的。 */
+const RELEASE_VARIANTS = [{ name: "hard", label: "hardened" }];
 
 async function runPublishJob(job, { source, version, options, origin }) {
   try {
@@ -593,9 +578,7 @@ async function runPublishJob(job, { source, version, options, origin }) {
       ? options.seed
       : normalizeSeed("");
     for (const variant of RELEASE_VARIANTS) {
-      const variantOptions = variant.name === "hard"
-        ? { ...options, seed: pinnedSeed, hardening: true }
-        : { ...options, seed: pinnedSeed, hardening: false };
+      const variantOptions = { ...options, seed: pinnedSeed, hardening: true };
       const out = await obfuscateSource(guarded, variantOptions);
       if (out.ok) {
         attempts += out.attempts ?? 1;
@@ -610,17 +593,14 @@ async function runPublishJob(job, { source, version, options, origin }) {
         };
         continue;
       }
-      // safe 版失败 = 这次发布彻底失败；hard 版失败 = 只少一层加固，不拖垮发布。
-      if (variant.name === "safe") {
-        return failJob(job, out.error, out.detail);
-      }
-      job.hardVariantError = out.error;
+      // R081：只有一份产物，它失败 = 这次发布彻底失败（不再有降级件可发）。
+      return failJob(job, out.error, out.detail);
     }
     job.attempts = attempts;
 
     setJobStage(job, "storing");
     const key = `${job.scriptId}:${version}`;
-    const primary = variants.safe;
+    const primary = variants.hard;
     const stored = {};
     for (const [name, data] of Object.entries(variants)) {
       stored[name] = {
@@ -635,11 +615,11 @@ async function runPublishJob(job, { source, version, options, origin }) {
       scriptId: job.scriptId,
       ownerEmail: job.ownerEmail,
       version,
-      // 兼容旧字段：顶层始终指向 compatible 版本
+      // 兼容旧字段：顶层指向唯一产物（hardened）
       sha256: primary.sha256,
       size: primary.bytes,
       createdAt: now(),
-      file: stored.safe.file,
+      file: stored.hard.file,
       pipeline: true,
       variants: stored,
     };
@@ -3265,8 +3245,8 @@ const server = createServer(async (req, res) => {
     if (!allowed) return json(res, 403, { ok: false, error: "LICENSE_INVALID", code: "KEY_MISSING" });
 
     const release = latestReleaseFor(scriptId);
-    // 变体：hard（完整加固）/ safe（兼容）。缺省走 safe，未知变体一律回落。
-    const wantedVariant = body.variant === "hard" ? "hard" : "safe";
+    // 变体：R081 起只有 hard（完整加固）。旧客户端传 safe 时回落到唯一产物。
+    const wantedVariant = "hard";
     if (!release) return json(res, 404, { ok: false, error: "RELEASE_NOT_FOUND" });
     const variantInfo = release.variants && release.variants[wantedVariant]
       ? release.variants[wantedVariant]
@@ -3281,7 +3261,7 @@ const server = createServer(async (req, res) => {
       ok: true,
       scriptId,
       version: release.version,
-      variant: variantInfo ? variantInfo.variant : "safe",
+      variant: variantInfo ? variantInfo.variant : "hard",
       sha256: variantInfo ? variantInfo.sha256 : release.sha256,
       size: variantInfo ? variantInfo.size : release.size,
       code,
@@ -3913,6 +3893,8 @@ server.listen(PORT, HOST, () => {
   // 这不影响服务启动——探测失败只记录，不阻断。
   void (async () => {
     const KNOWN = {
+      R080: { size: 179643, sha256: "1b1056221c386f5a7232153e5d5f6f63a2e68cc4c51f5e6e7165a46b8b5c7135" },
+      R079: { size: 178551, sha256: "ccf5d0839fef962a8a0c031d745d869dff7a861b6590fe8e267d93f5cf63c045" },
       R073: { size: 171881, sha256: "b67a06e3f4ba620daaac0b81a3fb266cfb9f78fac9dda614052cbc7738024b9b" },
       R072: { size: 231571, sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a" },
       R071: { size: 231571, sha256: "6c22c008c20883589a9f8ad3503151e2027880ac4454454a975842ba9731e11a" },

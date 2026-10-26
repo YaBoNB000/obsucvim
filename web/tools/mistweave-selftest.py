@@ -7,6 +7,10 @@ import hashlib, os, pathlib, subprocess, sys, tempfile
 TOOLS = pathlib.Path(__file__).resolve().parent
 RUNNER = TOOLS / "wasi-runner.mjs"
 WASM = TOOLS / "obsucvim.wasm"
+# R081：发布 wasm 拒绝 --no-bind-executor（绑定层恒开）。第 4 段要的是
+# 「未绑定产物在裸 Luau 里跑通」的 E2E 对照，改走原生开发构建。
+NATIVE = pathlib.Path(os.environ.get("ENGINE_BIN")
+                      or (TOOLS.parent.parent / "engine" / "target" / "release" / "obsucvim"))
 LUAU = os.environ.get("LUAU_BIN") or "luau"
 FAILS = []
 
@@ -93,13 +97,20 @@ def main():
                         "k_src.lua", "k_mw.lua", "--seed", "20261025",
                         "--num-fog", "0.55", "--blocks", "6"],
                        check=True, capture_output=True)
-        eng = {"wasmPath": str(WASM), "workDir": str(work),
-               "args": ["--preset", "v15", "--env-check", "--no-bind-executor",
-                        "--seed", "20261025", "/work/k_mw.lua", "/work/k_eng.lua"]}
-        subprocess.run(["node", str(RUNNER), __import__("json").dumps(eng)],
-                       check=True, capture_output=True)
+        if NATIVE.exists():
+            subprocess.run([str(NATIVE), "--preset", "v15", "--env-check",
+                            "--no-bind-executor", "--seed", "20261025",
+                            "k_mw.lua", "k_eng.lua"],
+                           check=True, capture_output=True)
+        else:
+            eng = {"wasmPath": str(WASM), "workDir": str(work),
+                   "args": ["--preset", "v15", "--env-check", "--bind-executor",
+                            "--bind-env", "roblox", "--no-executor-guard",
+                            "--seed", "20261025", "/work/k_mw.lua", "/work/k_eng.lua"]}
+            subprocess.run(["node", str(RUNNER), __import__("json").dumps(eng)],
+                           check=True, capture_output=True)
         rc, out = run_luau("k_eng.lua")
-        check("E2E kkksu-mini -> MW-1 -> R079 -> no-bind fib",
+        check("E2E kkksu-mini -> MW-1 -> engine -> bare fib",
               rc == 0 and ENGV_FIB in out, out[:80])
 
         # 5) 体积打印

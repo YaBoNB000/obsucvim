@@ -24,7 +24,9 @@ if (!source) {
 }
 const seeds = process.argv.slice(3).length ? process.argv.slice(3) : ["1", "2", "3", "4"];
 
-const BASE = ["--preset", "v15", "--env-check", "--no-bind-executor"];
+// R081：发布 wasm 拒绝 --no-bind-executor，崩溃矩阵改按产品形态（绑定态）跑。
+// 本脚本只比较「引擎能否产出文件」，不执行产物，绑定与否不影响判据。
+const BASE = ["--preset", "v15", "--env-check", "--bind-executor", "--bind-env", "roblox"];
 const COMBOS = {
   default: ["--minify", "--vm-seal-strings"],
   noflatten: ["--minify", "--vm-seal-strings", "--no-flatten"],
