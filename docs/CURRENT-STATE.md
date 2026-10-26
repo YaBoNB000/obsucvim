@@ -166,6 +166,11 @@ node web/tools/wasi-runner.mjs '{"wasmPath":"<abs>/web/tools/obsucvim.wasm",
 6. **托管侧**：Webhook 保护 / 外部验卡应用的前端界面未做；存储未关系化；产物未上对象存储；
    多节点未做；告警自动升级未做；源码保险箱按产品决策不做。
 7. **CI**：`.github/workflows/` 无写权限，模板在 `web/tools/ci/build-engine.yml`，需手工复制。
+8. **`wtf_port_tier2_test.sh` 的 `destroy-lock` 负向探针恒红**（「difference stayed 0」）：
+   在 `bf14e5a`（R079 源码树）上就是红的，属 mock 探针自身未接通该组，不是引擎回归；
+   其余 19 项绿（两个形态快照已于 2026-10-25 按 R080 重钉）。
+9. **`--vm` 相位全红**：37 个语料的 VM 产物在本机 luau 下输出二进制垃圾 / SIGABRT；
+   R079、R080、R081 三个构建失败集合完全一致，属既有缺陷。
 
 ---
 

@@ -53,9 +53,12 @@ out="$(timeout 30 "$LUAU" "$TMP/t2a.lua" 2>&1)"
 if [[ "$out" == *"T2"* ]]; then bad "tier2 CLI must die silently"; else ok; fi
 
 # pre-existing flag combos must stay byte-identical to the Phase-1
-# snapshots (SHA-256 pinned from the Phase-1 binary, canary = print("T2", 6*7))
-EC_SHA=8e919865f41c29c82ca01601442401c777b3a9eccf79d764a8175226c19e3c5f
-BIND_SHA=0ca2ce87fc7d12047d7b20f8cb8712b0f0fd0f480cb1a85d4e1f6dec88099258
+# snapshots (canary = print("T2", 6*7))
+# 2026-10-25 重钉（R080 静态弱点批次 1）：V-06/V-07/V-08 改变的是噪声/诱饵形态，
+# 这两个组合的**保护层**没动，但整份字节必然变——快照不重钉就会永久红，掩盖真回归。
+# 重钉后这两条恢复为「本构建的形态锁」：任何非预期改动都会立刻打红。
+EC_SHA=04a4cf1e532116d50f3e1807550484a56a7251c57b70c629e7dc5cd931a6cd36
+BIND_SHA=15d047f9fdf21b45e55733e7148a7322e1e95a1d00204e55cd92ce6bea065a20
 # 2026-10-11 起绑定默认开启：tier-1-only / 关闭态的对照锚均需显式退绑；
 # tier-2 双开(现在的 --env-check 默认形态)与显式绑定保持 Phase-1/2 快照。
 "$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY" "$TMP/ec_only.lua"
