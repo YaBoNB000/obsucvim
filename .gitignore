@@ -1,31 +1,9 @@
 # prebuilt toolchain + interpreter binaries
-# (rebuilt in-repo 2026-08-25: see HANDOFF.md §4 rebuild steps)
+# (rebuilt in-repo: see HANDOFF.md §4)
 tools/
 .tools/
-# build artifacts
+# Rust build tree
 engine/target/
 # ...but keep the luau CLI main sources used by the rebuild
 !engine/tools/
-# web console engine backend (local Rust wrapper) is source, not a toolchain
-!web/tools/
 __pycache__/
-
-# 红队战役工件: 生成副本/日志/样本副本不入库(脚本与提取证据入库)
-artifacts/redteam/harness_run*.lua
-artifacts/redteam/harness_*.lua
-artifacts/redteam/*.log
-artifacts/redteam/sample_luraph15.lua
-artifacts/redteam/trace_gen_*.py
-artifacts/redteam/harness_after.lua
-artifacts/redteam/harness_combined.lua
-artifacts/redteam/harness_meta*.lua
-artifacts/redteam/harness_protos*.lua
-artifacts/redteam/harness_debug.lua
-artifacts/redteam/harness_wrap.lua
-
-# Local Discord / deployment credentials (never commit)
-.env
-.env.*
-!.env.example
-.venv/
-.pytest_cache/

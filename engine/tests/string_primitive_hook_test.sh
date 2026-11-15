@@ -86,4 +86,4 @@ PY
 }
 
 check_case minimal 64080 "$TMP/basic.lua"
-check_case R064 64075 "$REPO/artifacts/targets/R064_7kb_src.lua"
+check_case R064 64075 "$REPO/engine/tests/fixtures/targets/R064_7kb_src.lua"

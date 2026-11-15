@@ -5,7 +5,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TOOL="$ROOT/engine/target/release/obsucvim"
-SRC="$ROOT/artifacts/targets/R064_7kb_src.lua"
+SRC="$ROOT/engine/tests/fixtures/targets/R064_7kb_src.lua"
 TOOLS_BIN=/home/user/tools/bin
 if [ ! -x "$TOOLS_BIN/luau" ] || [ ! -x "$TOOLS_BIN/luau-compile" ]; then
   TOOLS_BIN="$ROOT/.tools/bin"

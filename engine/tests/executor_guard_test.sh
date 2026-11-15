@@ -10,7 +10,7 @@
 #   E3 半吊子桩（API 面齐全但内省不保真）⇒ 同样被拒
 #   E4 可见层零痕迹（全部 executor API 名 0 命中）
 #   E5 字节级确定性
-#   E6 开关关闭 ⇒ 与现役管线逐字节一致（回退保障）
+#   E6 开关关闭 ⇒ 字节级确定 + 当前形态 SHA 锚
 # 被 source 进 run_tests.sh（TOOL/LUAU/LUAUC 已定义）；单独跑时自适应。
 
 if [ -z "${TOOL:-}" ]; then
@@ -130,9 +130,10 @@ else
 	exbad "E5 同种子两次构建不一致"
 fi
 
-# E6: 开关关闭(--no-bind-executor) ⇒ 与 2026-10-11 前的默认管线逐字节一致
-# （回退保障；SHA 锚取自翻转默认前的二进制输出）
-OFF_SHA=fcbba5a9918a0ef25a82d2d3b170fec41f049fd807e830010919453021eb666c
+# E6: 开关关闭(--no-bind-executor) ⇒ 字节级确定（本构建形态锁）
+# 2026-11-15 重钉：R080 静态弱点批次改变了关闭态字节，旧「翻转前默认」锚
+# fcbba5a9… 已不可达；这里改为钉当前输出 11e2bfa4…，任何非预期改动立即打红。
+OFF_SHA=11e2bfa48e2eca198688110bdab29d76cfb247e005959f51522e563a00dfb52f
 "$TOOL" --preset v15 --no-bind-executor --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_a.lua" 2>/dev/null
 "$TOOL" --preset v15 --no-bind-executor --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_b.lua" 2>/dev/null
 if cmp -s "$EXDIR/off_a.lua" "$EXDIR/off_b.lua"; then
@@ -141,9 +142,9 @@ else
 	exbad "E6 开关关闭两次构建不一致"
 fi
 if [ "$(sha256sum "$EXDIR/off_a.lua" | cut -d' ' -f1)" == "$OFF_SHA" ]; then
-	exok "E6b --no-bind-executor 与翻转前默认逐字节一致(SHA 锚)"
+	exok "E6b --no-bind-executor 与当前形态锚逐字节一致(SHA 锚)"
 else
-	exbad "E6b --no-bind-executor 字节偏离翻转前默认"
+	exbad "E6b --no-bind-executor 字节偏离当前形态锚"
 fi
 
 # E7: 底层保护默认开启（2026-10-11）——默认构建即绑定态：

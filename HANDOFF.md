@@ -1,116 +1,126 @@
 # 交接文档（HANDOFF）
 
-> **这是仓库里唯一的文档。** 2026-11-15 仓库规整：除本文件外的 88 个 markdown 全部删除
-> （恢复方式见 §13）。设计、审计、逐轮台账、红队与托管文档都不在树里了，需要时从 git 取回，
-> 不要凭记忆补写。
+> **仓库现在只有混淆引擎。** 2026-11-15 第二次规整：除本文件外不再保留任何 markdown；
+> 控制台（`web/`）、托管服务（`services/`）、研究数据（`docs/`）、证据链（`artifacts/`）、
+> 发布包（`release-assets/`）与 Render/Docker 部署文件已从工作树删除。测试仍需的 4 个靶标
+> 已移入 `engine/tests/fixtures/`。需要旧文件时从基线提交 `68b9187` 取回（见 §10）。
 >
-> 最后更新：2026-11-15（基于实际代码、发布件与沙箱实测重写）。
-> 工作分支以会话说明为准；本仓库当前是 **shallow clone**（只有 1 个可见提交），
-> 历史提交只能看到基线 `68b9187`。
+> 最后更新：2026-11-15。所有数字来自本沙箱实际构建与执行，不是旧文档转抄。
+> 当前分支以会话说明为准；仓库是 **shallow clone**，本地只能看到基线 `68b9187`。
 
 ---
 
 ## 1. 项目是什么
 
-**obsucvim**：商业级 **Luau / Roblox 混淆器**（对标 Luraph）。Rust 引擎把用户脚本编译成
-**私有字节码**，由随产物分发的「Lua 写的加密解释器」执行；外围是 React 控制台、
-Node 托管服务（账户 / 卡密 / 发布 / 验卡）和 Discord `/obf` 适配。
+**obsucvim**：Luau / Roblox 混淆引擎。Rust 把输入脚本编译成私有字节码，再由随产物分发的
+「Lua 写的加密解释器」执行；可选 v15 结构克隆、环境检查、executor 认证绑定与 key-host 转录链。
 
-- 产品线 **Luau-only**：Lua 5.1 目标自 2026-09-10 起停止支持，`--dialect 5.1` 直接报错。
-- 引擎本体 **Rust，std-only，零第三方 crate**（沙箱到不了 crates.io，这是设计约束）。
-- 交付形态：CLI + Web 控制台 + 托管服务（卡密 / 单产物发布 / 验卡）+ Discord 机器人（未部署）。
+- **Luau-only**：Lua 5.1 目标自 2026-09-10 停止支持，`--dialect 5.1` 直接报错。
+- **引擎本体 Rust，std-only，零第三方 crate**（`engine/Cargo.toml` 无依赖）。沙箱到不了
+  crates.io，这是硬约束，不是疏忽。
+- 仓库内**没有** WASM 发布件、Web 控制台、托管服务或部署配置；只剩 CLI 引擎、语料、示例、
+  测试矩阵与工具链重建脚本。
 
 ---
 
-## 2. 当前发布态（2026-11-15 实测）
+## 2. 当前实测状态（2026-11-15）
 
 | 项 | 值 |
 | --- | --- |
-| 发布 wasm | `web/tools/obsucvim.wasm`，**1,302,319 B** / `a019dc83057ad7722100ca289915704a4cbc5fc6df4a6a4778b3ded59195ebc3` |
-| 构建代号 | **R081**（绑定层恒开；wasm 二进制变了，输出锚点未变） |
-| 自检版本 | `node web/tools/verify-engine-version.mjs` → **verdict: R080**（按输出锚点识别，R081 仍报 R080 属预期） |
-| 锚点命令 | `print("suda") --preset v15 --env-check --bind-executor --seed 67067` |
-| 锚点结果 | **179,643 B** / `1b1056221c386f5a7232153e5d5f6f63a2e68cc4c51f5e6e7165a46b8b5c7135` |
-| 上一锚点 | R079：178,551 B / `ccf5d0839fef962a8a0c031d745d869dff7a861b6590fe8e267d93f5cf63c045` |
-| 水印 | 每个产物第一行固定 `-- This file was obfuscated by Obsucvim.`（普通注释，不是防篡改） |
+| 原生二进制 | `engine/target/release/obsucvim`，**2,117,872 B** / `ff2bc1a88aab9da1e6ba22096e5b1c9ca862ee3233543191d804f6674ca8d4b0` |
+| 构建 | Rust 1.88.0，`cargo build --release` 离线成功（约 30 s 增量） |
+| 单元/集成测试 | `cargo test --release`：**65 passed / 0 failed / 1 ignored**（61+4） |
+| 官方矩阵 | `bash engine/tests/run_tests.sh` → **PASS 169 / FAIL 2**（约 155 s） |
+| VM 专项 | 37 语料 × `--vm`（字符串密封默认开）× run + `luau-compile` → **74 / 74 PASS** |
+| v15 锚点 | `print("suda") --preset v15 --env-check --bind-executor --seed 67067` → **179,643 B** / `1b1056221c386f5a7232153e5d5f6f63a2e68cc4c51f5e6e7165a46b8b5c7135` |
+| 关闭绑定锚 | `--preset v15 --no-bind-executor --seed 4242`（executor 守卫语料）→ **159,951 B** / `11e2bfa48e2eca198688110bdab29d76cfb247e005959f51522e563a00dfb52f` |
+| 水印 | 每个产物第一行固定 `-- This file was obfuscated by Obsucvim.`（普通注释） |
 
-**确定性**：同一 `--seed` 逐字节一致（本沙箱连跑两次 sha256 相同）；不同 seed 全量重随机
-（指令编号、槽位、载体、转义、钥匙表、命名都变）。
+**确定性**：同一 `--seed` 连跑逐字节一致；不同 seed 全量重随机。
 
-**绑定层**：`--bind-executor`（v15）在发布件里**恒开**，传 `--no-bind-executor` 会硬报错；
-原生开发构建仍保留该旗标，仅供语义矩阵和示例生成，这类产物不上线。
+**v15 产物不带字符串密封时与旧锚点逐字节一致**；本轮只改了 legacy VM 的 LoadStr 解码
+handler，v15 发射路径未动，所以上述两个锚点与整理前相同。
 
-**EVKEY（V19 运行时值入钥流）实际默认 = Bind**：完整链（v15 + executor guard + key-host）
-下不设环境变量与 `OBSUCVIM_V19_EVKEY=1` 输出完全相同；`=0` 才会关闭（体积 177,542 B /
-`8e94579b…`）。旧文档写「默认关」是过期结论，代码与实测为准
-（`engine/src/vmgen/exguard.rs::resolve_ev_mode`、`engine/src/main.rs`）。
+### 2.1 本轮修掉的缺陷：legacy VM 字符串密封解码失配
+
+现象：`--vm`（默认 `--vm-seal-strings`）产物在 Luau 下把字符串读成垃圾字节（`basics`
+第 6 行的 `"x"` 变成单字节乱码），37 个 VM 语料全红；加 `--no-vm-seal-strings` 则 74/74 全绿。
+
+根因：`engine/src/vmgen/strseal.rs::encode` 在 V19 R5-b 已改为
+「NL-65521 非线性折叠 + 明文字节级联」，v15 模板（`template.rs` 的 `M_LOAD_STR`）也同步镜像；
+但 legacy VM 使用的 `engine/src/vmgen/handlers/loadstr.rs` 仍是旧式 `st*257+d+i` + 低 8 位掩码，
+既缺 `+1`，也缺前一字节日志 `_pv`，还不是 NL 折叠。单字节字符串也会立刻错。
+
+修复：把 handler 的 Lua 解码文本改成与 `encode`/v15 镜像同式（含 `_pv`、`+1`、两次 NL 折叠）。
+修复后 `--vm` 全语料通过，且 v15 输出字节不变。**以后改 `strseal` 必须同时改这三处镜像：
+Rust encode/decode、v15 micro-op、handlers/loadstr.rs。**
 
 ---
 
 ## 3. 仓库布局（规整后）
 
 ```
-engine/                 Rust 引擎（CLI + L6 私有 VM）+ 语料 + 测试矩阵 + 示例
-  src/                  73 个 .rs，约 2.05 万行（注释已于 2026-10-11 整体剥离）
-  src/vmgen/            L6：compiler / template / v15 / isa / envcheck / exguard /
+engine/                 Rust 引擎（CLI + 私有 VM）+ 语料 + 示例 + 测试
+  Cargo.toml            零依赖；release: opt-level=3 + lto
+  src/                  73 个 .rs，约 2.05 万行（注释 2026-10-11 整体剥离）
+  src/vmgen/            compiler / template / v15 / isa / envcheck / exguard /
                         fuse / strseal / strpool / handlers（43 个指令 handler）
-  tests/                37 个语料 + 矩阵/审计/多种子脚本 + 攻击面回归
-  examples/             37 个混淆示例（改 pass 必须重生成）
-  tools/                剥注释脚本、luau CLI 主程序源码
-web/                    控制台 + 托管服务 + 引擎 WASM + 验证套件（部署契约路径，勿改名）
-  src/                  React 控制台（工作台 / 脚本 / 历史 / 文档 / 账户 / #key 自助页）
-  tools/                engine-server.mjs（单文件后端）、obsucvim.wasm、wasi-runner、
-                        test-*.mjs / test-*.py、mistweave.py、rebuild-package.sh
-  deploy/               Windows 一键包脚本与自更新器（raw URL 路径，勿移动）
-services/discord_obf/   Discord HTTP /obf 适配（Flask + Rust 引擎子进程；未部署）
-artifacts/              只增不改的证据链：targets（R007–R067 靶标）/ samples / redteam /
-                        legacy-lph（早期 Lua 参考实现，仅存档）
-docs/research/          研究脚本与数据（md 报告已删除，见 §13）
-release-assets/         Windows 发布包 + sha256（部署契约路径，勿移动）
+  tests/                37 个语料 + 矩阵/审计/多种子/红队探针
+    fixtures/targets/   测试用 4 个历史靶标（R035/R062/R064），从原 artifacts 移入
+    cases/              37 个语义语料
+    run_tests.sh        官方矩阵入口
+  examples/             37 个 v15 混淆示例（改 pass 必须重生成）
+  tools/                rebuild_tools.sh + luau CLI 主程序源码（main_luau*.cpp）
 HANDOFF.md              本文件（唯一文档）
+.gitignore              忽略 .tools/ 与 engine/target/
 ```
 
-改名或移动 `web/`、`release-assets/` 会让已部署客户端的自更新 404。
+没有 `web/`、`services/`、`docs/`、`artifacts/`、`release-assets/`、`render.yaml`、
+`.dockerignore`。所有路径均相对仓库根，不再依赖 `/home/user/obsucvim` 之外的目录。
 
 ---
 
 ## 4. 构建与运行
 
-### 4.1 原生引擎
+### 4.1 工具链（沙箱重置后先跑这个）
 
 ```bash
-export PATH=/home/user/obsucvim/.tools/bin:$PATH   # 工具链 gitignored，可能不存在
+bash engine/tools/rebuild_tools.sh          # 默认装到 .tools/（gitignored）
+# 或指定目录：
+OBSUCVIM_TOOLS=/tmp/obsucvim-tools bash engine/tools/rebuild_tools.sh
+```
+
+脚本做三件事，全部可离线缓存后复现：
+
+1. Rust 1.88：`npm pack @rustbin/{rustc,cargo,rust-std}-1.88.0-x86_64-unknown-linux-gnu`，
+   解包后 `install.sh --prefix=.tools` 并合并 std。
+2. Lua 5.1.5：GitHub 镜像源码，`make generic` → `lua51` / `luac51`。
+3. Luau 0.735：codeload 源码 + 仓库内 `main_luau.cpp` / `main_luau_compile.cpp`，
+   `g++ -O2 -std=c++17 -DLUA_USE_LONGJMP=1 '-DLUA_API=extern "C"'` 直编 7 个库。
+
+依赖：`npm`、`curl`、`make`、`g++`、`tar`。约 2 分钟。结束后打印
+`rustc 1.88.0`、`Lua 5.1.5` 与 `toolchain ready`。
+
+> `main_luau.cpp` **默认不加** `luaL_sandbox`；只有设 `LUAU_READONLY_GLOBALS=1` 才启用只读全局。
+> 官方 CLI 的 sandbox 会让所有写全局的产物报 `attempt to modify a readonly table`，不要默认开。
+
+### 4.2 引擎
+
+```bash
+export PATH="$PWD/.tools/bin:$PATH"
 cd engine
-CARGO_NET_OFFLINE=true cargo build --release        # → engine/target/release/obsucvim
-cargo test
+CARGO_NET_OFFLINE=true cargo build --release    # → engine/target/release/obsucvim
+cargo test --release
 ```
 
-工具链要求 `cargo/rustc ≥ 1.88`、`lua51`、`luau`、`luau-compile`。本沙箱（2026-11-15）
-**没有** cargo/rustc/.tools/bin，也没装 `web/node_modules`，所以原生构建与矩阵跑不了。
+`engine/target/` 与 `.tools/` 都在 `.gitignore` 里，**不会随工作区快照保留**；重置后必须重跑
+§4.1 与本节。测试脚本优先找 `/home/user/tools/bin`，不存在则回落仓库 `.tools/bin`。
 
-### 4.2 WASM 引擎（控制台 / 托管用）
+### 4.3 WASM
 
-```bash
-cd engine && cargo build --release --target wasm32-wasip1
-node ../web/tools/verify-engine-version.mjs target/wasm32-wasip1/release/obsucvim.wasm
-cp target/wasm32-wasip1/release/obsucvim.wasm ../web/tools/obsucvim.wasm
-```
-
-> **坑：`web/tools/build-engine-wasm.sh` 已过期，不要用。** 它仍指向旧目录
-> `$ROOT/obsucvim`，并校验 R067 锚点。按上面三条命令手工做；锚点不匹配就不要安装，
-> 否则线上版本与文档脱节。
-
-### 4.3 沙箱内可跑的自检
-
-```bash
-node web/tools/verify-engine-version.mjs          # → R080（实测通过）
-printf 'print("hello")\n' > /tmp/work/in.lua
-node web/tools/wasi-runner.mjs '{"wasmPath":"'"$PWD"'/web/tools/obsucvim.wasm",
-  "workDir":"/tmp/work","args":["--seed","42","/work/in.lua","/work/out.lua"]}'
-# 实测：174,364 B，首行水印正确；同 seed 两次 sha256 一致
-```
-
-WASI 运行器支持 `cfg.env` 与 `cfg.preopens` 透传（托管服务不传）。
+**本仓库不再包含 wasm 发布件，也没有安装 `wasm32-wasip1` std**，所以
+`cargo build --target wasm32-wasip1` 在当前沙箱不可执行（未验证）。不要参考旧文档里的
+`web/tools/*.mjs` 路径——那些文件已删除。
 
 ---
 
@@ -126,29 +136,22 @@ WASI 运行器支持 `cfg.env` 与 `cfg.preopens` 透传（托管服务不传）
 
 | 预设 | 内容 | 说明 |
 | --- | --- | --- |
-| 默认 = `v15` | v15 全防护（Luau/Roblox） | 产品形态 |
-| `low` | L1 + L2（legacy） | 名称/字符串不可读 |
+| 默认 = `v15` | v15 全防护 | 产品形态 |
+| `low` | L1 + L2 | 名称/字符串不可读 |
 | `medium` | low + L3 | 控制流打散 |
 | `high` | medium + L4/L5/L7 | 整段密文 + 反篡改 |
-| `vm` | high + L6 | 旧版 VM |
+| `vm` | high + L6 | legacy 私有 VM |
 | `max` | 当前 = `vm` | legacy 最强档 |
 
 常用旗标：`--env-check`、`--bind-env roblox`、`--bind-executor` / `--no-bind-executor`
-（后者仅原生开发构建）、`--super-insn`（函数级超指令融合，默认关）、
-`--vm-seal-strings`，以及 `--no-mangle/-minify/-strings/-flatten/-junk/-numbers/-body/-antidbg/-guard`。
+（后者仅原生开发构建可用）、`--super-insn`（默认关）、`--vm-seal-strings` /
+`--no-vm-seal-strings`，以及 `--no-mangle/-minify/-strings/-flatten/-junk/-numbers/-body/-antidbg/-guard`。
 
 - `--key-host delta` 自 R070 起恒开（仅兼容保留）；`--no-key-host` 已移除。
 - 绑定态产物（`--bind-env` / `--env-check` / `--bind-executor`）**不进运行等价矩阵**：
   只做语法校验 + 裸 Luau「干净拒绝」验证；矩阵与示例用 `--no-bind-executor`。
 - Luau 输入支持 `//`、`continue`、复合赋值、反引号插值、类型注解（解析期剥离）。
-- 多值/变参、`return f(...)` 尾调用、`local function` 递归可见性都有语料覆盖，改动别破坏。
-
-可选输入侧变换（MW-1「雾织」）：
-
-```bash
-python3 web/tools/mistweave.py in.lua weaved.lua --seed 20261025 --num-fog 0.55 --blocks 6
-python3 web/tools/mistweave-selftest.py    # 门禁 11/11（需要 luau）
-```
+- 多值/变参、`return f(...)` 尾调用、`local function` 递归可见性都有语料覆盖。
 
 ---
 
@@ -157,7 +160,7 @@ python3 web/tools/mistweave-selftest.py    # 门禁 11/11（需要 luau）
 ```bash
 cd engine
 cargo build --release
-bash tests/run_tests.sh        # 官方矩阵：37 语料 × luau ×（high + vm + v15）
+bash tests/run_tests.sh        # 官方矩阵：37 语料 ×（默认 v15 + --vm）+ 专项套件
 bash tests/run_presets.sh      # 预设 × 全语料
 bash tests/multiseed.sh        # 改 vmgen/ 必跑：1 7 4242 31337 999999
 bash tests/defense_audit.sh    # 防御审计 D1–D20
@@ -167,183 +170,107 @@ python3 tests/v15_fingerprint.py
 ```
 
 语义判据：混淆产物的 **stdout + 退出码**与源码逐字节一致（Luau 下）；绑定态产物按
-「干净拒绝」判定。任意改动必须：矩阵 + 多种子 + 指纹/审计 + 重生成示例 + 刷新锚点 +
-更新本文件。
+「干净拒绝」判定；超时（124）一律 FAIL。任何改动必须：矩阵 + 多种子 + 指纹/审计 +
+重生成示例 + 刷新锚点 + 更新本文件。
 
-托管 / 引擎锚点：
+**2026-11-15 实跑结果**
 
-```bash
-node web/tools/verify-engine-version.mjs
-node web/tools/test-hosting.mjs
-python3 web/tools/test-loader.py
-```
+- `cargo test --release`：61 + 4 全绿，0 failed，1 ignored。
+- `tests/run_tests.sh`：**PASS 169 / FAIL 2**，两个红项见 §7。
+- VM 专项（37 语料 × `--vm`，密封默认开）：run 37/37 + `luau-compile` 37/37。
+- 标准语料 + 示例一致性包含在矩阵与 `wtf_port_test.sh` 中；改 v15 发射后必须重生成示例，
+  否则 `flag-off parity` 会红。
 
-**本沙箱跑不了这些**（缺工具链、解释器、node_modules）。2026-11-15 静态清点的用例数：
-hosting 76 项、loader 24、attest 18、live-loader 13、artifact-runtime 16、engine-retry 10；
-这些是脚本里的校验条数，不是本轮实测结果。
+**已知红项（不是本轮整理造成的回归）**
 
-**已知红项（既有缺陷，不是回归）**：
-
-1. `--vm` 相位：37 个语料的 VM 产物在本机 luau 下输出二进制垃圾 / SIGABRT；
-   R079 / R080 / R081 三个构建失败集合完全一致。
-2. `tests/wtf_port_tier2_test.sh` 的 `destroy-lock` 负向探针恒红（「difference stayed 0」），
-   mock 探针未接通该组；其余 19 项绿。
-3. 官方 luau CLI 的 `luaL_sandbox` 会让写全局的产物在只读全局下失败；测试侧用的是
-   去掉 sandbox 的 `main_luau.cpp` 构建。
+1. `exguard/E4`「可见层零痕迹」：绑定态产物命中 10 个痕迹词。
+   EVKEY 探针（`template.rs` 的 `EvKeyMode::Bind` 文本）和 executor 前置自检的 `_miss`
+   诊断串仍以明文列出 `identifyexecutor/getgenv/checkcaller/iscclosure/…`。
+   这是 R075 引入 EVKEY 后的真实硬化缺口，不是清理能修的；修它要改默认 v15 发射字节并重钉
+   所有锚点/示例，本轮未做。**不要对外宣称「可见层零痕迹」。**
+2. `wtf-port/tier2` 的 `destroy-lock` 负向探针恒红（`difference stayed 0`）：mock 已实现
+   `_destroyed` 开关，但 ENVFRAG 里没有对应的 destroy-lock 检查组，属于测试夹具未接通；
+   其余 19 项绿。补这个组等于新增守卫检查，超出「整理 + 可用性验证」范围，未做。
 
 ---
 
-## 7. 控制台与托管服务（web/）
+## 7. 已知问题与限制
 
-```bash
-cd web
-npm install
-npm run engine     # 后端：账户 + 卡密 + 发布 + 验卡（默认 127.0.0.1:8787）
-npm run dev        # Vite 控制台，/api 代理到 8787
-```
-
-后端是单文件 `web/tools/engine-server.mjs`（3,936 行，约 50 条路由）：注册/登录/验证码/
-会话、项目与文件夹、卡密签发/撤销/封禁/解绑、异步发布作业、loader 与文件分发、验卡、
-webhook、审计、指标、外部应用。引擎优先原生二进制，缺失时回落 WASI
-（`web/tools/obsucvim.wasm` + `wasi-runner.mjs`）。
-
-要点：
-
-- 会话是 **HttpOnly + SameSite=Strict Cookie**；密码 scrypt；验证码/锁定/额度/限流都在服务端；
-  CSP + `X-Frame-Options: DENY`；HTTPS 才下发 Secure/HSTS。
-- 发布是异步作业：`POST /api/publish` → `GET /api/publish/<jobId>`；失败退额度。
-- R081 起只出**加固单变体**：服务端固定 `--preset v15 --env-check --bind-executor --bind-env roblox`，
-  `hardening` 入参保留但无效；旧 `safe` 变体已下线。
-- 存储是单文档 `web/tools/.state.json` + 本地磁盘产物（已原子写）；多实例/大规模卡密需换数据库。
-- 未配 SMTP 时是 **demo 邮件模式**，验证码会出现在响应里（仅演示，别公网裸奔）；
-  `web/.env.example` 有 SMTP / Turnstile / 代理信任配置项，`SMTP_PASS` 只放服务端环境变量。
-- 前端历史记录存在浏览器本地；控制台注释里的「浏览器本地执行 / wasm-bindgen / 源码不出本机」
-  是旧架构文案，**实际源码发到服务端处理**。
+1. **E4 明文痕迹**（见 §6），真实缺口，优先级高于任何外观问题。
+2. **tier2 destroy-lock 未接通**（见 §6），测试覆盖缺口。
+3. **WASM 路径不可验证**：仓库已无 wasm 与 wasm32 std；旧发布锚点
+   `a019dc83…` / R081 只能从 git 历史取回，不能在本沙箱重建。
+4. **真机未验证**：只在自编 Luau 0.735 + 宿主 mock 上跑过；Roblox / Delta / Synapse
+   等真实 executor 的正向运行没做。EVKEY 失败形态是「静默失步挂起」，可能被同宿主旁录。
+5. **`tests/run_tests.sh` 的输出比较用命令替换**，遇到二进制 stdout 会打印
+   `ignored null byte in input` 警告；这是比较方式的噪声，不是失败（需要严格比较时改用文件 diff）。
+6. 部分测试脚本仍硬编码 `/home/user/tools/bin` 作为首选、仓库 `.tools/bin` 作为回落；
+   在只有 `.tools` 的环境里会自动走回落，但不要删除回落分支。
 
 ---
 
-## 8. 部署与发布
+## 8. 诚实边界（必须保留这些口径）
 
-- Windows 便携包：`release-assets/obsucvim-web-win64/Obsucvim-Web-Windows-x64.zip`
-  （35 MB，含 Node 22、node_modules、WASI 引擎、单文件 UI）。
-- 自更新器固定从 `https://raw.githubusercontent.com/YaBoNB000/obsucvim/arena/01a038eb-luraph`
-  拉取 `web/deploy/self-update.mjs` 与发布包；该远端分支仍存在。**改发布通道前先改
-  `Update-Obsucvim.ps1` / `self-update.mjs` 的 `REPO_BRANCH`，否则老客户端 404。**
-- 重新打包：
-
-  ```bash
-  cd web && npm run build
-  ./tools/rebuild-package.sh --base ../release-assets/obsucvim-web-win64/Obsucvim-Web-Windows-x64.zip
-  ```
-
-  2026-11-15 起脚本对已删除的文档做「存在才复制」，不会再因缺 md 中断。
-
-- **发布包与源码已漂移（未修）**：包内 wasm 是 1,175,136 B / `13916d0b…`，
-  且 `tools/engine-server.mjs` 仍是带 `--no-bind-executor` 的 R081 前逻辑。
-  包内 `BUILD-INFO.txt` 写的 WASM 哈希 `8032da5b…` 与 `SHA256SUMS.txt`/实际文件
-  （`13916d0b…`）不一致——`rebuild-package.sh` 只刷新 Build date，不刷新该哈希行。
-  下次打包必须同时刷新 BUILD-INFO 的 WASM 哈希并重算 SHA256SUMS。
-
----
-
-## 9. Discord `/obf`
-
-`services/discord_obf/`：Flask + Ed25519 验签（无需 Gateway/Bot Token）、单工作线程、
-单任务/队列上限/冷却、输入 256 KiB、输出 7 MiB、超时 90 s、地址空间 256 MiB，只混淆不执行。
-`render.yaml` 用 Docker 部署（Rust 构建阶段 → Python 运行阶段），健康检查 `/healthz`。
-代码与本地测试完成，**未部署、未做真实 Discord 联调**；Bot Token 只用于本地注册命令，
-不要发到聊天/日志/仓库。
-
----
-
-## 10. 已知问题（本次整理未擅自修）
-
-优先级从高到低，均有可复现证据：
-
-1. **重建 WASM 的官方脚本失效**：`web/tools/build-engine-wasm.sh` 用旧路径 `obsucvim/`
-   且校验 R067 锚点。按 §4.2 手工命令绕过。
-2. **CI 模板失效**：`web/tools/ci/build-engine.yml` 仍用 `obsucvim/**`、R067 锚点，
-   上传路径又写 `engine/...`；`.github/workflows/` 无写权限，需手工复制修正后的版本。
-3. **发布包漂移**：见 §8（旧引擎 + 旧服务端 + BUILD-INFO 哈希错误）。
-4. **`engine-server.mjs` 原生引擎默认路径过期**：`BIN` 仍拼 `REPO/obsucvim/target/release/obsucvim`，
-   实际目录已是 `engine/`，因此永远回落 WASI。临时对策：部署时显式设 `OBSUCVIM_BIN`。
-5. **控制台文案**：`web/index.html` 与 i18n 里「浏览器本地 / wasm-bindgen / 源码不出本机」
-   与服务端混淆架构不符。
-6. **测试计数口径**：旧文档写 hosting 78/78、engine-retry 9/9，脚本实际 76 / 10 项校验；
-   没有重跑记录前不要对外引用旧数字。
-7. **部署通道钉在老分支** `arena/01a038eb-luraph`（其 PR #1 仍开着）；与当前工作分支不同。
-
----
-
-## 11. 诚实边界（必须保留这些口径）
-
-1. **静态可解性未解决**：对 R079 等价件的纯静态审计（原 `docs/engine/AUDIT-20261025-v19evkey.md`）
-   证明载体层密钥流是产物内常量的纯函数，60 行 Python 可解；V-01/V-03 未修，
-   R080 只修了 V-06/07/08（诱饵与噪声的可折叠形态）。**不要宣称「静态不可拆」。**
-2. **自包含脚本的流密码密钥必然可恢复** —— 壁垒是「每构建唯一 + 提取成本」，
+1. **静态可解性未解决**：载体层密钥流是产物内常量的纯函数，纯静态审计可解；
+   V-01/V-03 未修，R080 只修了 V-06/07/08。**不要宣称「静态不可拆」。**
+2. **自包含脚本的流密码密钥必然可恢复**——壁垒是「每构建唯一 + 提取成本」，
    不是密码学不可破。
-3. **真机验证依赖用户回传**：沙箱只有自编 Luau + 宿主 mock；Roblox / Delta / Synapse
-   正向验证不在本地能力范围。EVKEY 失败形态是「静默失步挂起」，观测面可被同宿主旁录。
-4. **HWID 是客户端提供的值**，可伪造；卡密绑定只是摩擦，不是硬件认证。
-5. **绑定态产物在通用沙箱加载即失败**是设计目的，不是缺陷。
-6. **未验证项必须标注**：云邮件、Cloudflare Turnstile、真实 Windows Server、Render 部署、
-   Discord 真实联调、外部验卡前端、多节点等都没做。
-7. 水印是可删除的普通注释，不是防篡改。
+3. **绑定态产物在通用沙箱加载即失败**是设计目的，不是缺陷。
+4. 水印是可删除的普通注释，不是防篡改。
+5. 未验证项必须标注：真实 executor、真机 Roblox、WASM 构建、任何部署环境。
+6. 仓库只剩引擎；旧的控制台/托管/部署结论不再适用于本树，不要再从记忆里补写。
 
 ---
 
-## 12. 工作规则（用户硬性要求）
+## 9. 工作规则（用户硬性要求）
 
-1. **不擅自扩范围**；引擎改进多次被收放（P2/P3/P4/P5 已取消，PW-1 已删除），
-   没有明确指令不要开新战场，也不要复活已删技术线。
-2. 改混淆模块的强制工作流：官方矩阵 + （动 `vmgen/`）多种子 + 安全指纹/防御审计 +
+1. **不擅自扩范围**；引擎新功能已被 §34 收摊令冻结，只做修复与验证。
+2. 改混淆模块的强制工作流：官方矩阵 +（动 `vmgen/`）多种子 + 安全指纹/防御审计 +
    重生成 `engine/examples/` + 刷新锚点 + 更新本文件；任一项不过 = 未完成。
-3. 混淆器本体只写 Rust，不改用其他语言；`artifacts/legacy-lph/` 仅存档。
+3. 混淆器本体只写 Rust；不要引入 crates.io 依赖。
 4. 每条结论给可复现证据（命令、体积、sha256、测试计数）；未验证就写「未验证」。
 5. 只动当前工作分支：commit + push 到当前分支，**不动 `main`，不 force push**。
-6. 代码里没有注释（历史剥离）；设计看 git 历史文档，不要惊讶。
+6. 代码里没有注释（历史剥离）；设计看 git 历史，不要惊讶。
 7. Shell 小坑：`/tmp/t_$s_$d.lua` 会把 `$s_` 当变量名，用 `${s}_${d}`。
 8. 守卫/探针改动要过「净化后形态」：标识符会被改名，字符串字面量不会；
    外部对象成员只能 `["字符串键"]` 访问。
+9. `strseal` 三处镜像（Rust encode/decode、v15 micro-op、handlers/loadstr.rs）必须同步改。
 
 ---
 
-## 13. 2026-11-15 仓库整理
+## 10. 2026-11-15 仓库整理记录
 
-**做了什么**
+**本次（引擎-only）**
 
-- 删除除 `HANDOFF.md` 外的全部 88 个 markdown（根 README、docs 全部、engine/web/services/
-  artifacts/release-assets 下的 README 与说明）。
-- 保留非 md 的研究脚本/数据（`docs/research/**`）、证据产物（`artifacts/**`）、
-  发布包与全部代码/测试。
-- `web/tools/rebuild-package.sh` 改为「文档存在才复制」，避免打包因缺 md 失败。
-- 本文件按当前代码与实测重写。
+- 删除 `web/`、`services/`、`docs/`、`release-assets/`、`artifacts/`、`render.yaml`、
+  `.dockerignore`；`.gitignore` 同步去掉 web/artifacts 规则。
+- 测试仍需要的 4 个靶标移入 `engine/tests/fixtures/targets/`，5 个脚本的路径已改。
+- 修复 legacy VM 字符串密封解码（§2.1）。
+- E6b 的「翻转前默认 SHA」已不可达（R080 改变了关闭态字节），重钉为当前输出
+  `11e2bfa4…`，并改名为「当前形态锚」；E6 的确定性检查保留。
+- 重写本文件。
 
-**影响**
+**上一次（只删 md，提交 `cbd21a5`）**
 
-- 设计史、逐轮台账（R067–R081）、审计细节、红队过程、托管计划、部署手册都不在树里了；
-  需要时从 git 取回，不要重写历史结论。
-- `docs/` 下只剩 `docs/research/` 的脚本与数据；没有 README 解释它们，使用前先看脚本头。
-- 发布包里的旧 README 仍是包里那份（zip 未重建）。
+- 删除除本文件外的 88 个 markdown；保留全部代码/测试/产物。
 
-**恢复单个文档**
+**恢复旧文件**
 
 ```bash
-git show 68b9187:docs/CURRENT-STATE.md            # 查看
-git show 68b9187:README.md > /tmp/README.md       # 导出
-git show --stat 68b9187 | head                    # 基线提交概览
+git show 68b9187:README.md > /tmp/README.md
+git show 68b9187:web/tools/obsucvim.wasm > /tmp/obsucvim.wasm
+git show --stat 68b9187 | head
 ```
 
-`68b9187` 是本次整理前的基线（会话起点）。仓库是 shallow clone，取不到更早的历史；
-需要更早的文档/恢复点时，去远端仓库或完整克隆里查。
+`68b9187` 是整理前基线；仓库是 shallow clone，取不到更早历史。需要更早的文档/版本时去远端
+仓库或完整克隆查。
 
 ---
 
-## 14. 新任务开工顺序
+## 11. 新任务开工顺序
 
-1. 读本文件 §2（发布态）、§10（已知问题）、§11（边界）。
-2. 明确要动的是引擎、托管、部署还是文档——**先确认在不在允许范围内**。
-3. 引擎：确认基线 → 改 `engine/` → 按 §6 全工作流 → 刷锚 → 更新本文件。
-4. 托管/控制台：改 `web/` → 跑对应套件（需 node_modules 与引擎）→ 更新本文件。
-5. 部署/发布：先处理 §8 的包漂移与 §10-4 的 `OBSUCVIM_BIN`，再重建包并刷新哈希。
-6. 收尾：`git status` 干净、套件有记录、结论可复现；不合入 `main`。
+1. 读本文件 §2（实测态）、§6（红项）、§7–§8（限制与边界）。
+2. 确认任务在允许范围内（引擎修复/验证，不开新功能）。
+3. 重建工具链（§4.1）→ 构建（§4.2）→ 跑官方矩阵（§6）建立基线。
+4. 改动后按 §9-2 全工作流复跑；动 `vmgen/` 必跑 `multiseed.sh`。
+5. 收尾：`git status` 干净、套件有记录、结论可复现；提交并 push 到当前分支。

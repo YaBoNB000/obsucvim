@@ -1,2 +1,0 @@
-RESEARCH_ABLATE fn=6 instruction=Instr { op: LoadK, a: 3, b: 3, c: 0, d: 0 }
-RESEARCH_ABLATE fn=11 instruction=Instr { op: Move, a: 3, b: 3, c: 0, d: 0 }

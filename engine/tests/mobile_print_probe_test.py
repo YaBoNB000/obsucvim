@@ -8,7 +8,7 @@ import tempfile
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REPO = ROOT.parent
 GEN = ROOT / "tools/mobile_print_probe_gen.py"
-TARGET = REPO / "artifacts/targets/R035_target.luau.lua"
+TARGET = REPO / "engine/tests/fixtures/targets/R035_target.luau.lua"
 TOOLS = REPO / ".tools/bin"
 LUAU = TOOLS / "luau"
 COMPILE = TOOLS / "luau-compile"

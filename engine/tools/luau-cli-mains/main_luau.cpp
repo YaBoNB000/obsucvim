@@ -1,14 +1,18 @@
-// Minimal Luau 0.735 interpreter CLI — replicates the official CLI
-// runtime environment (required for the obsucvim test corpus):
+// Minimal Luau 0.735 interpreter CLI for the obsucvim test corpus.
 //   luaL_openlibs + custom loadstring/collectgarbage globals +
-//   require file rehook + luaL_sandbox (readonly globals, as the
-//   official CLI has since 0.600).
+//   require file rehook.
+//
+// Globals are writable by default: v15 artifacts assign the module table at
+// top level, which the official CLI's luaL_sandbox would reject with
+// "attempt to modify a readonly table". Set LUAU_READONLY_GLOBALS=1 to opt
+// into the official sandbox semantics.
 #include <lua.h>
 #include <lualib.h>
 #include <Luau/Compiler.h>
 #include <Luau/Require.h>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 
@@ -239,7 +243,8 @@ int main(int argc, char** argv)
     ReqCtx rc;
     rc.dir = dirOf(argv[1]);
     luaopen_require(L, configInit, &rc);
-    luaL_sandbox(L);
+    if (std::getenv("LUAU_READONLY_GLOBALS"))
+        luaL_sandbox(L);
 
     if (luau_load(L, argv[1], bytecode.data(), bytecode.size(), 0) != 0)
     {

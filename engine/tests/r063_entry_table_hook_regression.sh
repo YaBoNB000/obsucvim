@@ -8,7 +8,7 @@ REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="$REPO/engine/target/release/obsucvim"
 LUAU="${LUAU:-$REPO/.tools/bin/luau}"
 LUAC="${LUAU_COMPILE:-$REPO/.tools/bin/luau-compile}"
-SRC="$REPO/artifacts/targets/R062_src.lua"
+SRC="$REPO/engine/tests/fixtures/targets/R062_src.lua"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

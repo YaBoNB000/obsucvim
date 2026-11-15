@@ -4,7 +4,7 @@
 # that a loader-controlled environment can observe the outer module table.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-ART="$ROOT/artifacts/targets/R062_target.luau.lua"
+ART="$ROOT/engine/tests/fixtures/targets/R062_target.luau.lua"
 LUAU="${LUAU:-$ROOT/.tools/bin/luau}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
