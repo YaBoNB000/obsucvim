@@ -2,7 +2,8 @@
 """v15 结构指纹检查器（P0 脚手架，路线 A 已拍板 2026-08-25）。
 
 对照 `samples/luraph15.txt` 的黄金数，统计一份混淆输出的 32 条结构指纹
-（F1–F32，定义见 `docs/v15-structural-parity-plan.md` §0.1/§0.2）。
+（F1–F32；定义原在 v15 结构对齐档案 §0.1/§0.2，该档案已于 2026-11-15 删除，
+需要时可从 git 基线取回）。
 
 用法：
     python3 tests/v15_fingerprint.py <file.lua> [--quiet]

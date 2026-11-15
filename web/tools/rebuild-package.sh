@@ -53,10 +53,8 @@ for f in "$WEB"/tools/*.mjs "$WEB"/tools/*.luau "$WEB"/tools/obsucvim.wasm; do
   esac
   cp "$f" "$PKG/tools/$(basename "$f")"
 done
-cp "$ROOT_REPO/docs/hosting/SCRIPT-KEYS.md" "$PKG/SCRIPT-KEYS.md"
-cp "$ROOT_REPO/docs/hosting/HOSTING-V2-PLAN.md" "$PKG/HOSTING-V2-PLAN.md"
-cp "$WEB/deploy/README-Windows.md" "$PKG/README-Windows.md"
-cp "$WEB/deploy/README-UPDATE.md" "$PKG/README-UPDATE.md"
+# 仓库自 2026-11-15 起只保留 HANDOFF.md：不再向发布包复制任何 markdown 帮助文件。
+# 底座 zip 里残留的旧文档会随底座保留，但不再由本脚本刷新。
 cp "$WEB/deploy/Start-Obsucvim.bat" "$WEB/deploy/Start-Obsucvim.cmd" "$WEB/deploy/Start-Obsucvim.ps1" "$PKG/"
 cp "$WEB/deploy/Update-Obsucvim.ps1" "$PKG/Update-Obsucvim.ps1"
 cp "$WEB/deploy/self-update.mjs" "$PKG/tools/self-update.mjs"

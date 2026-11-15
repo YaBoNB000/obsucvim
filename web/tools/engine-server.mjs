@@ -318,7 +318,7 @@ function ensureDefaultFolder(ownerEmail) {
 }
 
 /* 原子写：先写临时文件再 rename。断电/崩溃只会留下旧文件，不会留下半截 JSON。
- * 单实例下足够；多实例部署仍需要真正的数据库（见 docs/hosting/HOSTING-V2-PLAN.md Phase 6）。 */
+ * 单实例下足够；多实例部署仍需要真正的数据库（计划中的 Phase 6）。 */
 function saveState() {
   const payload = JSON.stringify(state);
   const tmp = `${STATE_FILE}.${process.pid}.tmp`;

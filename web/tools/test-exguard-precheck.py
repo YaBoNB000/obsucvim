@@ -110,9 +110,8 @@ def main():
 
             # 1. 裸 Luau（根本不是执行器）：必须失败关闭、绝不放行；且**只要**
             #    自检消息出现，清单就必须准确。注意：某些种子下 tier-2 的宿主探测
-            #    会比 precheck 先崩（fail-closed 噪音，R067 起既有，见
-            #    docs/engine/ENGINE-VERSION.md），所以裸 Luau 上不强制消息必须送达——
-            #    送达性只在执行器宿主（下面的 delta-like 用例）上强制。
+            #    会比 precheck 先崩（fail-closed 噪音，R067 起既有），所以裸 Luau 上
+            #    不强制消息必须送达——送达性只在执行器宿主（下面的 delta-like 用例）上强制。
             rc, out = run_luau(luau, artifact, "bare.luau", work)
             check("stock Luau: never runs the payload", rc != 0 and "suda" not in out,
                   out[:140])

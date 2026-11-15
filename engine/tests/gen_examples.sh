@@ -15,8 +15,8 @@ rm -f "$OUT"/*.lua
 
 
 # v15 structural-parity examples (Route A): full coverage over all corpus
-# cases, Luau-only profile (module table + CPS bootstrap,
-# docs/v15-structural-parity-plan.md). Containers are ~40-50KB each,
+# cases, Luau-only profile (module table + CPS bootstrap; 设计档案已于
+# 2026-11-15 从仓库删除，需要时从 git 基线取回). Containers are ~40-50KB each,
 # so full coverage keeps the repo light.
 for case in "$ROOT"/tests/cases/*.lua; do
 	base="$(basename "$case" .lua)"
