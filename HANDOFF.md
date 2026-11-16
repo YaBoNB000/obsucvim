@@ -274,3 +274,89 @@ git show --stat 68b9187 | head
 3. 重建工具链（§4.1）→ 构建（§4.2）→ 跑官方矩阵（§6）建立基线。
 4. 改动后按 §9-2 全工作流复跑；动 `vmgen/` 必跑 `multiseed.sh`。
 5. 收尾：`git status` 干净、套件有记录、结论可复现；提交并 push 到当前分支。
+
+---
+
+## 12. 引擎评估摘要（2026-11-15，未改代码）
+
+> 结论先行：**原生 CLI 能跑、语料矩阵基本绿，但默认 v15 路径还不是可交付的商业级实现。**
+> 下面每条都有本轮实测证据；修复前不要把 §2 的“可用”理解为“可上线”。
+
+### P0（阻断上线）
+
+1. **默认 v15 只匹配一个 executor 档案。** `exguard.rs::keyhost_profile` 只有 `delta`
+   一项（`k3c=22`，即 `identifyexecutor` 名长 5、`checkcaller=true`）；`main.rs` 在
+   v15+bind+guard 时自动注入该档案。换名长/宿主值就静默失步：
+   把 `identifyexecutor` 改成 `"Synapse"`、其余提供 Delta 形状的假环境，产物 40 s 内
+   没有任何输出（挂起），不是可诊断错误。帮助文本里的“Synapse-class”与代码不符。
+2. **默认绑定产物没有正向端到端验证。** 测试只有 E2/E3 负面拒绝、语法校验和
+   `--bind-env` 的 faithful stub；没有任何测试让默认 `--bind-executor` 产物在仿真
+   executor 里成功跑完。默认路径的“能用”目前只是历史真机结论，不是本轮证据。
+3. **数字字符串算术语义丢失（v15/vm）。** `print(("5")+0)` 源码 `5`，产物报
+   `attempt to perform arithmetic on a string value`；`1+"2"`、`-"5"`、`"10"/"2"` 同理。
+   `handlers/mod.rs::bin_op_body` 只接受 `type==number`，未做 Lua 的 tonumber 强制转换。
+4. **括号调用截断语义丢失（所有 preset）。** `local function f() return 1,2,3 end;
+   print((f()))` 源码输出 `1`，产物输出 `1 2 3`；`return (f())`、`select('#',(f()))`
+   同样错。解析器 `parser.rs` 的 `(` 分支直接返回内部表达式，AST 无 Paren 节点，
+   打印/编译器无从恢复“截断为一个值”。
+5. **运行时字符串钩子可恢复明文。** 不需要改产物，只需 `loadstring(artifact)` 前把
+   真实 `string.char` 换成记录版，执行后 `table.concat` 截获 1,850 个字符，
+   其中直接含 `UNIQUE_MARKER_9f3a`（源里的秘密字符串）。`tests/charhook_test.sh`
+   替换的是 `setfenv` 环境里的 **string 副本**，所以报 0 命中；真实全局 `string.char`
+   被替换时命中。D17/S5 的“char 钩子封堵”结论不成立。
+6. **输入规模硬顶且以 panic 结束。**
+   - 3,493 B、100 个顶层 `local function` → `panicked: st table exhaustion`（rc=101）；
+   - 20,709 B、3,000 条顶层赋值 → `H3 sparse register pool exhausted`（rc=101）；
+   - 521 B、20 层嵌套闭包 → `upvalue descriptor miss`（rc=101）；
+   - 20,000 层嵌套括号/表 → Rust 栈溢出 SIGABRT。
+   没有输入大小/递归深度限制，也没有把这些情形变成可读错误；对服务端是 DoS 面。
+7. **性能不适合实时脚本。** 200,000 次循环：源码 0.0065 s，v15 产物 18.50 s
+   （约 2,800×）；50,000 次：3.67 ms → 4,892 ms（约 1,330×）。legacy `vm` 约
+   1,000×，`high` 约 10×。v15 的 Lua-in-Lua 解释器是数量级瓶颈，Roblox 逐帧逻辑
+   基本不可用。
+8. **体积放大。** 空脚本产物 146,546 B；713 B 的 basics → 164,085 B（230×）；
+   7,179 B 的 R064 → 341,539 B（47.6×）；13.8 KB/2,000 行 → 613,269 B。
+   每个产物都自带完整解释器，分发/移动端/Executor 限制都要考虑。
+
+### P1（重要）
+
+9. **解析器覆盖不足。** 常见 Luau 写法直接拒绝：
+   - `local x = 5 :: number` → `expected ')' got ':'`
+   - `local function f<T>(x:T):T` → `expected '(' got '<'`
+   - `y: string?` / `...: number` → 解析失败
+   - UTF-8 BOM、shebang、`\u{...}` 转义不支持。
+   简单类型注解、泛型类型别名、广义迭代、`continue`、复合赋值可通过。
+10. **错误语义不兼容。** VM 的错误串更泛化（`attempt to perform arithmetic on a
+    number value` 丢失 `(add)` 和操作数类型），行号整体后移；依赖 `pcall` 错误文本/
+    traceback 的脚本会行为改变，也容易被反作弊指纹识别。
+11. **静态可解性是设计约束，不是已解决。** KeyEmitter/载体字母表/解码器全部随产物
+    分发；V-01/V-03 仍在。仓库的 S1–S5 攻击脚本只覆盖“找不到 LCG 生成器”这类
+    浅层特征，5/5 绿不能证明抗手工逆向。EVKEY 只是宿主形状闸，不是密码学认证：
+    宿主值可伪造/旁录，Delta 上可直接 dump EVKX；`--no-bind-executor` 与
+    `OBSUCVIM_*` 调试口在原生源码里仍然存在。
+12. **测试给出错误安全感。** `string_primitive_hook_test.sh`/D17 只换副本表；
+    `run_tests.sh` 不覆盖上面 §12.3/12.4 的语义；`v15_fingerprint.py` 对 basics
+    仅 21/32，`defense_audit.sh` 18 PASS / 3 FAIL（D3 指纹、D18 E4；D13 是本轮
+    PATH 下 debug 构建未编成）。现有 169/2 是“现有语料”的绿，不是产品完备性。
+
+### P2（工程/运维）
+
+13. **RNG 只有 31 位状态**（Park-Miller，`rng.rs`）；默认 seed 取系统时间纳秒，
+    不是密码学随机。种子碰撞/可预测性不适合作为“每用户唯一”的安全边界。
+14. **调试环境变量是生产脚枪**：`OBSUCVIM_KEY_MANIFEST` 可把密钥写文件，
+    `OBSUCVIM_VM_RAW`/`OBSUCVIM_VM_TSRC` 可导出中间形态；发布构建应编译期禁用。
+15. **重建脚本从 GitHub `master` 拉 Lua 5.1.5 源码**（非固定 commit/无校验和），
+    供应链与可复现性弱；Rust/Luau 版本已钉。
+16. **无 CI、无 fuzz、无 benchmark、无默认产物正向测试**；20,534 行 Rust 中
+    输入可达的 `panic!/assert!/unwrap` 不少，建议加入结构化限制和 fuzz 门禁。
+
+### 仍然成立的部分
+
+- 37 语料 × v15/vm 的运行等价与语法矩阵 169/2，`cargo test` 65 绿；
+- v15 同一 seed 逐字节确定，随机化覆盖面广，能挡住 grep/字符串直读/初级 dump；
+- VM 字符串密封的 legacy 解码 bug 已修，`--vm` 74/74；
+- 协程、元表、多值、upvalue、变参等语料语义通过（但未覆盖上述两个核心缺失）。
+
+**最低限度的下一步**：先修 §12.3/12.4 并补回归用例；再决定“单 executor 绑定”是
+产品策略还是缺陷（至少给出 `--key-host` 多档案/通用模式）；随后做真实 Delta 正向
+验收与性能预算；最后重写 S1–S5/D17 的攻击口径，避免继续用副本表测试宣称安全。
