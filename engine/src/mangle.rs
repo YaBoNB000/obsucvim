@@ -256,6 +256,7 @@ impl<'a> CompactMangler<'a> {
 
 	fn walk_expr(&mut self, expr: &Expr) -> Result<(), String> {
 		match expr {
+			Expr::Paren { e } => self.walk_expr(e)?,
 			Expr::Dot { obj, .. } => self.walk_expr(obj)?,
 			Expr::Index { obj, idx } => {
 				self.walk_expr(obj)?;

@@ -372,6 +372,11 @@ impl<'a> Printer<'a> {
 				}
 			}
 			Expr::Vararg => self.out.push_str("..."),
+			Expr::Paren { e } => {
+				self.out.push('(');
+				self.print_expr(e, Ctx::Top);
+				self.out.push(')');
+			}
 			Expr::Ident { name, sym } => match sym {
 				Some(id) => self.out.push_str(self.table.name_of(*id)),
 				None => self.out.push_str(name),
@@ -403,7 +408,7 @@ impl<'a> Printer<'a> {
 				self.print_expr(e, Ctx::Unary);
 			}
 			Expr::Bin { op, l, r } => {
-			if *op == BinOp::Idiv {
+			if *op == BinOp::Idiv && !self.luau_fold {
 				self.out.push_str("math.floor(");
 				self.print_expr(l, Ctx::Bin(BinOp::Div, false));
 				self.out.push_str(" / ");
@@ -595,6 +600,7 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 			| Expr::Index { .. }
 			| Expr::Call { .. }
 			| Expr::Method { .. }
+			| Expr::Paren { .. }
 			| Expr::Table { .. } => return false,
 			_ => return true,
 		}
@@ -602,7 +608,7 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 	if let Ctx::Suffix = ctx {
 		match e {
 			Expr::Ident { .. } | Expr::Dot { .. } | Expr::Index { .. } | Expr::Call { .. }
-			| Expr::Method { .. } => return false,
+			| Expr::Method { .. } | Expr::Paren { .. } => return false,
 			_ => return true,
 		}
 	}
@@ -687,4 +693,18 @@ pub fn print_chunk_luau(table: &SymTable, block: &Block) -> String {
 	p.print_block(block);
 	p.out.push('\n');
 	p.out
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{print_chunk, print_chunk_luau};
+	use crate::{parser, symtab};
+
+	#[test]
+	fn integer_division_uses_target_appropriate_syntax() {
+		let mut block = parser::parse("return x // y", true).unwrap();
+		let table = symtab::resolve(&mut block);
+		assert!(print_chunk(&table, &block).contains("math.floor(x / y)"));
+		assert!(print_chunk_luau(&table, &block).contains("x // y"));
+	}
 }

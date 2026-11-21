@@ -12,7 +12,7 @@ const OP_NAMES: [&str; N_OPS] = [
 	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
 ];
 
-const PRIM_SRC: [&str; 15] = [
+const PRIM_SRC: [&str; 16] = [
 	"(\"\")[\"byte\"]",
 	"(\"\")[\"sub\"]",
 	"(\"\")[\"char\"]",
@@ -28,11 +28,12 @@ const PRIM_SRC: [&str; 15] = [
 	"select",
 	"pcall",
 	"tonumber",
+	"tostring",
 ];
 
-const PRIM_NAME: [&str; 15] = [
+const PRIM_NAME: [&str; 16] = [
 	"BYTE", "SUB", "CHAR", "GFE", "UNP", "FLR", "TYP", "ERR", "GMT", "RGET",
-	"RSET", "SMT", "SEL", "PCAL", "TONUM",
+	"RSET", "SMT", "SEL", "PCAL", "TONUM", "TSTR",
 ];
 
 fn gen_dispatch_tree(
@@ -113,11 +114,11 @@ fn lua_dstr(bytes: &[u8]) -> String {
 	s
 }
 
-fn prim_slots(rng: &mut Rng) -> [u8; 15] {
+fn prim_slots(rng: &mut Rng) -> [u8; 16] {
 	let mut pool: Vec<u8> = (1..=80).collect();
 	rng.shuffle(&mut pool);
-	let mut out = [0u8; 15];
-	out.copy_from_slice(&pool[..15]);
+	let mut out = [0u8; 16];
+	out.copy_from_slice(&pool[..16]);
 	out
 }
 
@@ -491,21 +492,42 @@ struct MicroLits {
 	byte_: String,
 	empty: String,
 	add: String,
+	add_op: String,
 	sub: String,
+	sub_op: String,
 	mul: String,
+	mul_op: String,
 	div: String,
+	div_op: String,
 	mod_: String,
+	mod_op: String,
 	pow: String,
+	pow_op: String,
+	idiv: String,
+	idiv_op: String,
+	idiv_fallback: String,
 	unm: String,
 	len: String,
 	concat: String,
 	lt: String,
+	lt_op: String,
 	le: String,
+	le_op: String,
+	gt_op: String,
+	ge_op: String,
 	eq: String,
 	arith_msg: String,
+	arith_open: String,
+	arith_on: String,
+	arith_and: String,
+	unm_msg: String,
+	luau_target: bool,
 	compare_msg: String,
 	concat_msg: String,
 	index_msg: String,
+	index_with_msg: String,
+	index_quote: String,
+	compare_space: String,
 	value_msg: String,
 	with_msg: String,
 	mk1: u16,
@@ -513,7 +535,7 @@ struct MicroLits {
 }
 
 impl MicroLits {
-	fn new(pool: &mut StrPool, mk: (u16, u16), include_loadstr: bool) -> MicroLits {
+	fn new(pool: &mut StrPool, mk: (u16, u16), include_loadstr: bool, luau_target: bool) -> MicroLits {
 		MicroLits {
 			number: pool.lit("number"),
 			string: pool.lit("string"),
@@ -527,21 +549,42 @@ impl MicroLits {
 			byte_: if include_loadstr { pool.lit("byte") } else { String::new() },
 			empty: pool.lit(""),
 			add: pool.lit("__add"),
+			add_op: pool.lit("add"),
 			sub: pool.lit("__sub"),
+			sub_op: pool.lit("sub"),
 			mul: pool.lit("__mul"),
+			mul_op: pool.lit("mul"),
 			div: pool.lit("__div"),
+			div_op: pool.lit("div"),
 			mod_: pool.lit("__mod"),
+			mod_op: pool.lit("mod"),
 			pow: pool.lit("__pow"),
+			pow_op: pool.lit("pow"),
+			idiv: pool.lit("__idiv"),
+			idiv_op: pool.lit("idiv"),
+			idiv_fallback: if luau_target { "ou // ow" } else { "FLOOR(ou/ow)" }.to_string(),
 			unm: pool.lit("__unm"),
 			len: pool.lit("__len"),
 			concat: pool.lit("__concat"),
 			lt: pool.lit("__lt"),
+			lt_op: pool.lit("<"),
 			le: pool.lit("__le"),
+			le_op: pool.lit("<="),
+			gt_op: pool.lit(">"),
+			ge_op: pool.lit(">="),
 			eq: pool.lit("__eq"),
 			arith_msg: pool.lit("attempt to perform arithmetic on a "),
+			arith_open: pool.lit("attempt to perform arithmetic ("),
+			arith_on: pool.lit(") on "),
+			arith_and: pool.lit(" and "),
+			unm_msg: pool.lit("attempt to perform arithmetic (unm) on "),
+			luau_target,
 			compare_msg: pool.lit("attempt to compare "),
-			concat_msg: pool.lit("attempt to perform concatenation on a "),
-			index_msg: pool.lit("attempt to index a "),
+			concat_msg: pool.lit("attempt to concatenate "),
+			index_msg: pool.lit("attempt to index "),
+			index_with_msg: pool.lit(" with '"),
+			index_quote: pool.lit("'"),
+			compare_space: pool.lit(" "),
 			value_msg: pool.lit(" value"),
 			with_msg: pool.lit(" with "),
 			mk1: mk.0,
@@ -673,25 +716,46 @@ fn micro_post_call_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	}
 }
 
-fn micro_binary_body(expr: &str, meta: &str, lit: &MicroLits) -> String {
+fn micro_binary_body(expr: &str, fallback: &str, op: &str, meta: &str, lit: &MicroLits) -> String {
+	let error = if lit.luau_target {
+		format!(
+			"local em={}..{}..{} if tu==tw then ERR(em..tu,0) else ERR(em..tu..{}..tw,0) end",
+			lit.arith_open, op, lit.arith_on, lit.arith_and
+		)
+	} else {
+		format!(
+			"local bad=tu if TYP(u)=={} then bad=tw end ERR({}..bad..{},0)",
+			lit.number, lit.arith_msg, lit.value_msg
+		)
+	};
 	format!(
-		"local u,w=T[1],T[2] if TYP(u)=={number} and TYP(w)=={number} then T[x]={expr} else local f,h=mget(u,{meta}) if not f then local g,h2=mget(w,{meta}) f=g h=h or h2 end if f then T[x]=f(u,w) elseif h then T[x]={expr} else ERR({msg}..TYP(u)..{value},0) end end",
-		number = lit.number,
-		meta = meta,
-		msg = lit.arith_msg,
-		value = lit.value_msg,
-	)
-}
-
-fn micro_compare_body(native: &str, meta: &str, swapped: bool, lit: &MicroLits) -> String {
-	let call = if swapped { "f(w,u)" } else { "f(u,w)" };
-	format!(
-		"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} and tw=={number}) or (tu=={string} and tw=={string}) then T[x]={native} else local f,h=mget(u,{meta}) if not f then local g,h2=mget(w,{meta}) f=g h=h or h2 end if f then T[x]={call} elseif h then T[x]={native} else ERR({msg}..tu..{with_}..tw,0) end end",
+		"local u,w=T[1],T[2] local ou,ow=u,w local tu,tw=TYP(u),TYP(w) if tu=={string} then u=TONUM(u) end if tw=={string} then w=TONUM(w) end if TYP(u)=={number} and TYP(w)=={number} then T[x]={expr} else local f,h=mget(ou,{meta}) if f==nil and not h then local g,h2=mget(ow,{meta}) f=g h=h2 end if f~=nil then T[x]=f(ou,ow) elseif h then T[x]={fallback} else {error} end end",
 		number = lit.number,
 		string = lit.string,
 		meta = meta,
-		msg = lit.compare_msg,
-		with_ = lit.with_msg,
+		fallback = fallback,
+		error = error,
+	)
+}
+
+fn micro_compare_body(native: &str, op: &str, meta: &str, swapped: bool, lit: &MicroLits) -> String {
+	let call = if swapped { "f(w,u)" } else { "f(u,w)" };
+	let error = if lit.luau_target {
+		format!(
+			"ERR({}..tu..{}..{}..tw,0)",
+			lit.compare_msg, lit.compare_space, op
+		)
+	} else {
+		format!("ERR({}..tu..{}..tw,0)", lit.compare_msg, lit.with_msg)
+	};
+	format!(
+		"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} and tw=={number}) or (tu=={string} and tw=={string}) then T[x]={native} else local f,h=mget(u,{meta}) if f==nil and not h then local g,h2=mget(w,{meta}) f=g h=h2 end if f~=nil then T[x]={call} elseif h then T[x]={native} else {error} end end",
+		number = lit.number,
+		string = lit.string,
+		meta = meta,
+		call = call,
+		native = native,
+		error = error,
 	)
 }
 
@@ -752,30 +816,37 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_SET_PC => "E.pc = O[x]".to_string(),
 		M_BRANCH_FALSE => "if not T[x] then E.pc = O[y] end".to_string(),
 		M_BRANCH_TRUE => "if T[x] then E.pc = O[y] end".to_string(),
-		M_ADD => micro_binary_body("u+w", &lit.add, lit),
-		M_SUB => micro_binary_body("u-w", &lit.sub, lit),
-		M_MUL => micro_binary_body("u*w", &lit.mul, lit),
-		M_DIV => micro_binary_body("u/w", &lit.div, lit),
-		M_MOD => micro_binary_body("u%w", &lit.mod_, lit),
-		M_POW => micro_binary_body("u^w", &lit.pow, lit),
-		M_IDIV => "T[x] = FLOOR(T[1] / T[2])".to_string(),
-		M_UNM => format!(
-			"local u=T[y] if TYP(u)=={number} then T[x]=-u else local f,hidden=mget(u,{meta}) if f then T[x]=f(u) elseif hidden then T[x]=-u else ERR({msg}..TYP(u)..{value},0) end end",
-			number = lit.number, meta = lit.unm, msg = lit.arith_msg, value = lit.value_msg,
-		),
+		M_ADD => micro_binary_body("u+w", "ou+ow", &lit.add_op, &lit.add, lit),
+		M_SUB => micro_binary_body("u-w", "ou-ow", &lit.sub_op, &lit.sub, lit),
+		M_MUL => micro_binary_body("u*w", "ou*ow", &lit.mul_op, &lit.mul, lit),
+		M_DIV => micro_binary_body("u/w", "ou/ow", &lit.div_op, &lit.div, lit),
+		M_MOD => micro_binary_body("u%w", "ou%ow", &lit.mod_op, &lit.mod_, lit),
+		M_POW => micro_binary_body("u^w", "ou^ow", &lit.pow_op, &lit.pow, lit),
+		M_IDIV => micro_binary_body("FLOOR(u/w)", &lit.idiv_fallback, &lit.idiv_op, &lit.idiv, lit),
+		M_UNM => {
+			let error = if lit.luau_target {
+				format!("ERR({}..tu,0)", lit.unm_msg)
+			} else {
+				format!("ERR({}..tu..{},0)", lit.arith_msg, lit.value_msg)
+			};
+			format!(
+				"local u=T[y] local ou=u local tu=TYP(u) if tu=={string} then u=TONUM(u) end if TYP(u)=={number} then T[x]=-u else local f,hidden=mget(ou,{meta}) if f~=nil then T[x]=f(ou) elseif hidden then T[x]=-ou else {error} end end",
+				number = lit.number, string = lit.string, meta = lit.unm, error = error,
+			)
+		},
 		M_LEN => format!(
 			"local u=T[y] local f=HAS_LEN_META and mget(u,{meta}) if f then T[x]=f(u) else T[x]=#u end",
 			meta = lit.len,
 		),
 		M_CONCAT => format!(
-			"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} or tu=={string}) and (tw=={number} or tw=={string}) then T[x]=u..w else local f,h=mget(u,{meta}) if not f then local g,h2=mget(w,{meta}) f=g h=h or h2 end if f then T[x]=f(u,w) elseif h then T[x]=u..w else ERR({msg}..tu..{value},0) end end",
+			"local u,w=T[1],T[2] local tu,tw=TYP(u),TYP(w) if (tu=={number} or tu=={string}) and (tw=={number} or tw=={string}) then T[x]=u..w else local f,h=mget(u,{meta}) if f==nil and not h then local g,h2=mget(w,{meta}) f=g h=h2 end if f~=nil then T[x]=f(u,w) elseif h then T[x]=u..w else ERR({msg}..tu..{with_msg}..tw,0) end end",
 			number = lit.number, string = lit.string, meta = lit.concat,
-			msg = lit.concat_msg, value = lit.value_msg,
+			msg = lit.concat_msg, with_msg = lit.with_msg,
 		),
-		M_LT => micro_compare_body("u<w", &lit.lt, false, lit),
-		M_LE => micro_compare_body("u<=w", &lit.le, false, lit),
-		M_GT => micro_compare_body("u>w", &lit.lt, true, lit),
-		M_GE => micro_compare_body("u>=w", &lit.le, true, lit),
+		M_LT => micro_compare_body("u<w", &lit.lt_op, &lit.lt, false, lit),
+		M_LE => micro_compare_body("u<=w", &lit.le_op, &lit.le, false, lit),
+		M_GT => micro_compare_body("u>w", &lit.gt_op, &lit.lt, true, lit),
+		M_GE => micro_compare_body("u>=w", &lit.ge_op, &lit.le, true, lit),
 		M_EQ | M_NE => {
 			let result = if index == M_NE { "not eqv" } else { "eqv" };
 			format!(
@@ -790,14 +861,14 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_VARG_TABN => "for j=1,vargc do T[1][T[2]+j]=vargs[1+((j+E.vd-1)%vargc)] end T[2]=T[2]+vargc".to_string(),
 		M_CLOSURE => "V[O[x]+1]=makefn(E.bt[O[y]],V,ups,S)".to_string(),
 		M_GET_TABLE => format!(
-			"local o,j=T[1],T[2] local r if TYP(o)=={string} then r=o[j] elseif TYP(o)=={table_} then r=RGET(o,j) if r==nil then local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] end end else local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] else ERR({msg}..TYP(o)..{value},0) end end T[x]=r",
+			"local o,j=T[1],T[2] local r if TYP(o)=={string} then r=o[j] elseif TYP(o)=={table_} then r=RGET(o,j) if r==nil then local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] end end else local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] else ERR({msg}..TYP(o)..{index_with}..TSTR(j)..{index_quote},0) end end T[x]=r",
 			table_ = lit.table_, string = lit.string, index = lit.index, function = lit.function,
-			msg = lit.index_msg, value = lit.value_msg,
+			msg = lit.index_msg, index_with = lit.index_with_msg, index_quote = lit.index_quote,
 		),
 		M_SET_TABLE => format!(
-			"local o,j,w=T[1],T[2],T[3] if TYP(o)~={table_} then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) elseif hidden then o[j]=w else ERR({msg}..TYP(o)..{value},0) end else if RGET(o,j)==nil then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then RSET(f,j,w) elseif hidden then o[j]=w else RSET(o,j,w) end else RSET(o,j,w) end end",
+			"local o,j,w=T[1],T[2],T[3] if TYP(o)~={table_} then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then f[j]=w elseif hidden then o[j]=w else ERR({msg}..TYP(o)..{index_with}..TSTR(j)..{index_quote},0) end else if RGET(o,j)==nil then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then f[j]=w elseif hidden then o[j]=w else RSET(o,j,w) end else RSET(o,j,w) end end",
 			table_ = lit.table_, newindex = lit.newindex, function = lit.function,
-			msg = lit.index_msg, value = lit.value_msg,
+			msg = lit.index_msg, index_with = lit.index_with_msg, index_quote = lit.index_quote,
 		),
 		M_NOP => nop.to_string(),
 		M_MKSTR => format!(
@@ -905,7 +976,7 @@ mod micro_fusion_tests {
 	#[test]
 	fn multi_primitive_superoperators_expand_in_original_order() {
 		let mut pool = StrPool::new(false);
-		let lit = MicroLits::new(&mut pool, (17, 31), false);
+		let lit = MicroLits::new(&mut pool, (17, 31), false, false);
 		for (slot, name) in MICRO_SUPER_NAMES.iter().enumerate() {
 			let recipe = micro_recipe(name).unwrap();
 			assert_eq!(recipe, vec![(M_SUPER_BASE + slot, 0, 0)], "{name}");
@@ -956,7 +1027,7 @@ mod micro_fusion_tests {
 	#[test]
 	fn fused_bodies_do_not_use_shard_scratch_temporaries() {
 		let mut pool = StrPool::new(false);
-		let lit = MicroLits::new(&mut pool, (17, 31), false);
+		let lit = MicroLits::new(&mut pool, (17, 31), false, false);
 		for kind in [
 			M_FUSE_LOAD_K,
 			M_FUSE_MOVE,
@@ -1265,6 +1336,7 @@ pub fn generate(
 	lane_dialect: (u8, u8),
 	carrier: &Carrier,
 	carrier_lengths: &[usize],
+	luau_target: bool,
 	rng: &mut Rng,
 	n_fns: usize,
 	v15: bool,
@@ -1384,7 +1456,7 @@ pub fn generate(
 		let core = if name == "Nop" || name == "NopA" {
 			nop.clone()
 		} else {
-			handlers::gen(name, fmt_of[name], v15, &mut pool, mk)
+			handlers::gen(name, fmt_of[name], v15, &mut pool, mk, luau_target)
 		};
 		if v15 {
 			if core.is_empty() {
@@ -2173,7 +2245,7 @@ __FVARM__        else
 	let hfrag: String;
 	let handler_defs = if v15 {
 		let call_names = ["Call", "CallE", "CallM", "CallT"];
-		let micro_lits = MicroLits::new(&mut pool, mk, include_loadstr);
+		let micro_lits = MicroLits::new(&mut pool, mk, include_loadstr, luau_target);
 		let mut micro_shards = Vec::with_capacity(n_micro_shards);
 		let mut micro_used: Vec<std::collections::HashSet<usize>> =
 			vec![std::collections::HashSet::new(); n_micro_shards];

@@ -21,7 +21,11 @@ pub fn apply_body(
 			tmark = std::time::Instant::now();
 		}
 	};
-	let text = crate::printer::print_chunk(table, block);
+	let text = if luau {
+		crate::printer::print_chunk_luau(table, block)
+	} else {
+		crate::printer::print_chunk(table, block)
+	};
 	tlog("print_chunk");
 	let compact = crate::minify::minify(&text, luau).unwrap_or(text);
 	tlog("minify");

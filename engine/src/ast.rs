@@ -106,6 +106,9 @@ pub enum Expr {
 	Bool { value: bool },
 	Nil,
 	Vararg,
+	/// Parenthesized expression. Parentheses are semantically significant for
+	/// Lua's multiple-return rules even though they do not change the value.
+	Paren { e: Box<Expr> },
 	Ident { name: String, sym: Option<SymId> },
 	Dot { obj: Box<Expr>, name: String },
 	Index { obj: Box<Expr>, idx: Box<Expr> },

@@ -925,11 +925,19 @@ fn expr_refs(e: &Expr, out: &mut HashSet<SymId>) {
 				expr_refs(a, out);
 			}
 		}
+		Expr::Paren { e } => expr_refs(e, out),
 		Expr::Bin { l, r, .. } => {
 			expr_refs(l, out);
 			expr_refs(r, out);
 		}
 		Expr::Un { e, .. } => expr_refs(e, out),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				expr_refs(cond, out);
+				expr_refs(value, out);
+			}
+			expr_refs(elseb, out);
+		}
 		Expr::Table { fields } => {
 			for f in fields {
 				match f {
@@ -1010,12 +1018,126 @@ fn collect_bodies<'a>(block: &'a Block, out: &mut Vec<(&'a Block, &'a [SymId])>)
 	}
 }
 
+// Collect only closure bodies created in this lexical function. Expressions and
+// control-flow blocks are traversed, but a function literal is a scope boundary.
+fn collect_direct_bodies<'a>(block: &'a Block, out: &mut Vec<(&'a Block, &'a [SymId])>) {
+	for s in &block.stmts {
+		match s {
+			Stmt::LocalFunc { func, .. } | Stmt::FuncDecl { func, .. } => {
+				out.push((&func.body, &func.param_syms));
+			}
+			_ => {}
+		}
+		match s {
+			Stmt::Local { values, .. } => {
+				for e in values.iter().flatten() {
+					expr_direct_bodies(e, out);
+				}
+			}
+			Stmt::Assign { targets, values } => {
+				for e in targets.iter().chain(values) {
+					expr_direct_bodies(e, out);
+				}
+			}
+			Stmt::ExprStmt(e) => expr_direct_bodies(e, out),
+			Stmt::Return(es) => {
+				for e in es {
+					expr_direct_bodies(e, out);
+				}
+			}
+			Stmt::If { cond, thenb, elsifs, elseb } => {
+				expr_direct_bodies(cond, out);
+				collect_direct_bodies(thenb, out);
+				for (c, b) in elsifs {
+					expr_direct_bodies(c, out);
+					collect_direct_bodies(b, out);
+				}
+				if let Some(b) = elseb {
+					collect_direct_bodies(b, out);
+				}
+			}
+			Stmt::While { cond, body } => {
+				expr_direct_bodies(cond, out);
+				collect_direct_bodies(body, out);
+			}
+			Stmt::Repeat { body, cond } => {
+				collect_direct_bodies(body, out);
+				expr_direct_bodies(cond, out);
+			}
+			Stmt::ForNum { start, limit, step, body, .. } => {
+				expr_direct_bodies(start, out);
+				expr_direct_bodies(limit, out);
+				if let Some(e) = step {
+					expr_direct_bodies(e, out);
+				}
+				collect_direct_bodies(body, out);
+			}
+			Stmt::ForGen { iters, body, .. } => {
+				for e in iters {
+					expr_direct_bodies(e, out);
+				}
+				collect_direct_bodies(body, out);
+			}
+			Stmt::Do(b) => collect_direct_bodies(b, out),
+			_ => {}
+		}
+	}
+}
+
+fn expr_direct_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
+	match e {
+		Expr::Function { body, param_syms, .. } => out.push((body, param_syms)),
+		Expr::Paren { e } | Expr::Un { e, .. } => expr_direct_bodies(e, out),
+		Expr::Dot { obj, .. } => expr_direct_bodies(obj, out),
+		Expr::Index { obj, idx } => {
+			expr_direct_bodies(obj, out);
+			expr_direct_bodies(idx, out);
+		}
+		Expr::Call { func, args } => {
+			expr_direct_bodies(func, out);
+			for a in args {
+				expr_direct_bodies(a, out);
+			}
+		}
+		Expr::Method { obj, args, .. } => {
+			expr_direct_bodies(obj, out);
+			for a in args {
+				expr_direct_bodies(a, out);
+			}
+		}
+		Expr::Bin { l, r, .. } => {
+			expr_direct_bodies(l, out);
+			expr_direct_bodies(r, out);
+		}
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				expr_direct_bodies(cond, out);
+				expr_direct_bodies(value, out);
+			}
+			expr_direct_bodies(elseb, out);
+		}
+		Expr::Table { fields } => {
+			for f in fields {
+				match f {
+					TableField::Array(e) => expr_direct_bodies(e, out),
+					TableField::Key { key, value } => {
+						expr_direct_bodies(key, out);
+						expr_direct_bodies(value, out);
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
 fn expr_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
 	match e {
 		Expr::Function { body, param_syms, .. } => {
 			out.push((body, param_syms));
 			collect_bodies(body, out);
 		}
+		Expr::Paren { e } => expr_bodies(e, out),
 		Expr::Dot { obj, .. } => expr_bodies(obj, out),
 		Expr::Index { obj, idx } => {
 			expr_bodies(obj, out);
@@ -1038,6 +1160,13 @@ fn expr_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
 			expr_bodies(r, out);
 		}
 		Expr::Un { e, .. } => expr_bodies(e, out),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				expr_bodies(cond, out);
+				expr_bodies(value, out);
+			}
+			expr_bodies(elseb, out);
+		}
 		Expr::Table { fields } => {
 			for f in fields {
 				match f {
@@ -1097,35 +1226,9 @@ fn collect_declared_all(block: &Block, out: &mut Vec<SymId>) {
 	}
 }
 
-fn collect_declared_expr(e: &Expr, out: &mut Vec<SymId>) {
-	match e {
-		Expr::Function { body, .. } => collect_declared_all(body, out),
-		Expr::Call { func, args } => {
-			collect_declared_expr(func, out);
-			for a in args {
-				collect_declared_expr(a, out);
-			}
-		}
-		Expr::Method { obj, args, .. } => {
-			collect_declared_expr(obj, out);
-			for a in args {
-				collect_declared_expr(a, out);
-			}
-		}
-		Expr::Table { fields } => {
-			for f in fields {
-				match f {
-					TableField::Array(e) => collect_declared_expr(e, out),
-					TableField::Key { key, value } => {
-						collect_declared_expr(key, out);
-						collect_declared_expr(value, out);
-					}
-				}
-			}
-		}
-		_ => {}
-	}
-}
+// Expressions do not declare locals in their enclosing function. A function
+// literal is a distinct scope, so its locals must never enter this set.
+fn collect_declared_expr(_e: &Expr, _out: &mut Vec<SymId>) {}
 
 fn declared_set_of(block: &Block) -> HashSet<SymId> {
 	let mut v = Vec::new();
@@ -1247,18 +1350,20 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 	direct.retain(|s| !declared_set.contains(s));
 
 	let mut bodies: Vec<(&Block, &[SymId])> = Vec::new();
-	collect_bodies(block, &mut bodies);
+	collect_direct_bodies(block, &mut bodies);
 	let mut nested = HashSet::new();
-	for (b, bparams) in &bodies {
-		let mut own_decl = Vec::new();
-		own_decl.extend(bparams.iter().copied());
-		collect_declared_all(b, &mut own_decl);
-		let own_set: HashSet<SymId> = own_decl.iter().copied().collect();
-		let mut refs = HashSet::new();
-		collect_block_refs_own(b, &mut refs);
-		refs.retain(|s| !own_set.contains(s));
-		refs.retain(|s| !declared_set.contains(s));
-		nested.extend(refs);
+	for (child, child_params) in &bodies {
+		// Each child contributes both its own external references and the
+		// references it must forward to its descendants. Filter symbols owned
+		// here: they are captured from this frame, not from this function's
+		// enclosing frame. Recursing over only direct children prevents sibling
+		// scopes from leaking locals into this closure's descriptor set.
+		let child_analysis = analyze(child, child_params);
+		for s in child_analysis.direct_up.iter().chain(&child_analysis.nested_up) {
+			if !declared_set.contains(s) {
+				nested.insert(*s);
+			}
+		}
 	}
 
 	let mut direct_up: Vec<SymId> = direct.iter().copied().collect();
@@ -1537,6 +1642,7 @@ fn count_expr(e: &Expr, n: &mut usize) {
 			*n += 1;
 			count_fns(body, n);
 		}
+		Expr::Paren { e } => count_expr(e, n),
 		Expr::Dot { obj, .. } => count_expr(obj, n),
 		Expr::Index { obj, idx } => {
 			count_expr(obj, n);
@@ -1559,6 +1665,13 @@ fn count_expr(e: &Expr, n: &mut usize) {
 			count_expr(r, n);
 		}
 		Expr::Un { e, .. } => count_expr(e, n),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				count_expr(cond, n);
+				count_expr(value, n);
+			}
+			count_expr(elseb, n);
+		}
 		Expr::Table { fields } => {
 			for f in fields {
 				match f {
@@ -2127,6 +2240,7 @@ impl<'a> Ctx<'a> {
 					self.emit(Instr::ab(Op::LoadK, kreg, k1));
 					self.emit(Instr::abc(Op::GetTab, dst, t, kreg));
 				}
+			Expr::Paren { e } => self.compile_expr(e, dst),
 			Expr::Ident { name, sym } => match sym {
 				Some(s) => {
 					if let Some(k) = self.lookup(*s) {

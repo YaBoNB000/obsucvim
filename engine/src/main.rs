@@ -567,6 +567,7 @@ fn main() -> ExitCode {
 				(program.lane_base, program.lane_step),
 				&program.carrier,
 				&carrier_lengths,
+				luau,
 				&mut rng,
 				n,
 				opts.do_v15,
@@ -651,7 +652,7 @@ fn main() -> ExitCode {
 						}
 					}
 				}
-				let interp_src = printer::print_chunk(&ttable, &tblock);
+				let interp_src = printer::print_chunk_luau(&ttable, &tblock);
 				let total_bytes: usize = carrier_bytes.iter().map(|c| c.len()).sum();
 				let est_words = total_bytes / 4 + carrier_bytes.len() * vmgen::v15::CHUNKS + 4;
 				let n_bw_slots = est_words / vmgen::v15::BW_SLOT_WORDS + 1;
@@ -761,7 +762,11 @@ let kg = slot_pool[3];
 			(block, table, false)
 		};
 		if opts.do_vm && vm_raw {
-		let out = printer::print_chunk(&table, &block);
+			let out = if luau {
+				printer::print_chunk_luau(&table, &block)
+			} else {
+				printer::print_chunk(&table, &block)
+			};
 			return Ok(out);
 		}
 		let tim = std::env::var("OBSUCVIM_TIMING").is_ok();

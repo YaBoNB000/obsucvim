@@ -103,7 +103,7 @@ impl<'a> Resolver<'a> {
 					self.resolve_expr(a);
 				}
 			}
-			Expr::Un { e, .. } => self.resolve_expr(e),
+			Expr::Paren { e } | Expr::Un { e, .. } => self.resolve_expr(e),
 			Expr::Bin { l, r, .. } => {
 				self.resolve_expr(l);
 				self.resolve_expr(r);
