@@ -1,0 +1,260 @@
+[
+  {
+    "opcode": 0,
+    "j_index": 20,
+    "name": "EQ",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == ty and (tx == \"number\" or tx == \"string\" or tx == \"boolean\" or tx == \"nil\") then V[a + 1] = x == y else local f = mget(x, \"__eq\") or mget(y, \"__eq\"); if f then V[a + 1] = f(x, y) else V[a + 1] = x == y end end"
+  },
+  {
+    "opcode": 1,
+    "j_index": 26,
+    "name": "APPEND_ONE",
+    "body": "local t = V[a + 1]; local n = V[b + 1]; t[n + 1] = V[c + 1]; V[b + 1] = n + 1"
+  },
+  {
+    "opcode": 2,
+    "j_index": 23,
+    "name": "NEWTABLE",
+    "body": "V[a + 1] = {}"
+  },
+  {
+    "opcode": 3,
+    "j_index": 16,
+    "name": "LT",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == \"number\" and ty == \"number\" then V[a + 1] = x < y elseif tx == \"string\" and ty == \"string\" then V[a + 1] = x < y else local f = mget(x, \"__lt\") or mget(y, \"__lt\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to compare \" .. tx .. \" with \" .. ty, 0) end end"
+  },
+  {
+    "opcode": 4,
+    "j_index": 22,
+    "name": "FLOORDIV",
+    "body": "local q = V[b + 1] / V[c + 1]; V[a + 1] = FLOOR(q)"
+  },
+  {
+    "opcode": 5,
+    "j_index": 1,
+    "name": "JMP_IF_FALSE",
+    "body": "local t = V[a + 1]; if not t then return {j = b} end"
+  },
+  {
+    "opcode": 6,
+    "j_index": 31,
+    "name": "VARARG_COUNT",
+    "body": "V[a + 1] = vargc"
+  },
+  {
+    "opcode": 7,
+    "j_index": 14,
+    "name": "NOT",
+    "body": "local t = V[b + 1]; V[a + 1] = not t"
+  },
+  {
+    "opcode": 8,
+    "j_index": 8,
+    "name": "MUL",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == \"number\" and ty == \"number\" then V[a + 1] = x * y else local f = mget(x, \"__mul\") or mget(y, \"__mul\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to perform arithmetic on a \" .. tx .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 9,
+    "j_index": 19,
+    "name": "GE",
+    "body": "local u = V[b + 1]; local w = V[c + 1]; if TYP(u) == \"number\" and TYP(w) == \"number\" then V[a + 1] = u >= w elseif TYP(u) == \"string\" and TYP(w) == \"string\" then V[a + 1] = u >= w else local f = mget(u, \"__le\") or mget(w, \"__le\"); if f then V[a + 1] = f(w, u) else ERR(\"attempt to compare \" .. TYP(u) .. \" with \" .. TYP(w), 0) end end"
+  },
+  {
+    "opcode": 10,
+    "j_index": 5,
+    "name": "MOVE",
+    "body": "local t = V[b + 1]; V[a + 1] = t"
+  },
+  {
+    "opcode": 11,
+    "j_index": 21,
+    "name": "NE",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); local eqv; if tx == ty and (tx == \"number\" or tx == \"string\" or tx == \"boolean\" or tx == \"nil\") then eqv = x == y else local f = mget(x, \"__eq\") or mget(y, \"__eq\"); if f then eqv = f(x, y) else eqv = x == y end end; V[a + 1] = not eqv"
+  },
+  {
+    "opcode": 12,
+    "j_index": 36,
+    "name": "SETUPVAL",
+    "body": "local u = ups[a + 1]; u.v[u.i] = V[b + 1]"
+  },
+  {
+    "opcode": 13,
+    "j_index": 11,
+    "name": "POW",
+    "body": "local u = V[b + 1]; local w = V[c + 1]; if TYP(u) == \"number\" and TYP(w) == \"number\" then V[a + 1] = u ^ w else local f = mget(u, \"__pow\") or mget(w, \"__pow\"); if f then V[a + 1] = f(u, w) else ERR(\"attempt to perform arithmetic on a \" .. TYP(u) .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 14,
+    "j_index": 38,
+    "name": "NOP",
+    "body": "local _ = c * d"
+  },
+  {
+    "opcode": 15,
+    "j_index": 27,
+    "name": "CALL_APPEND",
+    "body": "local f = V[S[a + 1]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = FLOOR(d / 2); local tail = d % 2 == 1; local ntail = tail and V[S[a + nfixed + 2]] or 0; local nargs = nfixed + off + ntail; local av = {}; if off == 1 then av[1] = f end; for i = 1, nfixed + ntail do if tail and i > nfixed then local x = a + i + 2; local s = S[x]; if s then av[off + i] = V[s] else av[off + i] = O[x] end else av[off + i] = V[S[a + i + 1]] end end; local tb = V[b + 1]; local n0 = V[c + 1]; local ov, nout = callcap(fn, av, nargs); for i = 1, nout do tb[n0 + i] = ov[i] end; V[c + 1] = n0 + nout; local _ = c * a - d"
+  },
+  {
+    "opcode": 16,
+    "j_index": 37,
+    "name": "RETURN",
+    "body": "local out = {}; local n = b; local total; if n == 255 then local pre = d; for i = 1, pre do out[i] = V[S[a + i]] end; if c == 1 then for i = 1, vargc do out[pre + i] = vargs[i] end; total = pre + vargc else for i = 1, E.ln do local s = S[E.lb + i]; if s then out[pre + i] = V[s] else out[pre + i] = O[E.lb + i] end end; total = pre + E.ln end else for i = 1, n do out[i] = V[S[a + i]] end; total = n end; return {out, total}"
+  },
+  {
+    "opcode": 17,
+    "j_index": 33,
+    "name": "GETGLOBAL",
+    "body": "V[a + 1] = G[C[b + 1]]"
+  },
+  {
+    "opcode": 18,
+    "j_index": 10,
+    "name": "MOD",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; if TYP(x) == \"number\" and TYP(y) == \"number\" then V[a + 1] = x % y else local f = mget(x, \"__mod\") or mget(y, \"__mod\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to perform arithmetic on a \" .. TYP(x) .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 19,
+    "j_index": 40,
+    "name": "CALL_WITH_TAIL",
+    "body": "local base = a + 1; local f = V[S[base]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = b; local ntail = V[S[base + nfixed + 1]]; local nargs = nfixed + ntail + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, nfixed + ntail do if i <= nfixed then args[off + i] = V[S[base + i]] else local x = base + i + 1; local s = S[x]; if s then args[off + i] = V[s] else args[off + i] = O[x] end end end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; E.lb = a + 1; E.ln = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do local s = S[base + i]; if s then V[s] = out[i] else O[base + i] = out[i] end end; local _ = (a + c) * (b - d)"
+  },
+  {
+    "opcode": 20,
+    "j_index": 35,
+    "name": "GETUPVAL",
+    "body": "local uc = ups[b + 1]; V[a + 1] = uc.v[uc.i]"
+  },
+  {
+    "opcode": 21,
+    "j_index": 32,
+    "name": "APPEND_VARARGS",
+    "body": "local t = V[a + 1]; local n = V[b + 1]; for i = 1, vargc do t[n + i] = vargs[i] end; V[b + 1] = n + vargc"
+  },
+  {
+    "opcode": 22,
+    "j_index": 3,
+    "name": "LOADNIL_RANGE",
+    "body": "for i = 1, b do V[S[a + i]] = nil end"
+  },
+  {
+    "opcode": 23,
+    "j_index": 29,
+    "name": "CALL",
+    "body": "local base = a + 1; local f = V[S[base]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nargs = b + off; local args = {}; if off == 1 then args[1] = f end; for i = 1, b do args[off + i] = V[S[base + i]] end; if d == 1 then for i = 1, vargc do args[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local out, nout = callcap(fn, args, nargs); local nres = c; E.lb = a + 1; E.ln = nout; local wn = nout; if nres ~= 255 and nres > wn then wn = nres end; for i = 1, wn do local s = S[base + i]; if s then V[s] = out[i] else O[base + i] = out[i] end end; local _ = a * d + b * c"
+  },
+  {
+    "opcode": 24,
+    "j_index": 41,
+    "name": "LOAD_SHORT_STRING",
+    "body": "local ms = (63371 * a + 41221) % 65536; local q1 = (b - ms) % 65536; local q2 = (c - ms) % 65536; local q3 = (d - ms) % 65536; local n = FLOOR(q3 / 256); local t = {}; t[1] = q1 % 256; t[2] = FLOOR(q1 / 256); t[3] = q2 % 256; t[4] = FLOOR(q2 / 256); t[5] = q3 % 256; local s = \"\"; local i = 1; while i <= n do s = s .. CHAR(t[i]); i = i + 1 end; V[a + 1] = s"
+  },
+  {
+    "opcode": 25,
+    "j_index": 25,
+    "name": "SETTABLE",
+    "body": "local t = V[a + 1]; local k = V[b + 1]; local v = V[c + 1]; if TYP(t) ~= \"table\" then local mt = GMT(t); local f = mt and mt[\"__newindex\"]; if TYP(f) == \"function\" then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else ERR(\"attempt to index a \" .. TYP(t) .. \" value\", 0) end else if RGET(t, k) == nil then local f = mget(t, \"__newindex\"); if TYP(f) == \"function\" then f(t, k, v) elseif f ~= nil then RSET(f, k, v) else RSET(t, k, v) end else RSET(t, k, v) end end"
+  },
+  {
+    "opcode": 26,
+    "j_index": 2,
+    "name": "JMP_IF_TRUE",
+    "body": "if V[a + 1] then return {j = b} end"
+  },
+  {
+    "opcode": 27,
+    "j_index": 18,
+    "name": "GT",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == \"number\" and ty == \"number\" then V[a + 1] = x > y elseif tx == \"string\" and ty == \"string\" then V[a + 1] = x > y else local f = mget(x, \"__lt\") or mget(y, \"__lt\"); if f then V[a + 1] = f(y, x) else ERR(\"attempt to compare \" .. tx .. \" with \" .. ty, 0) end end"
+  },
+  {
+    "opcode": 28,
+    "j_index": 28,
+    "name": "CLOSURE",
+    "body": "V[a + 1] = makefn(b + 1, V, ups, S)"
+  },
+  {
+    "opcode": 29,
+    "j_index": 0,
+    "name": "JMP",
+    "body": "return {j = b}"
+  },
+  {
+    "opcode": 30,
+    "j_index": 13,
+    "name": "UNM",
+    "body": "local x = V[b + 1]; local tx = TYP(x); if tx == \"number\" then V[a + 1] = -x else local f = mget(x, \"__unm\"); if f then V[a + 1] = f(x) else ERR(\"attempt to perform arithmetic on a \" .. tx .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 31,
+    "j_index": 39,
+    "name": "CALL_COUNTED",
+    "body": "local bs = a + 1; local f = V[S[bs]]; local fn, selfv = resolve_call(f); local off = selfv and 1 or 0; local nfixed = b; local varg = d % 2 == 1; local tail = d >= 2; local nargs = nfixed + off; if tail then nargs = nargs + V[S[bs + nfixed + 1]] end; local av = {}; if off == 1 then av[1] = f end; for i = 1, (tail and (nfixed + V[S[bs + nfixed + 1]]) or nfixed) do if tail and i > nfixed then local x = bs + i + 1; local s = S[x]; if s then av[off + i] = V[s] else av[off + i] = O[x] end else av[off + i] = V[S[bs + i]] end end; if varg then for i = 1, vargc do av[nargs + i] = vargs[i] end; nargs = nargs + vargc end; local ov, nout = callcap(fn, av, nargs); for i = 1, nout do local s = S[bs + i]; if s then V[s] = ov[i] else O[bs + i] = ov[i] end end; V[S[bs]] = nout; local _ = c * a - d"
+  },
+  {
+    "opcode": 32,
+    "j_index": 24,
+    "name": "GETTABLE",
+    "body": "local o = V[b + 1]; local j = V[c + 1]; local r; if TYP(o) == \"table\" then r = RGET(o, j); if r == nil then local f = mget(o, \"__index\"); if TYP(f) == \"function\" then r = f(o, j) elseif f ~= nil then r = f[j] end end else local m0 = GMT(o); if m0 and m0[\"__index\"] ~= nil then local f = m0[\"__index\"]; if TYP(f) == \"function\" then r = f(o, j) else r = f[j] end else ERR(\"attempt to index a \" .. TYP(o) .. \" value\", 0) end end; V[a + 1] = r"
+  },
+  {
+    "opcode": 33,
+    "j_index": 30,
+    "name": "PACK_VARARGS",
+    "body": "local t = {}; local i = 1; while i <= vargc do t[i] = vargs[i]; i = i + 1 end; V[a + 1] = t"
+  },
+  {
+    "opcode": 34,
+    "j_index": 9,
+    "name": "DIV",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == \"number\" and ty == \"number\" then V[a + 1] = x / y else local f = mget(x, \"__div\") or mget(y, \"__div\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to perform arithmetic on a \" .. tx .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 35,
+    "j_index": 15,
+    "name": "LEN",
+    "body": "local x = V[b + 1]; local f = HAS_LEN_META and mget(x, \"__len\"); if f then V[a + 1] = f(x) else V[a + 1] = #x end"
+  },
+  {
+    "opcode": 36,
+    "j_index": 17,
+    "name": "LE",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == \"number\" and ty == \"number\" then V[a + 1] = x <= y elseif tx == \"string\" and ty == \"string\" then V[a + 1] = x <= y else local f = mget(x, \"__le\") or mget(y, \"__le\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to compare \" .. tx .. \" with \" .. ty, 0) end end"
+  },
+  {
+    "opcode": 37,
+    "j_index": 4,
+    "name": "LOADK",
+    "body": "local t = C[b + 1]; V[a + 1] = t"
+  },
+  {
+    "opcode": 38,
+    "j_index": 7,
+    "name": "SUB",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == \"number\" and ty == \"number\" then V[a + 1] = x - y else local f = mget(x, \"__sub\") or mget(y, \"__sub\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to perform arithmetic on a \" .. tx .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 39,
+    "j_index": 12,
+    "name": "CONCAT",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if (tx == \"number\" or tx == \"string\") and (ty == \"number\" or ty == \"string\") then V[a + 1] = x .. y else local f = mget(x, \"__concat\") or mget(y, \"__concat\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to perform concatenation on a \" .. tx .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 40,
+    "j_index": 6,
+    "name": "ADD",
+    "body": "local x = V[b + 1]; local y = V[c + 1]; local tx = TYP(x); local ty = TYP(y); if tx == \"number\" and ty == \"number\" then V[a + 1] = x + y else local f = mget(x, \"__add\") or mget(y, \"__add\"); if f then V[a + 1] = f(x, y) else ERR(\"attempt to perform arithmetic on a \" .. tx .. \" value\", 0) end end"
+  },
+  {
+    "opcode": 41,
+    "j_index": 34,
+    "name": "SETGLOBAL",
+    "body": "G[C[b + 1]] = V[a + 1]"
+  },
+  {
+    "opcode": 42,
+    "j_index": null,
+    "name": "NOP_PATCH",
+    "body": "local _ = c * d"
+  }
+]

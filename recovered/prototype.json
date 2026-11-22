@@ -1,0 +1,219 @@
+{
+  "upsrc": [],
+  "nregs": 3,
+  "nparams": 0,
+  "vararg": 0,
+  "constant_seed": 22229,
+  "S": [
+    8,
+    9,
+    4
+  ],
+  "nconst": 6,
+  "const_bytes": 43,
+  "const_offset": 18,
+  "ncode": 6,
+  "W_before_patch": [
+    17,
+    37,
+    23,
+    10,
+    16,
+    14
+  ],
+  "SA": [
+    29222,
+    35180,
+    1,
+    23073,
+    0,
+    40696
+  ],
+  "SB": [
+    62818,
+    46739,
+    0,
+    49105,
+    0,
+    37715
+  ],
+  "SC": [
+    2,
+    1,
+    1,
+    3,
+    0,
+    29473
+  ],
+  "SD": [
+    8,
+    3,
+    1,
+    7,
+    0,
+    57104
+  ],
+  "checksum": 411152,
+  "trailing_bytes": "",
+  "sections": [
+    {
+      "tag": 237,
+      "start": 0,
+      "end": 2,
+      "meaning": "upvalues"
+    },
+    {
+      "tag": 118,
+      "start": 2,
+      "end": 6,
+      "meaning": "header"
+    },
+    {
+      "tag": 221,
+      "start": 6,
+      "end": 10,
+      "meaning": "constant_seed"
+    },
+    {
+      "tag": 82,
+      "start": 10,
+      "end": 15,
+      "meaning": "register_map"
+    },
+    {
+      "tag": 86,
+      "start": 15,
+      "end": 61,
+      "meaning": "constants"
+    },
+    {
+      "tag": 191,
+      "start": 61,
+      "end": 113,
+      "meaning": "instructions"
+    }
+  ],
+  "first64_ciphertext_hash": 225835152,
+  "constants_plain_hex": "04 80 80 80 80 e0 81 89 0a be 1f 04 80 80 80 80 80 80 80 0c 9e 1f 03 05 00 70 72 69 6e 74 00 00 04 80 80 80 80 c0 af ef 08 be 1f",
+  "C": [
+    {
+      "index": 1,
+      "tag": 4,
+      "value": 659975,
+      "pool_range": [
+        0,
+        11
+      ]
+    },
+    {
+      "index": 2,
+      "tag": 4,
+      "value": 12,
+      "pool_range": [
+        11,
+        22
+      ]
+    },
+    {
+      "index": 3,
+      "tag": 3,
+      "value": "print",
+      "pool_range": [
+        22,
+        30
+      ]
+    },
+    {
+      "index": 4,
+      "tag": 0,
+      "value": null,
+      "pool_range": [
+        30,
+        31
+      ]
+    },
+    {
+      "index": 5,
+      "tag": 0,
+      "value": null,
+      "pool_range": [
+        31,
+        32
+      ]
+    },
+    {
+      "index": 6,
+      "tag": 4,
+      "value": 581310,
+      "pool_range": [
+        32,
+        43
+      ]
+    }
+  ],
+  "W": [
+    17,
+    37,
+    23,
+    10,
+    16,
+    42
+  ],
+  "expected_checksum": 411152,
+  "instructions": [
+    {
+      "pc": 1,
+      "opcode_before_patch": 17,
+      "opcode": 17,
+      "a_SD": 8,
+      "b_SC": 2,
+      "c_SA": 29222,
+      "d_SB": 62818
+    },
+    {
+      "pc": 2,
+      "opcode_before_patch": 37,
+      "opcode": 37,
+      "a_SD": 3,
+      "b_SC": 1,
+      "c_SA": 35180,
+      "d_SB": 46739
+    },
+    {
+      "pc": 3,
+      "opcode_before_patch": 23,
+      "opcode": 23,
+      "a_SD": 1,
+      "b_SC": 1,
+      "c_SA": 1,
+      "d_SB": 0
+    },
+    {
+      "pc": 4,
+      "opcode_before_patch": 10,
+      "opcode": 10,
+      "a_SD": 7,
+      "b_SC": 3,
+      "c_SA": 23073,
+      "d_SB": 49105
+    },
+    {
+      "pc": 5,
+      "opcode_before_patch": 16,
+      "opcode": 16,
+      "a_SD": 0,
+      "b_SC": 0,
+      "c_SA": 0,
+      "d_SB": 0
+    },
+    {
+      "pc": 6,
+      "opcode_before_patch": 14,
+      "opcode": 42,
+      "a_SD": 57104,
+      "b_SC": 29473,
+      "c_SA": 40696,
+      "d_SB": 37715
+    }
+  ]
+}

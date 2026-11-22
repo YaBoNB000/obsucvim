@@ -1,0 +1,28 @@
+-- Explanatory IR, NOT an executable reconstruction of the full wrapper.
+-- Manually derived from the decoded root prototype (prototype.json) and the
+-- decoded handler bodies (handlers/op_NN.decoded.lua.txt). No VM was run.
+-- Preconditions: the wrapper's environmental checks pass.
+-- ENV = getfenv(0); S = {8, 9, 4}; V is a sparse physical-register table.
+-- Operands are (a, b, c, d) = (SD, SC, SA, SB) as serialized.
+
+-- PC1: opcode 17 (GETGLOBAL), a=8, b=2
+V[9] = ENV[C[3]] = ENV["print"]
+
+-- PC2: opcode 37 (LOADK), a=3, b=1
+V[4] = C[2] = 12
+
+-- PC3: opcode 23 (CALL), a=1, b=1, c=1, d=0
+-- base = a + 1 = 2; f = V[S[2]] = V[9]; one fixed argument V[S[3]] = V[4].
+-- resolve_call(f), then call with one argument; request at least one result slot.
+-- Results are written back through S starting at base.
+CALL_AND_CAPTURE(V[9], {V[4]}, argument_count=1, minimum_result_slots=1)
+
+-- PC4: opcode 10 (MOVE), a=7, b=3
+V[8] = V[4]  -- first result slot; never used again
+
+-- PC5: opcode 16 (RETURN), a=0, b=0
+RETURN_NO_VALUES
+
+-- PC6 is unreachable (NOP_PATCH).
+-- Serialized opcode 14 is patched to 42 before VM dispatch; both are NOPs.
+-- Operands (a, b, c, d) = (57104, 29473, 40696, 37715).

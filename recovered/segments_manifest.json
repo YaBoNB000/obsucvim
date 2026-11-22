@@ -1,0 +1,266 @@
+[
+  {
+    "opcode": 10,
+    "slot": 594,
+    "length": 346,
+    "file": "handlers/op_10.decoded.lua.txt"
+  },
+  {
+    "opcode": 1,
+    "slot": 1206,
+    "length": 391,
+    "file": "handlers/op_01.decoded.lua.txt"
+  },
+  {
+    "opcode": 4,
+    "slot": 1310,
+    "length": 364,
+    "file": "handlers/op_04.decoded.lua.txt"
+  },
+  {
+    "opcode": 200,
+    "slot": 805,
+    "length": 9848,
+    "file": "bytecode_parser.decoded.lua.txt"
+  },
+  {
+    "opcode": 0,
+    "slot": 1717,
+    "length": 598,
+    "file": "handlers/op_00.decoded.lua.txt"
+  },
+  {
+    "opcode": 21,
+    "slot": 203,
+    "length": 419,
+    "file": "handlers/op_21.decoded.lua.txt"
+  },
+  {
+    "opcode": 22,
+    "slot": 1117,
+    "length": 351,
+    "file": "handlers/op_22.decoded.lua.txt"
+  },
+  {
+    "opcode": 24,
+    "slot": 1910,
+    "length": 672,
+    "file": "handlers/op_24.decoded.lua.txt"
+  },
+  {
+    "opcode": 7,
+    "slot": 1857,
+    "length": 350,
+    "file": "handlers/op_07.decoded.lua.txt"
+  },
+  {
+    "opcode": 14,
+    "slot": 323,
+    "length": 329,
+    "file": "handlers/op_14.decoded.lua.txt"
+  },
+  {
+    "opcode": 39,
+    "slot": 1770,
+    "length": 603,
+    "file": "handlers/op_39.decoded.lua.txt"
+  },
+  {
+    "opcode": 8,
+    "slot": 1500,
+    "length": 566,
+    "file": "handlers/op_08.decoded.lua.txt"
+  },
+  {
+    "opcode": 37,
+    "slot": 1724,
+    "length": 346,
+    "file": "handlers/op_37.decoded.lua.txt"
+  },
+  {
+    "opcode": 15,
+    "slot": 1408,
+    "length": 951,
+    "file": "handlers/op_15.decoded.lua.txt"
+  },
+  {
+    "opcode": 19,
+    "slot": 1428,
+    "length": 1133,
+    "file": "handlers/op_19.decoded.lua.txt"
+  },
+  {
+    "opcode": 20,
+    "slot": 1489,
+    "length": 358,
+    "file": "handlers/op_20.decoded.lua.txt"
+  },
+  {
+    "opcode": 33,
+    "slot": 1953,
+    "length": 405,
+    "file": "handlers/op_33.decoded.lua.txt"
+  },
+  {
+    "opcode": 17,
+    "slot": 1448,
+    "length": 336,
+    "file": "handlers/op_17.decoded.lua.txt"
+  },
+  {
+    "opcode": 3,
+    "slot": 1099,
+    "length": 627,
+    "file": "handlers/op_03.decoded.lua.txt"
+  },
+  {
+    "opcode": 32,
+    "slot": 957,
+    "length": 718,
+    "file": "handlers/op_32.decoded.lua.txt"
+  },
+  {
+    "opcode": 27,
+    "slot": 1952,
+    "length": 627,
+    "file": "handlers/op_27.decoded.lua.txt"
+  },
+  {
+    "opcode": 13,
+    "slot": 948,
+    "length": 542,
+    "file": "handlers/op_13.decoded.lua.txt"
+  },
+  {
+    "opcode": 29,
+    "slot": 1433,
+    "length": 328,
+    "file": "handlers/op_29.decoded.lua.txt"
+  },
+  {
+    "opcode": 38,
+    "slot": 443,
+    "length": 568,
+    "file": "handlers/op_38.decoded.lua.txt"
+  },
+  {
+    "opcode": 34,
+    "slot": 849,
+    "length": 568,
+    "file": "handlers/op_34.decoded.lua.txt"
+  },
+  {
+    "opcode": 30,
+    "slot": 1567,
+    "length": 488,
+    "file": "handlers/op_30.decoded.lua.txt"
+  },
+  {
+    "opcode": 28,
+    "slot": 1142,
+    "length": 349,
+    "file": "handlers/op_28.decoded.lua.txt"
+  },
+  {
+    "opcode": 41,
+    "slot": 1934,
+    "length": 336,
+    "file": "handlers/op_41.decoded.lua.txt"
+  },
+  {
+    "opcode": 23,
+    "slot": 503,
+    "length": 916,
+    "file": "handlers/op_23.decoded.lua.txt"
+  },
+  {
+    "opcode": 5,
+    "slot": 1902,
+    "length": 366,
+    "file": "handlers/op_05.decoded.lua.txt"
+  },
+  {
+    "opcode": 35,
+    "slot": 306,
+    "length": 426,
+    "file": "handlers/op_35.decoded.lua.txt"
+  },
+  {
+    "opcode": 12,
+    "slot": 238,
+    "length": 355,
+    "file": "handlers/op_12.decoded.lua.txt"
+  },
+  {
+    "opcode": 11,
+    "slot": 1858,
+    "length": 614,
+    "file": "handlers/op_11.decoded.lua.txt"
+  },
+  {
+    "opcode": 18,
+    "slot": 916,
+    "length": 542,
+    "file": "handlers/op_18.decoded.lua.txt"
+  },
+  {
+    "opcode": 26,
+    "slot": 997,
+    "length": 349,
+    "file": "handlers/op_26.decoded.lua.txt"
+  },
+  {
+    "opcode": 25,
+    "slot": 1055,
+    "length": 740,
+    "file": "handlers/op_25.decoded.lua.txt"
+  },
+  {
+    "opcode": 42,
+    "slot": 149,
+    "length": 329,
+    "file": "handlers/op_42.decoded.lua.txt"
+  },
+  {
+    "opcode": 9,
+    "slot": 1748,
+    "length": 617,
+    "file": "handlers/op_09.decoded.lua.txt"
+  },
+  {
+    "opcode": 36,
+    "slot": 278,
+    "length": 631,
+    "file": "handlers/op_36.decoded.lua.txt"
+  },
+  {
+    "opcode": 31,
+    "slot": 1754,
+    "length": 1106,
+    "file": "handlers/op_31.decoded.lua.txt"
+  },
+  {
+    "opcode": 6,
+    "slot": 484,
+    "length": 330,
+    "file": "handlers/op_06.decoded.lua.txt"
+  },
+  {
+    "opcode": 40,
+    "slot": 242,
+    "length": 568,
+    "file": "handlers/op_40.decoded.lua.txt"
+  },
+  {
+    "opcode": 16,
+    "slot": 529,
+    "length": 738,
+    "file": "handlers/op_16.decoded.lua.txt"
+  },
+  {
+    "opcode": 2,
+    "slot": 280,
+    "length": 327,
+    "file": "handlers/op_02.decoded.lua.txt"
+  }
+]

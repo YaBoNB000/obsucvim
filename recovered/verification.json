@@ -1,0 +1,47 @@
+{
+  "handler_parser_ciphertext_prefix_roundtrip_44_of_44": true,
+  "body_ciphertext_roundtrip": true,
+  "outer_base94_escape_roundtrip": true,
+  "constant_pool_roundtrip": true,
+  "outer_byte_sum": 16047,
+  "operand_sum": 411152,
+  "expected_operand_sum": 411152,
+  "outer_escaped_length": 194,
+  "outer_unescaped_length": 150,
+  "outer_base94_binary_length": 120,
+  "encrypted_body_length": 113,
+  "constant_pool_length": 43,
+  "body_sections_consume_all_bytes": true,
+  "opcode_ids_are_distinct": true,
+  "prng_parameters": {
+    "alphabet": {
+      "seed": 63870079,
+      "multiplier": 25620441,
+      "increment": 64642393
+    },
+    "escape_map": {
+      "seed": 240363193,
+      "multiplier": 17542905,
+      "increment": 2358669
+    },
+    "stage1_loader": {
+      "seed": 65493484,
+      "multiplier": 5974577,
+      "increment": 4366095
+    },
+    "handler_parser": {
+      "base_seed": 243153214,
+      "seed_step": 1698984,
+      "multiplier": 18271769,
+      "increment": 39726727
+    }
+  },
+  "empty_decoy_loop_JT": 0,
+  "sha256": {
+    "stage1_loader.decoded.lua.txt": "acffaded89348268227503fc6f6b42d1f95190e5043fb03668037f302546e690",
+    "bytecode_parser.decoded.lua.txt": "34cfe6169da151eb1067bdc8b26534b3eafc01bc777c733bb3601f3b4508b1bd",
+    "payload.encrypted.bin": "8b07861fa1a05969103c04e736f9b2e6f82f13bad9aa2ecb7bb66b94d3404140",
+    "payload.decrypted.bin": "f51d55526a493a2ff11677e459531b53514dc3f244a210dac26cee73766ac295",
+    "constants.decrypted.bin": "f138315712b0144a408872f977f34f4badee0d5b95dd33366ae0a0e35e861e6e"
+  }
+}

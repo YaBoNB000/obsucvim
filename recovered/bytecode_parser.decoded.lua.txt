@@ -1,0 +1,233 @@
+return function(BYTE, CHAR, FLR, SUB, AL, TK, decarrier, r16, CKM, CKC, BKM, BKC, BSEED, BSTEP) local OS = {(912998633385 + 731967616852 - 1644965839085)} local function parse(s, fi)
+    s = decarrier(s)
+    local n = #s
+    local ksplit = n
+    if ksplit > 64 then ksplit = 64 end
+    local um = {}
+    local g = (BSEED + (fi - 1) * BSTEP) % 268435456
+    for i = 1, ksplit do
+      g = (BKM * g + BKC) % 268435456
+      um[i] = CHAR((BYTE(s, i) - g % 256) % 256)
+    end
+    local hf = 0
+    for i = 1, ksplit do
+      hf = (hf * 31 + BYTE(s, i)) % 268435456
+    end
+    g = (BSEED + (fi - 1) * BSTEP + hf) % 268435456
+    for i = ksplit + 1, n do
+      g = (BKM * g + BKC) % 268435456
+      um[i] = CHAR((BYTE(s, i) - g % 256) % 256)
+    end
+    s = table.concat(um)
+    local TH = 118
+    local TCK = 221
+    local TU = 237
+    local TC = 86
+    local TS = 82
+    local TDC = 230
+    local NSECT = 6
+    local p = 1
+    local got = 0
+    local cstart = 0
+    local st = 1
+    local nregs, nparams, vararg, cks, csl, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK
+    while st <= 2 do
+      if st == 1 then
+        local tag = BYTE(s, p); p = p + 1
+        if tag == TH then
+          local v
+          v, p = r16(s, p); nregs = v
+          v, p = r16(s, p); nparams = v
+          v, p = r16(s, p); vararg = v
+          got = got + 1
+        elseif tag == TCK then
+          local v; v, p = r16(s, p); cks = v
+          got = got + 1
+        elseif tag == TU then
+          local nu; nu, p = r16(s, p)
+          upsrc = {}
+          for i = 1, nu do local v; v, p = r16(s, p); upsrc[i] = v end
+          got = got + 1
+        elseif tag == TC then
+          local v
+          v, p = r16(s, p); nconst = v
+          v, p = r16(s, p); csl = v
+          cstart = p
+          p = p + csl
+          got = got + 1
+        elseif tag == TS then
+          local ns; ns, p = r16(s, p)
+          S = {}
+          for i = 1, ns do local v; v, p = r16(s, p); S[i] = v end
+          got = got + 1
+        elseif tag == TDC then
+          local dl; dl, p = r16(s, p)
+          p = p + dl
+        else
+          local v; v, p = r16(s, p); ncode = v
+          W = {}
+          for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
+          local p0 = p
+          SA = {}
+        for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then SA[i] = b1; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then SA[i] = (b1 - 128) + b2 * 128; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; SA[i] = v; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; SA[i] = v; p = p + 4
+              end
+            end
+          end
+        end
+        SB = {}
+        for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then SB[i] = b1; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then SB[i] = (b1 - 128) + b2 * 128; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; SB[i] = v; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; SB[i] = v; p = p + 4
+              end
+            end
+          end
+        end
+        SC = {}
+        for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then SC[i] = b1; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then SC[i] = (b1 - 128) + b2 * 128; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; SC[i] = v; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; SC[i] = v; p = p + 4
+              end
+            end
+          end
+        end
+        SD = {}
+        for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then SD[i] = b1; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then SD[i] = (b1 - 128) + b2 * 128; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; SD[i] = v; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; SD[i] = v; p = p + 4
+              end
+            end
+          end
+        end
+          local pend = p
+          p = p0
+          local ck = 0
+          for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then ck = (ck + b1) % 4294967296; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then ck = (ck + (b1 - 128) + b2 * 128) % 4294967296; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 4
+              end
+            end
+          end
+        end
+        for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then ck = (ck + b1) % 4294967296; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then ck = (ck + (b1 - 128) + b2 * 128) % 4294967296; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 4
+              end
+            end
+          end
+        end
+        for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then ck = (ck + b1) % 4294967296; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then ck = (ck + (b1 - 128) + b2 * 128) % 4294967296; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 4
+              end
+            end
+          end
+        end
+        for i = 1, ncode do
+          local b1 = BYTE(s, p)
+          if b1 < 128 then ck = (ck + b1) % 4294967296; p = p + 1 else
+            local b2 = BYTE(s, p + 1)
+            if b2 < 128 then ck = (ck + (b1 - 128) + b2 * 128) % 4294967296; p = p + 2 else
+              local b3 = BYTE(s, p + 2)
+              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 3 else
+                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; ck = (ck + v) % 4294967296; p = p + 4
+              end
+            end
+          end
+        end
+          CK = ck
+          p = pend
+          got = got + 1
+        end
+        if got >= NSECT then st = 2 end
+      else
+        p = cstart
+        C = {}
+        local function mb()
+      cks = (CKM * cks + CKC) % 268435456
+      local b = (BYTE(s, p) - cks % 256) % 256
+      p = p + 1
+      return b
+    end
+    for i = 1, nconst do
+      local t = mb()
+      if t == 0 then
+        C[i] = nil
+      elseif t == 1 then
+        C[i] = mb() == 1
+      elseif t == 3 then
+        local lo = mb()
+        local hi = mb()
+        local l = lo + hi * 256
+        local xs = ""
+        for j = 1, l do
+          xs = xs .. CHAR(mb())
+        end
+        C[i] = xs
+      else
+        local m = 0
+        local sh = 1
+        while true do
+          local bb = mb()
+          if bb < 128 then m = m + bb * sh; break end
+          m = m + (bb - 128) * sh
+          sh = sh * 128
+        end
+        local kp = 0
+        local sh2 = 1
+        while true do
+          local bb = mb()
+          if bb < 128 then kp = kp + bb * sh2; break end
+          kp = kp + (bb - 128) * sh2
+          sh2 = sh2 * 128
+        end
+        local kk = FLR(kp / 2) - 2048
+        local pw = 1
+        if kk >= 0 then for j = 1, kk do pw = pw * 2 end else for j = 1, 0 - kk do pw = pw / 2 end end
+        local v = m * pw
+        if kp % 2 == 1 then v = 0 - v end
+        C[i] = v
+      end
+    end
+        if p ~= cstart + csl then while true do end end
+        st = 3
+      end
+    end
+    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
+  end return function(FN_) local PF_ = {} local di = 1 while di <= #FN_ do PF_[di] = parse(FN_[di], di); if PF_[di].ck ~= OS[di] then while true do end end; di = di + 1 end return PF_ end end
