@@ -151,7 +151,7 @@ Usage: obsucvim [options] <input.lua> [output.lua]
 Options:
   --dialect <luau>       target dialect (仅 luau；5.1 自 2026-09-10 起停止支持)
   -o, --output <file>    output file (default: stdout)
-  --seed <n>             PRNG seed (default: time-based; use a fixed seed
+  --seed <n>             PRNG seed (default: system entropy; use a fixed seed
                          for reproducible output)
   --preset <name>        named strength (flags after this override it).
                          DEFAULT (no --preset/--vm): v15 — 产品默认形态
@@ -487,14 +487,7 @@ fn main() -> ExitCode {
 	}
 
 	let luau = opts.dialect == "luau";
-	let seed = if opts.seed == 0 {
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos() as u64)
-			.unwrap_or(1)
-	} else {
-		opts.seed
-	};
+	let seed = opts.seed;
 
 	let src = match std::fs::read_to_string(&opts.input) {
 		Ok(s) => s,
@@ -514,9 +507,13 @@ fn main() -> ExitCode {
 	let result = (|| -> Result<String, String> {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
-		let mut rng = rng::Rng::new(seed);
+		let mut rng = if seed == 0 {
+			rng::Rng::from_entropy()?
+		} else {
+			rng::Rng::new(seed)
+		};
 		if vm_seal_strings {
-			let mut seal_rng = rng::Rng::new(seed ^ 0x5230_3632_5354_5253);
+			let mut seal_rng = rng.fork(0x5230_3632_5354_5253);
 			vmgen::strseal::seal_literals(&mut block, &mut seal_rng);
 		}
 		let env_slots: Option<[i64; 4]> = if opts.do_v15 && opts.bind_env.is_some() {

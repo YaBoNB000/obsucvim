@@ -3,10 +3,10 @@
 > **仓库现在只有混淆引擎。** 2026-11-15 第二次规整：除本文件外不再保留任何 markdown；
 > 控制台（`web/`）、托管服务（`services/`）、研究数据（`docs/`）、证据链（`artifacts/`）、
 > 发布包（`release-assets/`）与 Render/Docker 部署文件已从工作树删除。测试仍需的 4 个靶标
-> 已移入 `engine/tests/fixtures/`。需要旧文件时从基线提交 `68b9187` 取回（见 §10）。
+> 已移入 `engine/tests/fixtures/`。旧文件恢复记录见 §10；当前 shallow checkout 不含旧基线 `68b9187` 对象。
 >
-> 最后更新：2026-11-15。所有数字来自本沙箱实际构建与执行，不是旧文档转抄。
-> 当前分支以会话说明为准；仓库是 **shallow clone**，本地只能看到基线 `68b9187`。
+> 最后更新：2026-11-21。§2 和 §12 保留 2026-11-15 的历史基线；本轮增量验证、评估报告边界见 §13。
+> 当前工作分支与 PR 状态以 Arena 会话说明为准；此 checkout 是 **shallow clone**，分支基线为 `aeca245`，本轮工作起点为 `44696d5`；不要依赖更早历史。
 
 ---
 
@@ -200,8 +200,9 @@ python3 tests/v15_fingerprint.py
 2. **tier2 destroy-lock 未接通**（见 §6），测试覆盖缺口。
 3. **WASM 路径不可验证**：仓库已无 wasm 与 wasm32 std；旧发布锚点
    `a019dc83…` / R081 只能从 git 历史取回，不能在本沙箱重建。
-4. **真机未验证**：只在自编 Luau 0.735 + 宿主 mock 上跑过；Roblox / Delta / Synapse
-   等真实 executor 的正向运行没做。EVKEY 失败形态是「静默失步挂起」，可能被同宿主旁录。
+4. **真实 executor 的历史手测口径**：历史上只在自编 Luau 0.735 + 宿主 mock 上跑过；Roblox /
+   Delta / Synapse 等宿主兼容性不应从旧记录外推。2026-11-21 当前绑定样例另按 §13.3 的用户约定
+   记为手测通过（不是 agent 的独立复现）。EVKEY 失败形态是「静默失步挂起」，可能被同宿主旁录。
 5. **`tests/run_tests.sh` 的输出比较用命令替换**，遇到二进制 stdout 会打印
    `ignored null byte in input` 警告；这是比较方式的噪声，不是失败（需要严格比较时改用文件 diff）。
 6. 部分测试脚本仍硬编码 `/home/user/tools/bin` 作为首选、仓库 `.tools/bin` 作为回落；
@@ -230,11 +231,12 @@ python3 tests/v15_fingerprint.py
 3. 混淆器本体只写 Rust；不要引入 crates.io 依赖。
 4. 每条结论给可复现证据（命令、体积、sha256、测试计数）；未验证就写「未验证」。
 5. 只动当前工作分支：commit + push 到当前分支，**不动 `main`，不 force push**。
-6. 代码里没有注释（历史剥离）；设计看 git 历史，不要惊讶。
-7. Shell 小坑：`/tmp/t_$s_$d.lua` 会把 `$s_` 当变量名，用 `${s}_${d}`。
-8. 守卫/探针改动要过「净化后形态」：标识符会被改名，字符串字面量不会；
+6. 新生成或重生成、且需纳入仓库的 example（特别是根目录 `example.txt`），完成验证后直接提交并推送到当前分支，不只留在本地；提交前检查工作区，只包含预期改动并保留既有用户文件。
+7. 代码里没有注释（历史剥离）；设计看 git 历史，不要惊讶。
+8. Shell 小坑：`/tmp/t_$s_$d.lua` 会把 `$s_` 当变量名，用 `${s}_${d}`。
+9. 守卫/探针改动要过「净化后形态」：标识符会被改名，字符串字面量不会；
    外部对象成员只能 `["字符串键"]` 访问。
-9. `strseal` 三处镜像（Rust encode/decode、v15 micro-op、handlers/loadstr.rs）必须同步改。
+10. `strseal` 三处镜像（Rust encode/decode、v15 micro-op、handlers/loadstr.rs）必须同步改。
 
 ---
 
@@ -262,8 +264,7 @@ git show 68b9187:web/tools/obsucvim.wasm > /tmp/obsucvim.wasm
 git show --stat 68b9187 | head
 ```
 
-`68b9187` 是整理前基线；仓库是 shallow clone，取不到更早历史。需要更早的文档/版本时去远端
-仓库或完整克隆查。
+上述 `git show 68b9187:...` 是整理时的历史恢复示例；**当前 checkout 无法解析该 commit**（浅克隆对象不存在）。需要这些文件时从远端仓库的完整历史或完整克隆恢复。
 
 ---
 
@@ -292,13 +293,12 @@ git show --stat 68b9187 | head
 2. **默认绑定产物没有正向端到端验证。** 测试只有 E2/E3 负面拒绝、语法校验和
    `--bind-env` 的 faithful stub；没有任何测试让默认 `--bind-executor` 产物在仿真
    executor 里成功跑完。默认路径的“能用”目前只是历史真机结论，不是本轮证据。
-3. **数字字符串算术语义丢失（v15/vm）。** `print(("5")+0)` 源码 `5`，产物报
-   `attempt to perform arithmetic on a string value`；`1+"2"`、`-"5"`、`"10"/"2"` 同理。
-   `handlers/mod.rs::bin_op_body` 只接受 `type==number`，未做 Lua 的 tonumber 强制转换。
-4. **括号调用截断语义丢失（所有 preset）。** `local function f() return 1,2,3 end;
-   print((f()))` 源码输出 `1`，产物输出 `1 2 3`；`return (f())`、`select('#',(f()))`
-   同样错。解析器 `parser.rs` 的 `(` 分支直接返回内部表达式，AST 无 Paren 节点，
-   打印/编译器无从恢复“截断为一个值”。
+3. **数字字符串算术语义丢失（v15/vm；历史基线问题，已修）。** 2026-11-15 基线中
+   `print(("5")+0)` 等输入会报 `attempt to perform arithmetic on a string value`；
+   已由提交 `44696d5` 修复并纳入 `engine/tests/vm_semantics_regression.sh`，本轮该专项通过。
+4. **括号调用截断语义丢失（所有 preset；历史基线问题，已修）。** 基线中
+   `print((f()))` 会保留多返回值；提交 `44696d5` 增加 `Expr::Paren` 并贯通解析、打印与 VM
+   编译，本轮 `vm_semantics_regression.sh` 通过（详见 §13）。
 5. **运行时字符串钩子可恢复明文。** 不需要改产物，只需 `loadstring(artifact)` 前把
    真实 `string.char` 换成记录版，执行后 `table.concat` 截获 1,850 个字符，
    其中直接含 `UNIQUE_MARKER_9f3a`（源里的秘密字符串）。`tests/charhook_test.sh`
@@ -334,15 +334,17 @@ git show --stat 68b9187 | head
     浅层特征，5/5 绿不能证明抗手工逆向。EVKEY 只是宿主形状闸，不是密码学认证：
     宿主值可伪造/旁录，Delta 上可直接 dump EVKX；`--no-bind-executor` 与
     `OBSUCVIM_*` 调试口在原生源码里仍然存在。
-12. **测试给出错误安全感。** `string_primitive_hook_test.sh`/D17 只换副本表；
-    `run_tests.sh` 不覆盖上面 §12.3/12.4 的语义；`v15_fingerprint.py` 对 basics
-    仅 21/32，`defense_audit.sh` 18 PASS / 3 FAIL（D3 指纹、D18 E4；D13 是本轮
-    PATH 下 debug 构建未编成）。现有 169/2 是“现有语料”的绿，不是产品完备性。
+12. **测试覆盖仍可能给出错误安全感。** `string_primitive_hook_test.sh`/D17 只换副本表；
+    §12.3/12.4 已由 `44696d5` 增加专项语义回归，但 `run_tests.sh` 不是完整的反篡改或
+    executor 正向证明；`v15_fingerprint.py` 对 basics 仅 21/32，`defense_audit.sh` 基线为
+    18 PASS / 3 FAIL（D3 指纹、D18 E4；D13 是当时 PATH 下 debug 构建未编成）。现有
+    169/2 只说明已有语料结果，不代表产品完备性。
 
 ### P2（工程/运维）
 
-13. **RNG 只有 31 位状态**（Park-Miller，`rng.rs`）；默认 seed 取系统时间纳秒，
-    不是密码学随机。种子碰撞/可预测性不适合作为“每用户唯一”的安全边界。
+13. **RNG 的历史问题（已部分修正，见 §13）。** 2026-11-15 基线使用 31 位 Park–Miller，
+    `next_raw()` 直接暴露完整状态；本轮已换为 ChaCha20、默认系统熵与私有输出接口。显式固定
+    `--seed` 仍可预测，且产物内的随机化参数不是秘密；不能把此 PRNG 当成产物保密或安全边界。
 14. **调试环境变量是生产脚枪**：`OBSUCVIM_KEY_MANIFEST` 可把密钥写文件，
     `OBSUCVIM_VM_RAW`/`OBSUCVIM_VM_TSRC` 可导出中间形态；发布构建应编译期禁用。
 15. **重建脚本从 GitHub `master` 拉 Lua 5.1.5 源码**（非固定 commit/无校验和），
@@ -352,11 +354,94 @@ git show --stat 68b9187 | head
 
 ### 仍然成立的部分
 
-- 37 语料 × v15/vm 的运行等价与语法矩阵 169/2，`cargo test` 65 绿；
-- v15 同一 seed 逐字节确定，随机化覆盖面广，能挡住 grep/字符串直读/初级 dump；
+- 2026-11-15 基线的 37 语料 × v15/vm 矩阵为 169/2、`cargo test` 为 65 绿；本轮更新后的测试结果见 §13；
+- v15 同一显式 seed 逐字节确定；随机化增加分析成本，但不构成对已交付产物的保密保证；
 - VM 字符串密封的 legacy 解码 bug 已修，`--vm` 74/74；
 - 协程、元表、多值、upvalue、变参等语料语义通过（但未覆盖上述两个核心缺失）。
 
-**最低限度的下一步**：先修 §12.3/12.4 并补回归用例；再决定“单 executor 绑定”是
-产品策略还是缺陷（至少给出 `--key-host` 多档案/通用模式）；随后做真实 Delta 正向
-验收与性能预算；最后重写 S1–S5/D17 的攻击口径，避免继续用副本表测试宣称安全。
+**最低限度的下一步**：继续补证 §12 中尚未解决的输入规模、动态钩子与性能问题；决定“单 executor
+绑定”是产品策略还是缺陷（至少评估多档案/通用模式），并建立性能预算；最后重写 S1–S5/D17
+的攻击口径，避免继续用副本表测试宣称安全。本次绑定样例的正向验收按用户手测约定记录，见 §13.3。
+历史问题 §12.3/12.4 已有代码修复与专项回归，但仍应在完整发布验证中保留。
+
+---
+
+## 13. 2026-11-21 评估报告跟进（本轮工作）
+
+> 附件报告称其自建 Luau stub 从样本运行中观测到 `print(6)`，并通过钩子取得一段 216 字节
+> 明文；作者没有反汇编原始字节码，也没有在真实 Roblox/executor、本地引擎构建或性能基准中
+> 验证这些结论。因此它证明的是该 stub 与该样本下的行为/读取路径，不是原始源码还原或通用
+> executor 结论。报告提出的环境指纹失败静默挂起行为按用户要求保留。当前 `example.txt` 是按
+> 本轮修改重新生成的样例，体积和 SHA-256 见下文 §13.1。
+
+### 13.1 本轮实现
+
+1. **按需解密与解析。** `vmgen/template.rs` 移除了先把整个明文 blob 拼进 `um`、再
+   `table.concat(um)` 的路径。现在 `rb()` 解出单字节、`rv()` 按需读 varint，解析时直接消费
+   当前 section；常量 section 首轮只记录偏移并跳过，随后重置 reader、从密文流回放到该偏移，
+   由 `mb()` 直接解码常量，不再缓存整个明文常量段。运行时仍保留 VM 必需的解析结构
+   （如 `W`、操作数流和常量表），且载荷密文仍在内存；这不是“运行时绝无明文”，也不是防止
+   调试器/钩子读取已解析数据的密码学边界。
+2. **增加反篡改行为断言与可见层清理。** `exguard.rs::SCHALL` 除原有类型/闭包分类外，还通过保护调用
+   检查字符串、表、数学、`select`/`pcall`、类型与转换、raw access、迭代、元表、unpack，以及
+   debug source/info 的实际结果；不符合预期时现有校验链拒绝该运行。debug info 的 source 字段
+   改用字面键 `"source"`。守卫使用的 executor API 名在生成 Lua 中由相邻字面片段拼接，静态 12 词
+   扫描为零命中；这只是减少直接字面痕迹，不是加密，也不妨碍动态恢复名称。探针只覆盖列出的行为，
+   不证明可抵御能完整仿真同样输出的钩子。真实 executor 手测口径见 §13.3。
+3. **移除报告中可识别的 unread section padding。** `compiler.rs` 不再生成 0–2 个随机 section-id-6
+   字节段；发射端加不变量断言，模板移除了 `TDC` 读取分支，Rust section walker 遇到 id 6 会失败。
+   section tag 数组仍保留该索引作保留槽位，但不会发射该段。本改动针对报告指出的两块未读取区，
+   不等于证明引擎里所有其他散布/诱饵数据都被执行读取。
+4. **替换 RNG。** `rng.rs` 改为 ChaCha20，默认 `--seed`（值为 0）从系统熵初始化：Unix
+   `/dev/urandom`、Windows BCrypt、WASI `random_get`；显式非零 seed 仍确定性（SplitMix64 扩展
+   到 key），整数区间用拒绝采样，子流通过 `fork` 域分离。`next_raw()` 已变为私有，散布噪声
+   使用分离子流且不再把它的原始样本写入 audit 行。此改动改善构建随机性，不隐藏产物里已经
+   编码的随机参数；固定 seed 和从产物可推导的子流仍可复现，不应当作产物保密机制。新随机序列
+   触发了 H3 稀疏寄存器上界问题，已将高槽上限夹到 4095 并由布局测试覆盖。
+5. **样例和固定层。** 根目录 `example.txt` 已用绑定开启的 `print(6)` 重生成：
+   `--preset v15 --bind-executor --dialect luau --seed 42 print6.lua example.txt`。
+   当前为 **172,186 B**，SHA-256 `98798595917262d7ff59671a7754b5eb1f8046203941bb04a73e6781d8932c27`；
+   首行 watermark 仍是 `-- This file was obfuscated by Obsucvim.`。固定 watermark 常量与
+   `--bind-executor` 开关/默认策略未改，样例明确使用 `--bind-executor`，没有用 `--no-bind-executor`
+   生成验收样例。`engine/tests/gen_examples.sh` 也按 seed 42 重生成了全部 **37** 个
+   `engine/examples/*.v15.luau.lua`（这些测试参考样例显式关闭 binding）。既有未跟踪 `print6.lua`、
+   `print6_obf.lua` 和评估报告未覆盖。
+6. **刷新验证基线。** 37 个 examples、executor/no-bind SHA 锚及 tier-2 形态锚因 ChaCha20 与按需
+   reader 更新而重钉。`v15_fingerprint.py` 改为解析当前 root-table/VM 调用壳，阈值按 7 个固定 seed
+   校准；`r063` 回归按新的 KeyEmitter 语法族检查并显式关闭 binding（它在 stock Luau 中执行）。
+   tier-2 mock 的 `destroy-lock` 负例修正为只破坏锁、保留子表，避免被 fixture 自身的清理行为误判。
+   `envcheck.rs` 未改；这些改动是测试口径/夹具更新，不改环境指纹的 fail-closed 行为。
+
+### 13.2 本轮验证
+
+- `cargo test --manifest-path engine/Cargo.toml --quiet`：**69 passed / 0 failed / 1 ignored**，另有
+  **4 个集成测试通过**；`cargo check --manifest-path engine/Cargo.toml --all-targets --quiet` 通过，
+  仍有仓库既有 unused/dead-code 警告。
+- `engine/tests/vm_semantics_regression.sh`：通过；v15 样例保持 binding 开启，stock Luau 语法编译成功，
+  运行时按预期拒绝绑定产物。
+- 官方 `bash engine/tests/run_tests.sh`：**169 checks PASS / 0 FAIL**。其中 executor guard **11/11**、
+  env-check **16/16**、tier-2 env battery **20/20**；R063、protected-meta、micro-fusion、字符串钩子、
+  call-window 与 WTF-PORT 回归均通过。
+- `bash engine/tests/multiseed.sh`（默认 seed 1、7、4242、31337、999999）：`FAIL=0`；另含 R064
+  nested-upvalue **24 seeds** 与 call-window 噪声 **13/13** 回归通过。
+- `bash engine/tests/defense_audit.sh`：**21 PASS / 0 FAIL**（退役的 D7 `--bind-key` 按设计跳过）；D3
+  结构指纹 **32/32**，D4 安全指纹 **5/5**，D5/D6 真跨度篡改 **30/30 拒绝**，D13 debug 构建通过，
+  D15 朴素环境桩静默毒药通过。另将同一结构指纹在 7 个固定 seed 上各跑一次，均为 **32/32**。
+- `bash engine/tests/gen_examples.sh` 重生成 37 个 seed-42、unbound 测试参考样例；绑定开启的 v15
+  `--super-insn` 产物及根 `example.txt` 均通过 `luau-compile`。样例大小与 hash 见 §13.1。
+- 固定 seed 的绑定 v15 两次生成逐字节一致；省略 seed 的两次生成不同，验证默认 OS 熵路径。
+- `git diff --check` 通过。环境指纹 fail-closed 的模拟反例见上述 env-check/tier-2/D15 结果；`envcheck.rs`
+  未改。
+
+### 13.3 明确边界与用户验收约定
+
+- Agent 未独立在真实 Roblox/executor 中正向运行绑定产物。用户明确由其手动测试，并约定「未反馈问题
+  即视为通过」；截至本次交接用户未报告该样例有问题，因此按约定将**当前绑定样例的手测验收记为通过**。
+  这不是 agent 的独立复现，也不证明其他 executor 档案或所有宿主版本均兼容。
+- 没有反汇编报告中的 216 字节，也没有重新构造报告中的 hook/读取追踪；不能据此声称已阻止所有
+  明文钩子。VM 必须持有可执行的常量和解码后的操作数，仍可能被动态观察。
+- 没有测本轮 reader 的峰值内存、性能开销或真实脚本运行时间；常量读取需回放 blob 前缀，可能增加
+  工作量。报告中约 2,800× 的数字未复测。
+- `envcheck.rs` 未改，以保留环境指纹不匹配时的静默 fail-closed 行为；官方 env-check/tier-2 负例与
+  D15 朴素桩均通过，但只覆盖这些模拟环境，不外推到所有真实宿主。
+- 其余 §12 的已知问题、静态可解性、调试环境变量和输入规模限制仍需独立评估；ChaCha20 不改变这些边界。

@@ -117,7 +117,7 @@ for w in identifyexecutor getgenv checkcaller iscclosure islclosure newcclosure 
 	if grep -q "$w" "$EXDIR/bound.lua"; then miss=$((miss+1)); fi
 done
 if [[ "$miss" == "0" ]]; then
-	exok "E4 可见层零痕迹 (13 词全 0 命中)"
+	exok "E4 可见层零痕迹 (12 词全 0 命中)"
 else
 	exbad "E4 可见层有 $miss 个痕迹词命中"
 fi
@@ -131,9 +131,9 @@ else
 fi
 
 # E6: 开关关闭(--no-bind-executor) ⇒ 字节级确定（本构建形态锁）
-# 2026-11-15 重钉：R080 静态弱点批次改变了关闭态字节，旧「翻转前默认」锚
-# fcbba5a9… 已不可达；这里改为钉当前输出 11e2bfa4…，任何非预期改动立即打红。
-OFF_SHA=11e2bfa48e2eca198688110bdab29d76cfb247e005959f51522e563a00dfb52f
+# 2026-11-21 重钉：ChaCha20 RNG 与按需 VM reader 改变了关闭态字节；
+# 本锚固定当前 seed=4242 的输出，避免旧 PRNG 时代快照产生伪失败。
+OFF_SHA=35ef530756a25f1c6ba777e78d4cff9f2e32536e205f3a34245408fc6d6b0f18
 "$TOOL" --preset v15 --no-bind-executor --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_a.lua" 2>/dev/null
 "$TOOL" --preset v15 --no-bind-executor --seed 4242 "$EXDIR/src.lua" "$EXDIR/off_b.lua" 2>/dev/null
 if cmp -s "$EXDIR/off_a.lua" "$EXDIR/off_b.lua"; then

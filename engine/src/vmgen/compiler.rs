@@ -349,7 +349,7 @@ impl<'a> Ctx<'a> {
 		let n_low = n.saturating_sub(n_high);
 		let low_max = n.max(1) + (n / 2).min(64).max(8);
 		let high_start = (low_max + 1).max(96);
-		let high_end = high_start.saturating_add(4095).min(u16::MAX as usize);
+		let high_end = 4095usize.min(u16::MAX as usize);
 		assert!(
 			high_start <= u16::MAX as usize
 				&& high_end >= high_start
@@ -447,16 +447,11 @@ impl<'a> Ctx<'a> {
 			self.emit(Instr::abcd(Op::Return, 0, 0, 0, 0));
 		}
 		let base_code_len = self.code.len();
-		let mut noise_seed = 0u64;
 		let nop_count: usize;
 		let mut active_count = 0usize;
 		let mut dead_regs = 0usize;
 		if self.scatter {
-			noise_seed = self
-				.rng
-				.next_raw()
-				^ (fn_index as u64 + 1).wrapping_mul(0x9e37_79b9);
-			let mut nr = Rng::new(noise_seed);
+			let mut nr = self.rng.fork(0x5343_4154_5445_5200 ^ fn_index as u64);
 
 			dead_regs = nr.int(2, 4) as usize;
 			let dead_base = nregs;
@@ -696,7 +691,7 @@ impl<'a> Ctx<'a> {
 		let mut noise_total = 0usize;
 		let mut noise_high = 0usize;
 		if self.scatter {
-			let mut fill_rng = Rng::new(noise_seed ^ 0xa5a5_5a5a);
+			let mut fill_rng = self.rng.fork(0x4649_4c4c_0000_0000 ^ fn_index as u64);
 			for r in recs.iter_mut() {
 				let unused = rec_unused(r.kind);
 				let mut vals = [r.a, r.b, r.c, r.d];
@@ -822,23 +817,12 @@ impl<'a> Ctx<'a> {
 			secs.push((7, fv));
 			self.program.fv_sets[fn_index] = fv_vocab.clone();
 		}
-		let ndecoys = self.rng.int(0, 2);
-		for _ in 0..ndecoys {
-			let len = self.rng.int(8, 48);
-			let mut g = Vec::with_capacity(len as usize);
-			for _ in 0..len {
-				g.push(self.rng.int(0, 255) as u8);
-			}
-			secs.push((6, g));
-		}
 		self.rng.shuffle(&mut secs);
 		let tags = &self.program.section_tags;
 		let mut blob: Vec<u8> = Vec::with_capacity(self.code.len() * 6 + 96);
 		for (id, body) in &secs {
+			assert_ne!(*id, 6, "unread padding sections must not be emitted");
 			blob.push(tags[*id]);
-			if *id == 6 {
-				isa::encode_u16var(&mut blob, body.len() as u16);
-			}
 			blob.extend_from_slice(body);
 		}
 		let km = self.program.blob_km as u64;
@@ -875,9 +859,8 @@ impl<'a> Ctx<'a> {
 		}
 		if self.scatter {
 			noise_audit(&format!(
-				"fn={} seed={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={} chaff={}",
+				"fn={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={} chaff={}",
 				fn_index,
-				noise_seed,
 				base_code_len,
 				recs.len(),
 				nop_count,
@@ -2876,6 +2859,7 @@ mod dbg {
 				.iter()
 				.position(|&candidate| candidate == tag)
 				.expect("known section tag");
+			assert_ne!(id, 6, "unread padding sections must not be emitted");
 			seen.push(id);
 			match id {
 				0 => {
@@ -2912,10 +2896,7 @@ mod dbg {
 						}
 					}
 				}
-				6 => {
-					let len = varint(&blob, &mut p) as usize;
-					p += len;
-				}
+				6 => panic!("unread padding sections must not be emitted"),
 				7 => {
 					let nv = varint(&blob, &mut p) as usize;
 					for _ in 0..nv {
@@ -3001,10 +2982,7 @@ mod dbg {
 						}
 					}
 				}
-				6 => {
-					let len = varint(&blob, &mut p) as usize;
-					p += len;
-				}
+				6 => panic!("unread padding sections must not be emitted"),
 				7 => {
 					// V17 fv 段：count + count×u16var
 					let nv = varint(&blob, &mut p) as usize;
@@ -3290,6 +3268,7 @@ mod dbg {
 			while got < 6 {
 				let tag = buf[p];
 				p += 1;
+				assert_ne!(tag, tags[6], "unread padding sections must not be emitted");
 				if tag == tags[0] {
 					let (v, np) = isa::decode_varint(&buf, p).unwrap();
 					nregs = v as usize;
@@ -3329,9 +3308,6 @@ p = np;
 						ns -= 1;
 					}
 					got += 1;
-				} else if tag == tags[6] {
-					let (dl, np) = isa::decode_varint(&buf, p).unwrap();
-					p = np + dl as usize;
 				} else {
 					if tag != tags[5] {
 						panic!(

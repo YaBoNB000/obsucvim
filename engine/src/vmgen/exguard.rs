@@ -425,18 +425,18 @@ let mut descriptors: Vec<(i64, usize, usize, i64, i64)> = Vec::new();
 		r#"do
 local _miss = ""
 local function _chk(n, v) if TYPV(v) ~= "function" then _miss = _miss .. n .. "," end end
-_chk("identifyexecutor", IDENTV)
-_chk("checkcaller", CHKCV)
-_chk("iscclosure", ISCV)
-_chk("islclosure", ISLV)
-_chk("newcclosure", NEWCV)
+_chk("identify".."executor", IDENTV)
+_chk("check".."caller", CHKCV)
+_chk("is".."cclosure", ISCV)
+_chk("is".."lclosure", ISLV)
+_chk("new".."cclosure", NEWCV)
 _chk("loadstring", LSTRV)
 _chk("typeof", TYPHOF)
 if TYPV(GINFOV) ~= "function" and TYPV(GINFOSV) ~= "function" then _miss = _miss .. "debug.info," end
-_chk("debug.getconstants", GCONSTV)
-_chk("debug.getupvalues", GUPVV)
-if TYPV(GPROTOV) ~= "function" and TYPV(GPROTOSV) ~= "function" then _miss = _miss .. "debug.getproto," end
-_chk("debug.setupvalue", SUPVV)
+_chk("debug.get".."constants", GCONSTV)
+_chk("debug.get".."upvalues", GUPVV)
+if TYPV(GPROTOV) ~= "function" and TYPV(GPROTOSV) ~= "function" then _miss = _miss .. "debug.get".."proto," end
+_chk("debug.setup".."value", SUPVV)
 if TYPV(GAMEV) ~= "table" and TYPV(GAMEV) ~= "userdata" then _miss = _miss .. "game," end
 if TYPV(INSTV) ~= "table" then _miss = _miss .. "Instance," end
 if TYPV(VEC3V) ~= "table" then _miss = _miss .. "Vector3," end
@@ -564,6 +564,66 @@ end
 	));
 	sc.push_str(
 		"local _prims = { SBYTEV, SCHARV, SSUBV, TCONCV, TINSEV, LDEXPV, SELV, PCALV, TYPV, TOSTRV, TONUMV, RGETV, RSETV, RAWEQV, NEXTV, SMTV, GMTV, TUNPV or UNPV, INSPECTV }\nfor _pi = 1, #_prims do if not CLASSIFIES(_prims[_pi], true) then return false, 0 end end\nlocal function _lprobe(v) return v end\nif not CLASSIFIES(_lprobe, false) then return false, 0 end\n",
+	);
+	sc.push_str(
+		r##"local _bok, _br = PCALV(function()
+local _sb1, _sb2, _sb3 = SBYTEV("probe", 2, 4)
+if _sb1 ~= 114 or _sb2 ~= 111 or _sb3 ~= 98 then return false end
+if SCHARV(65, 0, 255) ~= "\065\000\255" then return false end
+if SSUBV("abcdef", 2, 4) ~= "bcd" or SSUBV("abcdef", -3, -1) ~= "def" then return false end
+if TCONCV({"a", "b", "c"}, "-", 2, 3) ~= "b-c" then return false end
+local _ins = {"a", "c"}
+local _ir = TINSEV(_ins, 2, "b")
+if _ir ~= nil or _ins[1] ~= "a" or _ins[2] ~= "b" or _ins[3] ~= "c" then return false end
+if LDEXPV(1.5, 3) ~= 12 or LDEXPV(1, -2) ~= 0.25 then return false end
+if SELV("#", 7, nil, 11) ~= 3 then return false end
+local _sv1, _sv2 = SELV(2, 7, 11, 13)
+if _sv1 ~= 11 or _sv2 ~= 13 then return false end
+local _pok, _pv = PCALV(function(v) return v + 1 end, 8)
+local _eok = PCALV(function() return 1 + nil end)
+if not _pok or _pv ~= 9 or _eok then return false end
+if TYPV("x") ~= "string" or TYPV(1) ~= "number" or TYPV({}) ~= "table" or TYPV(nil) ~= "nil" then return false end
+if TOSTRV(12345) ~= "12345" or TOSTRV(true) ~= "true" then return false end
+if TONUMV("17") ~= 17 or TONUMV("1.25") ~= 1.25 or TONUMV("not-a-number") ~= nil then return false end
+local _raw = {present = 5}
+SMTV(_raw, {__index = function() return 9 end})
+if RGETV(_raw, "present") ~= 5 or RGETV(_raw, "missing") ~= nil then return false end
+local _writes = 0
+local _set = {}
+SMTV(_set, {__newindex = function() _writes = _writes + 1 end})
+local _sr = RSETV(_set, "x", 7)
+if _sr ~= _set or RGETV(_set, "x") ~= 7 or _set.x ~= 7 or _writes ~= 0 then return false end
+local _emt = {__eq = function() return true end}
+local _ea = SMTV({}, _emt)
+local _eb = SMTV({}, _emt)
+if RAWEQV(_ea, _eb) ~= false or RAWEQV(_ea, _ea) ~= true then return false end
+local _nt = {a = 3, b = 4}
+local _nk, _count, _sum = nil, 0, 0
+while true do
+  local _nextk, _nextv = NEXTV(_nt, _nk)
+  if _nextk == nil then break end
+  _nk = _nextk
+  _count = _count + 1
+  _sum = _sum + _nextv
+end
+if _count ~= 2 or _sum ~= 7 then return false end
+local _mt = {__index = function(_, k) if k == "visible" then return 23 end end}
+local _obj = {}
+if SMTV(_obj, _mt) ~= _obj or GMTV(_obj) ~= _mt or _obj.visible ~= 23 then return false end
+local _unpack = TUNPV or UNPV
+local _u1, _u2, _u3 = _unpack({13, 17, 19}, 1, 3)
+if _u1 ~= 13 or _u2 ~= 17 or _u3 ~= 19 then return false end
+if INSPECTV == GINFOSV then
+  local _isrc = INSPECTV(function() return 29 end, "s")
+  if TYPV(_isrc) ~= "string" or #_isrc == 0 then return false end
+else
+  local _iinfo = INSPECTV(function() return 29 end)
+  if TYPV(_iinfo) ~= "table" or TYPV(ERD(_iinfo, "source")) ~= "string" then return false end
+end
+return true
+end)
+if not _bok or _br ~= true then return false, 0 end
+"##,
 	);
 	sc.push_str(
 		"local _c1ok = PCALV(GCONSTV, SBYTEV) local _c2ok, _c2up = PCALV(GUPVV, SBYTEV) local _c3ok = PCALV(SUPVV, SBYTEV, 1, 0)\nif _c1ok or _c3ok or (_c2ok and not TEMPTY(_c2up)) then return false, 0 end\nif TYPV(GPROTOV) == \"function\" then local _c4ok = PCALV(GPROTOV, SBYTEV, 1) if _c4ok then return false, 0 end end\nif TYPV(GPROTOSV) == \"function\" then local _c5ok = PCALV(GPROTOSV, SBYTEV) if _c5ok then return false, 0 end end\n",

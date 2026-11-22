@@ -70,10 +70,10 @@ local function newFolder()
 	obj.Destroy = function(self)
 		if BREAK ~= "destroy-lock" then
 			self._destroyed = true
+			CHILDREN[self] = nil
 		else
 			self._destroyed = false
 		end
-		CHILDREN[self] = nil
 	end
 	obj.ChildRemoved = makeSignal()
 	setmetatable(obj, mt)

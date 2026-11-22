@@ -12,14 +12,16 @@ SRC="$REPO/engine/tests/fixtures/targets/R062_src.lua"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-"$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/target.lua"
+"$BIN" --preset v15 --no-bind-executor --seed 63063 "$SRC" "$TMP/target.lua"
 "$LUAC" "$TMP/target.lua" >/dev/null
 python3 "$REPO/engine/tests/v15_short_name_audit.py" "$TMP/target.lua"
 
 # White-box static audit: KeyEmitter must have no public lookup tables, and
 # every emitted key reconstruction must depend on actual carrier lengths.
+# This regression executes under stock Luau, so pin its artifacts unbound even
+# though executor binding is enabled by default for v15.
 OBSUCVIM_VM_TSRC=1 OBSUCVIM_KEY_MANIFEST="$TMP/keys.txt" \
-    "$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/static-audit.lua"
+    "$BIN" --preset v15 --no-bind-executor --seed 63063 "$SRC" "$TMP/static-audit.lua"
 python3 "$REPO/engine/tests/key_literal_check.py" \
     "$TMP/static-audit.lua" "$TMP/keys.txt" --quiet
 python3 - "$TMP/vm_tsrc.lua" <<'PY'
@@ -36,7 +38,11 @@ for name in ('KA', 'KB', 'KC', 'KM'):
         f'old key-table lookup remains: {name}'
     assert not re.search(rf'\blocal\s+{name}\s*=\s*\{{', src), \
         f'old key table remains: {name}'
-assert 'for i=1,#d do s=(s*' in src and '#d[i]' in src, 'carrier-length digest loop missing'
+carrier_exprs = re.findall(r'\(function\(([dpv])\)(.*?)end\)\(FN\)', src, re.S)
+assert carrier_exprs, 'carrier-key expressions missing'
+assert any(re.search(r'#[dpv]\[[ijn]\]', body) and
+           re.search(r'(?:for\s+[ijn]\s*=\s*1\s*,\s*#[dpv]|while\s+[ijn]\s*<=\s*#[dpv]|repeat\s+[ijn].*?#[dpv])', body)
+           for _, body in carrier_exprs), 'carrier-length digest missing'
 assert 'local by=string.byte for i=1,#d do' not in src, 'key derivation added a byte-hook sink'
 contexts = re.findall(r'end\)\(([^)]*)\)', src)
 contexts = [ctx for ctx in contexts if ctx]
@@ -47,7 +53,7 @@ PY
 
 # The former build-time debug environment variable must not emit raw keys or
 # otherwise alter a fixed-seed artifact.
-OBSUCVIM_KEY_DBG=1 "$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/key-debug-env.lua"
+OBSUCVIM_KEY_DBG=1 "$BIN" --preset v15 --no-bind-executor --seed 63063 "$SRC" "$TMP/key-debug-env.lua"
 cmp -s "$TMP/target.lua" "$TMP/key-debug-env.lua" || {
     echo 'FAIL OBSUCVIM_KEY_DBG changed the emitted artifact' >&2
     exit 1

@@ -414,7 +414,7 @@ else
 	DBGOBJ="$ROOT/target/debug/obsucvim"
 fi
 if [ -x "$DBGOBJ" ]; then
-	if "$DBGOBJ" --preset v15 --dialect luau --seed 31337 "$SRC" "$W/d13.lua" >/dev/null 2>&1 \
+	if "$DBGOBJ" --preset v15 --dialect luau --no-bind-executor --seed 31337 "$SRC" "$W/d13.lua" >/dev/null 2>&1 \
 		&& [ "$($LUAU "$W/d13.lua" 2>&1)" == "$EXP1" ]; then
 		ok "debug 构建通过 + 静态协议产物运行等价"
 	else

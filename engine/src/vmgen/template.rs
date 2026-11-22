@@ -1378,7 +1378,7 @@ pub fn generate(
 		super::exguard::EvKeyMode::Off => String::new(),
 		super::exguard::EvKeyMode::Dev(v) => format!("EVK = {} ", obf_num(v as u64, rng)),
 		super::exguard::EvKeyMode::Bind => String::from(
-			"do local _eko, _ekv = PCAL(function() local _env = GFE(0) local _gg = _env and _env[\"getgenv\"] local _cen = nil if TYP(_gg) == \"function\" then local _gok, _gv = PCAL(_gg) if _gok and TYP(_gv) == \"table\" then _cen = _gv end end local _cen1 = _cen local _vn = nil if _cen1 ~= nil then _vn = _cen1[\"Vector3\"] end if _vn == nil and TYP(_env) == \"table\" then _vn = _env[\"Vector3\"] end if TYP(_vn) ~= \"table\" then return nil end local _nw = _vn[\"new\"] if TYP(_nw) ~= \"function\" then return nil end local _v = _nw(1, 2, 3) local _a = 7 local _s = TSTR(_v) for _i = 1, #_s do _a = (_a * 31 + BYTE(_s, _i)) % 2147483647 end local _tf = nil if _cen1 ~= nil then _tf = _cen1[\"typeof\"] end if _tf == nil and TYP(_env) == \"table\" then _tf = _env[\"typeof\"] end if TYP(_tf) ~= \"function\" then return nil end local _s2 = _tf(_v) if TYP(_s2) ~= \"string\" then return nil end local _b = 7 for _i = 1, #_s2 do _b = (_b * 31 + BYTE(_s2, _i)) % 2147483647 end local _c = 0 local _gm = nil if _cen1 ~= nil then _gm = _cen1[\"game\"] end if _gm == nil and TYP(_env) == \"table\" then _gm = _env[\"game\"] end if TYP(_gm) == \"table\" or TYP(_gm) == \"userdata\" then local _gs = _gm[\"GetService\"] if TYP(_gs) == \"function\" then local _gok2, _rs = PCAL(_gs, _gm, \"RunService\") if _gok2 and _rs ~= nil then local _isf = _rs[\"IsStudio\"] if TYP(_isf) == \"function\" then local _iok, _iv = PCAL(_isf, _rs) if _iok and _iv == true then _c = _c + 1 end end end end end local _ckf = nil if _cen1 ~= nil then _ckf = _cen1[\"checkcaller\"] end if _ckf == nil and TYP(_env) == \"table\" then _ckf = _env[\"checkcaller\"] end if TYP(_ckf) == \"function\" then local _cok, _cr = PCAL(_ckf) if _cok and _cr == true then _c = _c + 2 end end local _idf = nil if _cen1 ~= nil then _idf = _cen1[\"identifyexecutor\"] end if _idf == nil and TYP(_env) == \"table\" then _idf = _env[\"identifyexecutor\"] end if TYP(_idf) == \"function\" then local _iok2, _n1 = PCAL(_idf) if _iok2 and TYP(_n1) == \"string\" then _c = _c + #_n1 * 4 end end return ((_a * 31 + _b) % 268435456 * 31 + _c) % 268435456 end) if not (_eko and TYP(_ekv) == \"number\") then error(\"[Obsucvim] this executor lacks APIs the hardened build requires: Vector3/typeof/game/checkcaller/identifyexecutor, - use the compatible build (--no-bind-executor) here, or a Synapse-class executor\", 0) end EVK = _ekv end "
+			"do local _eko, _ekv = PCAL(function() local _env = GFE(0) local _gg = _env and _env[\"get\"..\"genv\"] local _cen = nil if TYP(_gg) == \"function\" then local _gok, _gv = PCAL(_gg) if _gok and TYP(_gv) == \"table\" then _cen = _gv end end local _cen1 = _cen local _vn = nil if _cen1 ~= nil then _vn = _cen1[\"Vector3\"] end if _vn == nil and TYP(_env) == \"table\" then _vn = _env[\"Vector3\"] end if TYP(_vn) ~= \"table\" then return nil end local _nw = _vn[\"new\"] if TYP(_nw) ~= \"function\" then return nil end local _v = _nw(1, 2, 3) local _a = 7 local _s = TSTR(_v) for _i = 1, #_s do _a = (_a * 31 + BYTE(_s, _i)) % 2147483647 end local _tf = nil if _cen1 ~= nil then _tf = _cen1[\"typeof\"] end if _tf == nil and TYP(_env) == \"table\" then _tf = _env[\"typeof\"] end if TYP(_tf) ~= \"function\" then return nil end local _s2 = _tf(_v) if TYP(_s2) ~= \"string\" then return nil end local _b = 7 for _i = 1, #_s2 do _b = (_b * 31 + BYTE(_s2, _i)) % 2147483647 end local _c = 0 local _gm = nil if _cen1 ~= nil then _gm = _cen1[\"game\"] end if _gm == nil and TYP(_env) == \"table\" then _gm = _env[\"game\"] end if TYP(_gm) == \"table\" or TYP(_gm) == \"userdata\" then local _gs = _gm[\"GetService\"] if TYP(_gs) == \"function\" then local _gok2, _rs = PCAL(_gs, _gm, \"RunService\") if _gok2 and _rs ~= nil then local _isf = _rs[\"IsStudio\"] if TYP(_isf) == \"function\" then local _iok, _iv = PCAL(_isf, _rs) if _iok and _iv == true then _c = _c + 1 end end end end end local _ckf = nil if _cen1 ~= nil then _ckf = _cen1[\"check\"..\"caller\"] end if _ckf == nil and TYP(_env) == \"table\" then _ckf = _env[\"check\"..\"caller\"] end if TYP(_ckf) == \"function\" then local _cok, _cr = PCAL(_ckf) if _cok and _cr == true then _c = _c + 2 end end local _idf = nil if _cen1 ~= nil then _idf = _cen1[\"identify\"..\"executor\"] end if _idf == nil and TYP(_env) == \"table\" then _idf = _env[\"identify\"..\"executor\"] end if TYP(_idf) == \"function\" then local _iok2, _n1 = PCAL(_idf) if _iok2 and TYP(_n1) == \"string\" then _c = _c + #_n1 * 4 end end return ((_a * 31 + _b) % 268435456 * 31 + _c) % 268435456 end) if not (_eko and TYP(_ekv) == \"number\") then error(\"[Obsucvim] this executor lacks APIs the hardened build requires: Vector3/typeof/game/\"..\"check\"..\"caller/\"..\"identify\"..\"executor\"..\", - use the compatible build (--no-bind-executor) here, or a Synapse-class executor\", 0) end EVK = _ekv end "
 		),
 	};
 	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
@@ -1477,62 +1477,6 @@ pub fn generate(
 	rng.shuffle(&mut items);
 	let branches = gen_dispatch_tree(&items, &mut body_of, rng, 0);
 
-	let ladder = |assign: &dyn Fn(&str) -> String| -> String {
-		format!(
-			"local b1 = BYTE(s, p)
-          if b1 < 128 then {a1}; p = p + 1 else
-            local b2 = BYTE(s, p + 1)
-            if b2 < 128 then {a2}; p = p + 2 else
-              local b3 = BYTE(s, p + 2)
-              if b3 < 128 then local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384; if v >= 2147483648 then v = v - 4294967296 end; {a3}; p = p + 3 else
-                local b4 = BYTE(s, p + 3); local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152; if v >= 2147483648 then v = v - 4294967296 end; {a4}; p = p + 4
-              end
-            end
-          end",
-			a1 = assign("b1"),
-			a2 = assign("(b1 - 128) + b2 * 128"),
-			a3 = assign("v"),
-			a4 = assign("v"),
-		)
-	};
-	let stream_read = |name: &str| -> String {
-		let sink: Box<dyn Fn(&str) -> String> =
-			Box::new(move |x: &str| format!("{}[i] = {}", name, x));
-		format!(
-			"{} = {{}}
-        for i = 1, ncode do
-          {}
-        end",
-			name,
-			ladder(&sink)
-		)
-	};
-	let fold_read = || -> String {
-		let sink: Box<dyn Fn(&str) -> String> = Box::new(|x: &str| {
-			format!("ck = (ck + {}) % 4294967296", x)
-		});
-		format!(
-			"for i = 1, ncode do
-          {}
-        end",
-			ladder(&sink)
-		)
-	};
-	let fold_read2 = |s_idx: i64| -> String {
-		let sink: Box<dyn Fn(&str) -> String> = Box::new(move |x: &str| {
-			format!(
-				"ck2 = (ck2 + (({} * ncode + i) * ({})) % 4294967296) % 4294967296",
-				s_idx, x
-			)
-		});
-		format!(
-			"for i = 1, ncode do
-          {}
-        end",
-			ladder(&sink)
-		)
-	};
-
 	// V19 R5-b：mb() 镜像 isa::ConstLcg（fold_key_nl 非线性 + _cpv 明文级联）。
 	let const_loop = r#"local _mc = ("")["char"]
     local _cpv = 0
@@ -1540,8 +1484,8 @@ pub fn generate(
       cks = (CKM * cks + CKC + _cpv) % 268435456
       local _x = (cks + (cks % 16384) * FLR(cks / 16384)) % 268435456
       _x = (_x * 257 + FLR(_x / 65536)) % 268435456
-      local b = (BYTE(s, p) - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
-      p = p + 1
+      local b = (rb() - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
+      cp = cp + 1
       _cpv = b
       return b
     end
@@ -1604,13 +1548,12 @@ pub fn generate(
 	manifest_key("BSTEP", blobk.3 as u64);
 	manifest_key("CKJ", ckj as u64);
 	let tag_defs = format!(
-		"local TH = {}\n    local TCK = {}\n    local TU = {}\n    local TC = {}\n    local TS = {}\n    local TDC = {}\n    local NSECT = {}\n    {}",
+		"local TH = {}\n    local TCK = {}\n    local TU = {}\n    local TC = {}\n    local TS = {}\n    local NSECT = {}\n    {}",
 		tags[0],
 		tags[1],
 		tags[2],
 		tags[3],
 		tags[4],
-		tags[6],
 		if v15 { if super_insn { 7 } else { 6 } } else { 5 },
 		if super_insn { format!("local TFV = {}", tags[7]) } else { String::new() }
 	);
@@ -1622,34 +1565,46 @@ pub fn generate(
     local n = #s
     local ksplit = n
     if ksplit > 64 then ksplit = 64 end
-    local um = {}
-    local g = (BSEED + (fi - 1) * BSTEP) % 268435456
-    local _pv = 0
-    for i = 1, ksplit do
-      g = (BKM * g + BKC + _pv) % 268435456
-      local _x = (g + (g % 16384) * FLR(g / 16384)) % 268435456
-      _x = (_x * 257 + FLR(_x / 65536)) % 268435456
-      local _v = (BYTE(s, i) - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
-      um[i] = CHAR(_v)
-      _pv = _v
-    end
+    local base = (BSEED + (fi - 1) * BSTEP) % 268435456
     local hf = 0
     for i = 1, ksplit do
       hf = (hf * 31 + BYTE(s, i)) % 268435456
     end
-    g = (BSEED + (fi - 1) * BSTEP + hf) % 268435456
-    for i = ksplit + 1, n do
+    local g = base
+    local _pv = 0
+    local rp = 0
+    local function rb()
+      rp = rp + 1
+      if rp == ksplit + 1 then g = (base + hf) % 268435456 end
       g = (BKM * g + BKC + _pv) % 268435456
       local _x = (g + (g % 16384) * FLR(g / 16384)) % 268435456
       _x = (_x * 257 + FLR(_x / 65536)) % 268435456
-      local _v = (BYTE(s, i) - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
-      um[i] = CHAR(_v)
+      local _v = (BYTE(s, rp) - (((_x % 256) + (FLR(_x / 256) % 256) + (FLR(_x / 65536) % 256) + FLR(_x / 16777216)) % 256)) % 256
       _pv = _v
+      return _v
     end
-    s = table.concat(um)
-    __TAGS__local p = 1
-    local got = 0
-    local cstart = 0"#;
+    local function rv()
+      local b1 = rb()
+      if b1 < 128 then return b1 end
+      local b2 = rb()
+      if b2 < 128 then return (b1 - 128) + b2 * 128 end
+      local b3 = rb()
+      if b3 < 128 then
+        local v = (b1 - 128) + (b2 - 128) * 128 + b3 * 16384
+        if v >= 2147483648 then v = v - 4294967296 end
+        return v
+      end
+      local b4 = rb()
+      local v = (b1 - 128) + (b2 - 128) * 128 + (b3 - 128) * 16384 + b4 * 2097152
+      if v >= 2147483648 then v = v - 4294967296 end
+      return v
+    end
+    local function reset_reader()
+      g = base
+      _pv = 0
+      rp = 0
+    end
+    __TAGS__local got = 0"#;
 	// V19 R4-proto：knob 开时 blob LCG 两个 g 初值都并入 EVKX（BSS 外层
 	// 函数新增尾参；off 时文本与 R073 逐字节一致）。
 	let unmask_pre = if ev_on {
@@ -1660,40 +1615,35 @@ pub fn generate(
 	} else {
 		unmask_pre.to_string()
 	};
-	let walk_head = r#"local tag = BYTE(s, p); p = p + 1
+	let walk_head = r#"local tag = rb()
         if tag == TH then
-          local v
-          v, p = r16(s, p); nregs = v
-          v, p = r16(s, p); nparams = v
-          v, p = r16(s, p); vararg = v
+          nregs = rv()
+          nparams = rv()
+          vararg = rv()
           got = got + 1
         elseif tag == TCK then
-          local v; v, p = r16(s, p); cks = v
+          local v = rv(); cks = v
           got = got + 1
         elseif tag == TU then
-          local nu; nu, p = r16(s, p)
+          local nu = rv()
           upsrc = {}
-          for i = 1, nu do local v; v, p = r16(s, p); upsrc[i] = v end
+          for i = 1, nu do upsrc[i] = rv() end
           got = got + 1
         elseif tag == TC then
-          local v
-          v, p = r16(s, p); nconst = v
-          v, p = r16(s, p); csl = v
-          cstart = p
-          p = p + csl
+          nconst = rv()
+          csl = rv()
+          cstart = rp + 1
+          for i = 1, csl do rb() end
           got = got + 1
         elseif tag == TS then
-          local ns; ns, p = r16(s, p)
+          local ns = rv()
           S = {}
-          for i = 1, ns do local v; v, p = r16(s, p); S[i] = v end
+          for i = 1, ns do S[i] = rv() end
           got = got + 1
-        elseif tag == TDC then
-          local dl; dl, p = r16(s, p)
-          p = p + dl
 __FVARM__        else
-          local v; v, p = r16(s, p); ncode = v
+          ncode = rv()
           W = {}
-          for i = 1, ncode do W[i] = BYTE(s, p); p = p + 1 end
+          for i = 1, ncode do W[i] = rb() end
           __CODE_EXTRA__
           got = got + 1
         end"#;
@@ -1710,7 +1660,7 @@ __FVARM__        else
 		if super_insn {
 			(
 				String::from(
-					"        elseif tag == TFV then\n          local nv2; nv2, p = r16(s, p)\n          fvt = {}\n          for _fj = 1, nv2 do local fv1; fv1, p = r16(s, p); fvt[_fj] = fv1 end\n          got = got + 1\n",
+					"        elseif tag == TFV then\n          local nv2 = rv()\n          fvt = {}\n          for _fj = 1, nv2 do fvt[_fj] = rv() end\n          got = got + 1\n",
 				),
 				String::from(", fv = fvt, fvm = fvm0"),
 				", fvt, fvm0",
@@ -1727,9 +1677,9 @@ __FVARM__        else
 	};
 	let walk_head_super: String = if let Some((e1, e2)) = &e1_e2 {
 		walk_head.replace(
-			"v, p = r16(s, p); cks = v\n          got = got + 1",
+			"local v = rv(); cks = v\n          got = got + 1",
 			&format!(
-				"v, p = r16(s, p); cks = v\n          fvm0 = (v * {e1} + {e2}) % 65536\n          got = got + 1"
+				"local v = rv(); cks = v\n          fvm0 = (v * {e1} + {e2}) % 65536\n          got = got + 1"
 			),
 		)
 	} else {
@@ -1741,32 +1691,29 @@ __FVARM__        else
 		&walk_head_super
 	};
 	let parse_fn = if v15 {
-		let code_extra = r#"local p0 = p
-          __STREAMS__
-          local pend = p
-          p = p0
-          local ck = 0
-          __FOLDS__
-          p = p0
-          local ck2 = 0
-          __FOLDS2__
-          CK = ck
-          CK2 = ck2
-          p = pend"#;
+		let mut code_extra = String::from("local ck = 0\nlocal ck2 = 0\n");
+		for (stream_idx, name) in ["SA", "SB", "SC", "SD"].iter().enumerate() {
+			code_extra.push_str(&format!(
+				"{name} = {{}}\nfor i = 1, ncode do\n  local v = rv()\n  {name}[i] = v\n  ck = (ck + v) % 4294967296\n  ck2 = (ck2 + (({stream_idx} * ncode + i) * v) % 4294967296) % 4294967296\nend\n"
+			));
+		}
+		code_extra.push_str("CK = ck\nCK2 = ck2");
 		String::from(
 			r#"local function parse(s, fi)
     __UNMASK__
     local st = 1
-    local nregs, nparams, vararg, cks, csl, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK, CK2__FVLOC__
+    local nregs, nparams, vararg, cks, csl, cstart, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK, CK2__FVLOC__
     while st <= 2 do
       if st == 1 then
         __WALK__
         if got >= NSECT then st = 2 end
       else
-        p = cstart
+        reset_reader()
+        for _i = 1, cstart - 1 do rb() end
         C = {}
+        local cp = 1
         __CONSTS__
-        if p ~= cstart + csl then CK = (CK or 0) + p + 1; CK2 = (CK2 or 0) + cstart + csl + 1 end
+        if cp ~= csl + 1 then CK = (CK or 0) + cstart + cp; CK2 = (CK2 or 0) + cstart + csl + 1 end
         st = 3
       end
     end
@@ -1775,71 +1722,41 @@ __FVARM__        else
             .replace("__UNMASK__", &unmask_pre)
             .replace("__TAGS__", &tag_defs)
             .replace("__WALK__", walk_head_emit)
-            .replace("__CODE_EXTRA__", code_extra)
+            .replace("__CODE_EXTRA__", &code_extra)
             .replace("__CONSTS__", const_loop)
-            .replace(
-                "__STREAMS__",
-                &format!(
-                    "{}\n        {}\n        {}\n        {}",
-                    stream_read("SA"),
-                    stream_read("SB"),
-                    stream_read("SC"),
-                    stream_read("SD")
-                ),
-            )
-            .replace(
-                "__FOLDS__",
-                &format!(
-                    "{}\n        {}\n        {}\n        {}",
-                    fold_read(),
-                    fold_read(),
-                    fold_read(),
-                    fold_read()
-                ),
-            )
             .replace("__FVLOC__", fv_locals)
             .replace("__FVARM__", &fv_walk_arm)
             .replace("__FVRET__", &fv_ret_fields)
-            .replace(
-                "__FOLDS2__",
-                &format!(
-                    "{}\n        {}\n        {}\n        {}",
-                    fold_read2(0),
-                    fold_read2(1),
-                    fold_read2(2),
-                    fold_read2(3)
-                ),
-            ),
 		)
 	} else {
-		let code_extra =
-			r#"SA, SB, SC, SD = rstream(), rstream(), rstream(), rstream()"#;
+		let mut code_extra = String::new();
+		for name in ["SA", "SB", "SC", "SD"] {
+			code_extra.push_str(&format!(
+				"{name} = {{}}\nfor i = 1, ncode do {name}[i] = rv() end\n"
+			));
+		}
 		String::from(
 			r#"local function parse(s, fi)
     __UNMASK__
-    local nregs, nparams, vararg, cks, csl, upsrc, nconst, C, ncode, W, SA, SB, SC, SD
-    local function rstream()
-      local T = {}
-      for i = 1, ncode do
-        local v, np = r16(s, p); p = np; T[i] = v
-      end
-      return T
-    end
+    local nregs, nparams, vararg, cks, csl, cstart, upsrc, nconst, C, ncode, W, SA, SB, SC, SD
     while got < NSECT do
       __WALK__
     end
-    p = cstart
+    reset_reader()
+    for _i = 1, cstart - 1 do rb() end
     C = {}
+    local cp = 1
     __CONSTS__
-    if p ~= cstart + csl then while true do end end
+    if cp ~= csl + 1 then while true do end end
     return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, W = W, SA = SA, SB = SB, SC = SC, SD = SD }
   end"#,
 		)
 		.replace("__UNMASK__", &unmask_pre)
 		.replace("__TAGS__", &tag_defs)
 		.replace("__WALK__", walk_head_emit)
-		.replace("__CODE_EXTRA__", code_extra)
+		.replace("__CODE_EXTRA__", &code_extra)
 		.replace("__CONSTS__", const_loop)
+		.replace("__FVLOC__", fv_locals)
 		.replace("__FVARM__", &fv_walk_arm)
 		.replace("__FVRET__", &fv_ret_fields)
 	};
