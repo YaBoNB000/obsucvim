@@ -17,6 +17,8 @@ TOOLS = pathlib.Path("/home/user/luraph/.tools/bin")
 LUAU = TOOLS / "luau"
 if not LUAU.exists():
     LUAU = pathlib.Path("/home/user/tools/bin/luau")
+if not LUAU.exists():
+    LUAU = ROOT.parent / ".tools/bin/luau"
 
 SRC = """local function fold(n)
     local s = 0
@@ -77,7 +79,8 @@ def main():
         c, sc = build(314159, src, out_c, td / "c.noise")
 
         deterministic = a == c and sa == sc
-        seed_diff = a != b and [r["seed"] for r in sa] != [r["seed"] for r in sb]
+        # 审计行不带 seed；产物字节或噪声统计任一变即视为独立噪声流。
+        seed_diff = a != b and sa != sb
         print("== H3 噪声随机化审计 ==")
         print(f"[0] 同 seed 产物+噪声统计确定: {'YES' if deterministic else 'NO'}")
         print(f"[1] 异 seed 独立噪声流变化    : {'YES' if seed_diff else 'NO'}")

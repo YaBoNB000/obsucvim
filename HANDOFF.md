@@ -5,7 +5,7 @@
 > 发布包（`release-assets/`）与 Render/Docker 部署文件已从工作树删除。测试仍需的 4 个靶标
 > 已移入 `engine/tests/fixtures/`。旧文件恢复记录见 §10；当前 shallow checkout 不含旧基线 `68b9187` 对象。
 >
-> 最后更新：2026-11-21。§2 和 §12 保留 2026-11-15 的历史基线；Delta 诊断见 §13，本轮移除 executor binding/key-host/EVKEY 的现状与验证见 §14。
+> 最后更新：2026-11-22。§2 和 §12 保留 2026-11-15 的历史基线；Delta 诊断见 §13，本轮移除 executor binding/key-host/EVKEY 的现状与验证见 §14。
 > 当前工作分支与 PR 状态以 Arena 会话说明为准；此 checkout 是 **shallow clone**，分支基线为 `aeca245`，本轮工作起点为 `44696d5`；不要依赖更早历史。
 
 ---
@@ -28,14 +28,14 @@ executor 认证绑定、key-host 转录链和 EVKEY 路径已移除（详见 §1
 
 | 项 | 值 |
 | --- | --- |
-| 原生二进制 | `engine/target/release/obsucvim`，**2,117,872 B** / `ff2bc1a88aab9da1e6ba22096e5b1c9ca862ee3233543191d804f6674ca8d4b0` |
+| 原生二进制 | `engine/target/release/obsucvim`，**1,998,688 B** / `b1988fc669c8f52cc45ef899e8493b7d0b4c0efa665c69aa92352f470e082c03`（2026-11-22 重建） |
 | 构建 | Rust 1.88.0，`cargo build --release` 离线成功（约 30 s 增量） |
 | 单元/集成测试 | `cargo test --release`：**65 passed / 0 failed / 1 ignored**（61+4） |
-| 官方矩阵 | `bash engine/tests/run_tests.sh` → **PASS 169 / FAIL 2**（约 155 s） |
+| 官方矩阵 | `bash engine/tests/run_tests.sh` → **PASS 169 / FAIL 0**（2026-11-22，约 110 s；含新增 h9 密封闸） |
 | VM 专项 | 37 语料 × `--vm`（字符串密封默认开）× run + `luau-compile` → **74 / 74 PASS** |
-| v15 锚点 | `print("suda") --preset v15 --env-check --bind-executor --seed 67067` → **179,643 B** / `1b1056221c386f5a7232153e5d5f6f63a2e68cc4c51f5e6e7165a46b8b5c7135` |
-| 关闭绑定锚 | `--preset v15 --no-bind-executor --seed 4242`（executor 守卫语料）→ **159,951 B** / `11e2bfa48e2eca198688110bdab29d76cfb247e005959f51522e563a00dfb52f` |
+| 根样例锚 | `print(6)` + `--preset v15 --dialect luau --seed 42` → `example.txt` **149,118 B** / `9ceb3202cf050587ed3074398cb871fa45369d74464f47de6b0e9af40aa4c783` |
 | 水印 | 每个产物第一行固定 `-- This file was obfuscated by Obsucvim.`（普通注释） |
+| 加固复核 | 12 项外部改进方案逐条实测：9 项早已落地、1 项设计不适用、1 项（W3 假密封）本轮修复（见 §15） |
 
 **确定性**：同一 `--seed` 连跑逐字节一致；不同 seed 全量重随机。
 
@@ -529,3 +529,77 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
   默认 guard 样例曾报 `attempt to compare nil <= nil`。用户选择默认 guard 保持开启并不跑 trace；
   `example_guard_no_debug.txt` 与随后简化 debug source 检查的 `example_guard_source_probe.txt` 均在 Delta 正常。
   当前根目录 `example.txt` 已重生为后者的字节副本，具体 hash 与验证见 §13.4。
+
+---
+
+## 15. 加固方案复核与「真密封」落地（2026-11-22）
+
+> 外部提交了一份 12 项改进方案（出口收敛 / 构建差异化 / 动态密钥 / 自密封 / MBA /
+> 链式状态 / 去中心化 VM / JIT 解密 / 短暂常量 / 多态上下文 / 噪声随机化），声称当前
+> 综合评分 4.56/10、7 大弱点全中。本轮**逐条用产物本体复核**，结论是该评分模型不适用
+> 于本仓库现状：12 项里 9 项早已落地并有审计闸，1 项属静态可解性设计约束，只有
+> **1 项（W3 假密封）确实仍成立**并已修复。
+
+### 15.1 逐条复核结论（证据均为本沙箱实跑）
+
+| 方案项 | 声称 | 实测结论 | 证据 |
+|---|---|---|---|
+| W1 出口收敛 | 六路 `return` 泄漏 6 个内部对象 | **已闭合** | 产物末尾只有 `return <ft>:(...)`；正则无六路返回；`h4_loader_audit` = CLOSED（loader 参数 0 字节、内部调用 0） |
+| W2 构建差异化 | 53/54 段跨构建相同 | **已闭合** | `h2_diff_audit`：同位置相同字节 2.35%、骨架 token 4.94%、24-gram Jaccard 0.33%、长串段相同率 0% |
+| W5 噪声指纹 | 噪声跨构建固定 | **已闭合** | `h3_noise_audit` 11 项全过（真/噪声高低域双向重叠 29.1% vs 27.0%） |
+| W9 别名表固定 | 43×3 固定别名 | **已闭合** | 别名/分发表跨构建重掷（`h2`、`h7`） |
+| W10 指令字布局 | 5×u16 固定 | **已闭合** | 每函数 slot 置换 + SoA 变体（`h2`[F]、`h7`[3]） |
+| W6/W7 静态密钥 | 密钥可离线算 | **已闭合** | `OBSUCVIM_KEY_MANIFEST` 全部键跨构建重掷（`h7`[1]、`h8`[1][6]） |
+| W8 反 AI 设计 | 中央分发器 + 无 MBA | **已闭合（部分口径不同）** | 无 `OC.`/`if oc <=` 中央表；~236 状态 continuation + trampoline；Poison 六面分散（`h8`）。**未采用 MBA 与链式状态**——见 15.3 的取舍说明 |
+| W4 壳自密封 | 外层壳无自源码哈希 | **设计上不适用** | 产物是单条 `return` 表达式，无「壳」可改；源代码已无明文，`string.dump`/`debug.getinfo` 自哈希在 Luau 下既易伪造又破坏语义（`debug` 可被 hook）。密文完整性已由 D5/D6 真跨度篡改 30/30 拒绝覆盖 |
+| **W3 假密封** | 完整性检查为恒等式（≡0） | **成立，已修复** | 见 15.2 |
+
+### 15.2 W3：把「恒假无后果」换成「可证伪 + 有后果」
+
+修复前：`v15.rs` 的 V2 stage 是
+`if C[verifyslot]~=C[sumslot] then C[sumslot]=C[sumslot]+7919 end` —— 两个槽从未被
+任何一方初始化，nil 恒等于 nil，分支永不进入；即使进入也只是「加常数后自愈」，
+对攻击者是零成本、对执行者是零作用。
+
+修复后（`engine/src/vmgen/v15.rs`）：
+
+1. 入口装配初始化 `C[verifyslot] = C[sumslot]`，使比较在正确路径上是**活的**而非 nil 跳过；
+2. 失配不再自愈，而是把 `poison`（每构建随机、经 `st_pair_expr` 双表拆分）注入 `sumslot`，
+   并置 fail 槽；
+3. continuation（`ctl`）在抵达 `sdone` 时检查 fail 槽，命中则把 poison 当返回值交给解释器，
+   解释器随即 **静默毒药**退出（rc=0、无正确输出、无报错信号），与仓库既有 poison 口径一致。
+
+可证伪性实证（`engine/tests/h9_seal_audit.py`，已并入 `run_tests.sh` 官方矩阵）：
+
+- 正确构建：语义等价（`6 9 sealprobe`），不误报；
+- 篡改解码载荷字节 → 触发失败；
+- 篡改存放的校验值 → 触发失败；
+- **负对照**：把 `v15.rs` 回退到旧式 `+7919` 后同一审计 1/3/4 项全红、退出码 1。
+  这证明审计测的是密封本身，而不是恒真断言。
+
+### 15.3 未采纳项及理由（诚实边界）
+
+- **自源码哈希（W4）**：需要在产物内读自身源码。Luau 无 `string.dump`；`debug.info`/`getinfo`
+  在 executor 下可被 hook 伪造，且 §13.4 已证明 Delta 上 debug 路径脆弱。加它只会新增
+  误伤面而不增加真实攻击成本——攻击者本来就能改任意字节，哈希比对逻辑同样可改。
+- **MBA 语义纠缠（W8）**：`(x⊕y)·(x∨y)` 在 Lua 里按 double 运算，须显式 `%2^32` 与位库，
+  会把 VM 热路径再放慢一个量级（当前已是 ~2800×），换来的是可被常量折叠/代数化简消掉的
+  复杂度。仓库现有分散投毒 + 每构建重掷的收益/成本比更高。
+- **链式状态 / JIT 单指令解密 / 短暂常量**：与 15.1 的按需 reader（`rb()/rv()`）和
+  分散 poison 部分重叠；真正做到「内存中只有一条明文」需要重写解释器主循环，属新功能，
+  受 §9-1 收摊令冻结，本轮不动。
+
+### 15.4 本轮验证（全部本沙箱实跑）
+
+- `cargo test --release`：**65 passed / 0 failed / 1 ignored**，集成 **4 passed**。
+- `bash tests/run_tests.sh`：**169 PASS / 0 FAIL**（已含新增 h9 闸）；`wtf-port env-check` 23/23。
+- `bash tests/multiseed.sh`：**FAIL=0**；`bash tests/defense_audit.sh`：**20 PASS / 0 FAIL**。
+- H2/H3/H4/H5/H6/H7/H8/H9 八个加固审计：**全部 PASS**。其中 `h3_noise_audit.py` 本轮
+  修复了脚本自身的两处缺陷（引用早已不存在的 `seed` 字段、缺 `.tools/bin` 回落），
+  修复前它直接 `KeyError` 崩溃——即该审计此前**从未真正跑过**。
+- 重生成 `engine/examples/` 37 个样例；根 `example.txt` 重生为
+  **149,118 B**、SHA-256 `9ceb3202cf050587ed3074398cb871fa45369d74464f47de6b0e9af40aa4c783`，
+  `luau-compile` 通过、stock Luau 输出 `6`。
+- 性能：200k 循环 17.96s（改前记录 ~18.50s），无可测回归。
+- 已知既有问题（**非本轮引入**）：`v15_fingerprint.py` 在 seed 888 上 F9 偶发不过；
+  回退旧代码为 30/32，本轮为 31/32，属既存形态抖动，未在本轮处理。

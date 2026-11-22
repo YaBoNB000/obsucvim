@@ -610,6 +610,7 @@ let v2h = nm.take();
 	let sumslot = entryslot + 1;
 	let verifyslot = sumslot + 1;
 	let auxslot = verifyslot + 1;
+	let failslot = auxslot + 1;
 
 	const MIN_STAGING: usize = 100;
 	let natural = n * (1 + CHUNKS);
@@ -1210,13 +1211,28 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 		));
 	}
 	{
-let (st, _ret) = step(&mut state_i);
+		// 真密封（取代恒假无后果的 +7919 版）：C[verifyslot] 由 V1H 从已解码
+		// chunk 字节折叠得出，C[sumslot] 独立累计；两者在正确执行中恒等。
+		// 失配时不再“自愈”，而是把 poison 注入 sumslot 并置 fail 旗标，
+		// 由 ctl 在跑到 sdone 时转成 poison 返回码（fc 的 return B 即该值）。
+		let (st, _ret) = step(&mut state_i);
 		let v2n: Vec<String> = (0..5).map(|_| nm.take_avoid(&["b", "C"])).collect();
+		let seal_poison: i64 = rng.int(1, 268_435_455);
+		let mut st1v = st1.clone();
+		let mut f1v = st1_free.clone();
+		let seal_poison_e = st_pair_expr(
+			&mut st1v, &mut st2, &mut f1v, &mut st2_free,
+			st_slots[0], st_slots[1], seal_poison, rng,
+		);
 		let src = format!(
-			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]~=C[{sumslot}] then C[{sumslot}]=C[{sumslot}]+7919 end; \
-			 return {sdone},C,{n1},{n2},{n3},{n4},{n0} end",
-			verifyslot = verifyslot,
-			sumslot = sumslot,
+			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{vs}]~=C[{ss}] then C[{ss}]=b:{mod}(b:{mul}(C[{ss}],31)+{p}) C[{fs}]=1 end; \
+			return {sdone},C,{n1},{n2},{n3},{n4},{n0} end",
+			vs = verifyslot,
+			ss = sumslot,
+			fs = failslot,
+			p = seal_poison_e,
+			mod = modulo,
+			mul = mul,
 			sdone = sdone,
 			n0 = v2n[0],
 			n1 = v2n[1],
@@ -1235,8 +1251,8 @@ let (st, _ret) = step(&mut state_i);
 		ctl.clone(),
 		parse_expr(&format!(
 			"function(b,C,{sv}) local h=if {sv}>={} then 2 else 1; \
-			 if h==2 then return 2,C[{}] end; return 1 end",
-			sdone, entryslot, sv = sv
+			 if h==2 then if C[{fs}]~=nil then return 2,C[{ss}] end; return 2,C[{}] end; return 1 end",
+			sdone, entryslot, sv = sv, fs = failslot, ss = sumslot
 		)),
 	));
 
@@ -1269,13 +1285,14 @@ let (st, _ret) = step(&mut state_i);
 	{
 		let src = format!(
 			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
-			 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
+			 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; C[{vs}]=C[{ss}]; \
 		 do local u=1; local w=u+1-1; local o=w-u; if o~=0 then C[{ss}]=o end end; \
 			 local J={{[4]='{xl}',[7]='{xl}'}}; \
 			 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
 			if h2==2 then return B end end end",
 			init = init,
 			ss = sumslot,
+			vs = verifyslot,
 			ax = auxslot,
 			xl = xl,
 			lhs6 = lhs6,

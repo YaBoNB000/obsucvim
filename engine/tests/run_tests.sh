@@ -204,6 +204,13 @@ if ! bash "$ROOT/tests/call_window_noise_test.sh"; then
 	fail=$((fail + 1)); failed+=("h3-6/call-window-noise")
 fi
 
+# H4-9: the in-chain integrity seal must be live (initialised, non-nil) and
+# falsifiable -- a self-healing identity check must not creep back in.
+if ! python3 "$ROOT/tests/h9_seal_audit.py"; then
+	echo "FAIL [h9-seal] integrity seal is not falsifiable (fake-seal regression)"
+	fail=$((fail + 1)); failed+=("h9/fake-seal")
+fi
+
 # WTF-PORT Phase 1: --env-check battery (mock-environment kill matrix).
 if ! bash "$ROOT/tests/wtf_port_test.sh"; then
 	echo "FAIL [wtf-port] environment check battery regression"
