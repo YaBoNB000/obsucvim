@@ -1356,31 +1356,10 @@ pub fn generate(
 	super_insn: bool,
 	fv_sets: &[Vec<(u8, u8)>],
 	fvck: (u16, u16),
-	bind_env: Option<&str>,
 	env_slots: Option<&[i64; 4]>,
-	executor_bind: bool,
-	executor_guard: bool,
-	key_host: Option<&super::exguard::KeyHost>,
 	env_check: bool,
 	guard: bool,
-	ev_mode: super::exguard::EvKeyMode,
-	// V19 R3：oracle 熄灭——EVKEY 激活件的一切校验期望值先扣 ev_term 再入库，
-	// 运行期由探针现算的 EVK/EVKX 加回（Off=0 时全部公式退化为旧形，逐字节
-	// 不变于此项；R6 形状硬化不受影响）。
-	ev_term: u32,
 ) -> String {
-	let ev_on = ev_mode.on();
-	// V19 R4-proto（OBSUCVIM_V19_EVKEY）：Bind=真宿主探针现算 EVK；
-	// Dev(n)=开发档常量（仅本地矩阵机制验证，禁止交付）；Off=不发射任何 EV 痕迹。
-	let evsig = if ev_on { ",EVKX" } else { "" };
-	let evhk_unpack = if ev_on { ",EVK_" } else { "" };
-	let evk_probe: String = match ev_mode {
-		super::exguard::EvKeyMode::Off => String::new(),
-		super::exguard::EvKeyMode::Dev(v) => format!("EVK = {} ", obf_num(v as u64, rng)),
-		super::exguard::EvKeyMode::Bind => String::from(
-			"do local _eko, _ekv = PCAL(function() local _env = GFE(0) local _gg = _env and _env[\"get\"..\"genv\"] local _cen = nil if TYP(_gg) == \"function\" then local _gok, _gv = PCAL(_gg) if _gok and TYP(_gv) == \"table\" then _cen = _gv end end local _cen1 = _cen local _vn = nil if _cen1 ~= nil then _vn = _cen1[\"Vector3\"] end if _vn == nil and TYP(_env) == \"table\" then _vn = _env[\"Vector3\"] end if TYP(_vn) ~= \"table\" then return nil end local _nw = _vn[\"new\"] if TYP(_nw) ~= \"function\" then return nil end local _v = _nw(1, 2, 3) local _a = 7 local _s = TSTR(_v) for _i = 1, #_s do _a = (_a * 31 + BYTE(_s, _i)) % 2147483647 end local _tf = nil if _cen1 ~= nil then _tf = _cen1[\"typeof\"] end if _tf == nil and TYP(_env) == \"table\" then _tf = _env[\"typeof\"] end if TYP(_tf) ~= \"function\" then return nil end local _s2 = _tf(_v) if TYP(_s2) ~= \"string\" then return nil end local _b = 7 for _i = 1, #_s2 do _b = (_b * 31 + BYTE(_s2, _i)) % 2147483647 end local _c = 0 local _gm = nil if _cen1 ~= nil then _gm = _cen1[\"game\"] end if _gm == nil and TYP(_env) == \"table\" then _gm = _env[\"game\"] end if TYP(_gm) == \"table\" or TYP(_gm) == \"userdata\" then local _gs = _gm[\"GetService\"] if TYP(_gs) == \"function\" then local _gok2, _rs = PCAL(_gs, _gm, \"RunService\") if _gok2 and _rs ~= nil then local _isf = _rs[\"IsStudio\"] if TYP(_isf) == \"function\" then local _iok, _iv = PCAL(_isf, _rs) if _iok and _iv == true then _c = _c + 1 end end end end end local _ckf = nil if _cen1 ~= nil then _ckf = _cen1[\"check\"..\"caller\"] end if _ckf == nil and TYP(_env) == \"table\" then _ckf = _env[\"check\"..\"caller\"] end if TYP(_ckf) == \"function\" then local _cok, _cr = PCAL(_ckf) if _cok and _cr == true then _c = _c + 2 end end local _idf = nil if _cen1 ~= nil then _idf = _cen1[\"identify\"..\"executor\"] end if _idf == nil and TYP(_env) == \"table\" then _idf = _env[\"identify\"..\"executor\"] end if TYP(_idf) == \"function\" then local _iok2, _n1 = PCAL(_idf) if _iok2 and TYP(_n1) == \"string\" then _c = _c + #_n1 * 4 end end return ((_a * 31 + _b) % 268435456 * 31 + _c) % 268435456 end) if not (_eko and TYP(_ekv) == \"number\") then error(\"[Obsucvim] this executor lacks APIs the hardened build requires: Vector3/typeof/game/\"..\"check\"..\"caller/\"..\"identify\"..\"executor\"..\", - use the compatible build (--no-bind-executor) here, or a Synapse-class executor\", 0) end EVK = _ekv end "
-		),
-	};
 	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().take(active_op_count).enumerate() {
@@ -1560,7 +1539,6 @@ pub fn generate(
 	// V19 R5-a：非线性折叠（交叉半积 (x%16384)*(x/16384) + 高位回混）+
 	// 明文级联 _pv（前一明文字节并入 LCG 推进，跨 ksplit 连续携带）。
 	// 编译侧镜像：compiler::finish / unmask_blob（isa::fold_key_nl + prev）。
-	// R4 锚点句式 "BSEED + (fi - 1) * BSTEP" 两处必须原样保留（EVKX splice 依赖）。
 	let unmask_pre = r#"s = decarrier(s)
     local n = #s
     local ksplit = n
@@ -1605,16 +1583,6 @@ pub fn generate(
       rp = 0
     end
     __TAGS__local got = 0"#;
-	// V19 R4-proto：knob 开时 blob LCG 两个 g 初值都并入 EVKX（BSS 外层
-	// 函数新增尾参；off 时文本与 R073 逐字节一致）。
-	let unmask_pre = if ev_on {
-		unmask_pre.replace(
-			"BSEED + (fi - 1) * BSTEP",
-			"BSEED + (fi - 1) * BSTEP + EVKX",
-		)
-	} else {
-		unmask_pre.to_string()
-	};
 	let walk_head = r#"local tag = rb()
         if tag == TH then
           nregs = rv()
@@ -2454,15 +2422,11 @@ __FVARM__        else
 		let chaff_micro_e = obf_num(chaff_micro as u64, rng);
 		let micro_chaff_expected =
 			(micro_checksum as i64 + qf_checksum * chaff_micro as i64) % KEY_MOD;
-		// V19 R3（oracle 熄灭）：EVKEY 激活件先扣 ev_term 再入库，运行期 +EVK 加回；
-		// 静态常折只能得到错位期望值 ⇒ 校验 oracle 熄灭。Off 件（ev_term=0）退化旧形。
-		let micro_stored = (micro_chaff_expected - ev_term as i64).rem_euclid(KEY_MOD);
-		let micro_expected_e = ke.key_expr(micro_stored, None, rng);
+		let micro_expected_e = ke.key_expr(micro_chaff_expected, None, rng);
 		micro_fill.push_str(&format!(
-			"_mc=(_mc+CHQ*({chaff}))%268435456 MZD=(_mc-({expected}{evadd}))%268435456 ",
+			"_mc=(_mc+CHQ*({chaff}))%268435456 MZD=(_mc-({expected}))%268435456 ",
 			chaff = chaff_micro_e,
 			expected = micro_expected_e,
-			evadd = if ev_on { "+EVK" } else { "" },
 		));
 		manifest_key("MICRO_CK", micro_checksum);
 		manifest_key("MICRO_CHAFF_CK", micro_chaff_expected as u64);
@@ -2543,29 +2507,10 @@ __FVARM__        else
 		} else {
 			(String::new(), 0, false)
 		};
-		let (exg_src, exg_consts) = if executor_guard {
-			let (s, c) = super::exguard::build(rng, key_host);
-			(Some(s), Some(c))
-		} else {
-			(None, None)
-		};
 		let env_src = if env_check {
-			Some(super::envcheck::build(rng, env_check && executor_bind))
+			Some(super::envcheck::build(rng))
 		} else {
 			None
-		};
-		let xte_off = if let Some(c) = &exg_consts {
-			format!(" + {}", obf_num(c.xte, rng))
-		} else {
-			String::new()
-		};
-		let (xm3, xm4, xtec_off) = if let Some(c) = &exg_consts {
-let xm3v = rng.int(1024, 999_999) as u64;
-			let xm4v = rng.int(1, (268_435_456u64 - 1) as i64) as u64;
-			let xtec = (c.attest_token * xm3v + xm4v) % 268_435_456;
-			(xm3v, xm4v, format!(" + {}", obf_num(xtec, rng)))
-		} else {
-			(0, 0, String::new())
 		};
 		let (chaff_mul, chaff_coeffs, chaff_pos, chaff_fn) = chaff_formula;
 		let chaff_const = ((chaff_coeffs[1] as u64 * 263
@@ -2752,7 +2697,6 @@ let xm3v = rng.int(1024, 999_999) as u64;
 				"for j = 1, m do co[j] = si local cbase = (PS + i * PT + _svk + qf * CQC + ((bz%65521)*((i*KI+j*NI+qf)%65521))%268435456",
 			);
 			s.push_str(&cenv_off);
-			s.push_str(&xtec_off);
 			s.push_str(
 				// V19 R5-b：常量段 ct/csb 密封链——stj/stp 换 fold_key_nl 同式非线性，
 				// 字符串字节流并入 _pv2 明文级联（与下方 CDEC 解码文本严格镜面）。
@@ -2777,19 +2721,14 @@ let xm3v = rng.int(1024, 999_999) as u64;
 		} else {
 			""
 		};
-		// V19 R3（oracle 熄灭，L10 失守根因）：osum/osum2 期望值先扣 ev_term
-		// 再入库；运行期解析环 +EVKX 加回。静态侧拿到的差分永远错位 ev_term。
-		let os_adj = |s: u64| -> u64 {
-			(s as i64 - ev_term as i64).rem_euclid(4_294_967_296) as u64
-		};
 		let os_list = operand_sums
 			.iter()
-			.map(|s| obf_num(os_adj(*s), rng))
+			.map(|s| obf_num(*s, rng))
 			.collect::<Vec<_>>()
 			.join(", ");
 		let os_list2 = operand_sums2
 			.iter()
-			.map(|s| obf_num(os_adj(*s), rng))
+			.map(|s| obf_num(*s, rng))
 			.collect::<Vec<_>>()
 			.join(", ");
 		let mut zw_inner = String::new();
@@ -2846,9 +2785,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.map(|v| obf_num(*v as u64, rng))
 			.collect::<Vec<_>>()
 			.join(",");
-		// V19 R3：QF 折叠校验（_qk 对 RTQCKX）扣 ev_term；运行期 +EVKZ 加回。
-		let qf_stored = (qf_checksum - ev_term as i64).rem_euclid(KEY_MOD);
-		let qf_checksum_e = ke.key_expr(qf_stored, None, rng);
+		let qf_checksum_e = ke.key_expr(qf_checksum, None, rng);
 		let chaff_mul_e = obf_num(chaff_mul as u64, rng);
 		let chaff_coeff_e: Vec<String> = chaff_coeffs
 			.iter()
@@ -2887,7 +2824,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _sn=0 for _si=1,3 do local _so=(_si<3) and {{}} or function() end local _ts=TOSTR(_so) for _i=1,#_ts do _sn=(_sn*31+BYTE(_ts,_i))%268435456 _sn=(_sn+(_sn%16384)*((_sn-(_sn%16384))/16384))%268435456 end end SALT=(_sn*257+((_sn-(_sn%65536))/65536))%268435456 if TYP(CLK)==\"function\" and TYP(PCAL)==\"function\" then local _cko,_ckv=PCAL(CLK) if _cko and TYP(_ckv)==\"number\" then SALT=(SALT+(_ckv%65536))%268435456 end end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local bz=(BD+(pf.iz1%65521)*(1+(i+FQ)%65521)+(pf.iz2%65521)*(1+(i+KQ)%65521))%268435456 pf.iz1=nil pf.iz2=nil local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS+(bz%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} {svkm}local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(bz%65521)*CI2+(_svq%65521))%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 {svbx}for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + _sv + qf * CQB + ((bz%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456{xteoff}) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(bz%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(bz%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _sn=0 for _si=1,3 do local _so=(_si<3) and {{}} or function() end local _ts=TOSTR(_so) for _i=1,#_ts do _sn=(_sn*31+BYTE(_ts,_i))%268435456 _sn=(_sn+(_sn%16384)*((_sn-(_sn%16384))/16384))%268435456 end end SALT=(_sn*257+((_sn-(_sn%65536))/65536))%268435456 if TYP(CLK)==\"function\" and TYP(PCAL)==\"function\" then local _cko,_ckv=PCAL(CLK) if _cko and TYP(_ckv)==\"number\" then SALT=(SALT+(_ckv%65536))%268435456 end end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local bz=(BD+(pf.iz1%65521)*(1+(i+FQ)%65521)+(pf.iz2%65521)*(1+(i+KQ)%65521))%268435456 pf.iz1=nil pf.iz2=nil local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS+(bz%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} {svkm}local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(bz%65521)*CI2+(_svq%65521))%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 {svbx}for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + _sv + qf * CQB + ((bz%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(bz%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(bz%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2931,7 +2868,6 @@ let chaff_lane = rng.int(1, 4) as usize;
 			svbx = sv_bx_ep,
 			svkm = sv_km_ep,
 			cfields = c_fields_enc,
-			xteoff = xte_off,
 			enc_lanes = enc_lanes,
 		);
 		let ck_poison = rng.int(1, 268_435_455);
@@ -2957,16 +2893,9 @@ let chaff_lane = rng.int(1, 4) as usize;
 		{
 			phase_checksum = (phase_checksum * 257 + v as i64) % KEY_MOD;
 		}
-		// V19 R3：/_bp 校验期望值先扣 ev_term；运行期 +EVKX 加回（BSSKCX 占位
-		// 在 fragment 内被换名，EVKX 为 BSS 外层参数、内层闭包词法可达）。
-		let phase_ck_stored = (phase_checksum - ev_term as i64).rem_euclid(KEY_MOD);
-		let phase_checksum_e = ke.key_expr(phase_ck_stored, None, rng);
+		let phase_checksum_e = ke.key_expr(phase_checksum, None, rng);
 		manifest_key("BSS_PHASE_CK", phase_checksum as u64);
-		let phase_parse = if ev_on {
-			"local di=1 while di<=#FN_ do local pz=parse(FN_[di],di) PF_[di]=pz local d1=(pz.ck-(OS[di]+EVKX))%4294967296 local d2=(pz.ck2-(OS2[di]+EVKX))%4294967296 pz.iz1=((d1%65536)*(1+(PS+di*KM)%65521)+FLR(d1/65536)*(1+(PT+di*KC)%65521))%268435456 pz.iz2=((d2%65536)*(1+(PT+di*KM)%65521)+FLR(d2/65536)*(1+(PS+di*KC)%65521))%268435456 di=di+1 end".to_string()
-		} else {
-			"local di=1 while di<=#FN_ do local pz=parse(FN_[di],di) PF_[di]=pz local d1=(pz.ck-OS[di])%4294967296 local d2=(pz.ck2-OS2[di])%4294967296 pz.iz1=((d1%65536)*(1+(PS+di*KM)%65521)+FLR(d1/65536)*(1+(PT+di*KC)%65521))%268435456 pz.iz2=((d2%65536)*(1+(PT+di*KM)%65521)+FLR(d2/65536)*(1+(PS+di*KC)%65521))%268435456 di=di+1 end".to_string()
-		};
+		let phase_parse = "local di=1 while di<=#FN_ do local pz=parse(FN_[di],di) PF_[di]=pz local d1=(pz.ck-OS[di])%4294967296 local d2=(pz.ck2-OS2[di])%4294967296 pz.iz1=((d1%65536)*(1+(PS+di*KM)%65521)+FLR(d1/65536)*(1+(PT+di*KC)%65521))%268435456 pz.iz2=((d2%65536)*(1+(PT+di*KM)%65521)+FLR(d2/65536)*(1+(PS+di*KC)%65521))%268435456 di=di+1 end".to_string();
 		let phase_rewrite = if zw_inner.is_empty() {
 			"local _nz=PB%2 _nz=_nz-_nz".to_string()
 		} else {
@@ -2999,15 +2928,14 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.collect::<String>()
 			+ "else BD=(BD+BSSKPX)%268435456 end";
 		let mut bss_static_src = format!(
-			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR{evsig}) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch_arm}{dispatch} _bi=_bi+1 end end end",
-			evsig = evsig,
+			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch_arm}{dispatch} _bi=_bi+1 end end end",
 			os = os_list,
 			os2 = os_list2,
 			parse = parse_fn,
 			program = phase_stored.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(","),
 			mask = phase_mask,
 			step = phase_step,
-			expected = if ev_on { "(BSSKCX+EVKX)" } else { "BSSKCX" },
+			expected = "BSSKCX",
 			dispatch = phase_dispatch,
 			dispatch_arm = String::new(),
 		);
@@ -3016,28 +2944,12 @@ let chaff_lane = rng.int(1, 4) as usize;
 			tag_base_e, tag_step_e
 		);
 		let cdec_inner = if consts_safe {
-			let exg_active = exg_consts.is_some();
-			let (xm3_e, xm4_e) = if exg_active {
-				(obf_num(xm3, rng), obf_num(xm4, rng))
+			let probe_call = if cenv_active {
+				"local cef = CENVPROBE() "
 			} else {
-				(String::new(), String::new())
+				""
 			};
-			let probe_call = match (cenv_active, exg_active) {
-				(true, true) => "local cef = CENVPROBE() local xtok2 = XPROBE(fi) ",
-				(true, false) => "local cef = CENVPROBE() ",
-				(false, true) => "local xtok2 = XPROBE(fi) ",
-				_ => "",
-			};
-			let mut base_env_s = String::new();
-			if cenv_active {
-				base_env_s.push_str(" + cef");
-			}
-			if exg_active {
-				base_env_s.push_str(&format!(
-					" + (xtok2 * {} + {}) % 268435456",
-					xm3_e, xm4_e
-				));
-			}
+			let base_env_s = if cenv_active { " + cef" } else { "" };
 			let mut s = String::from(
 				"function(q, CHAR, UNP, TONUM) local fi=((q.sx-PM-1)%65521)+1 local ct, cn, csb, csl, co = q.ct, q.cn, q.csb, q.csl, q.co ",
 			);
@@ -3120,39 +3032,19 @@ let chaff_lane = rng.int(1, 4) as usize;
 			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    local vd=(QF[fi]*NQ+fi*NI+MM)%65521\n    local pg=((PZ1%65521)*((fi+FQ)%65521)+(PZ2%65521)*((QF[fi]+KQ)%65521)+(PZ3%65521)*((fi+NI)%65521)+(PZ4%65521)*((QF[fi]+RI)%65521)+(MZD%65521)*((fi+MM)%65521))%268435456\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
 		);
-		let (sig_tail, xtfb_line) = if let Some(c) = &exg_consts {
-			(
-				", XTOK, XPROBE".to_string(),
-				format!(
-					"local XTFB = (XTOK * {} + {}) % 268435456\n  SLT = (SLT + XTFB) % 268435456\n  ",
-					obf_num(c.xm1, rng),
-					obf_num(c.xm2, rng)
-				),
-			)
-		} else {
-			(String::new(), String::new())
-		};
-		let (sig_tail, xtfb_line, env_coef, env_coef2) = if env_check {
+		let (sig_tail, env_mix_line, env_coef2) = if env_check {
 			let ec = rng.int(1024, 65_521) as u64;
 			let ec2 = rng.int(1024, 65_521) as u64;
 			(
-				format!("{sig_tail}, EVD"),
+				String::from(", EVD"),
 				format!(
-					"{xtfb_line}SLT = (SLT + EVD * {}) % 268435456\n  ",
+					"SLT = (SLT + EVD * {}) % 268435456\n  ",
 					obf_num(ec, rng)
 				),
-				ec,
 				ec2,
 			)
 		} else {
-			(sig_tail, xtfb_line, 0, 0)
-		};
-		// V19 R3：EVKEY 激活件在 st2 壳尾参加 EVKZ（调用点传 EVK），
-		// PZ3/PZ4 的下文校验改从 EVKZ 加回，oracle 期望值本体错位入库。
-		let sig_tail = if ev_on {
-			format!("{sig_tail}, EVKZ")
-		} else {
-			sig_tail
+			(String::new(), String::new(), 0)
 		};
 		let bdec_assign = bdec_src.replacen("local function bdec", "bdec = function", 1);
 		let makefn_assign =
@@ -3190,9 +3082,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			rt_phase_checksum = (rt_phase_checksum * 257 + v as i64) % KEY_MOD;
 		}
 		let rt_phase_poison = rng.int(1, KEY_MOD - 1);
-		// V19 R3：/_rp 校验期望值扣 ev_term；运行期 +EVKZ 加回。
-		let rt_phase_ck_stored = (rt_phase_checksum - ev_term as i64).rem_euclid(KEY_MOD);
-		let rt_phase_checksum_e = ke.key_expr(rt_phase_ck_stored, None, rng);
+		let rt_phase_checksum_e = ke.key_expr(rt_phase_checksum, None, rng);
 		let rt_phase_poison_e = ke.key_expr(rt_phase_poison, None, rng);
 		manifest_key("RT_PHASE_CK", rt_phase_checksum as u64);
 		manifest_key("RT_PHASE_POISON", rt_phase_poison as u64);
@@ -3224,20 +3114,12 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.collect::<String>()
 			+ "else SLT=(SLT+RTPKX)%268435456 SLTC=(SLTC+RTPKX)%268435456 end";
 		let mut rt_static_src = format!(
-			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE,MZD{sigtail}) local SEL=P[{select_slot}] local PZ1=(H1*CB1+H2*CB2+CBC)%268435456 local PZ2=(H1*CC1+H2*CC2+CCC)%268435456 local SLTC=SLT local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local CNJ,CSJ={cnj},{csj} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end {pz3_line} {xtfb}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end {pz4_line} local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
+			"function(PS,PT,KM,KC,PB,SLT,P,G,U,FLOOR,MS,AV,HW2,TP,mget,resolve_call,callcap,HAS_LEN_META,XC1,XC2,XC3,XC4,XE1,XE2,XE3,XE4,CLK,H1,H2,CB1,CB2,CBC,CC1,CC2,CCC,CKJ,CENVPROBE,MZD{sigtail}) local SEL=P[{select_slot}] local PZ1=(H1*CB1+H2*CB2+CBC)%268435456 local PZ2=(H1*CC1+H2*CC2+CCC)%268435456 local SLTC=SLT local CQB={cqb} local CQC={cqc} local BC={bc} local WM,WB={wm},{wb} local CS={cs} local CNJ,CSJ={cnj},{csj} local FQ,FI,KQ,KI,BQ,BI,LB,LS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM={fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm} local QF={{{qf}}} local _qk=0 for _qi=1,#QF do _qk=(_qk*257+QF[_qi])%268435456 end {pz3_line} {envmix}local CDEC,bdec,newE,makefn,run local _rp={{{program}}} local _rc=0 _rc=(_rc*257+{mask})%268435456 _rc=(_rc*257+{step})%268435456 for _rj=1,#_rp do _rc=(_rc*257+_rp[_rj])%268435456 end {pz4_line} local _ri=1 while _ri<=#_rp do local _op=(_rp[_ri]-({mask}+_ri*{step})%256)%256 {dispatch} _ri=_ri+1 end _rp=nil return run end",
 			sigtail = sig_tail,
-			pz3_line = if ev_on {
-				"local PZ3=(_qk-(RTQCKX+EVKZ))%268435456"
-			} else {
-				"local PZ3=(_qk-RTQCKX)%268435456"
-			},
-			pz4_line = if ev_on {
-				"local PZ4=(_rc-(RTPCX+EVKZ))%268435456"
-			} else {
-				"local PZ4=(_rc-RTPCX)%268435456"
-			},
+			pz3_line = "local PZ3=(_qk-RTQCKX)%268435456",
+			pz4_line = "local PZ4=(_rc-RTPCX)%268435456",
 			select_slot = slots[12],
-			xtfb = xtfb_line,
+			envmix = env_mix_line,
 			qf = qf_expected,
 			cqb = chaff_block_e,
 			cqc = chaff_const_e,
@@ -3275,11 +3157,6 @@ let chaff_lane = rng.int(1, 4) as usize;
 			step = rt_phase_step,
 			dispatch = rt_phase_dispatch,
 		);
-		let mut exg_static_src = exg_src.map(|s| {
-			s.strip_prefix("return ")
-				.expect("EXG factory source")
-				.to_string()
-		});
 		let mut env_static_src = env_src.map(|s| {
 			s.strip_prefix("return ")
 				.expect("ENV factory source")
@@ -3346,18 +3223,6 @@ let chaff_lane = rng.int(1, 4) as usize;
 			"local _RTPKX_=({}) local _RTPCX_=({}) local _RTQCKX_=({}) RTFRAG={} ",
 			rt_phase_poison_e, rt_phase_checksum_e, qf_checksum_e, rt_static_src
 		);
-		let exg_fill = if let Some(src) = exg_static_src.take() {
-			let clean = sanitize_frag(
-				&src,
-				rng,
-				&mut frag_map,
-				&frag_reserved,
-				&mut frag_used,
-			);
-			format!("EXGFRAG={} ", clean)
-		} else {
-			String::new()
-		};
 		let env_fill = if let Some(src) = env_static_src.take() {
 			let clean = sanitize_frag(
 				&src,
@@ -3411,27 +3276,14 @@ let chaff_lane = rng.int(1, 4) as usize;
         let vault_name = format!("_vt{}", rng.int(10, 99));
         let vault_get_name = format!("_vg{}", rng.int(10, 99));
         let vault_ckj_e = ke.key_expr(ckj, None, rng);
-        // V19 R4-proto：knob 开时 vault 追加第 9 项 EVK（编译期 EV 烘进 blob，
-        // 运行期探针现算 EVK 沿 vault 进 HBOOT → BSS；产物内无 EV 常量）。
-        let vault_def = if ev_on {
-            format!(
-                "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS,HBD,EVK}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8],v[9] end ",
-                vn = vault_nonce_name,
-                vt = vault_name,
-                vg = vault_get_name,
-                nonce = vault_nonce,
-                ckj = vault_ckj_e
-            )
-        } else {
-            format!(
-                "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS,HBD}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8] end ",
-                vn = vault_nonce_name,
-                vt = vault_name,
-                vg = vault_get_name,
-                nonce = vault_nonce,
-                ckj = vault_ckj_e
-            )
-        };
+        let vault_def = format!(
+            "local {vn} = {nonce} local {vt} = {{ [{vn}] = {{RPK1,RPK2,RPK3,RPK4,RPK5,{ckj},BSS,HBD}} }} local {vg} = function(k) local v={vt}[k]; {vt}[k]=nil; return v[1],v[2],v[3],v[4],v[5],v[6],v[7],v[8] end ",
+            vn = vault_nonce_name,
+            vt = vault_name,
+            vg = vault_get_name,
+            nonce = vault_nonce,
+            ckj = vault_ckj_e
+        );
         let shell_params: Vec<&str> = vec![
             "AL", "BYTE", "CHAR", "FLR", "SUB", "CARR1_", "CARR2_", "CARR3_", "CARR4_", "EV",
             "FN_", "NOPA_", "TK_", "DC1", "R16", "CKM_", "CKC_", "BKM_",
@@ -3495,17 +3347,12 @@ let chaff_lane = rng.int(1, 4) as usize;
 			hb_phase_checksum = (hb_phase_checksum * 257 + v as i64) % KEY_MOD;
 		}
 		let hb_phase_poison = rng.int(1, KEY_MOD - 1);
-		// V19 R3：/_hp 校验期望值扣 ev_term；运行期 +EVK_（vault 第 9 槽）加回。
-		let hb_phase_ck_stored = (hb_phase_checksum - ev_term as i64).rem_euclid(KEY_MOD);
-		let hb_phase_checksum_e = ke.key_expr_with_data(hb_phase_ck_stored, None, "FN_", rng);
+		let hb_phase_checksum_e = ke.key_expr_with_data(hb_phase_checksum, None, "FN_", rng);
 		let hb_phase_poison_e = ke.key_expr_with_data(hb_phase_poison, None, "FN_", rng);
 		manifest_key("HBOOT_PHASE_CK", hb_phase_checksum as u64);
 		manifest_key("HBOOT_PHASE_POISON", hb_phase_poison as u64);
-        let hb_factory = if ev_on {
-            "_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_,EVK_)".to_string()
-        } else {
-            "_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string()
-        };
+        let hb_factory =
+            "_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string();
 		let hb_execute =
 			"_b1,_b2,_b3=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD1)%268435456,CKJ_)".to_string();
 		let hb_seal = "_ready=1".to_string();
@@ -3539,10 +3386,9 @@ let chaff_lane = rng.int(1, 4) as usize;
 				m = hb_phase_mask,
 			);
 		let hboot_src = format!(
-			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_{evhk}=GET_(NONCE_) local HD1=HBD_ local HD2=HBD_*257 local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end local _he=(_hc-({expected}))%268435456 HD1=(HD1+_he)%268435456 HD2=(HD2+_he*({mask}+1))%268435456 local _lv1,_b1,_b2,_b3 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD1=(HD1+({poison}))%268435456 HD2=(HD2+({poison})*({step}+1))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD1)%{m1} local h2=({iv2}+HD2)%{m2} local _O1,_O2,_O3,_O4,_O5,_O6{hpret_decl}=HW,_b1,_b2,h1,h2,_b3{hpret} HW,_b1,_b2,h1,h2,_b3{hpret}=nil,nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5,_O6{hpret_ret} end end",
+			"function({shell_sig}) {shell_bind}{guard}local PS_,PT_,KM_,KC_,PB_,CKJ_,BSSF_,HBD_=GET_(NONCE_) local HD1=HBD_ local HD2=HBD_*257 local _hp={{{program}}} local _hc=0 _hc=(_hc*257+{mask})%268435456 _hc=(_hc*257+{step})%268435456 for _hj=1,#_hp do _hc=(_hc*257+_hp[_hj])%268435456 end local _he=(_hc-({expected}))%268435456 HD1=(HD1+_he)%268435456 HD2=(HD2+_he*({mask}+1))%268435456 local _lv1,_b1,_b2,_b3 local _ready=0 local _hi=1 while _hi<=#_hp do local _op=(_hp[_hi]-({mask}+_hi*{step})%256)%256 {dispatch} _hi=_hi+1 end if _ready~=1 then HD1=(HD1+({poison}))%268435456 HD2=(HD2+({poison})*({step}+1))%268435456 end _hp=nil local HW={{}} local h1=({iv1}+HD1)%{m1} local h2=({iv2}+HD2)%{m2} local _O1,_O2,_O3,_O4,_O5,_O6{hpret_decl}=HW,_b1,_b2,h1,h2,_b3{hpret} HW,_b1,_b2,h1,h2,_b3{hpret}=nil,nil,nil,nil,nil,nil{hpret_nil_r} return function() return _O1,_O2,_O3,_O4,_O5,_O6{hpret_ret} end end",
 			guard = guard_embed,
 			hpret = hpret,
-			evhk = evhk_unpack,
 			shell_sig = shell_sig,
 			shell_bind = shell_bind,
 			program = hb_phase_stored
@@ -3552,11 +3398,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 				.join(","),
 			mask = hb_phase_mask,
 			step = hb_phase_step,
-			expected = if ev_on {
-				format!("({})+EVK_", hb_phase_checksum_e)
-			} else {
-				hb_phase_checksum_e
-			},
+			expected = hb_phase_checksum_e,
 			poison = hb_phase_poison_e,
 			dispatch = hb_phase_dispatch,
 			hpret_decl = hpret_decl,
@@ -3723,14 +3565,6 @@ let f_ty = fold31("Vector3Vector3");
 		} else {
 			String::new()
 		};
-		let (xtok_decl, xtok_extract) = if exg_consts.is_some() {
-			(
-				String::from("\n  local XTOK, XPROBE"),
-				String::from("\n    local _xg = EXGFRAG() EXGFRAG = nil XTOK, XPROBE = _xg[1], _xg[2]"),
-			)
-		} else {
-			(String::new(), String::new())
-		};
 		let mut av_order: Vec<usize> = vec![0, 1, 2];
 		rng.shuffle(&mut av_order);
 		let mut av_fold = String::new();
@@ -3789,7 +3623,7 @@ let f_ty = fold31("Vector3Vector3");
   local CT1, CT2, CT3, CT4
   local CX1, CX2, CX3, CX4
   local RTFRAG
-  local EXGFRAG{env_frag_decl}
+{env_frag_decl}
   local RPK1, RPK2, RPK3, RPK4, RPK5, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11
   local HBD
   local CHQ
@@ -3800,8 +3634,8 @@ let f_ty = fold31("Vector3Vector3");
   local PD = function() local z0, z1 = 0, 1 while z0 < 4294967296 do z0 = (z0 * 1103515245 + 12345) % 268435456 z1 = (z1 * 80659 + 95050511) % 268435456 if z0 == z1 and z0 == 123456789 then break end end end
   local MPF
   local CLK
-  local CENVPROBE{xtok_decl}{env_decl}{evk_decl}
-  {hboot_fill}{exg_fill}{env_fill}do
+  local CENVPROBE{env_decl}
+  {hboot_fill}{env_fill}do
     local LS = GFE(0)[{v_ls}]
     local TSTR = GFE(0)[{v_ts}]
     local DBG = GFE(0)[{v_dbg}]
@@ -3856,9 +3690,9 @@ let f_ty = fold31("Vector3Vector3");
     RPK9 = {shcc1}
     RPK10 = {shcc2}
     RPK11 = {shccc}
-    {evk_probe}{vault_def}local _hok, _r1 = PCAL(function() return HBOOT({vault_args}) end) HBOOT = nil BSS = nil
+    {vault_def}local _hok, _r1 = PCAL(function() return HBOOT({vault_args}) end) HBOOT = nil BSS = nil
     if not _hok then {hbootfail} end
-    HW, MPF, SALT, SH1, SH2, CHQ{hp_recv} = _r1() _r1 = nil{xtok_extract}{env_extract}
+    HW, MPF, SALT, SH1, SH2, CHQ{hp_recv} = _r1() _r1 = nil{env_extract}
     {hp_stash}
     {ct_fill}{cx_fill}for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
     {micro_fill}{hw_expand}{env_mzd}
@@ -3866,7 +3700,6 @@ let f_ty = fold31("Vector3Vector3");
   end"#,
 		boot = boot,
 		hboot_fill = hboot_fill,
-		exg_fill = exg_fill,
 		hbd = hbd_expr,
 		micro_fill = micro_fill,
 		bss_fill = bss_fill,
@@ -3874,20 +3707,10 @@ let f_ty = fold31("Vector3Vector3");
             hw_expand = hw_expand,
 		hp_recv = hp_recv,
 		hp_stash = hp_stash,
-		evk_probe = evk_probe,
 		vault_def = vault_def,
 		vault_args = vault_args,
 		hbootfail = "PD()",
-		xtok_decl = xtok_decl,
-		xtok_extract = xtok_extract,
 		env_decl = env_decl,
-		evk_decl = if ev_on {
-			// V19 R3：探针外置声明——EVK 必须活在 do 块之外，st2 壳调用
-			// （RTFRAG(...,EVK)）与 micro MZD 都在不同词法层消费它。
-			"\n  local EVK = 0"
-		} else {
-			""
-		},
 		env_frag_decl = env_frag_decl,
 		env_extract = env_extract,
 		env_fill = env_fill,
@@ -3988,13 +3811,7 @@ let f_ty = fold31("Vector3Vector3");
 	let run_block: String = if v15 {
 		run_unpack = String::new();
 		run_soa = String::new();
-		let call_tail = format!(
-			"{}{}{}",
-			if executor_guard { ", XTOK, XPROBE" } else { "" },
-			if env_check { ", EVD" } else { "" },
-			// V19 R3：EVKEY 激活件把 build 层 EVK 传进 st2 壳（尾参 EVKZ）。
-			if ev_on { ", EVK" } else { "" }
-		);
+		let call_tail = if env_check { ", EVD" } else { "" };
 		format!(
 			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE, MZD{}) RTFRAG = nil",
 			call_tail

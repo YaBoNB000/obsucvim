@@ -53,7 +53,7 @@ fail=0
 expected="$("$LUAU" "$SRC")"
 for seed in $SEEDS; do
 	out="$TMP/out_$seed.lua"
-	if ! "$TOOL" --no-bind-executor --seed "$seed" "$SRC" "$out" 2>"$TMP/err_$seed"; then
+	if ! "$TOOL" --seed "$seed" "$SRC" "$out" 2>"$TMP/err_$seed"; then
 		echo "FAIL [build] seed=$seed: $(head -1 "$TMP/err_$seed")"
 		fail=$((fail + 1))
 		continue

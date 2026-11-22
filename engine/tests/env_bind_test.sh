@@ -31,7 +31,7 @@ if [[ "$_STANDALONE" == "1" ]]; then trap 'rm -rf "$BG_TMP"' EXIT; fi
 gf() { echo "FAIL [envbind:$1] $2"; fail=$((fail+1)); failed+=("envbind/$1"); }
 
 # 生成绑定态产物
-if ! "$TOOL" --preset v15 --dialect luau --no-bind-executor --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound.lua" 2>"$BG_TMP/err"; then
+if ! "$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound.lua" 2>"$BG_TMP/err"; then
 	gf "build" "tool failed: $(head -1 "$BG_TMP/err")"
 else
 	# (a) 语法校验通过
@@ -60,14 +60,14 @@ fi
 # 前移消费 + 元钥匙流消费）；未绑定态只保留无害的 ef1 声明，无折叠消费。
 # （㊺ 正向等价/顺序守卫见 faithful_stub_test.sh。）
 rm -f /tmp/vm_tsrc.lua
-OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --no-bind-executor --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
+OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
 if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "Vector3\.new" "$BG_TMP/bound2.lua"; then
 	pass=$((pass+1))
 else
 	gf "envval" "绑定态缺少环境值折叠消费（ef1 钥匙流项 / 槽捕获）"
 fi
 rm -f /tmp/vm_tsrc.lua
-OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 42 "$SRC" "$BG_TMP/unbound2.lua" >/dev/null 2>&1
+OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound2.lua" >/dev/null 2>&1
 if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null; then
 	gf "envval-leak" "未绑定产物混入环境值折叠消费"
 else
@@ -75,7 +75,7 @@ else
 fi
 
 # 未绑定对照：零参数直接可运行（无回归）
-"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 42 "$SRC" "$BG_TMP/unbound.lua" 2>/dev/null
+"$TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound.lua" 2>/dev/null
 o1="$(timeout 30 "$LUAU" "$SRC" 2>&1)"; r1=$?
 o2="$(timeout 30 "$LUAU" "$BG_TMP/unbound.lua" 2>&1)"; r2=$?
 if [[ "$r1" == "$r2" && "$o1" == "$o2" ]]; then

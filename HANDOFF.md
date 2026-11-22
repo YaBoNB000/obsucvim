@@ -5,7 +5,7 @@
 > 发布包（`release-assets/`）与 Render/Docker 部署文件已从工作树删除。测试仍需的 4 个靶标
 > 已移入 `engine/tests/fixtures/`。旧文件恢复记录见 §10；当前 shallow checkout 不含旧基线 `68b9187` 对象。
 >
-> 最后更新：2026-11-21。§2 和 §12 保留 2026-11-15 的历史基线；本轮增量验证、评估报告边界见 §13。
+> 最后更新：2026-11-21。§2 和 §12 保留 2026-11-15 的历史基线；Delta 诊断见 §13，本轮移除 executor binding/key-host/EVKEY 的现状与验证见 §14。
 > 当前工作分支与 PR 状态以 Arena 会话说明为准；此 checkout 是 **shallow clone**，分支基线为 `aeca245`，本轮工作起点为 `44696d5`；不要依赖更早历史。
 
 ---
@@ -13,7 +13,8 @@
 ## 1. 项目是什么
 
 **obsucvim**：Luau / Roblox 混淆引擎。Rust 把输入脚本编译成私有字节码，再由随产物分发的
-「Lua 写的加密解释器」执行；可选 v15 结构克隆、环境检查、executor 认证绑定与 key-host 转录链。
+「Lua 写的加密解释器」执行；可选 v15 结构克隆、通用 Luau 环境检查、反调试 guard 与 `--bind-env` 目标 API 绑定。
+executor 认证绑定、key-host 转录链和 EVKEY 路径已移除（详见 §14）。
 
 - **Luau-only**：Lua 5.1 目标自 2026-09-10 停止支持，`--dialect 5.1` 直接报错。
 - **引擎本体 Rust，std-only，零第三方 crate**（`engine/Cargo.toml` 无依赖）。沙箱到不了
@@ -63,7 +64,7 @@ Rust encode/decode、v15 micro-op、handlers/loadstr.rs。**
 engine/                 Rust 引擎（CLI + 私有 VM）+ 语料 + 示例 + 测试
   Cargo.toml            零依赖；release: opt-level=3 + lto
   src/                  73 个 .rs，约 2.05 万行（注释 2026-10-11 整体剥离）
-  src/vmgen/            compiler / template / v15 / isa / envcheck / exguard /
+  src/vmgen/            compiler / template / v15 / isa / envcheck /
                         fuse / strseal / strpool / handlers（43 个指令 handler）
   tests/                37 个语料 + 矩阵/审计/多种子/红队探针
     fixtures/targets/   测试用 4 个历史靶标（R035/R062/R064），从原 artifacts 移入
@@ -143,13 +144,14 @@ cargo test --release
 | `vm` | high + L6 | legacy 私有 VM |
 | `max` | 当前 = `vm` | legacy 最强档 |
 
-常用旗标：`--env-check`、`--bind-env roblox`、`--bind-executor` / `--no-bind-executor`
-（后者仅原生开发构建可用）、`--super-insn`（默认关）、`--vm-seal-strings` /
-`--no-vm-seal-strings`，以及 `--no-mangle/-minify/-strings/-flatten/-junk/-numbers/-body/-antidbg/-guard`。
+常用旗标：`--env-check`（通用 Luau tier-1）、`--bind-env roblox`、`--guard` / `--no-guard`、
+`--super-insn`（默认关）、`--vm-seal-strings` / `--no-vm-seal-strings`，以及
+`--no-mangle/-minify/-strings/-flatten/-junk/-numbers/-body/-antidbg`。
 
-- `--key-host delta` 自 R070 起恒开（仅兼容保留）；`--no-key-host` 已移除。
-- 绑定态产物（`--bind-env` / `--env-check` / `--bind-executor`）**不进运行等价矩阵**：
-  只做语法校验 + 裸 Luau「干净拒绝」验证；矩阵与示例用 `--no-bind-executor`。
+- `--env-check` 仅包含通用 Luau 语义挑战；Roblox/executor 专用 tier-2 已随绑定路径移除。
+- `--bind-env` 是独立的目标 API 绑定功能，产物只做语法校验与目标环境绑定验证；普通 v15 与 `--env-check`
+  产物可在 stock Luau 运行。默认矩阵/示例不再传 executor-binding 开关。
+- executor binding、key-host 和 EVKEY 相关 CLI/运行时代码已移除，不再提供旧开关或兼容路径（详见 §14）。
 - Luau 输入支持 `//`、`continue`、复合赋值、反引号插值、类型注解（解析期剥离）。
 - 多值/变参、`return f(...)` 尾调用、`local function` 递归可见性都有语料覆盖。
 
@@ -200,9 +202,9 @@ python3 tests/v15_fingerprint.py
 2. **tier2 destroy-lock 未接通**（见 §6），测试覆盖缺口。
 3. **WASM 路径不可验证**：仓库已无 wasm 与 wasm32 std；旧发布锚点
    `a019dc83…` / R081 只能从 git 历史取回，不能在本沙箱重建。
-4. **真实 executor 的历史手测口径**：历史上只在自编 Luau 0.735 + 宿主 mock 上跑过；Roblox /
-   Delta / Synapse 等宿主兼容性不应从旧记录外推。2026-11-21 当前绑定样例另按 §13.3 的用户约定
-   记为手测通过（不是 agent 的独立复现）。EVKEY 失败形态是「静默失步挂起」，可能被同宿主旁录。
+4. **真实 executor 验收**：Agent 未独立在 Roblox/Delta 中正向运行绑定产物。用户现已报告根目录
+   `example.txt` 在 Delta build `1.0.747.1486` 直接执行时第 3 行 nil-call；详见 §13.4。此前“未反馈
+   即视为通过”的约定不再适用于该样例，根因仍未确认。EVKEY 失败形态也可能是「静默失步挂起」，可能被同宿主旁录。
 5. **`tests/run_tests.sh` 的输出比较用命令替换**，遇到二进制 stdout 会打印
    `ignored null byte in input` 警告；这是比较方式的噪声，不是失败（需要严格比较时改用文件 diff）。
 6. 部分测试脚本仍硬编码 `/home/user/tools/bin` 作为首选、仓库 `.tools/bin` 作为回落；
@@ -435,13 +437,95 @@ git show --stat 68b9187 | head
 
 ### 13.3 明确边界与用户验收约定
 
-- Agent 未独立在真实 Roblox/executor 中正向运行绑定产物。用户明确由其手动测试，并约定「未反馈问题
-  即视为通过」；截至本次交接用户未报告该样例有问题，因此按约定将**当前绑定样例的手测验收记为通过**。
-  这不是 agent 的独立复现，也不证明其他 executor 档案或所有宿主版本均兼容。
+- Agent 未独立在真实 Roblox/executor 中正向运行绑定产物。用户最初约定「未反馈问题即视为通过」，但
+  后续明确报告 `example.txt` 在 Delta 上失败；此前对该样例的“手测通过”记录已被此反馈取代，不能再用于
+  声称该 Delta build 已验收。该报告不证明其他 executor 档案或宿主版本的兼容性。
 - 没有反汇编报告中的 216 字节，也没有重新构造报告中的 hook/读取追踪；不能据此声称已阻止所有
   明文钩子。VM 必须持有可执行的常量和解码后的操作数，仍可能被动态观察。
 - 没有测本轮 reader 的峰值内存、性能开销或真实脚本运行时间；常量读取需回放 blob 前缀，可能增加
   工作量。报告中约 2,800× 的数字未复测。
-- `envcheck.rs` 未改，以保留环境指纹不匹配时的静默 fail-closed 行为；官方 env-check/tier-2 负例与
-  D15 朴素桩均通过，但只覆盖这些模拟环境，不外推到所有真实宿主。
+- 当时的 env-check/tier-2 结果仅代表当时基线；随后按 §14 用户决策移除 Roblox/executor 专用 tier-2，
+  保留通用 Luau tier-1。当前测试结果见 §14。
 - 其余 §12 的已知问题、静态可解性、调试环境变量和输入规模限制仍需独立评估；ChaCha20 不改变这些边界。
+
+### 13.4 Delta 运行时兼容性复测（仍未解决）
+
+用户确认截图对应根目录 `example.txt`，由 Delta executor 直接执行（不是 LocalScript `loadstring`）；
+`identifyexecutor()` 报告 build `1.0.747.1486`。故障为第 3 行 `attempt to call a nil value`，
+调用栈重复第 3 行后回到第 1 行。原样例 SHA-256 见 §13.1。
+
+用户在 Delta 执行 API 类型诊断：列出的 executor、debug、Vector3/Instance/game/task、bit32、table、
+string、math 和 clipboard 成员均为 function；`Vector3.new(1,2,3)` 成功（`type=vector`），
+`game:GetService("Players")` 成功（`type=userdata`）。这排除了这些具名成员整体缺失，但不验证
+debug introspection 的具体语义，也没有测试零参数 `Vector3.new()`。
+
+诊断版 `delta_trace_probe.txt` 与原始样例使用相同 `print6.lua`、v15、Luau、`--bind-executor`、seed 42
+参数；`OBSUCVIM_EXG_TRACE=1` 使部分守卫早退变成带标签的错误。用户在 Delta 运行后反馈
+`R-ixhj) true/0/-1/-1/-1`。`R` 是最外层 guard 的汇总失败，`true/0` 表示 `CIDENT` 通过但
+`SCHALL()` 返回失败及 transcript 0，三个 `-1` 表示失败发生在 key-host 观测前；它没有指出
+SCHALL 中哪项行为探针失败。初版文件 171,905 bytes，SHA-256
+`7fd113231144869ec701e87a35210304e902c0923bf99d864e1d0c665b91019a`，`luau-compile` 通过；已在当前
+分支提交 `728a5ea` 并推送。
+
+随后用户在 v2 中得到 `R-btze) true/SCHALL_TRACE_01/-1/-1/-1`，确认失败落在基础库行为探针块，
+而非 `loadstring`/`newcclosure` 分类分支。它仍未指出该块中的具体断言。v2 文件 171,950 bytes，
+SHA-256 `ba4a471073a323ba14f8d5326453a2285691d3545a9febbb6e529b28dc75d9d7`，`luau-compile` 通过；
+提交 `2dba601` 已推送。
+
+已生成 `delta_trace_probe_v3.txt`，把基础库块中的 20 个断言分别标为 `LIB_CHECK_01`–`LIB_CHECK_20`，
+并在汇总错误中带出 pcall 结果或具体断言号；另外保留 `SCHALL_TRACE_02`（loadstring chunk/closure）与
+`SCHALL_TRACE_03`（newcclosure/closure）分支标记。LIB 检查顺序为：byte、char、sub、concat、insert、
+ldexp、select(#)、select(values)、pcall、type、tostring、tonumber、rawget、rawset/metatable、rawequal、
+next、metatable、unpack、debug.info source、debug.getinfo source。文件 172,123 bytes，SHA-256
+`d1115cfbbdf7b04a69ce7cbff9740a900532093c7f03e2d8b1affc5b8ef7040`，`luau-compile` 通过；提交
+`b1045b3` 已推送。用户随后明确要求不再运行 trace，而直接测试移除 executor binding 后更新的
+根目录 `example.txt`（151,440 bytes，SHA-256 `c90a244ed2ab0afa370bb2aaa5507c07e0ee20b04fbd56f7cadbdbd32a46e10b`）。
+2026-11-22 截图给出 `attempt to compare nil <= nil`，堆栈为 `Line 3 - function fm`、多次重复
+`Line 3`，最后回到 `Line 1`。这与旧绑定样例的 `attempt to call a nil value` 不同，不能假设同根因。
+
+当前引擎重生的默认 guard 样例与交付文件 hash 一致；`.tools/bin/luau-compile` 通过，stock
+Luau 0.735 执行 `example.txt` 输出 `6`。当前 `cargo test` 为 65 passed / 1 ignored、4 个集成测试通过；
+`vm_semantics_regression.sh` 通过。为做不带 trace 的 A/B，另生成 `example_no_guard.txt`：同一输入、
+seed 42、v15，显式 `--no-guard`；143,643 bytes，SHA-256
+`e82bc2ee1f0ac069a24256f75ed93fad7016af702fcf584c5188e91bf2748a12`，编译通过且 stock Luau 输出 `6`。
+用户已在同一 Delta build 直接运行 `example_no_guard.txt` 并反馈不报错，问题收敛到 guard-enabled 路径。
+用户选择默认 guard 保持开启。随后临时省略 `ANTI_DEBUG`、保留其余四个 stage 生成的
+`example_guard_no_debug.txt`（148,520 bytes，SHA-256
+`73e480bc054d35346e6c5e43a9f5dea79384984f09532f8aa02b41c6d328c991`）也在 Delta 正常，确认问题在
+debug stage。
+
+为保留 debug 来源检查并避开不兼容的栈行号/xpcall 错误文本解析，当前工作树将 `ANTI_DEBUG` 改为受保护的
+`debug.info(..., "s")` 来源探测；仅在 `debug.info(pcall)` 返回 `[C]` 时校验 loader 来源，缺少元数据则跳过。
+默认 guard 仍开启。防御审计 D9/D10 仍通过。候选 `example_guard_source_probe.txt` 用该改动、seed 42 生成，
+148,769 bytes，SHA-256 `00e7ee9136cc3e5d73deff03cbee31509884734b45ea0184c2851fcadb6d6ecd`；Luau 编译通过，
+stock Luau 输出 `6`。`cargo test` 65 passed / 1 ignored、4 个集成测试通过；`run_tests.sh` 169/0，
+`defense_audit.sh` 20/0，全部 shell 语法与 `git diff --check` 通过。测试样例已在当前 PR 分支提交
+`9e9b340` 并推送。用户已在 Delta 直接运行 `example_guard_source_probe.txt` 并反馈正常；这确认简化的
+debug source 检查可用且其余默认 guard 保持开启。根目录 `example.txt` 已由当前引擎重生并与该候选逐字节一致，
+148,769 bytes，SHA-256 `00e7ee9136cc3e5d73deff03cbee31509884734b45ea0184c2851fcadb6d6ecd`；Luau 编译通过，
+stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及本轮相关清理。
+
+---
+
+## 14. executor binding / key-host / EVKEY 移除（2026-11-21）
+
+本节覆盖并取代 §1、§3、§5、§6、§7、§12 中关于当前 executor-binding/key-host/EVKEY 实现的旧描述；§13 的 Delta 诊断过程保留为历史上下文。
+
+- 从 CLI、VM compiler/template 链中移除 `--bind-executor`、`--no-bind-executor`、`--no-executor-guard`、
+  `--key-host`、EVKEY/EVKX、XTOK/XPROBE 与 EXG 运行路径；删除 `vmgen::exguard` 及对应专项测试。
+- 用户选择 `--env-check` 只保留通用 Luau tier-1：Roblox/executor 专用 tier-2 检查和 mock 回归已删除。
+  `--guard` / `--no-guard` 显式保留；通用 guard 默认开启，两个开关均受支持。`--bind-env` 是独立功能，未移除。
+- `engine/examples/` 已用当前 `gen_examples.sh` 重生 37 个默认 v15 样例。
+- 验证：`cargo test` 为 **65 passed / 0 failed / 1 ignored**，水印集成测试 **4 passed**；
+  `bash engine/tests/run_tests.sh` 为 **169 PASS / 0 FAIL**；
+  `bash engine/tests/defense_audit.sh` 为 **20 PASS / 0 FAIL**；
+  `wtf_port_test.sh` 为 **23 PASS / 0 FAIL**；VM semantics、`env_bind_test.sh`（6 PASS）、
+  `faithful_stub_test.sh`（5 PASS）均通过；`git diff --check` 与全部 shell `bash -n` 通过。
+- 根目录 `example.txt` 已按当前引擎从 `print6.lua` 以 `--preset v15 --dialect luau --seed 42` 重生，
+  151,440 bytes，SHA-256 `c90a244ed2ab0afa370bb2aaa5507c07e0ee20b04fbd56f7cadbdbd32a46e10b`；
+  `.tools/bin/luau-compile` 通过。Delta 截图报告 `attempt to compare nil <= nil`，多次重复 Line 3
+  （function fm）后回到 Line 1。Stock Luau 输出 `6`、VM semantics 回归通过；为 A/B 新增
+  `example_no_guard.txt`（显式 `--no-guard`），hash 与验证见 §13.4。用户在 Delta 上运行该文件反馈不报错；
+  默认 guard 样例曾报 `attempt to compare nil <= nil`。用户选择默认 guard 保持开启并不跑 trace；
+  `example_guard_no_debug.txt` 与随后简化 debug source 检查的 `example_guard_source_probe.txt` 均在 Delta 正常。
+  当前根目录 `example.txt` 已重生为后者的字节副本，具体 hash 与验证见 §13.4。

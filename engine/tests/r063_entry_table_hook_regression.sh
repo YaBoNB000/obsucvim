@@ -12,16 +12,16 @@ SRC="$REPO/engine/tests/fixtures/targets/R062_src.lua"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-"$BIN" --preset v15 --no-bind-executor --seed 63063 "$SRC" "$TMP/target.lua"
+"$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/target.lua"
 "$LUAC" "$TMP/target.lua" >/dev/null
 python3 "$REPO/engine/tests/v15_short_name_audit.py" "$TMP/target.lua"
 
 # White-box static audit: KeyEmitter must have no public lookup tables, and
 # every emitted key reconstruction must depend on actual carrier lengths.
-# This regression executes under stock Luau, so pin its artifacts unbound even
-# though executor binding is enabled by default for v15.
+# This regression executes under stock Luau; v15 output no longer depends on
+# executor-specific attestation APIs.
 OBSUCVIM_VM_TSRC=1 OBSUCVIM_KEY_MANIFEST="$TMP/keys.txt" \
-    "$BIN" --preset v15 --no-bind-executor --seed 63063 "$SRC" "$TMP/static-audit.lua"
+    "$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/static-audit.lua"
 python3 "$REPO/engine/tests/key_literal_check.py" \
     "$TMP/static-audit.lua" "$TMP/keys.txt" --quiet
 python3 - "$TMP/vm_tsrc.lua" <<'PY'
@@ -53,7 +53,7 @@ PY
 
 # The former build-time debug environment variable must not emit raw keys or
 # otherwise alter a fixed-seed artifact.
-OBSUCVIM_KEY_DBG=1 "$BIN" --preset v15 --no-bind-executor --seed 63063 "$SRC" "$TMP/key-debug-env.lua"
+OBSUCVIM_KEY_DBG=1 "$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/key-debug-env.lua"
 cmp -s "$TMP/target.lua" "$TMP/key-debug-env.lua" || {
     echo 'FAIL OBSUCVIM_KEY_DBG changed the emitted artifact' >&2
     exit 1

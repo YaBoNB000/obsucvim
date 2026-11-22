@@ -55,9 +55,6 @@ pub struct VmProgram {
 	pub fv_sets: Vec<Vec<(u8, u8)>>,
 	pub fv_m1: u16,
 	pub fv_mc: u16,
-	/// V19 R4-proto：宿主 EV 项（0=关闭）。非零时烘进每函数 blob LCG 基址，
-	/// 运行期由 EVKX 探针同式现算补齐；产物内不含 EV 常量。
-	pub ev_term: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -827,14 +824,9 @@ impl<'a> Ctx<'a> {
 		}
 		let km = self.program.blob_km as u64;
 		let kc = self.program.blob_kc as u64;
-		let mut base = (self.program.blob_seed as u64
+		let base = (self.program.blob_seed as u64
 			+ fn_index as u64 * self.program.blob_step as u64)
 			% 268_435_456;
-		if self.program.ev_term != 0 {
-			// V19 R4-proto：宿主 EV 烘进 blob LCG 基址；运行期 unmask 的
-			// g 初值以 EVKX 同式补齐。EV 常量不进产物。
-			base = (base + self.program.ev_term as u64) % 268_435_456;
-		}
 		// V19 R5-a：stage-1 blob —— 非线性折叠（fold_key_nl）+ 明文级联
 		// （前一明文字节并入 LCG 推进；跨 ksplit 边界连续携带，双镜面同构）。
 		let ksplit = blob.len().min(64);
@@ -1430,7 +1422,6 @@ fn compile_chunk(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
-	ev_term: u32,
 ) -> VmProgram {
 	let total = count_fns_count(block);
 	let has_loadstr = crate::vmgen::strseal::contains_sealed_literals(block);
@@ -1512,7 +1503,6 @@ fn compile_chunk(
 		fv_sets: vec![Vec::new(); total + 1],
 		fv_m1,
 		fv_mc,
-		ev_term,
 	};
 	{
 		let main_index = program.fns.len();
@@ -2800,9 +2790,8 @@ pub fn compile(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
-	ev_term: u32,
 ) -> VmProgram {
-	compile_chunk(block, table, rng, lua51, scatter, super_insn, ev_term)
+	compile_chunk(block, table, rng, lua51, scatter, super_insn)
 }
 
 #[cfg(test)]
@@ -2919,7 +2908,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(4242);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, 0);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, true);
 		assert!(prog.fv_sets.iter().any(|v| !v.is_empty()), "super on: vocab must be non-empty here");
 		for (fi, _) in prog.fns.iter().enumerate() {
 			let walk = section_walk(&prog, fi.min(prog.fns.len() - 1));
@@ -3060,7 +3049,7 @@ mod dbg {
 		};
 		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
 		let mut rng = crate::rng::Rng::new(77);
-		let program = compile_chunk(&block, &table, &mut rng, false, true, false, 0);
+		let program = compile_chunk(&block, &table, &mut rng, false, true, false);
 		assert!(program.has_loadstr);
 		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
 		assert!(strings.iter().any(|s| s == &expected_cipher));
@@ -3123,7 +3112,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, 0);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -3233,7 +3222,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(7);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, 0);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, false);
 		let mut saw_scattered_operand = false;
 		let tags = &prog.section_tags;
 		for (fi, b) in prog.fns.iter().enumerate() {
