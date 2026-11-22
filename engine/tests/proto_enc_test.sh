@@ -78,7 +78,7 @@ EOF
 # ---------- (1) 模板形态 ----------
 # （OBSUCVIM_VM_TSRC 写死输出到 /tmp/vm_tsrc.lua）
 rm -f /tmp/vm_tsrc.lua
-if OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 42 \
+if OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 \
 	"$PE_TMP/nested.lua" "$PE_TMP/nested.lua.out" 2>"$PE_TMP/err"; then
 	ts=/tmp/vm_tsrc.lua
 	ok=1
@@ -137,7 +137,7 @@ fi
 o1="$(timeout 30 "$LUAU" "$PE_TMP/nested.lua" 2>&1)"; r1=$?
 ok=1
 for seed in 1 777 31337; do
-	"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed "$seed" \
+	"$TOOL" --preset v15 --dialect luau --seed "$seed" \
 		"$PE_TMP/nested.lua" "$PE_TMP/n.$seed.lua" >/dev/null 2>&1
 	o2="$(timeout 30 "$LUAU" "$PE_TMP/n.$seed.lua" 2>&1)"; r2=$?
 	if [[ "$r1" != "$r2" || "$o1" != "$o2" ]]; then
@@ -148,7 +148,7 @@ done
 
 # ---------- (4) 常量往返 ----------
 o1="$(timeout 30 "$LUAU" "$PE_TMP/consts.lua" 2>&1)"; r1=$?
-"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 42 \
+"$TOOL" --preset v15 --dialect luau --seed 42 \
 	"$PE_TMP/consts.lua" "$PE_TMP/consts.out.lua" >/dev/null 2>&1
 o2="$(timeout 30 "$LUAU" "$PE_TMP/consts.out.lua" 2>&1)"; r2=$?
 if [[ "$r1" == "$r2" && "$o1" == "$o2" ]]; then
@@ -159,7 +159,7 @@ fi
 
 # ---------- (5) 深递归 + 闭包计数器 ----------
 o1="$(timeout 30 "$LUAU" "$PE_TMP/rec.lua" 2>&1)"; r1=$?
-"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 999999 \
+"$TOOL" --preset v15 --dialect luau --seed 999999 \
 	"$PE_TMP/rec.lua" "$PE_TMP/rec.out.lua" >/dev/null 2>&1
 o2="$(timeout 30 "$LUAU" "$PE_TMP/rec.out.lua" 2>&1)"; r2=$?
 if [[ "$r1" == "$r2" && "$o1" == "$o2" ]]; then
@@ -173,7 +173,7 @@ fi
 # OBSUCVIM_FRAG_SAN 导出的源码载荷。若重新出现即代表隐藏 fallback 回归。
 rm -rf "$PE_TMP/frags"
 mkdir -p "$PE_TMP/frags"
-OBSUCVIM_FRAG_SAN="$PE_TMP/frags" "$TOOL" --preset v15 --dialect luau --no-bind-executor \
+OBSUCVIM_FRAG_SAN="$PE_TMP/frags" "$TOOL" --preset v15 --dialect luau \
 	--seed 42 "$PE_TMP/nested.lua" "$PE_TMP/nested.san.lua" >/dev/null 2>&1
 if compgen -G "$PE_TMP/frags/san_*.src" >/dev/null; then
 	gf "sanitize" "H4-2C2 默认构建仍导出 HQ 源码碎片"

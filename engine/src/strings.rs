@@ -108,13 +108,16 @@ fn stmt_has_str(s: &Stmt) -> bool {
 
 fn expr_has_str(e: &Expr) -> bool {
 	match e {
-		Expr::Str { .. } => true,
+		Expr::Str { .. } | Expr::LongStr { .. } => true,
 		Expr::Dot { obj, .. } => expr_has_str(obj),
 		Expr::Index { obj, idx } => expr_has_str(obj) || expr_has_str(idx),
 		Expr::Call { func, args } => expr_has_str(func) || args.iter().any(expr_has_str),
 		Expr::Method { obj, args, .. } => expr_has_str(obj) || args.iter().any(expr_has_str),
-		Expr::Un { e, .. } => expr_has_str(e),
+		Expr::Paren { e } | Expr::Un { e, .. } => expr_has_str(e),
 		Expr::Bin { l, r, .. } => expr_has_str(l) || expr_has_str(r),
+		Expr::IfExpr { arms, elseb } => {
+			arms.iter().any(|(c, v)| expr_has_str(c) || expr_has_str(v)) || expr_has_str(elseb)
+		}
 		Expr::Table { fields } => fields.iter().any(|f| match f {
 			TableField::Array(e) => expr_has_str(e),
 			TableField::Key { key, value } => expr_has_str(key) || expr_has_str(value),
@@ -126,7 +129,7 @@ fn expr_has_str(e: &Expr) -> bool {
 
 fn xform_expr(e: &Expr, cfg: &Cfg) -> Expr {
 	match e {
-		Expr::Str { bytes, .. } => {
+		Expr::Str { bytes, .. } | Expr::LongStr { bytes } => {
 			let ct = encrypt(bytes, &cfg.key);
 			let chunks = split_into_parts(&ct, PARTS);
 			let args: Vec<Expr> = chunks
@@ -138,6 +141,13 @@ fn xform_expr(e: &Expr, cfg: &Cfg) -> Expr {
 				args,
 			}
 		}
+		Expr::Paren { e } => Expr::Paren {
+			e: Box::new(xform_expr(e, cfg)),
+		},
+		Expr::IfExpr { arms, elseb } => Expr::IfExpr {
+			arms: arms.iter().map(|(c, v)| (xform_expr(c, cfg), xform_expr(v, cfg))).collect(),
+			elseb: Box::new(xform_expr(elseb, cfg)),
+		},
 		Expr::Dot { obj, name } => Expr::Dot {
 			obj: Box::new(xform_expr(obj, cfg)),
 			name: name.clone(),

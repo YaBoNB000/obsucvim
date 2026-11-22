@@ -1,7 +1,7 @@
 #!/bin/bash
 # WTF-PORT Phase 1 regression: --env-check battery (envcheck.rs).
 #
-# Positive: clean runs stay output-equivalent; flag-off builds stay
+# Positive: clean runs stay output-equivalent; default builds stay
 # byte-identical to the committed examples; same seed is deterministic.
 # Negative: each check group has a targeted mock environment -- a wrong-
 # semantics mock must NOT reproduce the source output (the difference
@@ -44,7 +44,7 @@ bad() { fail=$((fail + 1)); echo "FAIL $1"; }
 # --- 1. clean equivalence across seeds --------------------------------------
 for seed in 42 4242 999999 20261011; do
 	out="$TMP/clean_$seed.lua"
-	if ! "$TOOL" --env-check --no-bind-executor --seed "$seed" "$CANARY_SRC" "$out" 2>"$TMP/err"; then
+	if ! "$TOOL" --env-check --seed "$seed" "$CANARY_SRC" "$out" 2>"$TMP/err"; then
 		bad "clean-build seed=$seed: $(head -1 "$TMP/err")"
 		continue
 	fi
@@ -53,17 +53,39 @@ for seed in 42 4242 999999 20261011; do
 done
 
 # --- 2. determinism ----------------------------------------------------------
-"$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY_SRC" "$TMP/d1.lua"
-"$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY_SRC" "$TMP/d2.lua"
+"$TOOL" --env-check --seed 42 "$CANARY_SRC" "$TMP/d1.lua"
+"$TOOL" --env-check --seed 42 "$CANARY_SRC" "$TMP/d2.lua"
 if cmp -s "$TMP/d1.lua" "$TMP/d2.lua"; then ok; else bad "determinism"; fi
 
-# --- 3. flag-off byte identity vs committed examples ------------------------
+# The generic guard keeps its default-on behavior, and both explicit switches
+# remain accepted: --guard matches the default; --no-guard changes the output.
+"$TOOL" --seed 42 "$CANARY_SRC" "$TMP/guard_default.lua"
+"$TOOL" --guard --seed 42 "$CANARY_SRC" "$TMP/guard_on.lua"
+if cmp -s "$TMP/guard_default.lua" "$TMP/guard_on.lua"; then ok; else bad "--guard should match the default"; fi
+"$TOOL" --no-guard --seed 42 "$CANARY_SRC" "$TMP/guard_off.lua"
+if cmp -s "$TMP/guard_default.lua" "$TMP/guard_off.lua"; then bad "--no-guard did not disable the guard"; else ok; fi
+
+# Retired executor/key-host switches must fail as unknown options.
+for flag in --bind-executor --no-bind-executor --no-executor-guard --no-key-host; do
+	if "$TOOL" "$flag" "$CANARY_SRC" "$TMP/obsolete.lua" >/dev/null 2>&1; then
+		bad "obsolete option still accepted: $flag"
+	else
+		ok
+	fi
+done
+if "$TOOL" --key-host delta "$CANARY_SRC" "$TMP/obsolete.lua" >/dev/null 2>&1; then
+	bad "obsolete option still accepted: --key-host"
+else
+	ok
+fi
+
+# --- 3. default output identity vs committed examples ------------------------
 for name in basics multival; do
-	"$TOOL" --no-bind-executor --seed 42 "$ROOT/tests/cases/$name.lua" "$TMP/off_$name.lua" 2>/dev/null
-	if cmp -s "$TMP/off_$name.lua" "$ROOT/examples/$name.v15.luau.lua"; then
+	"$TOOL" --seed 42 "$ROOT/tests/cases/$name.lua" "$TMP/default_$name.lua" 2>/dev/null
+	if cmp -s "$TMP/default_$name.lua" "$ROOT/examples/$name.v15.luau.lua"; then
 		ok
 	else
-		bad "flag-off byte identity: $name"
+		bad "default byte identity: $name"
 	fi
 done
 
@@ -72,7 +94,7 @@ done
 # environment with exactly one check group broken. A NO-OP mock must
 # reproduce the canary output first (harness sanity gate) -- only then do
 # the kill-mocks count.
-"$TOOL" --env-check --no-bind-executor --seed 42 "$CANARY_SRC" "$TMP/canary_artifact.lua" 2>/dev/null
+"$TOOL" --env-check --seed 42 "$CANARY_SRC" "$TMP/canary_artifact.lua" 2>/dev/null
 
 mk_mock() {
 	# $1 name, $2 mock-fragment path, $3 output harness path

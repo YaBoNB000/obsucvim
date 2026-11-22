@@ -176,143 +176,7 @@ d=(d*{p}+(okl and 0 or 1))%{m}",
 	)
 }
 
-
-fn g_enum(rng: &mut Rng) -> String {
-	format!(
-		"local z1=Enum.HumanoidRigType
-local z2=z1[\"FromName\"](z1,\"R6\") local z3=z1[\"FromName\"](z1,\"R6\") local z4=z1[\"FromValue\"](z1,0) local z5=z1[\"R6\"]
-local k4=(z2==z3 and z2==z4 and z2==z5 and z2[\"Name\"]==\"R6\" and z2[\"Value\"]==0 and z2[\"EnumType\"]==z1)
-d=(d*{p1}+(k4 and 0 or 1))%{m}
-local k5=(typeof(Enum)==\"Enums\" and typeof(z1)==\"Enum\" and typeof(z2)==\"EnumItem\" and getmetatable(Enum)==\"The metatable is locked\" and getmetatable(z1)==\"The metatable is locked\" and getmetatable(z2)==\"The metatable is locked\")
-d=(d*{p2}+(k5 and 0 or 1))%{m}",
-		p1 = mul(rng),
-		p2 = mul(rng),
-		m = MOD,
-	)
-}
-
-fn g_random(rng: &mut Rng) -> String {
-	// 只做「结构/语义」判定，不比对精确浮点。Delta 这类执行器把 Random 用另一套
-	// PRNG 实现（实测 seed 51018400 首个值 0.19639633043786484，而官方是
-	// 0.9598971928030796），比对数值等于把执行器实现差异当成作弊。
-	let s1 = rng.int(1, 2_147_483_646);
-	let s2 = rng.int(1, 2_147_483_646);
-	let s3 = rng.int(1, 2_147_483_646);
-	format!(
-		"local z6=Random.new(51018400)
-local z6a=z6[\"NextNumber\"](z6)
-local k6=(type(z6a)==\"number\" and z6a>=0 and z6a<1)
-d=(d*{p1}+(k6 and 0 or 1))%{m}
-local z6b=z6[\"NextInteger\"](z6,189,1164)
-local k7=(type(z6b)==\"number\" and math.floor(z6b)==z6b and z6b>=189 and z6b<=1164)
-d=(d*{p2}+(k7 and 0 or 1))%{m}
-local z6c=z6[\"NextNumber\"](z6)
-local k8=(type(z6c)==\"number\" and z6c>=0 and z6c<1 and z6c~=z6a)
-d=(d*{p3}+(k8 and 0 or 1))%{m}
-local z7=Random.new({s1}) local z8=Random.new({s1})
-local k9=(z7[\"NextNumber\"](z7)==z8[\"NextNumber\"](z8))
-d=(d*{p4}+(k9 and 0 or 1))%{m}
-local z9=Random.new({s2}) z9[\"NextNumber\"](z9)
-local za=z9[\"Clone\"](z9) local zb=za[\"NextNumber\"](za)
-local zc=za[\"Clone\"](za) local zd=zc[\"NextNumber\"](zc) local ze=za[\"NextNumber\"](za)
-local k10=(zd==ze)
-d=(d*{p5}+(k10 and 0 or 1))%{m}
-local zt=Random.new({s3}) local zw=Random.new({s3}+1)
-local k11=(zt[\"NextNumber\"](zt)~=zw[\"NextNumber\"](zw))
-d=(d*{p6}+(k11 and 0 or 1))%{m}",
-		p1 = mul(rng),
-		p2 = mul(rng),
-		p3 = mul(rng),
-		p4 = mul(rng),
-		p5 = mul(rng),
-		p6 = mul(rng),
-		s1 = s1,
-		s2 = s2,
-		s3 = s3,
-		m = MOD,
-	)
-}
-
-fn g_task(rng: &mut Rng) -> String {
-	format!(
-		"local zf=false
-local zg=task.spawn(function() zf=true end)
-local k11=(zf and type(zg)==\"thread\")
-d=(d*{p1}+(k11 and 0 or 1))%{m}
-local zh=false
-local zi=task.delay(86400, function() zh=true end)
-local zj,zl=pcall(task.cancel, zi)
-local k12=(type(zi)==\"thread\" and not zh and zj)
-d=(d*{p2}+(k12 and 0 or 1))%{m}
-local k13=(not pcall(task.wait, {{}}))
-d=(d*{p3}+(k13 and 0 or 1))%{m}",
-		p1 = mul(rng),
-		p2 = mul(rng),
-		p3 = mul(rng),
-		m = MOD,
-	)
-}
-
-fn g_member(rng: &mut Rng) -> String {
-	// 「点调用方法必须报错」这一条保留（语义），但不再依赖官方 Luau 的精确错误文案
-	// （"Expected ':' not '.'"）。不同执行器的解析器文案不同，Delta 的报错格式
-	// 就与官方不一致；拿文案当否决权 = 版本一换就全灭。
-	format!(
-		"local zm=game:GetService(\"RunService\")
-local zn,zo=pcall(function() return zm[\"IsStudio\"](nil) end)
-local k14=(not zn and type(zo)==\"string\" and #zo>0)
-d=(d*{p1}+(k14 and 0 or 1))%{m}
-local zk,zl=pcall(function() return zm[\"IsStudio\"](zm) end)
-local k14b=(zk and type(zl)==\"boolean\")
-d=(d*{p2}+(k14b and 0 or 1))%{m}
-local zp,zq=pcall(function() return game.GetChildren(nil) end)
-local k15=(not zp and type(zq)==\"string\" and #zq>0)
-d=(d*{p3}+(k15 and 0 or 1))%{m}",
-		p1 = mul(rng),
-		p2 = mul(rng),
-		p3 = mul(rng),
-		m = MOD,
-	)
-}
-
-fn g_instance(rng: &mut Rng) -> String {
-	format!(
-		"local zr=Instance.new(\"Folder\") local zs=Instance.new(\"Folder\")
-zs[\"Parent\"]=zr
-local k16=(typeof(zr)==\"Instance\" and zr[\"ClassName\"]==\"Folder\" and type(zr[\"Name\"])==\"string\" and #zr[\"GetChildren\"](zr)==1)
-d=(d*{p1}+(k16 and 0 or 1))%{m}
-local zu=zr[\"ChildRemoved\"]
-local zv=zu[\"Connect\"](zu, function() end)
-local k17=(zv[\"Connected\"]==true)
-zv[\"Disconnect\"](zv)
-k17=k17 and zv[\"Connected\"]==false
-d=(d*{p2}+(k17 and 0 or 1))%{m}
-zr[\"Destroy\"](zr)
-local zx,zy=pcall(function() zs[\"Parent\"]=zr end)
-local k18=(not zx and type(zy)==\"string\" and #zy>0)
-d=(d*{p3}+(k18 and 0 or 1))%{m}",
-		p1 = mul(rng),
-		p2 = mul(rng),
-		p3 = mul(rng),
-		m = MOD,
-	)
-}
-
-fn g_exec(rng: &mut Rng) -> String {
-	format!(
-		"local k19=true
-if type(_G[\"clonefunction\"])==\"function\" then
-local zz=_G[\"clonefunction\"](pcall)
-local z10,z11=zz(function() return 37 end)
-k19=(type(zz)==\"function\" and z10 and z11==37)
-end
-d=(d*{p}+(k19 and 0 or 1))%{m}",
-		p = mul(rng),
-		m = MOD,
-	)
-}
-
-pub fn build(rng: &mut Rng, tier2: bool) -> String {
+pub fn build(rng: &mut Rng) -> String {
 	let mut groups = vec![
 		g_arith(rng),
 		g_string(rng),
@@ -322,16 +186,6 @@ pub fn build(rng: &mut Rng, tier2: bool) -> String {
 		g_coroutine(rng),
 		g_compile(rng),
 	];
-	if tier2 {
-		groups.extend([
-			g_enum(rng),
-			g_random(rng),
-			g_task(rng),
-			g_member(rng),
-			g_instance(rng),
-			g_exec(rng),
-		]);
-	}
 	rng.shuffle(&mut groups);
 	let mut out = String::from("return function()\n");
 	out.push_str(
@@ -342,13 +196,6 @@ local r13=tostring local r14=bit32.bxor local r15=buffer.create
 local r16=string.byte local r17=coroutine.resume\n",
 	);
 	out.push_str("local d=0\n");
-	if tier2 {
-		out.push_str(
-			"local r18=game local r19=Enum local r20=Instance local r21=Random \
-local r22=task local r23=game.GetService local r24=Enum.HumanoidRigType \
-local r25=Instance.new local r26=Random.new local r27=task.spawn\n",
-		);
-	}
 	for g in &groups {
 		out.push_str(g);
 		out.push('\n');
@@ -362,16 +209,6 @@ d=(d*{p}+(q1 and 0 or 1))%{m}\n",
 		p = mul(rng),
 		m = MOD,
 	));
-	if tier2 {
-		out.push_str(&format!(
-			"local q2=(game==r18 and Enum==r19 and Instance==r20 and Random==r21 \
-and task==r22 and game.GetService==r23 and Enum.HumanoidRigType==r24 \
-and Instance.new==r25 and Random.new==r26 and task.spawn==r27)\n\
-d=(d*{p}+(q2 and 0 or 1))%{m}\n",
-			p = mul(rng),
-			m = MOD,
-		));
-	}
 	out.push_str("return d\nend");
 	out
 }
@@ -383,7 +220,7 @@ mod tests {
 	#[test]
 	fn factory_shape_is_stable() {
 		let mut rng = Rng::new(20261011);
-		let src = build(&mut rng, false);
+		let src = build(&mut rng);
 		assert!(src.starts_with("return function()\n"));
 		assert!(src.ends_with("return d\nend"));
 		for needle in [
@@ -409,52 +246,29 @@ mod tests {
 			assert!(src.contains(m), "coroutine locals must not shadow captures");
 		}
 		let mut rng2 = Rng::new(20261011);
-		assert_eq!(src, build(&mut rng2, false));
-	}
-
-		#[test]
-	fn tier2_flag_changes_source_and_keeps_tier1_shape() {
-		let src = build(&mut Rng::new(20261011), true);
-		for needle in [
-			"Enum.HumanoidRigType",
-			"Random.new(51018400)",
-			"math.floor(z6b)==z6b",
-			"task.spawn(function()",
-			"zm[\"IsStudio\"](zm)",
-			"Instance.new(\"Folder\")",
-			"_G[\"clonefunction\"]",
-			"local q2=(game==r18",
-		] {
-			assert!(src.contains(needle), "tier2 missing {needle}");
-		}
-		assert_eq!(
-			src.match_indices("local r")
-				.filter(|(i, _)| src[*i + 7..].chars().next().is_some_and(|c| c.is_ascii_digit()))
-				.count(),
-			27
-		);
-		let mut rng2 = Rng::new(20261011);
-		assert_eq!(src, build(&mut rng2, true));
+		assert_eq!(src, build(&mut rng2));
 	}
 
 	#[test]
-	fn tier2_false_contains_no_roblox_surface() {
-		let src = build(&mut Rng::new(20261011), false);
+	fn generic_check_excludes_roblox_and_executor_apis() {
+		let src = build(&mut Rng::new(20261011));
 		for banned in [
 			"Enum.",
 			"Random.new",
 			"task.spawn",
 			"Instance.new",
 			"clonefunction",
+			"identifyexecutor",
+			"checkcaller",
 		] {
-			assert!(!src.contains(banned), "tier2=false leaked {banned}");
+			assert!(!src.contains(banned), "generic check leaked {banned}");
 		}
 	}
 
 	#[test]
 	fn randomization_varies_across_seeds() {
-		let a = build(&mut Rng::new(1), false);
-		let b = build(&mut Rng::new(2), false);
+		let a = build(&mut Rng::new(1));
+		let b = build(&mut Rng::new(2));
 		assert_ne!(a, b);
 	}
 }

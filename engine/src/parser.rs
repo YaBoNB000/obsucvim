@@ -933,7 +933,7 @@ self.next();
 				self.next();
 				let e = self.exp()?;
 				self.expect(TokKind::Punct, Some(")"))?;
-				Ok(e)
+				Ok(Expr::Paren { e: Box::new(e) })
 			}
 			TokKind::Punct if t.text == "{" => self.tableconstructor(),
 			TokKind::Num | TokKind::Str | TokKind::Interp => self.simpleexp(),
@@ -1021,6 +1021,9 @@ fn clone_expr(e: &Expr) -> Expr {
 		Expr::Bool { value } => Expr::Bool { value: *value },
 		Expr::Nil => Expr::Nil,
 		Expr::Vararg => Expr::Vararg,
+		Expr::Paren { e } => Expr::Paren {
+			e: Box::new(clone_expr(e)),
+		},
 		Expr::Ident { name, sym } => Expr::Ident {
 			name: name.clone(),
 			sym: *sym,
@@ -1183,4 +1186,21 @@ pub fn parse(src: &str, luau: bool) -> Result<Block, ParseError> {
 		});
 	}
 	Ok(block)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::parse;
+
+	#[test]
+	fn parenthesized_callee_call_is_a_call_statement() {
+		assert!(parse("(f)()", false).is_ok());
+		assert!(parse("((f))()", false).is_ok());
+	}
+
+	#[test]
+	fn a_parenthesized_call_result_is_not_a_call_statement() {
+		assert!(parse("(f())", false).is_err());
+		assert!(parse("((f()))", false).is_err());
+	}
 }

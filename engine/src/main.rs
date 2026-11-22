@@ -22,16 +22,6 @@ use std::process::ExitCode;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const OUTPUT_WATERMARK: &str = "-- This file was obfuscated by Obsucvim.\n";
 
-/// R081（2026-10-25）：executor 认证绑定恒开。
-/// 发布件是 wasm32-wasip1 —— 该目标下 `--no-bind-executor` 不可用（硬报错），
-/// 未绑定产物在发布通道里物理不可生产。
-/// 原生构建保留该旗标：运行等价矩阵与 `tests/gen_examples.sh` 需要一个能在
-/// 裸 Luau 下跑、用于「语义是否等价」的对照产物，这类产物不上线。
-#[cfg(target_arch = "wasm32")]
-const DEV_UNBIND_ESCAPE: bool = false;
-#[cfg(not(target_arch = "wasm32"))]
-const DEV_UNBIND_ESCAPE: bool = true;
-
 struct Options {
 dialect: &'static str,
 	input: String,
@@ -51,11 +41,7 @@ dialect: &'static str,
 	do_junk: bool,
 	junk_n: usize,
 	bind_env: Option<String>,
-	bind_executor: bool,
-	bind_given: bool,
-	executor_guard: bool,
 	env_check: bool,
-	key_host: Option<String>,
 	super_insn: bool,
 }
 
@@ -151,7 +137,7 @@ Usage: obsucvim [options] <input.lua> [output.lua]
 Options:
   --dialect <luau>       target dialect (仅 luau；5.1 自 2026-09-10 起停止支持)
   -o, --output <file>    output file (default: stdout)
-  --seed <n>             PRNG seed (default: time-based; use a fixed seed
+  --seed <n>             PRNG seed (default: system entropy; use a fixed seed
                          for reproducible output)
   --preset <name>        named strength (flags after this override it).
                          DEFAULT (no --preset/--vm): v15 — 产品默认形态
@@ -168,6 +154,7 @@ Options:
   --no-numbers           disable L4 numeric literal rewriting (default: enabled)
   --no-body              disable L5 whole-program encryption (default: enabled)
   --no-antidbg           disable L7 anti-tamper (default: enabled)
+  --guard                enable the anti-debug environment guard prelude
   --no-guard             disable the anti-debug environment guard prelude
                          (default: enabled for the standard pipeline)
   --vm                   L6: compile the program to private bytecode and
@@ -187,27 +174,10 @@ Options:
                          bit32/string/元表/协程/freeze/loadstring 语义常量
                          挑战 + 首尾身份全等；差值折入 SLT/MZD 静默投毒。
                          防错误语义 mock 环境，不防真环境录制重放。
-  --bind-executor        增量51 executor 认证绑定（仅 v15，IronBrew2 守卫
-                         移植）——**默认开启（底层保护层）**：产物只在完整
-                         Roblox executor 环境内正确运行（identifyexecutor/
-                         getgenv/闭包内省语义全认证），其他环境错钥静默死亡。
-                         绑定态产物只做语法校验。非 v15 管线自动降级为关闭。
-  --no-bind-executor     R081 起**仅原生开发构建**可用（运行等价矩阵/示例生
-                         成用）；发布件（wasm32-wasip1）传入即硬报错——线上
-                         没有任何关闭绑定层的入口。
   --super-insn           V17 函数级超指令融合（Phase-1b 已接发射端，默认关，
                          仅 --preset v15）：按每个函数的指令流数据统计/选择
                          top-4 白名单相邻对，塌缩为 fused 记录（trampoline
                          经 pf.fv 现解本函数词汇，tail-less 双段连跑）。
-  --key-host <delta>     v16-a 转录绑定解码钥（仅 v15 + executor 守卫，
-                         **R070 起固化为底层、恒开**；此旗标保留仅为兼容，
-                         与不传等价）：把宿主观测值（Vector3 tostring/
-                         typeof 折叠、IsStudio/checkcaller 布尔、identify
-                         名长）折入 SCHALL 转录链；观测不符 → ATTEST/TOK/
-                         SLT/st 全链失步 → 错钥静默死亡，非 exec 环境连
-                         载荷字节都解不出来。
-                         守卫链不齐的构建（safe/tier-2）无钥载体，静默降级。
-                         R070 起 --no-key-host 已移除（恒开不可关）。
   -h, --help             show this help
   --version              show version
 ",
@@ -236,17 +206,14 @@ fn main() -> ExitCode {
 	do_junk: true,
 	junk_n: 2,
 		bind_env: None,
-		bind_executor: true,
-		executor_guard: true,
-		bind_given: false,
 		env_check: false,
-		key_host: None,
 		super_insn: false,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
 	let mut preset_given = false;
 	let mut vm_given = false;
+	let mut guard_override = None;
 	while i < args.len() {
 		match args[i].as_str() {
 			"-h" | "--help" => {
@@ -313,7 +280,14 @@ fn main() -> ExitCode {
 		"--no-numbers" => opts.do_numbers = false,
 		"--no-body" => opts.do_body = false,
 		"--no-antidbg" => opts.do_antidbg = false,
-		"--no-guard" => opts.do_guard = false,
+		"--guard" => {
+			opts.do_guard = true;
+			guard_override = Some(true);
+		}
+		"--no-guard" => {
+			opts.do_guard = false;
+			guard_override = Some(false);
+		}
 		"--vm" => {
 			vm_given = true;
 			opts.do_vm = true;
@@ -331,45 +305,9 @@ fn main() -> ExitCode {
 				}
 				opts.bind_env = Some(args[i].clone());
 			}
-			"--bind-executor" => {
-				opts.bind_executor = true;
-				opts.bind_given = true;
-			}
-			"--no-bind-executor" => {
-				// R081：发布件（wasm32-wasip1）里绑定层恒开，关闭入口物理不存在。
-				// 原生开发构建保留该旗标，供语义等价矩阵与 examples 生成；
-				// 该产物不进发布通道（线上只分发 wasm）。
-				if !DEV_UNBIND_ESCAPE {
-					eprintln!(
-						"error: --no-bind-executor has been removed (R081)\n  \
-						\tthe executor attestation layer is always on in release builds;\n  \
-						\tunbound artifacts are no longer producible."
-					);
-					return ExitCode::FAILURE;
-				}
-				opts.bind_executor = false;
-				opts.bind_given = true;
-			}
-			"--no-executor-guard" => opts.executor_guard = false,
 			"--env-check" => opts.env_check = true,
-			"--key-host" => {
-				i += 1;
-				if i >= args.len() {
-					eprintln!("error: --key-host requires a host profile (delta)");
-					return ExitCode::FAILURE;
-				}
-				opts.key_host = Some(args[i].clone());
-			}
 			"--super-insn" => opts.super_insn = true,
-			"--no-key-host" => {
-				eprintln!(
-					"error: --no-key-host was removed in R070\n  \
-						the delta host key is now a permanent底层 of the v15+executor-guard chain\n  \
-						(always on; non-optional). Keyless output = use a guardless (safe/tier-2) build."
-				);
-				return ExitCode::FAILURE;
-			}
-			s if s.starts_with('-') => {
+s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
 				return ExitCode::FAILURE;
@@ -392,6 +330,9 @@ fn main() -> ExitCode {
 		if let Err(e) = apply_preset(&mut opts, "v15") {
 			eprintln!("error: {e}");
 			return ExitCode::FAILURE;
+		}
+		if let Some(enabled) = guard_override {
+			opts.do_guard = enabled;
 		}
 	}
 	let vm_seal_strings = opts.vm_seal_strings.unwrap_or(opts.do_vm);
@@ -433,16 +374,6 @@ fn main() -> ExitCode {
 			return ExitCode::FAILURE;
 		}
 	}
-	if opts.bind_executor && !(opts.do_vm && opts.do_v15) {
-		if opts.bind_given {
-			eprintln!(
-				"error: --bind-executor requires --preset v15\n  \
-				\tthe executor attestation guard rides the v15 fragment chain."
-			);
-			return ExitCode::FAILURE;
-		}
-		opts.bind_executor = false;
-	}
 	if opts.env_check && !(opts.do_vm && opts.do_v15) {
 		eprintln!(
 			"error: --env-check requires --preset v15\n  \
@@ -450,51 +381,8 @@ fn main() -> ExitCode {
 		);
 		return ExitCode::FAILURE;
 	}
-	if let Some(kh) = &opts.key_host {
-		if !(opts.do_vm && opts.do_v15) {
-			eprintln!(
-				"error: --key-host requires --preset v15\n  \
-					the host-keyed decode rides the v15 attestation transcript chain."
-			);
-			return ExitCode::FAILURE;
-		}
-		if !(opts.bind_executor && opts.executor_guard) {
-			eprintln!(
-				"error: --key-host requires the executor guard (drop --no-executor-guard)\n  \
-					the keyed transcript folds into the SCHALL attestation chain."
-			);
-			return ExitCode::FAILURE;
-		}
-		if vmgen::exguard::keyhost_profile(kh).is_none() {
-			eprintln!(
-				"error: --key-host profile '{kh}' unknown (only 'delta')\n  \
-					a profile is a compile-time host model built from measured values."
-			);
-			return ExitCode::FAILURE;
-		}
-	}
-	// v16-a 恒开（R070 起固化为底层，`--no-key-host` 已移除）：
-	// v15 + executor 守卫链齐时自动注入 delta 宿主模型；
-	// 链不齐（如 --no-executor-guard 的 safe/tier-2 变体）静默降级为关——
-	// 守卫链是钥的唯一载体，safe 件物理上没有折钥的位置（FFA 弱宿主前提不变）。
-	if opts.key_host.is_none()
-		&& opts.do_vm
-		&& opts.do_v15
-		&& opts.bind_executor
-		&& opts.executor_guard
-	{
-		opts.key_host = Some("delta".to_string());
-	}
-
 	let luau = opts.dialect == "luau";
-	let seed = if opts.seed == 0 {
-		std::time::SystemTime::now()
-			.duration_since(std::time::UNIX_EPOCH)
-			.map(|d| d.as_nanos() as u64)
-			.unwrap_or(1)
-	} else {
-		opts.seed
-	};
+	let seed = opts.seed;
 
 	let src = match std::fs::read_to_string(&opts.input) {
 		Ok(s) => s,
@@ -514,9 +402,13 @@ fn main() -> ExitCode {
 	let result = (|| -> Result<String, String> {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
-		let mut rng = rng::Rng::new(seed);
+		let mut rng = if seed == 0 {
+			rng::Rng::from_entropy()?
+		} else {
+			rng::Rng::new(seed)
+		};
 		if vm_seal_strings {
-			let mut seal_rng = rng::Rng::new(seed ^ 0x5230_3632_5354_5253);
+			let mut seal_rng = rng.fork(0x5230_3632_5354_5253);
 			vmgen::strseal::seal_literals(&mut block, &mut seal_rng);
 		}
 		let env_slots: Option<[i64; 4]> = if opts.do_v15 && opts.bind_env.is_some() {
@@ -531,28 +423,10 @@ fn main() -> ExitCode {
 			} else {
 				None
 			};
-			let keyhost_prof = opts
-				.key_host
-				.as_deref()
-				.and_then(vmgen::exguard::keyhost_profile);
-			// V19 M1：EVKEY 默认翻 On——宿主 EV 进 blob 密钥流是默认形态。
-			// 未设旋钮 = 自动档（v15+key-host 链齐备 ⇒ Bind，否则回落 Off+警告）；
-			// OBSUCVIM_V19_EVKEY=0 强制关；=1 显式 Bind（缺链报错）；
-			// OBSUCVIM_V19_EVKEY_DEV=<n> = 开发档（常量进产物，仅机制验证，禁交付）。
-			let ev_mode = vmgen::exguard::resolve_ev_mode(
-				std::env::var("OBSUCVIM_V19_EVKEY").ok().as_deref(),
-				std::env::var("OBSUCVIM_V19_EVKEY_DEV").ok().as_deref(),
-				opts.do_vm && opts.do_v15,
-				keyhost_prof.is_some(),
-			)?;
-			let ev_term = vmgen::exguard::resolve_ev_term(ev_mode, keyhost_prof.as_ref())?;
-			if ev_mode.on() {
-				vmgen::manifest_key("EVKEY_TERM", ev_term as u64);
-			}
 			let vm_raw = std::env::var("OBSUCVIM_VM_RAW").is_ok();
 			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program =
-				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn, ev_term);
+				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn);
 			let n = program.fns.len();
 			let carrier_bytes: Vec<Vec<u8>> = program
 				.fns
@@ -567,6 +441,7 @@ fn main() -> ExitCode {
 				(program.lane_base, program.lane_step),
 				&program.carrier,
 				&carrier_lengths,
+				luau,
 				&mut rng,
 				n,
 				opts.do_v15,
@@ -596,15 +471,9 @@ fn main() -> ExitCode {
 				opts.super_insn,
 				&program.fv_sets,
 				(program.fv_m1, program.fv_mc),
-				opts.bind_env.as_deref(),
 				env_slots.as_ref(),
-				opts.bind_executor,
-				opts.bind_executor && opts.executor_guard,
-				keyhost_prof.as_ref(),
 				opts.env_check,
 				opts.do_guard,
-				ev_mode,
-				ev_term,
 			);
 			if std::env::var("OBSUCVIM_VM_TSRC").is_ok() {
 				let path = std::env::var("OBSUCVIM_VM_TSRC_PATH")
@@ -651,7 +520,7 @@ fn main() -> ExitCode {
 						}
 					}
 				}
-				let interp_src = printer::print_chunk(&ttable, &tblock);
+				let interp_src = printer::print_chunk_luau(&ttable, &tblock);
 				let total_bytes: usize = carrier_bytes.iter().map(|c| c.len()).sum();
 				let est_words = total_bytes / 4 + carrier_bytes.len() * vmgen::v15::CHUNKS + 4;
 				let n_bw_slots = est_words / vmgen::v15::BW_SLOT_WORDS + 1;
@@ -761,7 +630,11 @@ let kg = slot_pool[3];
 			(block, table, false)
 		};
 		if opts.do_vm && vm_raw {
-		let out = printer::print_chunk(&table, &block);
+			let out = if luau {
+				printer::print_chunk_luau(&table, &block)
+			} else {
+				printer::print_chunk(&table, &block)
+			};
 			return Ok(out);
 		}
 		let tim = std::env::var("OBSUCVIM_TIMING").is_ok();

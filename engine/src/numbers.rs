@@ -116,6 +116,9 @@ fn rw_expr(e: Expr, rng: &mut Rng) -> Expr {
 	match e {
 		Expr::Num { value, isfloat } => rw_num(value, isfloat, rng),
 		Expr::Ident { .. } | Expr::Str { .. } | Expr::LongStr { .. } | Expr::SealedStr { .. } | Expr::Bool { .. } | Expr::Nil | Expr::Vararg => e,
+		Expr::Paren { e } => Expr::Paren {
+			e: Box::new(rw_expr(*e, rng)),
+		},
 		Expr::IfExpr { arms, elseb } => Expr::IfExpr {
 			arms: arms
 				.into_iter()

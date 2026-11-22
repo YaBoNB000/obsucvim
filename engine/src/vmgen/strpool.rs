@@ -13,7 +13,10 @@ impl StrPool {
 	}
 	pub fn lit(&mut self, s: &str) -> String {
 		if !self.use_ms {
-			return format!("'{s}'");
+			return format!(
+				"\"{}\"",
+				crate::printer::print_string_bytes(s.as_bytes(), false)
+			);
 		}
 		let n = self.entries.len();
 		let e = *self.index.entry(s.to_string()).or_insert(n);
@@ -29,5 +32,17 @@ impl StrPool {
 			s.push_str(&format!("  MS[{}] = CHAR({})\n", i + 1, codes.join(", ")));
 		}
 		s
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::StrPool;
+
+	#[test]
+	fn inline_literals_escape_quotes_and_backslashes() {
+		let mut pool = StrPool::new(false);
+		let literal = pool.lit(" with 'quote' and \\\"slash\\\"");
+		assert!(crate::parser::parse(&format!("local s={literal}"), false).is_ok());
 	}
 }

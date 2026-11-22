@@ -50,68 +50,46 @@ pub const ANTI_ENV: &str = r###"	local function stage_env()
 "###;
 
 pub const ANTI_DEBUG: &str = r###"	local function stage_debug()
-		local function lineProbe() return (nil)[1] end
-
-		if
-			type(debugInfo) == "function"
-			and type(gmatch) == "function"
-			and type(tostring) == "function"
-			and type(tonumber) == "function"
-		then
-			local lineOk, line = pcall(debugInfo, lineProbe, "l")
-			local sourceOk, source = pcall(debugInfo, lineProbe, "s")
-			local errorLine
-			local callOk = xpcall(lineProbe, function(message)
-				for digits in gmatch(tostring(message), ":(%d+):") do
-					errorLine = tonumber(digits)
-				end
-
-				return message
-			end)
-
-			if
-				callOk
-				or not lineOk
-				or type(line) ~= "number"
-				or not sourceOk
-				or type(source) ~= "string"
-				or source == "[C]"
-				or type(errorLine) ~= "number"
-				or line ~= errorLine
-			then
-				failed = true
-			end
-
-			local nativeOk, nativeSource = pcall(debugInfo, error, "s")
-
-			if nativeOk and type(nativeSource) == "string" and nativeSource ~= "[C]" then
-				failed = true
-			end
+		-- Prefer protected source checks over stack-line/error-message parsing.
+		-- Some Luau executors implement debug.info without the same line semantics.
+		if type(debugInfo) ~= "function" then
+			return
 		end
 
-		if type(debugInfo) == "function" then
-			local function isNative(f)
-				if type(f) ~= "function" then
-					return false
-				end
-				local ok, src = pcall(debugInfo, f, "s")
-				return ok and type(src) == "string" and src == "[C]"
+		local function sourceOf(f)
+			local ok, src = pcall(debugInfo, f, "s")
+			if ok and type(src) == "string" then
+				return src
 			end
+			return nil
+		end
 
-			local envTable = (EV and EV["_G"]) or _G
+		local probe = function() return true end
+		local probeSource = sourceOf(probe)
+		if probeSource == "[C]" then
+			failed = true
+		end
 
-			if type(envTable) == "table" then
-				local loaderLS = rawget(envTable, "loadstring")
-				local loaderL = rawget(envTable, "load")
+		-- Only enforce loader provenance when debug.info can identify a known
+		-- native function; otherwise fail open on executors with partial metadata.
+		if sourceOf(pcall) ~= "[C]" then
+			return
+		end
 
-				if type(loaderLS) == "function" and not isNative(loaderLS) then
-					failed = true
-				end
+		local envTable = (EV and EV["_G"]) or _G
+		if type(envTable) ~= "table" then
+			return
+		end
 
-				if type(loaderL) == "function" and not isNative(loaderL) then
-					failed = true
-				end
-			end
+		local loaderLS = rawget(envTable, "loadstring")
+		local loaderL = rawget(envTable, "load")
+		local loaderSource = sourceOf(loaderLS)
+		local loadSource = sourceOf(loaderL)
+		if type(loaderLS) == "function" and loaderSource ~= nil and loaderSource ~= "[C]" then
+			failed = true
+		end
+		if type(loaderL) == "function" and loadSource ~= nil and loadSource ~= "[C]" then
+			failed = true
 		end
 	end
 "###;

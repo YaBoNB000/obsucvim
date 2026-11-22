@@ -99,6 +99,7 @@ fn stmt_contains_sealed(stmt: &Stmt) -> bool {
 fn expr_contains_sealed(expr: &Expr) -> bool {
 	match expr {
 		Expr::SealedStr { .. } => true,
+		Expr::Paren { e } => expr_contains_sealed(e),
 		Expr::Dot { obj, .. } => expr_contains_sealed(obj),
 		Expr::Index { obj, idx } => expr_contains_sealed(obj) || expr_contains_sealed(idx),
 		Expr::Call { func, args } => {
@@ -151,6 +152,7 @@ fn seal_expr(expr: &mut Expr, rng: &mut Rng, stats: &mut SealStats) {
 			stats.bytes += plain.len();
 			*expr = Expr::SealedStr { bytes: plain, seed, step };
 		}
+		Expr::Paren { e } => seal_expr(e, rng, stats),
 		Expr::Dot { obj, .. } => seal_expr(obj, rng, stats),
 		Expr::Index { obj, idx } => {
 			seal_expr(obj, rng, stats);

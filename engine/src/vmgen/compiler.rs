@@ -55,9 +55,6 @@ pub struct VmProgram {
 	pub fv_sets: Vec<Vec<(u8, u8)>>,
 	pub fv_m1: u16,
 	pub fv_mc: u16,
-	/// V19 R4-proto：宿主 EV 项（0=关闭）。非零时烘进每函数 blob LCG 基址，
-	/// 运行期由 EVKX 探针同式现算补齐；产物内不含 EV 常量。
-	pub ev_term: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -349,7 +346,7 @@ impl<'a> Ctx<'a> {
 		let n_low = n.saturating_sub(n_high);
 		let low_max = n.max(1) + (n / 2).min(64).max(8);
 		let high_start = (low_max + 1).max(96);
-		let high_end = high_start.saturating_add(4095).min(u16::MAX as usize);
+		let high_end = 4095usize.min(u16::MAX as usize);
 		assert!(
 			high_start <= u16::MAX as usize
 				&& high_end >= high_start
@@ -447,16 +444,11 @@ impl<'a> Ctx<'a> {
 			self.emit(Instr::abcd(Op::Return, 0, 0, 0, 0));
 		}
 		let base_code_len = self.code.len();
-		let mut noise_seed = 0u64;
 		let nop_count: usize;
 		let mut active_count = 0usize;
 		let mut dead_regs = 0usize;
 		if self.scatter {
-			noise_seed = self
-				.rng
-				.next_raw()
-				^ (fn_index as u64 + 1).wrapping_mul(0x9e37_79b9);
-			let mut nr = Rng::new(noise_seed);
+			let mut nr = self.rng.fork(0x5343_4154_5445_5200 ^ fn_index as u64);
 
 			dead_regs = nr.int(2, 4) as usize;
 			let dead_base = nregs;
@@ -696,7 +688,7 @@ impl<'a> Ctx<'a> {
 		let mut noise_total = 0usize;
 		let mut noise_high = 0usize;
 		if self.scatter {
-			let mut fill_rng = Rng::new(noise_seed ^ 0xa5a5_5a5a);
+			let mut fill_rng = self.rng.fork(0x4649_4c4c_0000_0000 ^ fn_index as u64);
 			for r in recs.iter_mut() {
 				let unused = rec_unused(r.kind);
 				let mut vals = [r.a, r.b, r.c, r.d];
@@ -822,35 +814,19 @@ impl<'a> Ctx<'a> {
 			secs.push((7, fv));
 			self.program.fv_sets[fn_index] = fv_vocab.clone();
 		}
-		let ndecoys = self.rng.int(0, 2);
-		for _ in 0..ndecoys {
-			let len = self.rng.int(8, 48);
-			let mut g = Vec::with_capacity(len as usize);
-			for _ in 0..len {
-				g.push(self.rng.int(0, 255) as u8);
-			}
-			secs.push((6, g));
-		}
 		self.rng.shuffle(&mut secs);
 		let tags = &self.program.section_tags;
 		let mut blob: Vec<u8> = Vec::with_capacity(self.code.len() * 6 + 96);
 		for (id, body) in &secs {
+			assert_ne!(*id, 6, "unread padding sections must not be emitted");
 			blob.push(tags[*id]);
-			if *id == 6 {
-				isa::encode_u16var(&mut blob, body.len() as u16);
-			}
 			blob.extend_from_slice(body);
 		}
 		let km = self.program.blob_km as u64;
 		let kc = self.program.blob_kc as u64;
-		let mut base = (self.program.blob_seed as u64
+		let base = (self.program.blob_seed as u64
 			+ fn_index as u64 * self.program.blob_step as u64)
 			% 268_435_456;
-		if self.program.ev_term != 0 {
-			// V19 R4-proto：宿主 EV 烘进 blob LCG 基址；运行期 unmask 的
-			// g 初值以 EVKX 同式补齐。EV 常量不进产物。
-			base = (base + self.program.ev_term as u64) % 268_435_456;
-		}
 		// V19 R5-a：stage-1 blob —— 非线性折叠（fold_key_nl）+ 明文级联
 		// （前一明文字节并入 LCG 推进；跨 ksplit 边界连续携带，双镜面同构）。
 		let ksplit = blob.len().min(64);
@@ -875,9 +851,8 @@ impl<'a> Ctx<'a> {
 		}
 		if self.scatter {
 			noise_audit(&format!(
-				"fn={} seed={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={} chaff={}",
+				"fn={} base={} final={} nop={} active={} dead={} reg_hi={} real_n={} real_hi={} noise_n={} noise_hi={} nil={} decoy={} chaff={}",
 				fn_index,
-				noise_seed,
 				base_code_len,
 				recs.len(),
 				nop_count,
@@ -925,11 +900,19 @@ fn expr_refs(e: &Expr, out: &mut HashSet<SymId>) {
 				expr_refs(a, out);
 			}
 		}
+		Expr::Paren { e } => expr_refs(e, out),
 		Expr::Bin { l, r, .. } => {
 			expr_refs(l, out);
 			expr_refs(r, out);
 		}
 		Expr::Un { e, .. } => expr_refs(e, out),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				expr_refs(cond, out);
+				expr_refs(value, out);
+			}
+			expr_refs(elseb, out);
+		}
 		Expr::Table { fields } => {
 			for f in fields {
 				match f {
@@ -1010,12 +993,126 @@ fn collect_bodies<'a>(block: &'a Block, out: &mut Vec<(&'a Block, &'a [SymId])>)
 	}
 }
 
+// Collect only closure bodies created in this lexical function. Expressions and
+// control-flow blocks are traversed, but a function literal is a scope boundary.
+fn collect_direct_bodies<'a>(block: &'a Block, out: &mut Vec<(&'a Block, &'a [SymId])>) {
+	for s in &block.stmts {
+		match s {
+			Stmt::LocalFunc { func, .. } | Stmt::FuncDecl { func, .. } => {
+				out.push((&func.body, &func.param_syms));
+			}
+			_ => {}
+		}
+		match s {
+			Stmt::Local { values, .. } => {
+				for e in values.iter().flatten() {
+					expr_direct_bodies(e, out);
+				}
+			}
+			Stmt::Assign { targets, values } => {
+				for e in targets.iter().chain(values) {
+					expr_direct_bodies(e, out);
+				}
+			}
+			Stmt::ExprStmt(e) => expr_direct_bodies(e, out),
+			Stmt::Return(es) => {
+				for e in es {
+					expr_direct_bodies(e, out);
+				}
+			}
+			Stmt::If { cond, thenb, elsifs, elseb } => {
+				expr_direct_bodies(cond, out);
+				collect_direct_bodies(thenb, out);
+				for (c, b) in elsifs {
+					expr_direct_bodies(c, out);
+					collect_direct_bodies(b, out);
+				}
+				if let Some(b) = elseb {
+					collect_direct_bodies(b, out);
+				}
+			}
+			Stmt::While { cond, body } => {
+				expr_direct_bodies(cond, out);
+				collect_direct_bodies(body, out);
+			}
+			Stmt::Repeat { body, cond } => {
+				collect_direct_bodies(body, out);
+				expr_direct_bodies(cond, out);
+			}
+			Stmt::ForNum { start, limit, step, body, .. } => {
+				expr_direct_bodies(start, out);
+				expr_direct_bodies(limit, out);
+				if let Some(e) = step {
+					expr_direct_bodies(e, out);
+				}
+				collect_direct_bodies(body, out);
+			}
+			Stmt::ForGen { iters, body, .. } => {
+				for e in iters {
+					expr_direct_bodies(e, out);
+				}
+				collect_direct_bodies(body, out);
+			}
+			Stmt::Do(b) => collect_direct_bodies(b, out),
+			_ => {}
+		}
+	}
+}
+
+fn expr_direct_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
+	match e {
+		Expr::Function { body, param_syms, .. } => out.push((body, param_syms)),
+		Expr::Paren { e } | Expr::Un { e, .. } => expr_direct_bodies(e, out),
+		Expr::Dot { obj, .. } => expr_direct_bodies(obj, out),
+		Expr::Index { obj, idx } => {
+			expr_direct_bodies(obj, out);
+			expr_direct_bodies(idx, out);
+		}
+		Expr::Call { func, args } => {
+			expr_direct_bodies(func, out);
+			for a in args {
+				expr_direct_bodies(a, out);
+			}
+		}
+		Expr::Method { obj, args, .. } => {
+			expr_direct_bodies(obj, out);
+			for a in args {
+				expr_direct_bodies(a, out);
+			}
+		}
+		Expr::Bin { l, r, .. } => {
+			expr_direct_bodies(l, out);
+			expr_direct_bodies(r, out);
+		}
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				expr_direct_bodies(cond, out);
+				expr_direct_bodies(value, out);
+			}
+			expr_direct_bodies(elseb, out);
+		}
+		Expr::Table { fields } => {
+			for f in fields {
+				match f {
+					TableField::Array(e) => expr_direct_bodies(e, out),
+					TableField::Key { key, value } => {
+						expr_direct_bodies(key, out);
+						expr_direct_bodies(value, out);
+					}
+				}
+			}
+		}
+		_ => {}
+	}
+}
+
 fn expr_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
 	match e {
 		Expr::Function { body, param_syms, .. } => {
 			out.push((body, param_syms));
 			collect_bodies(body, out);
 		}
+		Expr::Paren { e } => expr_bodies(e, out),
 		Expr::Dot { obj, .. } => expr_bodies(obj, out),
 		Expr::Index { obj, idx } => {
 			expr_bodies(obj, out);
@@ -1038,6 +1135,13 @@ fn expr_bodies<'a>(e: &'a Expr, out: &mut Vec<(&'a Block, &'a [SymId])>) {
 			expr_bodies(r, out);
 		}
 		Expr::Un { e, .. } => expr_bodies(e, out),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				expr_bodies(cond, out);
+				expr_bodies(value, out);
+			}
+			expr_bodies(elseb, out);
+		}
 		Expr::Table { fields } => {
 			for f in fields {
 				match f {
@@ -1097,35 +1201,9 @@ fn collect_declared_all(block: &Block, out: &mut Vec<SymId>) {
 	}
 }
 
-fn collect_declared_expr(e: &Expr, out: &mut Vec<SymId>) {
-	match e {
-		Expr::Function { body, .. } => collect_declared_all(body, out),
-		Expr::Call { func, args } => {
-			collect_declared_expr(func, out);
-			for a in args {
-				collect_declared_expr(a, out);
-			}
-		}
-		Expr::Method { obj, args, .. } => {
-			collect_declared_expr(obj, out);
-			for a in args {
-				collect_declared_expr(a, out);
-			}
-		}
-		Expr::Table { fields } => {
-			for f in fields {
-				match f {
-					TableField::Array(e) => collect_declared_expr(e, out),
-					TableField::Key { key, value } => {
-						collect_declared_expr(key, out);
-						collect_declared_expr(value, out);
-					}
-				}
-			}
-		}
-		_ => {}
-	}
-}
+// Expressions do not declare locals in their enclosing function. A function
+// literal is a distinct scope, so its locals must never enter this set.
+fn collect_declared_expr(_e: &Expr, _out: &mut Vec<SymId>) {}
 
 fn declared_set_of(block: &Block) -> HashSet<SymId> {
 	let mut v = Vec::new();
@@ -1247,18 +1325,20 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 	direct.retain(|s| !declared_set.contains(s));
 
 	let mut bodies: Vec<(&Block, &[SymId])> = Vec::new();
-	collect_bodies(block, &mut bodies);
+	collect_direct_bodies(block, &mut bodies);
 	let mut nested = HashSet::new();
-	for (b, bparams) in &bodies {
-		let mut own_decl = Vec::new();
-		own_decl.extend(bparams.iter().copied());
-		collect_declared_all(b, &mut own_decl);
-		let own_set: HashSet<SymId> = own_decl.iter().copied().collect();
-		let mut refs = HashSet::new();
-		collect_block_refs_own(b, &mut refs);
-		refs.retain(|s| !own_set.contains(s));
-		refs.retain(|s| !declared_set.contains(s));
-		nested.extend(refs);
+	for (child, child_params) in &bodies {
+		// Each child contributes both its own external references and the
+		// references it must forward to its descendants. Filter symbols owned
+		// here: they are captured from this frame, not from this function's
+		// enclosing frame. Recursing over only direct children prevents sibling
+		// scopes from leaking locals into this closure's descriptor set.
+		let child_analysis = analyze(child, child_params);
+		for s in child_analysis.direct_up.iter().chain(&child_analysis.nested_up) {
+			if !declared_set.contains(s) {
+				nested.insert(*s);
+			}
+		}
 	}
 
 	let mut direct_up: Vec<SymId> = direct.iter().copied().collect();
@@ -1342,7 +1422,6 @@ fn compile_chunk(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
-	ev_term: u32,
 ) -> VmProgram {
 	let total = count_fns_count(block);
 	let has_loadstr = crate::vmgen::strseal::contains_sealed_literals(block);
@@ -1424,7 +1503,6 @@ fn compile_chunk(
 		fv_sets: vec![Vec::new(); total + 1],
 		fv_m1,
 		fv_mc,
-		ev_term,
 	};
 	{
 		let main_index = program.fns.len();
@@ -1537,6 +1615,7 @@ fn count_expr(e: &Expr, n: &mut usize) {
 			*n += 1;
 			count_fns(body, n);
 		}
+		Expr::Paren { e } => count_expr(e, n),
 		Expr::Dot { obj, .. } => count_expr(obj, n),
 		Expr::Index { obj, idx } => {
 			count_expr(obj, n);
@@ -1559,6 +1638,13 @@ fn count_expr(e: &Expr, n: &mut usize) {
 			count_expr(r, n);
 		}
 		Expr::Un { e, .. } => count_expr(e, n),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				count_expr(cond, n);
+				count_expr(value, n);
+			}
+			count_expr(elseb, n);
+		}
 		Expr::Table { fields } => {
 			for f in fields {
 				match f {
@@ -2127,6 +2213,7 @@ impl<'a> Ctx<'a> {
 					self.emit(Instr::ab(Op::LoadK, kreg, k1));
 					self.emit(Instr::abc(Op::GetTab, dst, t, kreg));
 				}
+			Expr::Paren { e } => self.compile_expr(e, dst),
 			Expr::Ident { name, sym } => match sym {
 				Some(s) => {
 					if let Some(k) = self.lookup(*s) {
@@ -2703,9 +2790,8 @@ pub fn compile(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
-	ev_term: u32,
 ) -> VmProgram {
-	compile_chunk(block, table, rng, lua51, scatter, super_insn, ev_term)
+	compile_chunk(block, table, rng, lua51, scatter, super_insn)
 }
 
 #[cfg(test)]
@@ -2762,6 +2848,7 @@ mod dbg {
 				.iter()
 				.position(|&candidate| candidate == tag)
 				.expect("known section tag");
+			assert_ne!(id, 6, "unread padding sections must not be emitted");
 			seen.push(id);
 			match id {
 				0 => {
@@ -2798,10 +2885,7 @@ mod dbg {
 						}
 					}
 				}
-				6 => {
-					let len = varint(&blob, &mut p) as usize;
-					p += len;
-				}
+				6 => panic!("unread padding sections must not be emitted"),
 				7 => {
 					let nv = varint(&blob, &mut p) as usize;
 					for _ in 0..nv {
@@ -2824,7 +2908,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(4242);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, 0);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, true);
 		assert!(prog.fv_sets.iter().any(|v| !v.is_empty()), "super on: vocab must be non-empty here");
 		for (fi, _) in prog.fns.iter().enumerate() {
 			let walk = section_walk(&prog, fi.min(prog.fns.len() - 1));
@@ -2887,10 +2971,7 @@ mod dbg {
 						}
 					}
 				}
-				6 => {
-					let len = varint(&blob, &mut p) as usize;
-					p += len;
-				}
+				6 => panic!("unread padding sections must not be emitted"),
 				7 => {
 					// V17 fv 段：count + count×u16var
 					let nv = varint(&blob, &mut p) as usize;
@@ -2968,7 +3049,7 @@ mod dbg {
 		};
 		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
 		let mut rng = crate::rng::Rng::new(77);
-		let program = compile_chunk(&block, &table, &mut rng, false, true, false, 0);
+		let program = compile_chunk(&block, &table, &mut rng, false, true, false);
 		assert!(program.has_loadstr);
 		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
 		assert!(strings.iter().any(|s| s == &expected_cipher));
@@ -3031,7 +3112,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, 0);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -3141,7 +3222,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(7);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, 0);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, false);
 		let mut saw_scattered_operand = false;
 		let tags = &prog.section_tags;
 		for (fi, b) in prog.fns.iter().enumerate() {
@@ -3176,6 +3257,7 @@ mod dbg {
 			while got < 6 {
 				let tag = buf[p];
 				p += 1;
+				assert_ne!(tag, tags[6], "unread padding sections must not be emitted");
 				if tag == tags[0] {
 					let (v, np) = isa::decode_varint(&buf, p).unwrap();
 					nregs = v as usize;
@@ -3215,9 +3297,6 @@ p = np;
 						ns -= 1;
 					}
 					got += 1;
-				} else if tag == tags[6] {
-					let (dl, np) = isa::decode_varint(&buf, p).unwrap();
-					p = np + dl as usize;
 				} else {
 					if tag != tags[5] {
 						panic!(

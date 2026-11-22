@@ -55,14 +55,14 @@ EXP1="$($LUAU "$SRC" 2>&1)"
 EXP2="$($LUAU "$SRC2" 2>&1)"
 # Seed 772 keeps the randomized F10 literal-count specimen inside its
 # established 10..60 band with default-on LoadStr and dead MkStr pruning.
-"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 772 "$SRC" "$W/d1a.lua" >/dev/null 2>&1
-"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 888 "$SRC2" "$W/d1b.lua" >/dev/null 2>&1
+"$TOOL" --preset v15 --dialect luau --seed 772 "$SRC" "$W/d1a.lua" >/dev/null 2>&1
+"$TOOL" --preset v15 --dialect luau --seed 888 "$SRC2" "$W/d1b.lua" >/dev/null 2>&1
 [ "$($LUAU "$W/d1a.lua" 2>&1)" == "$EXP1" ] && ok "basics seed=772" || bad "basics seed=772"
 [ "$($LUAU "$W/d1b.lua" 2>&1)" == "$EXP2" ] && ok "real_algo seed=888" || bad "real_algo seed=888"
 
 echo "== D2 钥匙去字面化 (3 种子) =="
 for seed in 7 4242 999999; do
-	OBSUCVIM_KEY_MANIFEST="$W/keys_$seed.txt" "$TOOL" --preset v15 --dialect luau --no-bind-executor \
+	OBSUCVIM_KEY_MANIFEST="$W/keys_$seed.txt" "$TOOL" --preset v15 --dialect luau \
 		--seed "$seed" "$SRC" "$W/d2_$seed.lua" >/dev/null 2>&1
 	if python3 "$ROOT/tests/key_literal_check.py" "$W/d2_$seed.lua" "$W/keys_$seed.txt" \
 		>"$W/d2_$seed.out" 2>&1; then
@@ -262,7 +262,7 @@ fi
 echo "== D12 计时守卫 (㊳/H4-2C2: 接线 + 触发路径 + 误报抽查) =="
 rm -f /tmp/vm_tsrc.lua
 OBSUCVIM_VM_TSRC=1 OBSUCVIM_KEY_MANIFEST="$W/d12_keys.txt" \
-	"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
+	"$TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
 # H4-2C2 后 RT 不再是可导出的 HQ 碎片；从构建期 TSRC 中抽取已经字段
 # 随机化的静态 RT 守卫。正式产物没有运行时 dump/fallback 接口。
 rt_static="/tmp/vm_tsrc.lua"
@@ -398,7 +398,7 @@ else
 	[ "$t1" == "195	10" ] && ok "触发路径: tracer 两连窗 => 帧局部 poison=195、延迟窗=10" || bad "触发路径失效: 得到 [$t1]"
 	[ "$t2" == "0	0" ] && ok "干净时钟: 8 窗口 0 投毒 (阈值不误伤)" || bad "干净时钟误报: [$t2]"
 	# 误报抽查: 长运行用例真实执行必须输出等价
-	"$TOOL" --preset v15 --dialect luau --no-bind-executor --seed 999 \
+	"$TOOL" --preset v15 --dialect luau --seed 999 \
 		"$ROOT/tests/cases/stress_control.lua" "$W/d12c.lua" >/dev/null 2>&1
 	exp12="$(timeout 90 "$LUAU" "$ROOT/tests/cases/stress_control.lua" 2>&1)"
 	got12="$(timeout 90 "$LUAU" "$W/d12c.lua" 2>&1)"
@@ -449,7 +449,7 @@ echo "== D15 环境绑定语义强化 (㊸: 桩场景 ⇒ 静默毒药) =="
 # 朴素桩（形状对、语义错：typeof=table、无 tostring 格式）⇒ 折叠异值 ⇒
 # 元钥匙流污染 ⇒ HBOOT 垃圾 ⇒ 静默循环——无报错、无信号（样本式毒药
 # 语义）。若桩能跑通 = 语义探针失效。
-"$TOOL" --preset v15 --dialect luau --no-bind-executor --bind-env roblox --seed 42 "$SRC" "$W/d15_bound.lua" >/dev/null 2>&1 || bad "绑定态构建失败"
+"$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$W/d15_bound.lua" >/dev/null 2>&1 || bad "绑定态构建失败"
 python3 - "$W/d15_bound.lua" "$W" <<'PYD15'
 import sys
 src = open(sys.argv[1]).read()
@@ -510,20 +510,9 @@ else
 	bad "物化路径可被 char 钩子截获"; sed 's/^/  /' "$W/d17.out" | tail -8
 fi
 
-echo "== D18 executor 认证守卫 (51: IronBrew2 移植, 藏深 + 负面实证) =="
-# 守卫本体 = 加密碎片 (wire 209): 可见层零 API 名痕迹; 裸 Luau / 半吊子
-# 桩 (内省不保真) 双负面实证; 开关关闭 ⇒ 管线字节级不变 (回退保障)。
-# 正面运行等价需真执行器 (裸 Luau 无保真内省桩, R004 同界)。
-if bash "$ROOT/tests/executor_guard_test.sh" >"$W/d18.out" 2>&1; then
-	ok "executor 认证守卫 (语法/双负面/零痕迹/确定/回退 6 项全过)"
-else
-	bad "executor 认证守卫验证失败"; sed 's/^/  /' "$W/d18.out" | tail -8
-fi
-
 echo "=================================================="
 echo "防御审计: PASS $pass   FAIL $fail"
 [ "$fail" == "0" ] && echo "ALL DEFENSES ACTIVE" || exit 1
 #   D15 环境绑定语义强化 — 朴素桩场景必须静默毒药 (㊸)
 #   D16 可见层零解码源消费点 — 解码源不得落地可见层 (㊹, R018 P0-2)
 #   D17 物化去钩化           — char 钩子截不到载荷 (㊾, R021)
-#   D18 executor 认证守卫    — IronBrew2 移植藏深 + 双负面实证 (51)

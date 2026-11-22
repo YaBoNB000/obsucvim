@@ -18,6 +18,8 @@ python3 "$REPO/engine/tests/v15_short_name_audit.py" "$TMP/target.lua"
 
 # White-box static audit: KeyEmitter must have no public lookup tables, and
 # every emitted key reconstruction must depend on actual carrier lengths.
+# This regression executes under stock Luau; v15 output no longer depends on
+# executor-specific attestation APIs.
 OBSUCVIM_VM_TSRC=1 OBSUCVIM_KEY_MANIFEST="$TMP/keys.txt" \
     "$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/static-audit.lua"
 python3 "$REPO/engine/tests/key_literal_check.py" \
@@ -36,7 +38,11 @@ for name in ('KA', 'KB', 'KC', 'KM'):
         f'old key-table lookup remains: {name}'
     assert not re.search(rf'\blocal\s+{name}\s*=\s*\{{', src), \
         f'old key table remains: {name}'
-assert 'for i=1,#d do s=(s*' in src and '#d[i]' in src, 'carrier-length digest loop missing'
+carrier_exprs = re.findall(r'\(function\(([dpv])\)(.*?)end\)\(FN\)', src, re.S)
+assert carrier_exprs, 'carrier-key expressions missing'
+assert any(re.search(r'#[dpv]\[[ijn]\]', body) and
+           re.search(r'(?:for\s+[ijn]\s*=\s*1\s*,\s*#[dpv]|while\s+[ijn]\s*<=\s*#[dpv]|repeat\s+[ijn].*?#[dpv])', body)
+           for _, body in carrier_exprs), 'carrier-length digest missing'
 assert 'local by=string.byte for i=1,#d do' not in src, 'key derivation added a byte-hook sink'
 contexts = re.findall(r'end\)\(([^)]*)\)', src)
 contexts = [ctx for ctx in contexts if ctx]

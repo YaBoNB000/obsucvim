@@ -32,7 +32,7 @@ for seed in $SEEDS; do
 			vmflags=("" "--vm")
 			[[ "$d" == "luau" ]] && vmflags+=("--preset v15")
 			for vmflag in "${vmflags[@]}"; do
-				if ! timeout 60 "$TOOL" $vmflag --no-bind-executor --dialect "$d" --seed "$seed" "$case" /tmp/ms_out.lua 2>/dev/null; then
+				if ! timeout 60 "$TOOL" $vmflag --dialect "$d" --seed "$seed" "$case" /tmp/ms_out.lua 2>/dev/null; then
 					echo "FAIL [tool] $base $d ${vmflag:-nv} seed=$seed"; fail=$((fail+1)); continue
 				fi
 				o2="$(timeout 60 "$interp" /tmp/ms_out.lua 2>&1)"; c2=$?

@@ -394,11 +394,18 @@ fn collect_expr_syms(e: &Expr, out: &mut HashSet<SymId>) {
 				collect_expr_syms(a, out);
 			}
 		}
+		Expr::Paren { e } | Expr::Un { e, .. } => collect_expr_syms(e, out),
 		Expr::Bin { l, r, .. } => {
 			collect_expr_syms(l, out);
 			collect_expr_syms(r, out);
 		}
-		Expr::Un { e, .. } => collect_expr_syms(e, out),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				collect_expr_syms(cond, out);
+				collect_expr_syms(value, out);
+			}
+			collect_expr_syms(elseb, out);
+		}
 		Expr::Table { fields } => {
 			for f in fields {
 				match f {
@@ -445,7 +452,14 @@ fn collect_expr_syms_deep(e: &Expr, out: &mut HashSet<SymId>) {
 					collect_expr_syms_deep(l, out);
 					collect_expr_syms_deep(r, out);
 				}
-				Expr::Un { e, .. } => collect_expr_syms_deep(e, out),
+				Expr::Paren { e } | Expr::Un { e, .. } => collect_expr_syms_deep(e, out),
+				Expr::IfExpr { arms, elseb } => {
+					for (cond, value) in arms {
+						collect_expr_syms_deep(cond, out);
+						collect_expr_syms_deep(value, out);
+					}
+					collect_expr_syms_deep(elseb, out);
+				}
 				Expr::Table { fields } => {
 					for f in fields {
 						match f {
@@ -1387,6 +1401,14 @@ fn collect_functions_expr<'a>(e: &'a Expr, out: &mut Vec<&'a Block>) {
 			out.push(body);
 			collect_block_functions(body, out);
 		}
+		Expr::Paren { e } => collect_functions_expr(e, out),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms {
+				collect_functions_expr(cond, out);
+				collect_functions_expr(value, out);
+			}
+			collect_functions_expr(elseb, out);
+		}
 		Expr::Dot { obj, .. } => collect_functions_expr(obj, out),
 		Expr::Index { obj, idx } => {
 			collect_functions_expr(obj, out);
@@ -1475,6 +1497,14 @@ fn flatten_expr(
 	reserved: &mut HashSet<String>,
 ) {
 	match e {
+		Expr::Paren { e } => flatten_expr(e, table, rng, reserved),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms.iter_mut() {
+				flatten_expr(cond, table, rng, reserved);
+				flatten_expr(value, table, rng, reserved);
+			}
+			flatten_expr(elseb, table, rng, reserved);
+		}
 		Expr::Function { body, .. } => flatten_block(body, table, rng, reserved),
 		Expr::Call { func, args } => {
 			flatten_expr(func, table, rng, reserved);

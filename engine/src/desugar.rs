@@ -287,6 +287,7 @@ fn recurse_stmt(s: &mut Stmt, table: &mut SymTable, tmps: &mut Vec<String>) {
 
 fn recurse_expr(e: &mut Expr, table: &mut SymTable, tmps: &mut Vec<String>) {
 	match e {
+		Expr::Paren { e } => recurse_expr(e, table, tmps),
 		Expr::Function { body, .. } => desugar_block(body, table, tmps),
 		Expr::Call { func, args } => {
 			recurse_expr(func, table, tmps);
@@ -305,6 +306,13 @@ fn recurse_expr(e: &mut Expr, table: &mut SymTable, tmps: &mut Vec<String>) {
 			recurse_expr(r, table, tmps);
 		}
 		Expr::Un { e, .. } => recurse_expr(e, table, tmps),
+		Expr::IfExpr { arms, elseb } => {
+			for (cond, value) in arms.iter_mut() {
+				recurse_expr(cond, table, tmps);
+				recurse_expr(value, table, tmps);
+			}
+			recurse_expr(elseb, table, tmps);
+		}
 		Expr::Table { fields } => {
 			for f in fields.iter_mut() {
 				match f {

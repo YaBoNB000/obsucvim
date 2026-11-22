@@ -37,7 +37,7 @@ for case in "$ROOT"/tests/cases/*.lua; do
 	dialects="luau"
 	for d in $dialects; do
 		out="$TMP/${base}__${d}.lua"
-		if ! "$TOOL" --no-bind-executor --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then
+		if ! "$TOOL" --dialect "$d" --seed 42 "$case" "$out" 2>"$TMP/tool_err.txt"; then
 			echo "FAIL [tool]  $base ($d): $(head -1 "$TMP/tool_err.txt")"
 			fail=$((fail + 1)); failed+=("$base/$d/tool")
 			continue
@@ -157,14 +157,6 @@ source "$ROOT/tests/env_bind_test.sh"
 source "$ROOT/tests/faithful_stub_test.sh"
 
 # ---------------------------------------------------------------
-# 增量51 (IronBrew2 executor 认证守卫移植): --bind-executor 绑定态
-# 语法校验通过 + 裸 Luau/半吊子桩双负面实证 + 可见层零痕迹 + 字节级
-# 确定 + 开关关闭零回归。正面运行等价只能由真执行器验证（裸 Luau 无
-# 法构造保真内省桩）——口径与 IronBrew2 fail-closed 设计一致。
-# ---------------------------------------------------------------
-source "$ROOT/tests/executor_guard_test.sh"
-
-# ---------------------------------------------------------------
 # 增量㊾ (R021 回合 — 物化去钩化): 钩住 string.char 的钩子环境下程序
 # 仍正确运行、且载荷既不被整串钩中也不被逐字符序列钩中（短/长载荷，
 # 覆盖 MkStr 与常量池路径）。
@@ -216,12 +208,6 @@ fi
 if ! bash "$ROOT/tests/wtf_port_test.sh"; then
 	echo "FAIL [wtf-port] environment check battery regression"
 	fail=$((fail + 1)); failed+=("wtf-port/env-check")
-fi
-
-# WTF-PORT Phase 2: tier-2 Roblox/executor battery (fragment mock matrix).
-if ! bash "$ROOT/tests/wtf_port_tier2_test.sh"; then
-	echo "FAIL [wtf-port-tier2] tier-2 environment check regression"
-	fail=$((fail + 1)); failed+=("wtf-port/tier2")
 fi
 
 echo "=================================================="
