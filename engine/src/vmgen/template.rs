@@ -1570,10 +1570,9 @@ pub fn generate(
           sh2 = sh2 * 128
         end
         local kk = FLR(kp / 2) - 2048
-        local pw = 1
-        if kk >= 0 then for j = 1, kk do pw = pw * 2 end else for j = 1, 0 - kk do pw = pw / 2 end end
-        local v = m * pw
-        if kp % 2 == 1 then v = 0 - v end
+        local v = m
+        if kk >= 0 then for j = 1, kk do v = v * 2 end else for j = 1, 0 - kk do v = v / 2 end end
+        if kp % 2 == 1 then v = -v end
         C[i] = v
       end
     end"#;
@@ -2834,7 +2833,7 @@ __FVARM__        else
 			);
 			s.push_str(&cenv_off);
 			s.push_str(
-				") % 268435456 local v=Ct[j] local tv=TYP(v) local _pv2 = 0 local stj=(cbase+j*CKJ)%268435456 stj=(KM*stj+KC)%268435456 stj=(KM*stj+KC)%268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local pj=tv==\"string\" and CSJ or CNJ local stp=(cbase+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 if tv == \"number\" then if v ~= v then ct[j] = (6 + tm[1] + stj) % 65536 elseif v == 1/0 then ct[j] = (6 + tm[2] + stj) % 65536 elseif v == -1/0 then ct[j] = (6 + tm[3] + stj) % 65536 elseif v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + _sp % 65536 else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(ns, cb) + _spb % 256) % 256 _pv2 = BYTE(ns, cb) si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(v, cb) + _spb % 256) % 256 _pv2 = BYTE(v, cb) si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end Ct[j] = nil end pf.C = nil pf.nc = nil",
+				") % 268435456 local v=Ct[j] local tv=TYP(v) local _pv2 = 0 local stj=(cbase+j*CKJ)%268435456 stj=(KM*stj+KC)%268435456 stj=(KM*stj+KC)%268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local pj=tv==\"string\" and CSJ or CNJ local stp=(cbase+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 if tv == \"number\" then if v ~= v then ct[j] = (6 + tm[1] + stj) % 65536 elseif v == 1/0 then ct[j] = (6 + tm[2] + stj) % 65536 elseif v == -1/0 then ct[j] = (6 + tm[3] + stj) % 65536 elseif v == 0 and 1 / v < 0 then ct[j] = (6 + tm[4] + stj) % 65536 elseif v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + _sp % 65536 else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(ns, cb) + _spb % 256) % 256 _pv2 = BYTE(ns, cb) si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(v, cb) + _spb % 256) % 256 _pv2 = BYTE(v, cb) si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end Ct[j] = nil end pf.C = nil pf.nc = nil",
 			);
 			s
 		} else {
@@ -3095,7 +3094,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 				base_env_s
 			));
 			s.push_str(
-				"local C = {} local done = {} local MT = {} MT.__index = function(t, j) if done[j] then return nil end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local ty = (ct[j] - stj) % 65536 local pj=ty==tm[3] and CSJ or CNJ local stp=(base+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 local _pv2 = 0 local v if ty == tm[2] then v = cn[j] - _sp % 65536 elseif ty == 6 + tm[1] then v = 0/0 elseif ty == 6 + tm[2] then v = 1/0 elseif ty == 6 + tm[3] then v = -1/0 elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" if l > 0 then if l <= 64 then local _sb = {} for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 _sb[x] = _b _pv2 = _b si = si + 1 end s = CHAR(UNP(_sb, 1, l)) else local _st, _sn, _sb, _sk = {}, 0, {}, 0 for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 _sk = _sk + 1 _sb[_sk] = _b _pv2 = _b si = si + 1 if _sk == 64 then _sn = _sn + 1 _st[_sn] = CHAR(UNP(_sb, 1, 64)) _sk = 0 end end if _sk > 0 then _sn = _sn + 1 _st[_sn] = CHAR(UNP(_sb, 1, _sk)) end s = TCAT(_st) end end if ty == tm[3] then return s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true if v ~= nil then t[j] = v end return v end return SMT(C, MT) end",
+				"local C = {} local done = {} local MT = {} MT.__index = function(t, j) if done[j] then return nil end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local ty = (ct[j] - stj) % 65536 local pj=ty==tm[3] and CSJ or CNJ local stp=(base+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 local _pv2 = 0 local v if ty == tm[2] then v = cn[j] - _sp % 65536 elseif ty == 6 + tm[1] then v = 0/0 elseif ty == 6 + tm[2] then v = 1/0 elseif ty == 6 + tm[3] then v = -1/0 elseif ty == 6 + tm[4] then v = -1/(1/0) elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" if l > 0 then if l <= 64 then local _sb = {} for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 _sb[x] = _b _pv2 = _b si = si + 1 end s = CHAR(UNP(_sb, 1, l)) else local _st, _sn, _sb, _sk = {}, 0, {}, 0 for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 _sk = _sk + 1 _sb[_sk] = _b _pv2 = _b si = si + 1 if _sk == 64 then _sn = _sn + 1 _st[_sn] = CHAR(UNP(_sb, 1, 64)) _sk = 0 end end if _sk > 0 then _sn = _sn + 1 _st[_sn] = CHAR(UNP(_sb, 1, _sk)) end s = TCAT(_st) end end if ty == tm[3] then return s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true if v ~= nil then t[j] = v end return v end return SMT(C, MT) end",
 			);
 			s
 		} else {
@@ -3780,7 +3779,7 @@ let f_ty = fold31("Vector3Vector3");
   local MZD = 0
   local SH1, SH2
   local HPH
-  local PD = function() local z0, z1 = 0, 1 while z0 < 4294967296 do z0 = (z0 * 1103515245 + 12345) % 268435456 z1 = (z1 * 80659 + 95050511) % 268435456 if z0 == z1 and z0 == 123456789 then break end end end
+  local PD = function() local z0, z1 = 0, 1 while z0 < 65536 do z0 = z0 + 1 z1 = (z1 * 80659 + 95050511 + z0) % 268435456 end local zf = false zf = zf[zf] local zn return zn[z1] end
   local MPF
   local CLK
   local CENVPROBE{env_decl}
@@ -3806,7 +3805,7 @@ let f_ty = fold31("Vector3Vector3");
 -- baseline; two CONSECUTIVE windows slower than 100x baseline perturb a
 -- frame-local numeric lane. Its per-function delay changes both later block
 -- keys and the selected micro shard; no global flag or fixed poison literal.
-    do
+    {pcall_pre_guard}do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
       if ok and TYP(sr) == {strlit} then
         for i = 1, #sr do pb = (pb * 31 + BYTE(sr, i)) % 268435456 end
@@ -3850,7 +3849,12 @@ let f_ty = fold31("Vector3Vector3");
 		hp_stash = hp_stash,
 		vault_def = vault_def,
 		vault_args = vault_args,
-		hbootfail = "PD()",
+		hbootfail = if guard { "PD()" } else { "_r1()" },
+		pcall_pre_guard = if guard {
+			format!("if TYP(PCAL) ~= {fnlit} then PD() end ")
+		} else {
+			String::new()
+		},
 		env_decl = env_decl,
 		env_frag_decl = env_frag_decl,
 		env_extract = env_extract,

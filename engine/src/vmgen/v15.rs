@@ -1321,10 +1321,12 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 let (st, _ret) = step(&mut state_i);
 		let v2n: Vec<String> = (0..5).map(|_| nm.take_avoid(&["b", "C"])).collect();
 		let src = format!(
-			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]~=C[{sumslot}] then C[{sumslot}]=C[{sumslot}]+7919 end; \
+			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]~=C[{sumslot}] then C[{sumslot}]=C[{sumslot}]+7919; C[{entryslot}]=nil; C[{vmslot}]=nil end; \
 			 return {sdone},C,{n1},{n2},{n3},{n4},{n0} end",
 			verifyslot = verifyslot,
 			sumslot = sumslot,
+			entryslot = entryslot,
+			vmslot = vmslot,
 			sdone = sdone,
 			n0 = v2n[0],
 			n1 = v2n[1],

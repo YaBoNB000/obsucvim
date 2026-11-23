@@ -1,21 +1,25 @@
 #!/usr/bin/env bash
 # Mandatory Production vs Audit-Hooks Release Hygiene & Byte-Equivalence Gate.
 #
-# Enforces all P1-B invariants:
-# 1. Production release binary (`cargo build --release`, without `audit-hooks`)
-#    MUST exist (auto-built unless `OBSUCVIM_NO_AUTOBUILD=1`) and MUST NOT export
-#    key manifests, noise/profile manifests, raw VM dumps, template sources, or
-#    debug/timing stdout/stderr even when EVERY `OBSUCVIM_*` env var is set.
-# 2. `--features audit-hooks` binary MUST ALSO exist in an isolated target dir
-#    (`target/audit/release/obsucvim` by default, auto-built unless
-#    `OBSUCVIM_NO_AUTOBUILD=1`) — NEVER silently skipped!
-# 3. `AUDIT_BIN` MUST emit requested audit artifacts (`OBSUCVIM_KEY_MANIFEST`,
-#    `OBSUCVIM_NOISE_AUDIT`, `OBSUCVIM_PROFILE_AUDIT`, `OBSUCVIM_VM_TSRC_PATH`)
-#    AND produce byte-for-byte identical obfuscated Lua output (`cmp -s`) to
-#    `PROD_BIN` across seeds (`42`, `4242`) and presets (`v15`, `v15 --no-guard`, `vm`).
-# 4. Includes built-in negative self-tests verifying the gate script fails
-#    non-zero when `AUDIT_BIN` is missing, when a diagnostic file leaks, or when
-#    emitted artifact bytes diverge by even 1 byte.
+# Enforces all Phase 17 §5.1 / P1-B invariants across ALL 12 `OBSUCVIM_*` env vars:
+#   - File / path hooks: `OBSUCVIM_KEY_MANIFEST`, `OBSUCVIM_NOISE_AUDIT`,
+#     `OBSUCVIM_PROFILE_AUDIT`, `OBSUCVIM_VM_TSRC`, `OBSUCVIM_VM_TSRC_PATH`
+#   - Output-downgrade hook: `OBSUCVIM_VM_RAW` (early-returns unminified VM AST)
+#   - Stderr diagnostic hooks: `OBSUCVIM_VM_DBG`, `OBSUCVIM_HBOOT_DBG`,
+#     `OBSUCVIM_BUILD_DBG`, `OBSUCVIM_BIND_DBG`, `OBSUCVIM_FUSE_DBG`, `OBSUCVIM_TIMING`
+#
+# Invariants verified:
+# 1. `PROD_BIN` (`cargo build --release`, without `audit-hooks`) MUST NOT export any
+#    audit files, MUST NOT emit any stdout/stderr, and MUST produce byte-identical
+#    minified output whether all 12 `OBSUCVIM_*` env vars (including `OBSUCVIM_VM_RAW=1`)
+#    are set or completely unset.
+# 2. `AUDIT_BIN` (`--features audit-hooks`, isolated in `target/audit/release/obsucvim`)
+#    MUST exist (never silently skipped), MUST emit requested audit manifests + debug
+#    stderr, MUST honor `OBSUCVIM_VM_RAW=1` when explicitly requested, and MUST emit
+#    byte-for-byte identical obfuscated Lua output (`cmp -s`) to `PROD_BIN` across
+#    `v15`, `v15 --no-guard`, `v15 --super-insn --bind-env`, and `vm` modes.
+# 3. Built-in negative self-tests verify the gate fails closed on missing `AUDIT_BIN`,
+#    leaked diagnostic files, or 1-byte output drift.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -37,11 +41,11 @@ ensure_bin() {
 			exit 2
 		fi
 		echo "[gate] building $label binary: cargo $*"
-		cargo "$@"
+		CARGO_NET_OFFLINE=true cargo "$@"
 	elif [ "$NO_AUTOBUILD" != "1" ] && [ -d "$ROOT/src" ]; then
 		if [ -n "$(find "$ROOT/src" "$ROOT/Cargo.toml" -newer "$bin_path" -print -quit 2>/dev/null)" ]; then
 			echo "[gate] refreshing stale $label binary: cargo $*"
-			cargo "$@"
+			CARGO_NET_OFFLINE=true cargo "$@"
 		fi
 	fi
 	if [ ! -x "$bin_path" ]; then
@@ -78,6 +82,15 @@ run_pair_check() {
 	shift
 	rm -f /tmp/vm_raw.lua /tmp/vm_tsrc.lua
 
+	# Clean production baseline (zero OBSUCVIM_* env vars)
+	env -u OBSUCVIM_KEY_MANIFEST -u OBSUCVIM_NOISE_AUDIT -u OBSUCVIM_PROFILE_AUDIT \
+		-u OBSUCVIM_VM_RAW -u OBSUCVIM_VM_TSRC -u OBSUCVIM_VM_TSRC_PATH \
+		-u OBSUCVIM_VM_DBG -u OBSUCVIM_HBOOT_DBG -u OBSUCVIM_BUILD_DBG \
+		-u OBSUCVIM_BIND_DBG -u OBSUCVIM_FUSE_DBG -u OBSUCVIM_TIMING \
+		"$PROD_BIN" "$@" "$TMP/src.lua" "$TMP/prod_clean_${tag}.lua" \
+		>"$TMP/prod_clean_out_${tag}.txt" 2>"$TMP/prod_clean_err_${tag}.txt"
+
+	# Production run with ALL 12 OBSUCVIM_* hooks set (including OBSUCVIM_VM_RAW=1)
 	OBSUCVIM_KEY_MANIFEST="$TMP/prod_keys_${tag}.txt" \
 	OBSUCVIM_NOISE_AUDIT="$TMP/prod_noise_${tag}.txt" \
 	OBSUCVIM_PROFILE_AUDIT="$TMP/prod_prof_${tag}.txt" \
@@ -92,6 +105,12 @@ run_pair_check() {
 	OBSUCVIM_TIMING=1 \
 		"$PROD_BIN" "$@" "$TMP/src.lua" "$TMP/prod_out_${tag}.lua" \
 		>"$TMP/prod_stdout_${tag}.txt" 2>"$TMP/prod_stderr_${tag}.txt"
+
+	# Verify OBSUCVIM_VM_RAW=1 + all other env vars had ZERO effect on PROD_BIN output
+	if ! cmp -s "$TMP/prod_clean_${tag}.lua" "$TMP/prod_out_${tag}.lua"; then
+		echo "FAIL [$tag]: PROD_BIN output changed when OBSUCVIM_VM_RAW / audit env vars were set!" >&2
+		exit 1
+	fi
 
 	for leaked in \
 		"$TMP/prod_keys_${tag}.txt" \
@@ -119,6 +138,7 @@ run_pair_check() {
 		exit 1
 	fi
 
+	# Audit-hooks run with all non-mutating diagnostic hooks enabled
 	OBSUCVIM_KEY_MANIFEST="$TMP/audit_keys_${tag}.txt" \
 	OBSUCVIM_NOISE_AUDIT="$TMP/audit_noise_${tag}.txt" \
 	OBSUCVIM_PROFILE_AUDIT="$TMP/audit_prof_${tag}.txt" \
@@ -137,6 +157,10 @@ run_pair_check() {
 		echo "FAIL [$tag]: audit-hooks binary failed to emit OBSUCVIM_VM_TSRC_PATH" >&2
 		exit 1
 	fi
+	if [ ! -s "$TMP/audit_stderr_${tag}.txt" ]; then
+		echo "FAIL [$tag]: audit-hooks binary failed to emit diagnostic stderr" >&2
+		exit 1
+	fi
 	if [[ "$tag" == v15_* ]]; then
 		if [ ! -s "$TMP/audit_keys_${tag}.txt" ] || [ ! -s "$TMP/audit_noise_${tag}.txt" ] || [ ! -s "$TMP/audit_prof_${tag}.txt" ]; then
 			echo "FAIL [$tag]: audit-hooks binary failed to emit v15 audit manifests (keys/noise/prof)" >&2
@@ -151,10 +175,19 @@ run_pair_check() {
 	rm -f /tmp/vm_raw.lua /tmp/vm_tsrc.lua
 }
 
-run_pair_check "v15_s42"       --preset v15 --dialect luau --seed 42
-run_pair_check "v15_s4242"     --preset v15 --dialect luau --seed 4242
-run_pair_check "v15_ng_s42"    --preset v15 --no-guard --dialect luau --seed 42
-run_pair_check "vm_s42"        --preset vm --dialect luau --seed 42
+run_pair_check "v15_s42"          --preset v15 --dialect luau --seed 42
+run_pair_check "v15_s4242"        --preset v15 --dialect luau --seed 4242
+run_pair_check "v15_ng_s42"       --preset v15 --no-guard --dialect luau --seed 42
+run_pair_check "v15_super_bind"   --preset v15 --super-insn --bind-env roblox --dialect luau --seed 42
+run_pair_check "vm_s42"           --preset vm --dialect luau --seed 42
+
+# Verify OBSUCVIM_VM_RAW=1 IS active on AUDIT_BIN (returns unminified raw AST != minified output)
+OBSUCVIM_VM_RAW=1 "$AUDIT_BIN" --preset vm --dialect luau --seed 42 \
+	"$TMP/src.lua" "$TMP/audit_vm_raw.lua" >/dev/null 2>&1
+if cmp -s "$TMP/prod_out_vm_s42.lua" "$TMP/audit_vm_raw.lua"; then
+	echo "FAIL [vm_raw]: AUDIT_BIN did not honor OBSUCVIM_VM_RAW=1" >&2
+	exit 1
+fi
 
 # Built-in negative self-tests to guarantee the gate itself fails closed.
 if [ "$SKIP_SELFTEST" != "1" ]; then
@@ -187,6 +220,9 @@ EOF
 	# 3. Simulated 1-byte output drift on AUDIT_BIN must exit non-zero.
 	cat > "$TMP/drifted_audit.sh" <<EOF
 #!/usr/bin/env bash
+if [ "\${OBSUCVIM_VM_RAW:-}" = "1" ]; then
+	exec "$AUDIT_BIN" "\$@"
+fi
 "$AUDIT_BIN" "\$@"
 out_file="\${!#}"
 printf ' ' >> "\$out_file"
@@ -200,4 +236,4 @@ EOF
 	fi
 fi
 
-echo "PROD AUDIT GATE PASS: release binary exports 0 sensitive artifacts; mandatory audit-hooks build verified byte-identical across 4 build modes (+3 negative self-tests)"
+echo "PROD AUDIT GATE PASS: release binary exports 0 sensitive artifacts across all 12 OBSUCVIM_* hooks; mandatory audit-hooks build verified byte-identical across 5 build modes (+3 negative self-tests)"

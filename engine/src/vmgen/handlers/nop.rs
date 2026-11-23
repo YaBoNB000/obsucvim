@@ -29,3 +29,10 @@ pub fn body(rng: &mut Rng) -> String {
 	out.push_str("end");
 	out
 }
+
+pub fn code(fmt: u8) -> String {
+	match fmt {
+		0 => "local _n = (a + b) - (a + b)".to_string(),
+		_ => "local _n = c - c".to_string(),
+	}
+}

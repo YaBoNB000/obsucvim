@@ -738,6 +738,142 @@ mod tests {
 		}
 		assert_eq!(Op::from_index(N_OPS), None);
 	}
+
+	#[test]
+	fn const_encode_roundtrips_ieee754_signed_zero_nan_inf_and_binary_strings() {
+		let samples = vec![
+			Const::Nil,
+			Const::Bool(false),
+			Const::Bool(true),
+			Const::Num(0.0),
+			Const::Num(-0.0),
+			Const::Num(f64::INFINITY),
+			Const::Num(f64::NEG_INFINITY),
+			Const::Num(f64::NAN),
+			Const::Num(9_007_199_254_740_991.0),
+			Const::Num(-9_007_199_254_740_991.0),
+			Const::Num(1.2345678901234567e-200),
+			Const::Num(f64::MIN_POSITIVE),
+			Const::Str(Vec::new()),
+			Const::Str((0u8..=255).collect()),
+			Const::Str(vec![b'Z'; 300]),
+		];
+
+		let mut enc = Vec::new();
+		let mut enc_lcg = ConstLcg::new(0x1234_5678, 1_103_515_245 % 268_435_456 | 1, 12_345);
+		for c in &samples {
+			c.encode(&mut enc, &mut enc_lcg);
+		}
+
+		let mut dec_lcg = ConstLcg::new(0x1234_5678, 1_103_515_245 % 268_435_456 | 1, 12_345);
+		let mut pos = 0usize;
+		let mut mb = || {
+			let b = dec_lcg.unmask(enc[pos]);
+			pos += 1;
+			b
+		};
+
+		for expected in &samples {
+			let tag = mb();
+			match expected {
+				Const::Nil => assert_eq!(tag, 0),
+				Const::Bool(b) => {
+					assert_eq!(tag, 1);
+					assert_eq!(mb() == 1, *b);
+				}
+				Const::Num(ev) if ev.is_nan() => assert_eq!(tag, 7),
+				Const::Num(ev) if ev.is_infinite() => {
+					assert_eq!(tag, if ev.is_sign_negative() { 6 } else { 5 });
+				}
+				Const::Num(ev) => {
+					assert_eq!(tag, 4);
+					let mut m: u64 = 0;
+					let mut sh: u64 = 1;
+					loop {
+						let bb = mb() as u64;
+						if bb < 128 {
+							m += bb * sh;
+							break;
+						}
+						m += (bb - 128) * sh;
+						sh *= 128;
+					}
+					let mut kp: u64 = 0;
+					let mut sh2: u64 = 1;
+					loop {
+						let bb = mb() as u64;
+						if bb < 128 {
+							kp += bb * sh2;
+							break;
+						}
+						kp += (bb - 128) * sh2;
+						sh2 *= 128;
+					}
+					let kk = (kp / 2) as i32 - 2048;
+					let mut v = m as f64;
+					if kk >= 0 {
+						for _ in 0..kk {
+							v *= 2.0;
+						}
+					} else {
+						for _ in 0..(-kk) {
+							v /= 2.0;
+						}
+					}
+					if kp % 2 == 1 {
+						v = -v;
+					}
+					assert_eq!(
+						v.to_bits(),
+						ev.to_bits(),
+						"IEEE-754 bit mismatch for {ev:?} (got {v:?})"
+					);
+				}
+				Const::Str(eb) => {
+					assert_eq!(tag, 3);
+					let lo = mb() as usize;
+					let hi = mb() as usize;
+					let len = lo + hi * 256;
+					assert_eq!(len, eb.len());
+					let got: Vec<u8> = (0..len).map(|_| mb()).collect();
+					assert_eq!(&got, eb);
+				}
+			}
+		}
+		assert_eq!(pos, enc.len());
+	}
+
+	#[test]
+	fn all_43_ops_have_parseable_handlers_in_luau_and_lua51() {
+		for (i, &_op) in ALL_OPS.iter().enumerate() {
+			let name = OP_NAMES[i];
+			for &v15 in &[false, true] {
+				let nf = super::super::handlers::n_formats(name, v15);
+				assert!(nf >= 1, "handler {name} has 0 formats");
+				for fmt in 0..nf {
+					for &luau_target in &[true, false] {
+						if v15 && !luau_target {
+							continue;
+						}
+						let mut pool = super::super::strpool::StrPool::new(!v15);
+						let body = super::super::handlers::gen(
+							name,
+							fmt,
+							v15,
+							&mut pool,
+							(17, 29),
+							luau_target,
+						);
+						let wrapped = format!("local function _h()\n{}\nend\n", body);
+						assert!(
+							crate::parser::parse(&wrapped, luau_target).is_ok(),
+							"handler {name} fmt={fmt} v15={v15} luau={luau_target} failed to parse:\n{wrapped}"
+						);
+					}
+				}
+			}
+		}
+	}
 }
 
 /// Canonical ordered names of all 43 VM opcodes, matching `op_index` / `ALL_OPS` 1-to-1.

@@ -204,9 +204,11 @@ impl VmPrim {
 				tier: InterpreterBase,
 				driver: D::InterpreterBase,
 				template_ident: "UNP",
-				// Standard Lua 5.1/Luau `unpack` with `table.unpack` fallback.
+				// Scheme A contract: native `unpack` -> `table.unpack` -> pure-Lua slice
+				// unpacker preserving (i, j) bounds, empty i > j intervals (0 returns),
+				// and both intermediate and trailing `nil`s (`select("#", ...)` exact).
 				lua_bind_expr:
-					"(type(unpack)==\"function\" and unpack) or (type(table)==\"table\" and table.unpack)",
+					"(type(unpack)==\"function\" and unpack) or (type(table)==\"table\" and type(table.unpack)==\"function\" and table.unpack) or (function() local function _uf(t, i, j) if i == nil then i = 1 end if j == nil then j = #t end if i > j then return end local r = j - i if r == 0 then return t[i] elseif r == 1 then return t[i], t[i + 1] elseif r == 2 then return t[i], t[i + 1], t[i + 2] elseif r == 3 then return t[i], t[i + 1], t[i + 2], t[i + 3] end return t[i], t[i + 1], t[i + 2], t[i + 3], _uf(t, i + 4, j) end return _uf end)()",
 				luau_only: false,
 				v15_only: false,
 				has_fallback: true,

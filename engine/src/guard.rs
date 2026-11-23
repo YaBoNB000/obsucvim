@@ -8,12 +8,16 @@ use crate::rng::Rng;
 const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 	local function abort()
 		local al = 0
-		local zm
-		repeat
+		local az = 1
+		local zm = 65536
+		while al < zm do
 			al = al + 1
-		until al == zm
-
-		return (nil)[1]
+			az = (az * 80659 + 95050511 + al) % 268435456
+		end
+		local zf = false
+		zf = zf[zf]
+		local zn
+		return zn[az]
 	end
 
 	local _raw_type = type
@@ -58,6 +62,7 @@ const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 	local setmetatable = pick("setmetatable", setmetatable)
 	local tostring = pick("tostring", tostring)
 	local tonumber = pick("tonumber", tonumber)
+	local selectFn = pick("select", select)
 	local print = pick("print", print)
 	local warn = pick("warn", nil)
 	local newproxy = pick("newproxy", nil)
@@ -75,18 +80,17 @@ const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 			debugInfo = false
 		end
 	end
-	local unpack = pick("unpack", nil)
-	if unpack == nil then
-		local tbl = pick("table", table)
-		if _raw_type(tbl) == "table" then
-			local oku, tu = _raw_pcall(function()
-				return tbl["unpack"]
-			end)
-			if oku then
-				unpack = tu
-			else
-				unpack = false
-			end
+	local unpackFn = pick("unpack", unpack)
+	local tblTable = pick("table", table)
+	local tableUnpackFn
+	if _raw_type(tblTable) == "table" then
+		local oku, tu = _raw_pcall(function()
+			return tblTable["unpack"]
+		end)
+		if oku then
+			tableUnpackFn = tu
+		else
+			tableUnpackFn = false
 		end
 	end
 
@@ -146,10 +150,10 @@ pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
 	}
 	for text in [
 		"type", "pcall", "xpcall", "error", "rawget", "rawset",
-		"getmetatable", "setmetatable", "tostring", "tonumber", "string",
+		"getmetatable", "setmetatable", "tostring", "tonumber", "select", "string",
 		"gmatch", "unpack", "next", "table", "print", "warn", "newproxy", "debug",
 		"info", "os", "clock", "getfenv", "_G", "function", "number",
-		"boolean", "l", "s", "[C]", ":(%d+):", "loadstring", "load",
+		"boolean", "l", "s", "#", "[C]", ":(%d+):", "loadstring", "load",
 		"tddxhpfcpi", "lsphhfstdm", "vymgglkhqr",
 	] {
 		guard_src = guard_src.replace(&format!("\"{}\"", text), &chars(text));
@@ -201,6 +205,11 @@ mod tests {
 		assert!(
 			parser::parse(&src, true).is_ok(),
 			"hboot_guard_source must produce valid Luau"
+		);
+		assert!(
+			!src.contains('"'),
+			"unhidden string literal leaked in hboot_guard_source: {}",
+			src
 		);
 		for word in [
 			"\"newproxy\"",

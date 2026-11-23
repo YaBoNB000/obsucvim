@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P0/P1 Capability Binding Unification & P3 String/Constant Lifecycle Suite.
+"""Phase 17 Capability Binding Unification, Scheme A Unpack Fallback & Constant Lifecycle Suite.
 
 Verifies end-to-end on emitted artifacts:
 1. Single-source-of-truth capability pruning & template binding:
@@ -7,22 +7,29 @@ Verifies end-to-end on emitted artifacts:
      (`buffer.`, `vector.`, `Vector2`, `Vector3`, `typeof`, `coroutine.`,
      `rawget`, `rawset`, `rawequal`, `xpcall`, `newproxy`, `next`, `table.pack`)
      and ZERO algebraic tautology predicates.
-   - Emitted `v15` / `vm` artifacts carry the exact `VmPrim::lua_bind_expr()`
-     fallbacks for `getfenv`, `unpack`/`table.unpack`, and (when calls exist on
-     Luau `v15`) `table.pack` -> `{n=select("#",...),...}`.
+   - Emitted `v15` and `vm` artifacts carry the exact `VmPrim::lua_bind_expr()`
+     3-tier Scheme A fallback (`unpack -> table.unpack -> pure-Lua _uf`),
+     `getfenv` fallback, and (when calls exist on Luau `v15`) `table.pack`
+     fallback `{n=select("#",...),...}`, with zero raw `unpack or table.unpack`
+     bypass in `LoadStr`.
    - `--bind-env roblox` injects `Vector3` / `typeof`; `--env-check` runs cleanly
      on stock Luau; same-seed builds are byte-for-byte deterministic.
 2. Runtime fallback equivalence across 6 seeds (`1, 7, 42, 4242, 31337, 999999`)
    and `guard=true` / `guard=false` (`--no-guard`) + `--preset vm`:
-   - `getfenv == nil` (`ENV.getfenv = nil`, `ENV._G = ENV`)
-   - `unpack == nil` (`ENV.unpack = nil` with `table.unpack` available)
-   - `table.pack == nil` (`ENV.table.pack = nil`, verifying middle & trailing
-     `nil` multivalue preservation via `select("#", ...)`, tail calls, varargs,
-     table identity, and function identity)
-   - Combined restricted sandbox (`getfenv == nil`, `unpack == nil`, AND
-     `table.pack == nil` simultaneously)
-3. P3 Lazy String Materialization & IEEE-754 Constants across 6 seeds under
-   `LUAU_READONLY_GLOBALS=1` + `--super-insn`.
+   - `getfenv == nil`
+   - `unpack == nil` (`table.unpack` present)
+   - `table.unpack == nil` (`unpack` present)
+   - `both_unpack_nil` (`unpack == nil` AND `table.unpack == nil` -> exercises
+     Scheme A pure-Lua `_uf` slice unpacker across 0-arg, 4-arg, 5-arg, 13-arg
+     calls, intermediate & trailing `nil` multi-returns, `select("#", ...)`,
+     tail calls, varargs, and >64B chunked string decoding)
+   - `table.pack == nil`
+   - `all_fallbacks_combined` (`getfenv == nil`, `unpack == nil`,
+     `table.unpack == nil`, AND `table.pack == nil` simultaneously)
+3. Lazy String Materialization & IEEE-754 Constants (`""`, `1..5B`, `64B`,
+   `>64B`, binary `\0..\255`, shared closure constants, `0.0`, `-0.0` sign bit,
+   `+Inf`, `-Inf`, `NaN`, `2^53 - 1`) across 6 seeds under `LUAU_READONLY_GLOBALS=1`
+   + `--super-insn`.
 """
 import os
 import re
@@ -45,12 +52,29 @@ SEEDS = [1, 7, 42, 4242, 31337, 999999]
 
 
 P0_FALLBACK_WORKLOAD = r'''
+local function zero_ret()
+    return
+end
+
+local function zero_arg_call()
+    return 19
+end
+
+local function sum13(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11, a12, a13)
+    return a1 + (a2 or 0) + a3 + a4 + a5 + (a6 or 0) + a7 + a8 + a9 + a10 + a11 + a12 + a13,
+           a2 == nil and a6 == nil
+end
+
 local function multi_with_nils(tag)
     return tag, nil, 30, nil, nil
 end
 
 local function tail_caller(x)
     return multi_with_nils("T:" .. tostring(x))
+end
+
+local function tail_zero()
+    return zero_ret()
 end
 
 local function vararg_echo(...)
@@ -71,13 +95,18 @@ end
 local a1, a2, a3, a4, a5 = multi_with_nils("M")
 local c_multi = select("#", multi_with_nils("C"))
 local c_tail = select("#", tail_caller(9))
+local c_zero = select("#", zero_ret())
+local c_tzero = select("#", tail_zero())
+local z_val = zero_arg_call()
+local s13, nils13 = sum13(1, nil, 3, 4, 5, nil, 7, 8, 9, 10, 11, 12, 13)
 local t1, f1 = ret_identities()
-local long_s = "Fallback_Long_String_0123456789_abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_End!"
+local long_s = "Fallback_Long_String_0123456789_abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_ChunkTail_End!"
 
-print("NILS", a1, tostring(a2), a3, tostring(a4), tostring(a5), c_multi, c_tail)
+print("NILS", a1, tostring(a2), a3, tostring(a4), tostring(a5), c_multi, c_tail, c_zero, c_tzero)
+print("ARITY", z_val, s13, nils13)
 print("VARG", vararg_echo(multi_with_nils("V")))
 print("IDENT", t1 == id_tbl, f1 == id_fn, f1())
-print("LONG", #long_s, long_s:sub(1, 20), long_s:sub(-4))
+print("LONG", #long_s, long_s:sub(1, 20), long_s:sub(-14))
 '''
 
 
@@ -116,7 +145,9 @@ local r1, e1, blen, b1, b7 = c1("S1")
 local r2 = c2("S2")
 local tv, eq, llen = reader_a(lit_long)
 
+local pzero, nzero = 0.0, -0.0
 local pinf, ninf, nanv = 1/0, -1/0, 0/0
+local min_norm, nmin_norm = 2.2250738585072014e-308, -2.2250738585072014e-308
 local bigi = 9007199254740991
 
 print("EMPTY", #empty, empty == "", tbl[""])
@@ -125,7 +156,7 @@ print("MED64", #med64, med64:sub(1, 8), med64:sub(57, 64))
 print("LONG", tv, eq, llen, #long200)
 print("BIN", blen, b1, b7, tbl[bin])
 print("CLOS", #r1, #r2, r1 ~= r2, e1)
-print("IEEE", pinf == math.huge, ninf == -math.huge, nanv ~= nanv, bigi - 1 == 9007199254740990)
+print("IEEE", 1 / pzero == math.huge, 1 / nzero == -math.huge, pinf == math.huge, ninf == -math.huge, nanv ~= nanv, min_norm > 0, nmin_norm < 0, bigi - 1 == 9007199254740990)
 '''
 
 
@@ -224,49 +255,62 @@ def main() -> int:
         fb_src = tmp / "fb_src.lua"
         fb_src.write_text(P0_FALLBACK_WORKLOAD)
         vm_art = tmp / "fb_vm.lua"
+        vm_guard_art = tmp / "fb_vm_guard.lua"
         v15_guard_art = tmp / "fb_v15_guard.lua"
         v15_noguard_art = tmp / "fb_v15_noguard.lua"
         subprocess.run(
             [str(TOOL), "--preset", "vm", "--no-body", "--no-strings", "--no-guard", "--dialect", "luau", "--seed", "42", str(fb_src), str(vm_art)],
             check=True,
         )
+        subprocess.run(
+            [str(TOOL), "--preset", "vm", "--no-body", "--no-strings", "--dialect", "luau", "--seed", "42", str(fb_src), str(vm_guard_art)],
+            check=True,
+        )
         subprocess.run([str(TOOL), "--preset", "v15", "--dialect", "luau", "--seed", "42", str(fb_src), str(v15_guard_art)], check=True)
         subprocess.run([str(TOOL), "--preset", "v15", "--no-guard", "--dialect", "luau", "--seed", "42", str(fb_src), str(v15_noguard_art)], check=True)
 
         vm_txt = vm_art.read_text()
+        vmg_txt = vm_guard_art.read_text()
         g_txt = v15_guard_art.read_text()
         ng_txt = v15_noguard_art.read_text()
         check(
-            "vm_emits_getfenv_and_unpack_fallbacks_without_v15_only_prims",
+            "vm_emits_scheme_a_unpack_and_getfenv_fallbacks_without_bypass",
             bool(re.search(r"\bgetfenv\b", vm_txt))
             and bool(re.search(r"\btable\.unpack\b", vm_txt))
+            and not bool(re.search(r"\bunpack\s+or\s+table\.unpack\b", vm_txt))
             and not bool(re.search(r"\btable\.pack\b", vm_txt))
             and not bool(re.search(r"\bnext\b", vm_txt)),
-            "vm binds getfenv/table.unpack fallback, omits v15-only table.pack & next",
+            "vm binds getfenv + Scheme A unpack fallback, zero raw LoadStr unpack bypass",
         )
         check(
-            "v15_emits_fallbacks_and_gates_next_on_guard",
+            "v15_emits_scheme_a_fallbacks_and_gates_next_on_guard",
             bool(re.search(r"\bgetfenv\b", g_txt))
             and bool(re.search(r"\btable\.unpack\b", g_txt))
             and bool(re.search(r"\btable\.pack\b", g_txt))
             and bool(re.search(r"\bnext\b", g_txt))
             and not bool(re.search(r"\bnext\b", ng_txt)),
-            "v15 binds fallbacks; next present iff guard=true",
+            "v15 binds Scheme A fallbacks; next present iff guard=true",
         )
 
         # 3. Runtime fallback equivalence across ALL 6 seeds (guard=true, guard=false, and --preset vm)
         expected_fb = run_luau(fb_src, readonly=False).strip()
 
+        tbl_no_unpack = "setmetatable({}, { __index = function(_, k) if k == 'unpack' then return nil end return REAL_G.table[k] end })"
+        tbl_no_pack = "setmetatable({}, { __index = function(_, k) if k == 'pack' then return nil end return REAL_G.table[k] end })"
+        tbl_no_unpack_or_pack = (
+            "setmetatable({}, { __index = function(_, k) "
+            "if k == 'unpack' or k == 'pack' then return nil end return REAL_G.table[k] end })"
+        )
+
         sandboxes = [
             ("getfenv_nil", "ENV.getfenv = nil"),
             ("unpack_nil", "ENV.unpack = nil"),
+            ("table_unpack_nil", f"ENV.table = {tbl_no_unpack}"),
+            ("both_unpack_nil_scheme_a", f"ENV.unpack = nil\nENV.table = {tbl_no_unpack}"),
+            ("table_pack_nil", f"ENV.table = {tbl_no_pack}"),
             (
-                "table_pack_nil",
-                "ENV.table = setmetatable({}, { __index = function(_, k) if k == 'pack' then return nil end return REAL_G.table[k] end })",
-            ),
-            (
-                "all_three_fallbacks",
-                "ENV.getfenv = nil\nENV.unpack = nil\nENV.table = setmetatable({}, { __index = function(_, k) if k == 'pack' then return nil end return REAL_G.table[k] end })",
+                "all_fallbacks_combined",
+                f"ENV.getfenv = nil\nENV.unpack = nil\nENV.table = {tbl_no_unpack_or_pack}",
             ),
         ]
 
@@ -284,7 +328,7 @@ def main() -> int:
                     got_out = run_in_sandbox(tmp, f"{sb_name}_{mode_name}_{s}", art_t, sb_setup)
                     if got_out != expected_fb:
                         fb_ok = False
-                        fb_fail_detail = f"seed={s} mode={mode_name} sb={sb_name}: got={got_out!r}"
+                        fb_fail_detail = f"seed={s} mode={mode_name} sb={sb_name}: got={got_out!r}, expected={expected_fb!r}"
                         break
                 if not fb_ok:
                     break
@@ -296,12 +340,13 @@ def main() -> int:
             fb_fail_detail or f"{len(SEEDS)} seeds x 2 guard modes x {len(sandboxes)} sandboxes = {len(SEEDS)*2*len(sandboxes)} runs",
         )
 
-        # Verify --preset vm (--no-body) in combined fallback sandbox as well
-        vm_out = run_in_sandbox(tmp, "vm_all_three", vm_txt, sandboxes[-1][1])
+        # Verify --preset vm (both --guard and --no-guard) in all_fallbacks_combined sandbox
+        vm_ng_out = run_in_sandbox(tmp, "vm_ng_all", vm_txt, sandboxes[-1][1])
+        vm_g_out = run_in_sandbox(tmp, "vm_g_all", vmg_txt, sandboxes[-1][1])
         check(
-            "p0_runtime_fallbacks_preset_vm",
-            vm_out == expected_fb,
-            "preset vm (--no-body) with getfenv=nil + unpack=nil + table.pack=nil",
+            "p0_runtime_fallbacks_preset_vm_guard_and_noguard",
+            vm_ng_out == expected_fb and vm_g_out == expected_fb,
+            "preset vm (--guard & --no-guard) with getfenv=nil + unpack=nil + table.unpack=nil + table.pack=nil",
         )
 
         # 4. --bind-env roblox & --env-check
@@ -317,10 +362,6 @@ def main() -> int:
             "Vector3 + typeof present",
         )
         envchk_art = tmp / "envchk.art.lua"
-        subprocess.run(
-            [str(TOOL), "--preset", "v15", "--env-check", "--dialect", "luau", "--seed", "42", str(p3_src := tmp / "p3_envchk.lua"), str(envchk_art)],
-            check=False,
-        ) if False else None
         p3_env_src = tmp / "p3_envchk.lua"
         p3_env_src.write_text(P3_STRESS_LUA)
         subprocess.run(
@@ -342,7 +383,7 @@ def main() -> int:
         subprocess.run([str(TOOL), "--preset", "v15", "--dialect", "luau", "--seed", "777", str(p3_src), str(det_b)], check=True)
         check("same_seed_byte_identical", det_a.read_bytes() == det_b.read_bytes(), f"{det_a.stat().st_size} B")
 
-        # 6. P3 string & IEEE-754 constant semantics across 6 seeds + --super-insn
+        # 6. String, binary, closure-shared & IEEE-754 (including -0.0) semantics across 6 seeds + --super-insn + --preset vm
         expected = run_luau(p3_src)
         blobs = set()
         all_eq = True
@@ -358,7 +399,13 @@ def main() -> int:
 
         sup_p = tmp / "p3_super.lua"
         subprocess.run([str(TOOL), "--preset", "v15", "--super-insn", "--dialect", "luau", "--seed", "42", str(p3_src), str(sup_p)], check=True)
-        check("p3_semantics_super_insn", run_luau(sup_p) == expected, "--super-insn opt-in verified")
+        vm_p3 = tmp / "p3_vm.lua"
+        subprocess.run([str(TOOL), "--preset", "vm", "--dialect", "luau", "--seed", "42", str(p3_src), str(vm_p3)], check=True)
+        check(
+            "p3_semantics_super_insn_and_preset_vm",
+            run_luau(sup_p) == expected and run_luau(vm_p3) == expected,
+            "--super-insn + --preset vm IEEE-754/-0.0/string semantics verified",
+        )
 
     print(f"capability_manifest_test: {passed} PASS, {failed} FAIL")
     return 1 if failed else 0

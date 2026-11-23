@@ -637,3 +637,83 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - **能力边界重申**：
   1. 静态字符串常量首次求值解码后缓存于对应函数生命周期内的代理表；在真实宿主环境下的运行期动态插桩、内存转储或录制重放仍可观测已求值明文常量，静态混淆对此不作过度安全承诺。
   2. 本轮全部兼容性与守卫矩阵验证基于 stock Luau `0.735`、`LUAU_READONLY_GLOBALS=1` 及受控模拟环境完成；未在特定第三方真实执行器（如 Delta 等）实机验证本轮产物前，不声称该执行器实机已验收。
+
+## 17. Phase 17 安全优先加固（2026-11-23）
+
+> 任务书：`obsucvim_phase17_security_first_tasks.md`（P0–P1、§4–§8）。本阶段原则：安全性优先；不得为体积更小或运行更快而削弱混淆强度、VM 保护、字符串保护或默认 Guard。唯一体积硬门槛：`print(6)\n` 默认 v15 产物 `<= 250,000 bytes`（§0.1/§7）。
+> 基线 HEAD：`69dcfc9cb27772b097726225908b3a3e22959b88`（分支 `arena/3f7093d7-obsucvim`，开工时工作树 clean，`.tools/bin` 已重建）。
+> 最终 HEAD：`9a36826fe9e165d1154cd4d939ad140047848370`（本节所在提交；工作树 clean 后回填，见 §17.6）。
+> 安全评估报告：`docs/phase17_security_evaluation.md`（§6 五维评估 + NOT_RUN 声明）。
+
+### 17.1 能力契约定案（P0，方案 A：纯 Lua fallback）
+
+- `engine/src/vmgen/caps.rs`：`VmPrim::Unpack::lua_bind_expr()` 由两级（`unpack` → `table.unpack`）扩展为 Scheme A 三级回退：`rawget(table,"unpack") or rawget(G,"unpack") or <递归 Lua unroller>`。两种 API 同时缺失属于**可兼容场景**（走完整 fallback），不再由 Guard 拒绝；`STAGE_MANIFEST` 按“可替代 API 组”表达该契约，不再把两个 API 标为互不相关、可同时缺失的普通 optional API。
+- `engine/src/vmgen/handlers/loadstr.rs`：统一 `LoadStr` 原语名（`BYTE`/`SUB`/`CONC`/`CH`/`UNPK`），消除 `unpack or table.unpack` 旁路。
+- `engine/src/vmgen/handlers/mod.rs` + `handlers/nop.rs`：接线 `"Nop" => nop::code(fmt)`，消除 `"Nop"` panic。
+- `engine/tests/capability_manifest_test.py`：补上“`unpack` 与 `table.unpack` 同时缺失”场景与“`table.unpack` 存在但返回错误”场景；`table.unpack` 行为验证检查实际返回值、nil 保留、起止索引与空区间（不只 `pcall` 成功）；新增 `f64::MIN_POSITIVE = 2.2250738585072014e-308` 端到端运行期校验。结果 **11 PASS / 0 FAIL**。
+
+### 17.2 Guard 正确性与误报控制（P1）
+
+- `engine/src/guard.rs` + `engine/src/anti/mod.rs`：`abort()` 改为有界 65,536 步 fail-closed（消除无界循环导致的宿主线程挂起）；`STAGE_MANIFEST` 扩展并与 `guard_matrix_test.py` 保持双向精确同步（Rust 单元测试解析 Python 用例表 + Python 反向解析 `anti/mod.rs`，重复/孤儿 ID 即 CI 失败）；7-core `[C]` 检查（`pcall`、`xpcall`、`type`、`select`、`tostring`、`rawget`、`setmetatable`）+ 双 `checkUnpack`。
+- `engine/src/vmgen/template.rs`：`PD()` 有界 65,536 步；`pcall_pre_guard` 在 `HBOOT` 之前；`--no-guard` 与 `hbootfail` 分离；IEEE-754 `-0.0` 保留（`1/x == -math.huge`）；`const_loop` 直接 `v = m` 缩放，移除 FTZ 危险的次正规中间值 `2^-1074`。
+- `engine/tests/guard_matrix_test.py`：结果分类拆分 `GuardRejected` / `RuntimeError` / `Timeout` / `CompileError` / `HarnessError`；每个篡改用例带 `--no-guard` 差分对照（同输入同环境变体在 `--no-guard` 下通过、`--guard` 下拒绝）；payload 执行标记确认拒绝发生在 payload 运行前；方案 A 下“两种 unpack 均缺失”为允许场景，不再误判为 Guard 成功。结果 **72 PASS / 0 FAIL**（直方图 `{'OK': 26, 'GuardRejected': 39}` + 6 项负向自检）。
+
+### 17.3 VM/ISA/字符串一致性与防篡改矩阵（§4）
+
+- `engine/src/vmgen/isa.rs`：新增 IEEE-754（`-0.0`、`f64::MIN_POSITIVE`、`NaN`、`±Inf`）与二进制字符串往返测试 + 全 43 opcode 的 Luau/Lua5.1 handler 解析测试。
+- `engine/src/vmgen/v15.rs`（关键安全修复）：外层 `v2h` 完整性门 `verifyslot ~= sumslot` 此前仅改写未读的 `C[sumslot]` 即返回 `sdone`（篡改可静默执行）；现改为 `C[entryslot]=nil; C[vmslot]=nil`，篡改必在 payload 前 fail-closed。
+- `engine/tests/vm_tamper_matrix_test.py`（新增）：基于自有 fixture 的 60-case 黑盒篡改矩阵（3 seed × 20 case：15 VM 篡改 + 5 对照），覆盖 VM carrier、常量/密封字符串、opcode/operand 流、分派/micro-wrapper、完整性校验/阶段机；每 case 记录改动位置、字节数、预期分类、退出码、stdout/stderr、payload 标记。结果 **60 PASS / 0 FAIL**（`TamperRejectedFault 42`、`TamperRejectedPoisonedOutput 3`、`DeadDataIgnored 9`、`SyntaxCompileError 3`、`CleanExecution 3`），机器可读结果见 `engine/tests/results/vm_tamper_matrix.json`。
+- 诚实边界：静态产物保护与“运行时明文不可观测”明确区分；字符串首次解码后在函数生命周期内缓存，运行期 hook/dump/重放仍可观测（见 §17.6）。
+
+### 17.4 唯一 250 KB 门槛（§7）与生产隔离（§5）
+
+- `engine/tests/print_size_gate.sh`（新增）：精确输入 `print(6)\n`，生产 release binary + `--preset v15 --dialect luau --seed <seed>`（默认 Guard 开启），6 个固定 seed `{1, 7, 42, 4242, 31337, 999999}` 逐个构建；每 seed 校验完整文件 `<= 250000 bytes`、水印存在、`luau-compile` 解析、stock Luau 执行输出 `6` 且退出码 0；记录每 seed 大小 + SHA-256、binary SHA-256、源码 commit SHA；以最大值作为 gate 结果。
+  - seed=1：110,139 B，SHA-256 `f25cdd940285b84e99565035c2fdc0ad8d48a79ea110256df22029d333265b81`
+  - seed=7：106,193 B，SHA-256 `57119cc95b7c0a617eaad24d22a3828c3cff0f7ce95369232a2383fe93fec293`
+  - seed=42：106,252 B，SHA-256 `cbde6b7716c7f3844ba27babb68c9b113e991627e148ddd8f33243dd43c01a8f`
+  - seed=4242：106,484 B，SHA-256 `a6d7d2acabf0753d1f01e0069f6db53d4eca08a70a0ff2c1fb0bea28060986c0`
+  - seed=31337：110,332 B，SHA-256 `2873b188e01f202246916da7dd632cdb5012d28615e0b4a6470917ab21063a07`
+  - seed=999999：111,351 B，SHA-256 `fce7b850f85854e3bf9c9661ba2f5eab3f2d09018697500630aafc01b0d4c436`
+  - **最大值 111,351 B <= 250,000 B（余量 138,649 B），6/6 PASS。** 其他语料不设体积/耗时/RSS 门槛（`ab_compare.sh` 480/480 语义等价仅作观察数据，见 `engine/tests/results/ab_baseline_f583c2c3.{json,md}`）。
+- `engine/tests/prod_audit_gate_test.sh`：覆盖全部 12 个 `OBSUCVIM_*` 钩子（含 `OBSUCVIM_VM_RAW` 早退语义：生产版注入后仍输出正常产物且与同配置 audit-hooks 正常构建逐字节一致；audit-hooks 正向调用显式设置 `OBSUCVIM_VM_RAW=1` 并核验 VM 中间表示结构/可解析性）；生产 binary 零审计文件落盘、零 `stderr` 内部标记；`audit-hooks` 构建缺失/过期即自动重建（失败即非零退出）。结果 **PASS**（5 构建模式双二进制等效 + 3 项反向自检）。
+- 构建身份：生产 binary SHA-256 `df926259cebeae18eb49f7eca429d6eea30455827c6bde504ff8b380d81e4002`；audit-hooks binary SHA-256 `fe1ed6882ff35ac451e4fb3ccbdf88430ba37907f9dfcaa1c210abdf98761359`；`rustc 1.88.0`；stock Luau（`.tools/bin/luau`）。
+
+### 17.5 真实运行过的验证矩阵（§8，逐项结果）
+
+| 命令 | 结果 |
+|---|---|
+| `cargo check --all-targets` | PASS（仅既有 warnings） |
+| `cargo test --release` | **77 passed / 0 failed / 1 ignored** + 水印集成 **4 passed** |
+| `bash engine/tests/run_tests.sh` | **169 PASS / 0 FAIL**（含 wtf-port 23/23） |
+| `bash engine/tests/run_presets.sh` | **370 PASS / 0 FAIL** |
+| `bash engine/tests/multiseed.sh` | **FAIL=0**（含 R064 24 seeds） |
+| `bash engine/tests/vm_semantics_regression.sh` | **PASS** |
+| `bash engine/tests/defense_audit.sh` | **20 PASS / 0 FAIL** |
+| `bash engine/tests/faithful_stub_test.sh` | **5/5 PASS** |
+| `python3 engine/tests/capability_manifest_test.py` | **11 PASS / 0 FAIL** |
+| `python3 engine/tests/guard_matrix_test.py` | **72 PASS / 0 FAIL** |
+| `python3 engine/tests/vm_tamper_matrix_test.py` | **60 PASS / 0 FAIL** |
+| `bash engine/tests/prod_audit_gate_test.sh` | **PASS** |
+| `bash engine/tests/print_size_gate.sh` | **6/6 PASS**（max 111,351 B） |
+| `bash engine/tests/env_bind_test.sh` | **6 PASS / 0 FAIL** |
+| `python3 engine/tests/v15_fingerprint.py example.txt` | **32/32 PASS** |
+| `python3 engine/tests/security_fingerprint.py example.txt <src>` | **5/5 PASS**（S1–S5） |
+| `python3 engine/tests/h2_diff_audit.py` 等 H2–H8（7 脚本） | 全部 **PASS** |
+| `python3 engine/tests/h4_loader_audit.py --enforce-zero` | **ZERO-LOADER GATE: PASS** |
+| `python3 engine/tests/r061_bypass_audit.py` | **PASS** |
+| `python3 engine/tests/redteam_probe_regression.py` | **PASS** |
+| `python3 engine/tests/mobile_print_probe_test.py` | **6/6** |
+| `bash engine/tests/wtf_port_test.sh` | **23 PASS / 0 FAIL** |
+| `bash engine/tests/ab_compare.sh` | **480/480** 语义等价（观察数据） |
+| `git diff --check` / `bash -n` / Python 语法 | 全部 clean |
+
+- **失败与未执行项**：本轮无失败项。`v15_test.sh` 在当前仓库不存在（等价项为 `v15_fingerprint.py` + `v15_short_name_audit.py`，已执行前者）；§6.2 独立评估者流程 **NOT_RUN**（无独立评估者，见安全评估报告 §7）；第三方执行器实机 **未实测**。
+- **样例重生成**：`engine/examples/*.v15.luau.lua`（37 例，`gen_examples.sh`，`--seed 42`）与根 `example.txt`（输入 `a = 999\n`，`--preset v15 --dialect luau --seed 42`，104,224 B，SHA-256 `9a9148c463516fc678967c07035fac759cb5402524c2377aea5cbac08a921867`）已用本轮引擎重生成；`example.txt` 通过 `luau-compile` 与 stock Luau 运行验证。
+
+### 17.6 安全边界与未完成项
+
+1. 运行时明文可观测性：字符串首次解码后缓存于函数生命周期内；运行期动态插桩、内存转储、录制重放仍可观测已求值明文。本阶段不承诺“运行时明文不可观测”，不声称“不可逆”“无法破解”。
+2. 第三方执行器未实测：全部验证基于 stock Luau + `LUAU_READONLY_GLOBALS=1` 及受控模拟环境；未在特定第三方执行器实机验证前，不声称该执行器实机已验收。
+3. §6.2 独立评估（未参与实现者的固定预算评估）：**NOT_RUN**，不以内部静态指标替代。
+4. 退役路径未恢复：executor binding、key-host、EVKEY/EVKX、XTOK/XPROBE、EXG 与 executor 专用 tier-2 探测保持移除；未新增 crates.io 依赖（保持 std-only）；`audit-hooks` 保持显式 opt-in，未变为默认生产 feature。
+5. 本阶段未为体积/速度削弱任何保护：默认 v15 Guard 保持开启，`--super-insn` 保持 opt-in，字符串密封与完整性校验未降级；`print(6)` 达标靠既有结构余量（max 111,351 B），无需任何保护删减。
