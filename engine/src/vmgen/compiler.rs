@@ -50,6 +50,14 @@ pub struct VmProgram {
 	pub block_starts: Vec<Vec<u16>>,
 	pub s_indices: Vec<u8>,
 	pub consts_mask_safe: bool,
+	/// Exact opcode usage and frequency across all compiled functions (after H3 noise).
+	pub used_ops: [bool; isa::N_OPS],
+	pub op_hist: [u32; isa::N_OPS],
+	/// Constant pool breakdown `[nil, bool, int, float_or_nonfinite, str]`.
+	pub const_counts: [u32; 5],
+	pub has_float_const: bool,
+	pub total_insns: u32,
+	pub fused_insns: u32,
 	/// V17 P1-b：每函数 fused 词汇（(op_index, op_index) 对，≤FUSE_TOP_K）；
 	/// super_insn 关时恒空。fvm 掩码常量对（fv_m1/fv_mc）off 态为 0。
 	pub fv_sets: Vec<Vec<(u8, u8)>>,
@@ -114,7 +122,7 @@ fn const_key(c: &Const) -> (u8, u64) {
 }
 
 fn noise_audit(line: &str) {
-	if let Ok(path) = std::env::var("OBSUCVIM_NOISE_AUDIT") {
+	if let Some(path) = crate::audit_gate::audit_var("OBSUCVIM_NOISE_AUDIT") {
 		use std::io::Write;
 		if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
 			let _ = writeln!(f, "{line}");
@@ -203,11 +211,9 @@ impl<'a> Ctx<'a> {
 	}
 
 	fn kidx(&mut self, c: Const) -> u16 {
-		if let Const::Num(v) = c {
-			if !v.is_finite() {
-				self.program.consts_mask_safe = false;
-			}
-		}
+		// Non-finite numbers (+Inf, -Inf, NaN) are encoded via dedicated tags 5/6/7
+		// in `Const::encode` and `EP` tags `tm[7..9]`, so `consts_mask_safe` remains
+		// true for the entire program (no plaintext constant-table fallback).
 		let k = const_key(&c);
 		if let Some(&i) = self.const_map.get(&k) {
 			return i;
@@ -739,6 +745,53 @@ impl<'a> Ctx<'a> {
 		let mut osum: u64 = 0;
 		for r in &recs {
 			osum = (osum + r.a as u64 + r.b as u64 + r.c as u64 + r.d as u64) % 4294967296;
+			self.program.total_insns = self.program.total_insns.saturating_add(1);
+			match r.kind {
+				super::fuse::FKind::Base(op) => {
+					let oi = isa::op_index(op);
+					self.program.used_ops[oi] = true;
+					self.program.op_hist[oi] = self.program.op_hist[oi].saturating_add(1);
+				}
+				super::fuse::FKind::Fused(fk) => {
+					self.program.fused_insns = self.program.fused_insns.saturating_add(1);
+					if let Some(&(o1, o2)) = fv_vocab.get(fk as usize) {
+						if (o1 as usize) < isa::N_OPS {
+							self.program.used_ops[o1 as usize] = true;
+							self.program.op_hist[o1 as usize] =
+								self.program.op_hist[o1 as usize].saturating_add(1);
+						}
+						if (o2 as usize) < isa::N_OPS {
+							self.program.used_ops[o2 as usize] = true;
+							self.program.op_hist[o2 as usize] =
+								self.program.op_hist[o2 as usize].saturating_add(1);
+						}
+					}
+				}
+			}
+		}
+		for c in &self.consts {
+			match c {
+				Const::Nil => self.program.const_counts[0] += 1,
+				Const::Bool(_) => self.program.const_counts[1] += 1,
+				Const::Num(v) => {
+					if v.is_finite() {
+						let iv = *v as i64;
+						if (*v == iv as f64)
+							&& (-1_125_899_906_842_623..=1_125_899_906_842_623).contains(&iv)
+						{
+							self.program.const_counts[2] += 1;
+						} else {
+							self.program.const_counts[3] += 1;
+							self.program.has_float_const = true;
+						}
+					} else {
+						// Dedicated tags 5/6/7 in BSS + tm[7..9] in CDEC decode 1/0, -1/0, 0/0
+						// directly without calling `tonumber`!
+						self.program.const_counts[3] += 1;
+					}
+				}
+				Const::Str(_) => self.program.const_counts[4] += 1,
+			}
 		}
 		let mut osum2: u64 = 0;
 		let ncode64 = recs.len() as u64;
@@ -805,7 +858,7 @@ impl<'a> Ctx<'a> {
 					.expect("vocab pairs are whitelist-only by construction");
 				isa::encode_u16var(&mut fv, e);
 			}
-			if std::env::var("OBSUCVIM_FUSE_DBG").is_ok() {
+			if crate::audit_gate::audit_enabled("OBSUCVIM_FUSE_DBG") {
 				eprintln!(
 					"[fuse] fn={} s_idx={} ckseed={} fvm={} vocab={:?}",
 					fn_index, s_idx, ckseed, fvm, fv_vocab
@@ -1498,6 +1551,12 @@ fn compile_chunk(
 		blob_step,
 		section_tags,
 		consts_mask_safe: true,
+		used_ops: [false; isa::N_OPS],
+		op_hist: [0; isa::N_OPS],
+		const_counts: [0; 5],
+		has_float_const: false,
+		total_insns: 0,
+		fused_insns: 0,
 		block_starts: vec![Vec::new(); total + 1],
 		s_indices: vec![0; total + 1],
 		fv_sets: vec![Vec::new(); total + 1],
@@ -1517,6 +1576,29 @@ fn compile_chunk(
 		program.operand_sums.push(osum);
 		program.operand_sums2.push(osum2);
 		program.chaff_folds.push(chaff);
+	}
+	if let Some(path) = crate::audit_gate::audit_var("OBSUCVIM_PROFILE_AUDIT") {
+		let mut op_entries = Vec::new();
+		for (i, &cnt) in program.op_hist.iter().enumerate() {
+			if cnt > 0 {
+				op_entries.push(format!("\"{}\":{}", isa::OP_NAMES[i], cnt));
+			}
+		}
+		let json = format!(
+			"{{\"fn_count\":{},\"total_insns\":{},\"fused_insns\":{},\"consts\":{{\"nil\":{},\"bool\":{},\"int\":{},\"float\":{},\"str\":{},\"total\":{}}},\"consts_mask_safe\":{},\"op_hist\":{{{}}}}}\n",
+			program.fns.len(),
+			program.total_insns,
+			program.fused_insns,
+			program.const_counts[0],
+			program.const_counts[1],
+			program.const_counts[2],
+			program.const_counts[3],
+			program.const_counts[4],
+			program.const_counts.iter().sum::<u32>(),
+			program.consts_mask_safe,
+			op_entries.join(",")
+		);
+		let _ = std::fs::write(path, json);
 	}
 	program
 }
@@ -2560,7 +2642,7 @@ let _ = has_vararg;
 		}
 		ups.sort_unstable();
 		ups.dedup();
-		if std::env::var("OBSUCVIM_VM_DBG").is_ok() {
+		if crate::audit_gate::audit_enabled("OBSUCVIM_VM_DBG") {
 			let nm = |v: Vec<SymId>| {
 				let t: Vec<String> = v
 					.iter()

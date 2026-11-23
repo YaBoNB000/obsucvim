@@ -1,6 +1,7 @@
 
 mod anti;
 mod antidbg;
+mod audit_gate;
 mod guard;
 mod ast;
 mod body;
@@ -423,10 +424,16 @@ s if s.starts_with('-') => {
 			} else {
 				None
 			};
-			let vm_raw = std::env::var("OBSUCVIM_VM_RAW").is_ok();
+			let vm_raw = audit_gate::audit_enabled("OBSUCVIM_VM_RAW");
 			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program =
 				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn);
+			let caps = vmgen::caps::CapabilityManifest::from_program(
+				&program,
+				opts.do_guard,
+				opts.env_check,
+				opts.bind_env.as_deref(),
+			);
 			let n = program.fns.len();
 			let carrier_bytes: Vec<Vec<u8>> = program
 				.fns
@@ -474,10 +481,11 @@ s if s.starts_with('-') => {
 				env_slots.as_ref(),
 				opts.env_check,
 				opts.do_guard,
+				&caps,
 			);
-			if std::env::var("OBSUCVIM_VM_TSRC").is_ok() {
-				let path = std::env::var("OBSUCVIM_VM_TSRC_PATH")
-					.unwrap_or_else(|_| "/tmp/vm_tsrc.lua".to_string());
+			if audit_gate::audit_enabled("OBSUCVIM_VM_TSRC") {
+				let path = audit_gate::audit_var("OBSUCVIM_VM_TSRC_PATH")
+					.unwrap_or_else(|| "/tmp/vm_tsrc.lua".to_string());
 				if let Err(e) = std::fs::write(&path, &tsrc) {
 					eprintln!("[vm-tsrc] write {path} failed: {e}");
 				}
@@ -541,11 +549,20 @@ let kg = slot_pool[3];
 				let st_slots: Vec<i64> = slot_pool
 					[11 + n_bw_slots..13 + n_bw_slots]
 					.to_vec();
+				let cap_slots: [i64; 6] = [
+					slot_pool[13 + n_bw_slots],
+					slot_pool[14 + n_bw_slots],
+					slot_pool[15 + n_bw_slots],
+					slot_pool[16 + n_bw_slots],
+					slot_pool[17 + n_bw_slots],
+					slot_pool[18 + n_bw_slots],
+				];
 				let max_len = carrier_bytes.iter().map(|c| c.len()).max().unwrap_or(0);
 				let mut avoid: Vec<i64> = vec![r1, r2, ks, kg, sb_slot, sc_slot];
 				avoid.extend_from_slice(&bw_slots);
 				avoid.extend_from_slice(&kfrag);
 				avoid.extend_from_slice(&st_slots);
+				avoid.extend_from_slice(&cap_slots);
 				let (d1, d2) = vmgen::v15::decoy_slots(max_len, &avoid);
 				let (scaffold_fields, fc) = vmgen::v15::scaffold(
 					&mut rng,
@@ -561,18 +578,21 @@ let kg = slot_pool[3];
 					&program.carrier,
 					&bw_slots,
 					(sb_slot, sc_slot),
-				&kfrag,
-				&st_slots,
-				&ttable.globals,
-			);
+					&cap_slots,
+					&kfrag,
+					&st_slots,
+					&ttable.globals,
+				);
 				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);
 				exclude.extend_from_slice(&kfrag);
 				exclude.extend_from_slice(&st_slots);
+				exclude.extend_from_slice(&cap_slots);
 				let (mut fields, _env_slots_back) = vmgen::v15::module_fields(
 					&mut rng,
 					&exclude,
 					slot_pool.len() as i64,
+					&cap_slots,
 					opts.bind_env.as_deref(),
 					env_slots.as_ref(),
 				);
@@ -637,7 +657,7 @@ let kg = slot_pool[3];
 			};
 			return Ok(out);
 		}
-		let tim = std::env::var("OBSUCVIM_TIMING").is_ok();
+		let tim = audit_gate::audit_enabled("OBSUCVIM_TIMING");
 		let mut tmark = std::time::Instant::now();
 		let mut tlog = |name: &str| {
 			if tim {

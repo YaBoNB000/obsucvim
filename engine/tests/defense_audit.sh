@@ -29,7 +29,18 @@
 # 用法: bash tests/defense_audit.sh   (release 二进制需已构建)
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TOOL="$ROOT/target/release/obsucvim"
+TOOL="${OBSUCVIM_BIN:-$ROOT/target/release/obsucvim}"
+AUDIT_TOOL="${OBSUCVIM_AUDIT_BIN:-$ROOT/target/audit/release/obsucvim}"
+if [ ! -x "$AUDIT_TOOL" ]; then
+	if [ ! -x "$ROOT/target/debug/obsucvim" ]; then
+		(cd "$ROOT" && PATH="$ROOT/../.tools/bin:$PATH" CARGO_NET_OFFLINE=true cargo build --quiet >/dev/null 2>&1)
+	fi
+	if [ -x "$ROOT/target/debug/obsucvim" ]; then
+		AUDIT_TOOL="$ROOT/target/debug/obsucvim"
+	else
+		AUDIT_TOOL="$TOOL"
+	fi
+fi
 TOOLS_BIN=/home/user/tools/bin
 if [ ! -x "$TOOLS_BIN/luau" ]; then
 	TOOLS_BIN="$(cd "$(dirname "$0")/../../.tools/bin" && pwd)"
@@ -62,7 +73,7 @@ EXP2="$($LUAU "$SRC2" 2>&1)"
 
 echo "== D2 钥匙去字面化 (3 种子) =="
 for seed in 7 4242 999999; do
-	OBSUCVIM_KEY_MANIFEST="$W/keys_$seed.txt" "$TOOL" --preset v15 --dialect luau \
+	OBSUCVIM_KEY_MANIFEST="$W/keys_$seed.txt" "$AUDIT_TOOL" --preset v15 --dialect luau \
 		--seed "$seed" "$SRC" "$W/d2_$seed.lua" >/dev/null 2>&1
 	if python3 "$ROOT/tests/key_literal_check.py" "$W/d2_$seed.lua" "$W/keys_$seed.txt" \
 		>"$W/d2_$seed.out" 2>&1; then
@@ -262,7 +273,7 @@ fi
 echo "== D12 计时守卫 (㊳/H4-2C2: 接线 + 触发路径 + 误报抽查) =="
 rm -f /tmp/vm_tsrc.lua
 OBSUCVIM_VM_TSRC=1 OBSUCVIM_KEY_MANIFEST="$W/d12_keys.txt" \
-	"$TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
+	"$AUDIT_TOOL" --preset v15 --dialect luau --seed 777 "$SRC" "$W/d12b.lua" >/dev/null 2>&1
 # H4-2C2 后 RT 不再是可导出的 HQ 碎片；从构建期 TSRC 中抽取已经字段
 # 随机化的静态 RT 守卫。正式产物没有运行时 dump/fallback 接口。
 rt_static="/tmp/vm_tsrc.lua"
@@ -410,7 +421,7 @@ if [ -x "$ROOT/target/debug/obsucvim" ]; then
 	DBGOBJ="$ROOT/target/debug/obsucvim"
 else
 	echo "  (构建 debug 二进制中...)"
-	(cd "$ROOT" && CARGO_NET_OFFLINE=true cargo build >/dev/null 2>&1)
+	(cd "$ROOT" && PATH="$ROOT/../.tools/bin:$PATH" CARGO_NET_OFFLINE=true cargo build >/dev/null 2>&1)
 	DBGOBJ="$ROOT/target/debug/obsucvim"
 fi
 if [ -x "$DBGOBJ" ]; then

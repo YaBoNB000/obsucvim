@@ -56,13 +56,18 @@ pub struct FRec {
 }
 
 /// 统计：白名单相邻对的频次（确定性 BTree 序输出，key = (op_index(a), op_index(b))）。
+/// 同时强制校验 `OpMeta::fuse_head_ok` / `fuse_tail_ok` 语义边界。
 pub fn stats(code: &[Instr]) -> Vec<((u8, u8), u32)> {
 	let wl: BTreeSet<(u8, u8)> = FUSE_WHITELIST
 		.iter()
+		.filter(|&&(x, y)| x.meta().fuse_head_ok && y.meta().fuse_tail_ok)
 		.map(|&(x, y)| (op_index(x) as u8, op_index(y) as u8))
 		.collect();
 	let mut m: BTreeMap<(u8, u8), u32> = BTreeMap::new();
 	for w in code.windows(2) {
+		if !w[0].op.meta().fuse_head_ok || !w[1].op.meta().fuse_tail_ok {
+			continue;
+		}
 		let key = (op_index(w[0].op) as u8, op_index(w[1].op) as u8);
 		if wl.contains(&key) {
 			*m.entry(key).or_insert(0) += 1;

@@ -17,7 +17,11 @@
 # 可独立运行，也可被 run_tests.sh source（复用计数器）。
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TOOL="$ROOT/target/release/obsucvim"
+TOOL="${OBSUCVIM_BIN:-$ROOT/target/release/obsucvim}"
+AUDIT_TOOL="${OBSUCVIM_AUDIT_BIN:-$ROOT/target/audit/release/obsucvim}"
+if [ ! -x "$AUDIT_TOOL" ]; then
+	if [ -x "$ROOT/target/debug/obsucvim" ]; then AUDIT_TOOL="$ROOT/target/debug/obsucvim"; else AUDIT_TOOL="$TOOL"; fi
+fi
 
 TOOLS_BIN=/home/user/tools/bin
 if [ ! -x "$TOOLS_BIN/luau" ]; then
@@ -78,7 +82,7 @@ EOF
 # ---------- (1) 模板形态 ----------
 # （OBSUCVIM_VM_TSRC 写死输出到 /tmp/vm_tsrc.lua）
 rm -f /tmp/vm_tsrc.lua
-if OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 \
+if OBSUCVIM_VM_TSRC=1 "$AUDIT_TOOL" --preset v15 --dialect luau --seed 42 \
 	"$PE_TMP/nested.lua" "$PE_TMP/nested.lua.out" 2>"$PE_TMP/err"; then
 	ts=/tmp/vm_tsrc.lua
 	ok=1
@@ -173,7 +177,7 @@ fi
 # OBSUCVIM_FRAG_SAN 导出的源码载荷。若重新出现即代表隐藏 fallback 回归。
 rm -rf "$PE_TMP/frags"
 mkdir -p "$PE_TMP/frags"
-OBSUCVIM_FRAG_SAN="$PE_TMP/frags" "$TOOL" --preset v15 --dialect luau \
+OBSUCVIM_FRAG_SAN="$PE_TMP/frags" "$AUDIT_TOOL" --preset v15 --dialect luau \
 	--seed 42 "$PE_TMP/nested.lua" "$PE_TMP/nested.san.lua" >/dev/null 2>&1
 if compgen -G "$PE_TMP/frags/san_*.src" >/dev/null; then
 	gf "sanitize" "H4-2C2 默认构建仍导出 HQ 源码碎片"

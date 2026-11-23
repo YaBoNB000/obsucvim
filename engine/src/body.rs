@@ -13,7 +13,7 @@ pub fn apply_body(
 	reserved: &mut HashSet<String>,
 	luau: bool,
 ) {
-	let tim = std::env::var("OBSUCVIM_TIMING").is_ok();
+	let tim = crate::audit_gate::audit_enabled("OBSUCVIM_TIMING");
 	let mut tmark = std::time::Instant::now();
 	let mut tlog = |name: &str| {
 		if tim {

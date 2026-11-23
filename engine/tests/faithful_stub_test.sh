@@ -25,7 +25,11 @@
 # 可独立运行: bash tests/faithful_stub_test.sh；也可被 run_tests.sh source。
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TOOL="$ROOT/target/release/obsucvim"
+TOOL="${OBSUCVIM_BIN:-$ROOT/target/release/obsucvim}"
+AUDIT_TOOL="${OBSUCVIM_AUDIT_BIN:-$ROOT/target/audit/release/obsucvim}"
+if [ ! -x "$AUDIT_TOOL" ]; then
+	if [ -x "$ROOT/target/debug/obsucvim" ]; then AUDIT_TOOL="$ROOT/target/debug/obsucvim"; else AUDIT_TOOL="$TOOL"; fi
+fi
 SRC="$ROOT/tests/cases/basics.lua"
 
 TOOLS_BIN=/home/user/tools/bin
@@ -48,7 +52,7 @@ EXP="$(timeout 30 "$LUAU" "$SRC" 2>&1)"
 
 # ---- 生成绑定态产物（调试转储 TSRC 供顺序守卫使用）----
 rm -f /tmp/vm_tsrc.lua
-if ! OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --bind-env roblox \
+if ! OBSUCVIM_VM_TSRC=1 "$AUDIT_TOOL" --preset v15 --dialect luau --bind-env roblox \
 		--seed 42 "$SRC" "$FS_TMP/bound.lua" 2>"$FS_TMP/err"; then
 	gf "build" "绑定态构建失败: $(head -1 "$FS_TMP/err")"
 else

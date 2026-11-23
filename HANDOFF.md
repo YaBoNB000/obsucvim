@@ -529,3 +529,24 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
   默认 guard 样例曾报 `attempt to compare nil <= nil`。用户选择默认 guard 保持开启并不跑 trace；
   `example_guard_no_debug.txt` 与随后简化 debug source 检查的 `example_guard_source_probe.txt` 均在 Delta 正常。
   当前根目录 `example.txt` 已重生为后者的字节副本，具体 hash 与验证见 §13.4。
+
+---
+
+## 15. P0–P5 能力最小化、状态不变量、常量分块物化、守卫硬化与发布门禁（2026-11-22）
+
+本节记录在 §14 通用 Luau 基线之上完成的 P0–P5 架构收敛与可验证指标；不恢复任何 §14 已退役的 executor-binding / key-host / EVKEY / tier-2 探针机制。P0–P5 对照剖析以历史 `example.txt`（148,769 B，SHA-256 `00e7ee9136cc3e5d73deff03cbee31509884734b45ea0184c2851fcadb6d6ecd`）为改前基线；验收后按用户指令将根目录 `example.txt` 更新为 `a = 999` 的默认 `v15` 混淆产物（`--preset v15 --dialect luau --seed 42`，101,834 B，SHA-256 `b2fbad2231f5a6d37aae0f6f0897c8e2e4ed67bc5f2a7b250cb72a1fdd3675e1`）。
+
+### 15.1 关键改动摘要
+
+- **P0 产物诊断剖析器（`engine/tests/artifact_profile.py`）**：基于自包含 Luau 词法/AST 分析器输出字节数、token/AST 节点、全局宿主 API 引用、短/长字符串常量、可证恒真/恒假谓词、外层 staging 与内层 `HW2` 包装簇集中度，以及构建/运行耗时与子进程 Peak RSS，支持单产物剖析与 7 语料 × 6 seed 回归对比。
+- **P1 按需能力清单与隐式全局清零（`engine/src/vmgen/caps.rs`, `v15.rs`, `template.rs`）**：将外层模块表原语与内层 `P`/辅助函数拆分为 `InterpreterBase`（引导与常量/帧基础设施必需）和 `ProgramDriven`（由 `VmProgram` 活跃指令、浮点常量及 `--guard`/`--env-check`/`--bind-env`/`--super-insn` 标志确定性推导）；裁剪未使用 `(op, dialect)` 槽与未命中 `--super-insn` 融合尾槽，保留动态全局经运行时环境表 `G` 解析；补齐 `template.rs` 局部声明，消除旧产物中的 `DK`、`Qe`、`qA` 隐式全局读写；清理 `v15=true` 分支下不可达旧模板拼接死路径。
+- **P2 真实状态不变量与分派/包装多样化（`v15.rs`, `template.rs`）**：移除代数/奇偶恒真 `opaque_wrap` 与 `if false` 死分支，改用绑定初始化与运行期真实状态槽的 `state_guard_wrap`（AST 可证代数恒真分支与线性恒等分支均降为 `0`）；外层 `gen_filler_staging` 扩展为 `10` 类状态转移骨架 × `5..=9` 参数签名（最高单簇占比由 `27.4%–29.8%` 降至 `3.5%–4.4%`）；内层 Micro-VM 引入 `zC` 稀疏秩映射表、`12` 种工厂形态（4 种秩分派树 × 3 种循环骨架）与 `5..=8` 参 `HW2` 包装；`--super-insn` 维持显式 opt-in。
+- **P3 分块字符串物化、特殊数值常量与明文边界（`template.rs`, `handlers/loadstr.rs`, `compiler.rs`）**：将 `CDEC`、`LoadStr` 与 `M_LOAD_STR` 的逐字符 `..` 累加改为 `64` 字节分块 `CHAR(UNP(..., 1, k))` + `TCAT` 的 $O(L)$ 装配；`CDEC` 支持 IEEE-754 `±Inf` 与 `NaN`；将 `SALT` 时钟折叠改为 `FLR(_ckv*1000000)%65536` 整数域计算以避免浮点取模漂移。静态常量串沿用「每函数首次读取解码并写回该函数常量代理缓存」设计以保证热循环性能与 table key 相等性；首次读取后明文串在函数生命周期内驻留运行时内存，动态 hook 或内存转储仍可观测已求值常量，静态混淆对此不作过度承诺。
+- **P4 通用守卫阶段分类与沙箱兼容性硬化（`anti/mod.rs`, `guard.rs`, `template.rs`）**：新增 `STAGE_MANIFEST` 五阶段元数据表（`core`/`env`/`debug`/`canary`/`misc`），区分必选核心原语（`type`/`pcall`/`error`/`rawget`/`rawset`/`getmetatable`/`setmetatable`）与可选宿主 API（`xpcall`/`debug`/`debug.info`/`os`/`os.clock`/`newproxy`/`warn`/`unpack`/`loadstring`/`load`）：缺失可选 API 放行，非预期类型、伪造 `[C]` 来源、Lua 包装核心原语/加载器或破坏元表锁则静默 fail-closed；修正 `stage_env` 为 `pcall(function() return gfe(1) end)` 以正确读取 `setfenv` 闭包环境并兼容受保护字符串/表元表沙箱；`stage_debug` 在局部环境隐藏 `debug` 时回退检查 `getfenv(0)` 宿主 `debug.info`。新增超时隔离的 `engine/tests/guard_matrix_test.py`（31 场景）。
+- **P5 编译期审计钩子门禁、Luau 基准与样例更新（`audit_gate.rs`, `Cargo.toml`, `bench_presets.sh`, `examples/`）**：新增默认关闭的 `audit-hooks` feature，生产 `cargo build --release` 在编译期禁用 `OBSUCVIM_KEY_MANIFEST`、`OBSUCVIM_VM_RAW`、`OBSUCVIM_VM_TSRC`、`OBSUCVIM_NOISE_AUDIT`、`OBSUCVIM_PROFILE_AUDIT`、`OBSUCVIM_*_DBG` 与 `OBSUCVIM_TIMING`，且同 seed 产物与 `--features audit-hooks` 构建逐字节一致（`prod_audit_gate_test.sh`）；将 `bench_presets.sh` 升级为 Luau `0.735` 8 类语料 × 7 模式基准；通过 `gen_examples.sh` 重生 `engine/examples/*.v15.luau.lua` 全部 37 个样例。
+
+### 15.2 验证状态与明确边界
+
+- `cargo check --all-targets`、`cargo test --release`（**72 passed / 0 failed / 1 ignored** + 水印集成测试 **4 passed**）通过；本地 `.tools/bin` 最小工具链不含 `rustfmt` 组件（`cargo fmt` 不可用）。
+- `run_tests.sh`（**169 PASS / 0 FAIL**）、`run_presets.sh`（**370 PASS / 0 FAIL**）、`multiseed.sh`（**FAIL=0**，含 R064 **24 seeds**）、`vm_semantics_regression.sh`、`guard_matrix_test.py`（**31/31 PASS**）、`capability_manifest_test.py`（**6/6 PASS**，含 `--super-insn` 与字符串/`±Inf`/`NaN` 多 seed 等价）、`prod_audit_gate_test.sh`、`defense_audit.sh`（**20 PASS / 0 FAIL**）、`v15_fingerprint.py`（**32/32 PASS**）、`security_fingerprint.py`（**5/5 PASS**）、`h2`..`h8`、`r061_bypass_audit.py`、`redteam_probe_regression.py` 及 `bench_presets.sh`（56/56 组合等价）全部通过。
+- **真实执行器边界**：上述兼容性测试均在本地 stock Luau `0.735`、`LUAU_READONLY_GLOBALS=1` 及受控模拟环境矩阵中完成；未在真实第三方执行器（如 Delta 等）实机运行本轮新产物前，不声称特定执行器版本已通过实机验收。

@@ -396,12 +396,16 @@ def analyze(path):
     F.append(check("F18", "os.clock=0 且 loadstring=0", (osc, lds),
                    (0, 0), osc == 0 and lds == 0))
 
-    # ---- F19 Roblox 绑定
+    # ---- F19 按需能力裁剪（P1 起默认构建不再发射未使用的 buffer./typeof/vector 诱饵；
+    # 仅 --env-check / --bind-env roblox 按需引入对应宿主 API）
     buf = len(re.findall(r"\bbuffer\.", code))
     tof = len(re.findall(r"\btypeof\b", code))
     vec = len(re.findall(r"\bvector\.|\bVector[23]\b", code))
-    F.append(check("F19", "buffer./typeof/vector", (buf, tof, vec),
-                   (17, 1, 1), buf >= 10 and tof >= 1 and vec >= 1))
+    ok19 = (buf == 0 and tof == 0 and vec == 0) \
+        or (buf >= 1 and vec == 0) \
+        or (vec >= 1 and tof >= 1)
+    F.append(check("F19", "按需能力裁剪(buffer./typeof/vector)", (buf, tof, vec),
+                   (0, 0, 0), ok19))
 
     # ---- F20 while 数量
     whl = len(re.findall(r"\bwhile\b", code))

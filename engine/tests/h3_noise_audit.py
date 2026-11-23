@@ -12,8 +12,10 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TOOL = ROOT / "target/release/obsucvim"
-TOOLS = pathlib.Path("/home/user/luraph/.tools/bin")
+TOOL = pathlib.Path(os.environ["OBSUCVIM_BIN"]) if "OBSUCVIM_BIN" in os.environ else (
+    ROOT / "target/audit/release/obsucvim" if (ROOT / "target/audit/release/obsucvim").exists() else (
+    ROOT / "target/debug/obsucvim" if (ROOT / "target/debug/obsucvim").exists() else ROOT / "target/release/obsucvim"))
+TOOLS = (ROOT.parent / ".tools/bin")
 LUAU = TOOLS / "luau"
 if not LUAU.exists():
     LUAU = pathlib.Path("/home/user/tools/bin/luau")
@@ -77,7 +79,7 @@ def main():
         c, sc = build(314159, src, out_c, td / "c.noise")
 
         deterministic = a == c and sa == sc
-        seed_diff = a != b and [r["seed"] for r in sa] != [r["seed"] for r in sb]
+        seed_diff = a != b and [r.get("seed", r.get("chaff")) for r in sa] != [r.get("seed", r.get("chaff")) for r in sb]
         print("== H3 噪声随机化审计 ==")
         print(f"[0] 同 seed 产物+噪声统计确定: {'YES' if deterministic else 'NO'}")
         print(f"[1] 异 seed 独立噪声流变化    : {'YES' if seed_diff else 'NO'}")

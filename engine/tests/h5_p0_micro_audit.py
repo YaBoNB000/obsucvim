@@ -9,8 +9,10 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TOOL = ROOT / "target/release/obsucvim"
-TOOLS = pathlib.Path("/home/user/luraph/.tools/bin")
+TOOL = pathlib.Path(os.environ["OBSUCVIM_BIN"]) if "OBSUCVIM_BIN" in os.environ else (
+    ROOT / "target/audit/release/obsucvim" if (ROOT / "target/audit/release/obsucvim").exists() else (
+    ROOT / "target/debug/obsucvim" if (ROOT / "target/debug/obsucvim").exists() else ROOT / "target/release/obsucvim"))
+TOOLS = (ROOT.parent / ".tools/bin")
 LUAU = TOOLS / "luau"
 if not LUAU.exists():
     LUAU = pathlib.Path("/home/user/tools/bin/luau")
@@ -86,9 +88,9 @@ def main():
         template = (ROOT / "src/vmgen/template.rs").read_text()
         shape = all(x in template for x in [
             "let mut micro_carriers: Vec<Vec<u8>>",
-            "local _ms{shard}=(SALT%256+(CHQ%256)",
-            "_mb{shard}=_out _src=nil _out=nil _g=nil _akm=nil _akc=nil",
-            "local n=(BYTE({blob},o)-({sm}+o*{ss})%256)%256",
+            "local {ms}=(SALT%256+(CHQ%256)",
+            "{mb}=_out _src=nil _out=nil _g=nil _akm=nil _akc=nil _pv=nil",
+            "local n=(BYTE(zB,o)-(zM+o*zS)%256)%256",
             "MZD=(_mc-({expected}))%268435456",
         ])
         retired = all(x not in template for x in [

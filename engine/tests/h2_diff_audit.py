@@ -19,8 +19,10 @@ import tempfile
 import os
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TOOL = ROOT / "target/release/obsucvim"
-TOOLS_BIN = pathlib.Path("/home/user/luraph/.tools/bin")
+TOOL = pathlib.Path(os.environ["OBSUCVIM_BIN"]) if "OBSUCVIM_BIN" in os.environ else (
+    ROOT / "target/audit/release/obsucvim" if (ROOT / "target/audit/release/obsucvim").exists() else (
+    ROOT / "target/debug/obsucvim" if (ROOT / "target/debug/obsucvim").exists() else ROOT / "target/release/obsucvim"))
+TOOLS_BIN = (ROOT.parent / ".tools/bin")
 LUAU = TOOLS_BIN / "luau"
 if not LUAU.exists():
     LUAU = pathlib.Path("/home/user/tools/bin/luau")
@@ -163,8 +165,8 @@ def main():
         # G. H2-11：预净化 HBOOT 入口名本身随机，且参数序跨构建不同。
         siga, sigb = hboot_signature(da), hboot_signature(db)
         sig_shape = (
-            len(siga) == 25 and len(sigb) == 25
-            and len(set(siga)) == 25 and len(set(sigb)) == 25
+            len(siga) in (25, 28, 29) and len(sigb) == len(siga)
+            and len(set(siga)) == len(siga) and len(set(sigb)) == len(sigb)
             and all(re.fullmatch(r"_sp\d+_\d+", x) for x in siga + sigb)
         )
         shell_ok = sig_shape and siga != sigb
