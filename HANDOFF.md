@@ -647,7 +647,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 
 ### 17.1 能力契约定案（P0，方案 A：纯 Lua fallback）
 
-- `engine/src/vmgen/caps.rs`：`VmPrim::Unpack::lua_bind_expr()` 由两级（`unpack` → `table.unpack`）扩展为 Scheme A 三级回退：`rawget(table,"unpack") or rawget(G,"unpack") or <递归 Lua unroller>`。两种 API 同时缺失属于**可兼容场景**（走完整 fallback），不再由 Guard 拒绝；`STAGE_MANIFEST` 按“可替代 API 组”表达该契约，不再把两个 API 标为互不相关、可同时缺失的普通 optional API。
+- `engine/src/vmgen/caps.rs`：`VmPrim::Unpack::lua_bind_expr()` 由两级（`unpack` → `table.unpack`）扩展为 Scheme A 三级回退：`(type(unpack)=="function" and unpack) or (type(table)=="table" and type(table.unpack)=="function" and table.unpack) or <纯 Lua 递归切片解包器 _uf>`。两种 API 同时缺失属于**可兼容场景**（走完整 fallback），不再由 Guard 拒绝；`STAGE_MANIFEST` 按“可替代 API 组”表达该契约，不再把两个 API 标为互不相关、可同时缺失的普通 optional API。
 - `engine/src/vmgen/handlers/loadstr.rs`：统一 `LoadStr` 原语名（`BYTE`/`SUB`/`CONC`/`CH`/`UNPK`），消除 `unpack or table.unpack` 旁路。
 - `engine/src/vmgen/handlers/mod.rs` + `handlers/nop.rs`：接线 `"Nop" => nop::code(fmt)`，消除 `"Nop"` panic。
 - `engine/tests/capability_manifest_test.py`：补上“`unpack` 与 `table.unpack` 同时缺失”场景与“`table.unpack` 存在但返回错误”场景；`table.unpack` 行为验证检查实际返回值、nil 保留、起止索引与空区间（不只 `pcall` 成功）；新增 `f64::MIN_POSITIVE = 2.2250738585072014e-308` 端到端运行期校验。结果 **11 PASS / 0 FAIL**。

@@ -17,7 +17,10 @@ export PATH="$REPO_TOOLS:$HOME/.cargo/bin:$PATH"
 BIN="${OBSUCVIM_BIN:-$ROOT/target/release/obsucvim}"
 LUAU="${LUAU_BIN:-$(command -v luau || echo "$REPO_TOOLS/luau")}"
 LUAU_COMPILE="${LUAU_COMPILE_BIN:-$(command -v luau-compile || echo "$REPO_TOOLS/luau-compile")}"
-MAX_BYTES="${PRINT_SIZE_CAP_BYTES:-250000}"
+MAX_BYTES=250000
+
+echo "print_size_gate: building release binary..."
+CARGO_NET_OFFLINE=true cargo build --release --manifest-path "$ROOT/Cargo.toml" --quiet
 
 if [ ! -x "$BIN" ]; then
 	echo "FAIL: missing release binary at $BIN" >&2

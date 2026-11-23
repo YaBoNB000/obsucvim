@@ -262,14 +262,15 @@ def main() -> int:
                         art_sha = hashlib.sha256(art_bytes).hexdigest()
                         sha_by_seed.add(art_sha)
 
-                        # Same-seed determinism check on seed 42
-                        if seed == 42:
-                            dup_p = tmp / f"{side}__{cid}__{mode_name}__s42_dup.lua"
-                            rc_d, _, _, _, _ = run_timed(
-                                [str(bin_path), *mode_flags, "--seed", "42", str(sp), str(dup_p)]
+                        # Same-seed determinism check across all seeds
+                        dup_p = tmp / f"{side}__{cid}__{mode_name}__s{seed}_dup.lua"
+                        rc_d, _, _, _, _ = run_timed(
+                            [str(bin_path), *mode_flags, "--seed", str(seed), str(sp), str(dup_p)]
+                        )
+                        if rc_d != 0 or dup_p.read_bytes() != art_bytes:
+                            raise RuntimeError(
+                                f"determinism failure for {side} {cid} {mode_name} seed={seed}: repeated build differed"
                             )
-                            if rc_d != 0 or dup_p.read_bytes() != art_bytes:
-                                det_ok = False
 
                         # Compile check via luau-compile
                         lc_p = subprocess.run(
