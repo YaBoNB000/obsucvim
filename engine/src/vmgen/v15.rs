@@ -521,7 +521,13 @@ fn idle_local(rng: &mut crate::rng::Rng, name: &str, probe: &str, a: i64, b: i64
 		0 => format!("local {name}={};", idle_val(rng, probe, a, b)),
 		1 => format!("local {name};if {probe}==nil then {name}={b} else {name}={a} end;"),
 		2 => format!("local {name}={b};if {probe}~=nil then {name}={a} end;"),
-		_ => format!("local {name};do local _t={probe};{name}=(_t==nil)and {b} or {a} end;"),
+		_ => {
+			let tmp = ["_t", "_u", "_v"]
+				.into_iter()
+				.find(|&cand| cand != name && cand != probe)
+				.unwrap_or("_w");
+			format!("local {name};do local {tmp}={probe};{name}=({tmp}==nil)and {b} or {a} end;")
+		}
 	}
 }
 
@@ -1409,4 +1415,21 @@ let (st, _ret) = step(&mut state_i);
 	}
 
 	(fields, fc)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::idle_local;
+
+	#[test]
+	fn idle_local_never_shadows_target_when_name_is_underscore_t() {
+		for seed in 1u64..=128 {
+			let mut rng = crate::rng::Rng::new(seed);
+			let src = idle_local(&mut rng, "_t", "s", 83, 184);
+			assert!(
+				!src.contains("local _t;do local _t="),
+				"seed {seed} shadowed target local _t: {src}"
+			);
+		}
+	}
 }

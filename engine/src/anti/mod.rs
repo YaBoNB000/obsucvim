@@ -40,6 +40,8 @@ pub const STAGE_MANIFEST: [GuardStageMeta; 5] = [
 		fail_action: "immediate abort() (fail-closed hang)",
 		test_ids: &[
 			"clean_stock_luau",
+			"clean_stock_luau_guard_on",
+			"clean_stock_luau_guard_off",
 			"xpcall_nil_allowed",
 			"pcall_tampered_nonfn",
 			"xpcall_tampered_nonfn",
@@ -55,12 +57,18 @@ pub const STAGE_MANIFEST: [GuardStageMeta; 5] = [
 		fail_action: "failed = true -> abort()",
 		test_ids: &[
 			"readonly_globals",
+			"readonly_globals_guard_on",
+			"readonly_globals_guard_off",
 			"getfenv_nil_allowed",
+			"getfenv_tampered_nonfn",
 			"print_warn_nil_allowed",
+			"warn_nil_allowed",
 			"print_redirect_allowed",
+			"setfenv_index_proxy_allowed",
 			"warn_tampered_nonfn",
 			"rawget_tampered",
 			"pcall_error_swallowed",
+			"differential_noguard_warn_nonfn",
 		],
 	},
 	GuardStageMeta {
@@ -91,13 +99,14 @@ pub const STAGE_MANIFEST: [GuardStageMeta; 5] = [
 			"newproxy_nil_allowed",
 			"newproxy_tampered_nonfn",
 			"metatable_lock_tampered",
+			"differential_noguard_newproxy_nonfn",
 		],
 	},
 	GuardStageMeta {
 		id: "misc",
-		target: "Optional unpack/os/os.clock sanity + explicit 1..7 core-primitive shadow consistency",
+		target: "Optional unpack/next/os/os.clock sanity + explicit 1..7 core-primitive shadow consistency",
 		required_apis: &[],
-		optional_apis: &["unpack", "table.unpack", "os", "os.clock"],
+		optional_apis: &["unpack", "table.unpack", "next", "os", "os.clock"],
 		luau_guaranteed: true,
 		fail_action: "failed = true -> abort()",
 		test_ids: &[
@@ -106,8 +115,16 @@ pub const STAGE_MANIFEST: [GuardStageMeta; 5] = [
 			"os_non_table_tamper",
 			"os_clock_nonfn_tamper",
 			"unpack_nil_allowed",
+			"table_unpack_nil_allowed",
+			"table_unpack_tampered_nonfn",
+			"both_unpack_nil_rejected",
 			"unpack_broken_tamper",
+			"next_nil_allowed",
+			"next_tampered_nonfn",
+			"next_broken_tamper",
+			"differential_noguard_next_nonfn",
 			"shadow_pcall_false_tamper",
+			"shadow_rawget_hook_with_xpcall_nil",
 		],
 	},
 ];
@@ -326,6 +343,19 @@ pub const ANTI_MISC: &str = r###"	local function stage_misc()
 			end
 		end
 
+		if nextFn ~= nil then
+			if type(nextFn) ~= "function" then
+				failed = true
+			else
+				local _nt = { [1] = 7 }
+				local ok1, nk1, nv1 = pcall(nextFn, _nt, nil)
+				local ok2, nk2 = pcall(nextFn, {}, nil)
+				if not ok1 or nk1 ~= 1 or nv1 ~= 7 or not ok2 or nk2 ~= nil then
+					failed = true
+				end
+			end
+		end
+
 		if osTable ~= nil then
 			if type(osTable) ~= "table" then
 				failed = true
@@ -363,10 +393,12 @@ pub const STAGES: [(&str, &str, &str); 5] = [
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use std::collections::BTreeSet;
 
 	#[test]
 	fn stage_manifest_matches_stages_and_separates_optional_apis() {
 		assert_eq!(STAGE_MANIFEST.len(), STAGES.len());
+		let mut seen_ids = BTreeSet::new();
 		for (meta, (id, src, call)) in STAGE_MANIFEST.iter().zip(STAGES.iter()) {
 			assert_eq!(meta.id, *id);
 			assert!(!meta.target.is_empty());
@@ -381,6 +413,78 @@ mod tests {
 					req
 				);
 			}
+			for &tid in meta.test_ids {
+				assert!(
+					seen_ids.insert(tid),
+					"duplicate test_id {} across STAGE_MANIFEST",
+					tid
+				);
+			}
 		}
+	}
+
+	#[test]
+	fn stage_manifest_test_ids_match_guard_matrix_test_py_bidirectionally() {
+		let py_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+			.join("tests")
+			.join("guard_matrix_test.py");
+		let py_src = std::fs::read_to_string(&py_path)
+			.unwrap_or_else(|e| panic!("failed to read {}: {}", py_path.display(), e));
+
+		let manifest_ids: BTreeSet<&str> = STAGE_MANIFEST
+			.iter()
+			.flat_map(|s| s.test_ids.iter().copied())
+			.collect();
+
+		let mut py_ids = BTreeSet::new();
+		let mut in_cases = false;
+		let mut expect_case_name = false;
+		for line in py_src.lines() {
+			let trimmed = line.trim();
+			if trimmed == "cases = [" {
+				in_cases = true;
+				continue;
+			}
+			if in_cases && line.starts_with("        ]") {
+				break;
+			}
+			if !in_cases || trimmed.starts_with('#') {
+				continue;
+			}
+			if let Some(rest) = trimmed.strip_prefix("(\"") {
+				if let Some(end) = rest.find('"') {
+					let cid = &rest[..end];
+					assert!(
+						py_ids.insert(cid.to_string()),
+						"duplicate case id {} in guard_matrix_test.py",
+						cid
+					);
+				}
+			} else if trimmed == "(" {
+				expect_case_name = true;
+			} else if expect_case_name {
+				if let Some(rest) = trimmed.strip_prefix('"') {
+					if let Some(end) = rest.find('"') {
+						let cid = &rest[..end];
+						assert!(
+							py_ids.insert(cid.to_string()),
+							"duplicate case id {} in guard_matrix_test.py",
+							cid
+						);
+					}
+				}
+				expect_case_name = false;
+			}
+		}
+
+		let py_ref: BTreeSet<&str> = py_ids.iter().map(String::as_str).collect();
+		let missing_in_py: Vec<&&str> = manifest_ids.difference(&py_ref).collect();
+		let missing_in_manifest: Vec<&&str> = py_ref.difference(&manifest_ids).collect();
+		assert!(
+			missing_in_py.is_empty() && missing_in_manifest.is_empty(),
+			"STAGE_MANIFEST <-> guard_matrix_test.py drift!\n  missing in guard_matrix_test.py: {:?}\n  missing in STAGE_MANIFEST: {:?}",
+			missing_in_py,
+			missing_in_manifest
+		);
 	}
 }

@@ -22,6 +22,34 @@ pub enum CapabilityTier {
 	ProgramDriven,
 }
 
+/// Fine-grained activation driver for each `VmPrim` in `CapabilityManifest`.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrimDriver {
+	/// Unconditionally required by the VM carrier, constant proxy, or trampoline.
+	InterpreterBase,
+	/// Required only when one or more VM opcodes referencing it are active.
+	OpcodeDriven,
+	/// Required when float constants exist (`CDEC`) or numeric coercion ops are active.
+	OpcodeOrConstDriven,
+	/// Required only when anti-tamper Guard (`--guard` / default `v15`) is enabled.
+	GuardFlag,
+}
+
+/// Authoritative single-source-of-truth metadata for each `VmPrim`.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PrimMeta {
+	pub prim: VmPrim,
+	pub tier: CapabilityTier,
+	pub driver: PrimDriver,
+	pub template_ident: &'static str,
+	pub lua_bind_expr: &'static str,
+	pub luau_only: bool,
+	pub v15_only: bool,
+	pub has_fallback: bool,
+}
+
 /// Primitives placed in the outer `v15` module table and consumed by the
 /// chunk stream-cipher unmasker and 32-bit multiplier.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -86,7 +114,9 @@ pub enum VmPrim {
 
 #[allow(dead_code)]
 impl VmPrim {
-	pub const ALL: [VmPrim; 19] = [
+	pub const COUNT: usize = 19;
+
+	pub const ALL: [VmPrim; Self::COUNT] = [
 		VmPrim::StrByte,
 		VmPrim::StrSub,
 		VmPrim::StrChar,
@@ -122,82 +152,239 @@ impl VmPrim {
 		VmPrim::TableConcat,
 	];
 
-	pub const fn tier(self) -> CapabilityTier {
+	pub const fn meta(self) -> PrimMeta {
+		use CapabilityTier::*;
+		use PrimDriver as D;
 		match self {
-			VmPrim::StrByte
-			| VmPrim::StrSub
-			| VmPrim::StrChar
-			| VmPrim::EnvGet
-			| VmPrim::Unpack
-			| VmPrim::MathFloor
-			| VmPrim::Type
-			| VmPrim::SetMetatable
-			| VmPrim::Pcall
-			| VmPrim::ToString
-			| VmPrim::TableConcat => CapabilityTier::InterpreterBase,
-			VmPrim::RawGet
-			| VmPrim::RawSet
-			| VmPrim::Error
-			| VmPrim::GetMetatable
-			| VmPrim::Select
-			| VmPrim::ToNumber
-			| VmPrim::TablePack
-			| VmPrim::Next => CapabilityTier::ProgramDriven,
+			VmPrim::StrByte => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "BYTE",
+				lua_bind_expr: "(\"\")[\"byte\"]",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::StrSub => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "SUB",
+				lua_bind_expr: "(\"\")[\"sub\"]",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::StrChar => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "CHAR",
+				lua_bind_expr: "(\"\")[\"char\"]",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::EnvGet => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "GFE",
+				// Safe fallback when `getfenv` is absent in a restricted sandbox:
+				// preserves native `getfenv` identity when present, otherwise resolves `_G`.
+				lua_bind_expr:
+					"(type(getfenv)==\"function\" and getfenv) or function() return type(_G)==\"table\" and _G or {} end",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: true,
+			},
+			VmPrim::Unpack => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "UNP",
+				// Standard Lua 5.1/Luau `unpack` with `table.unpack` fallback.
+				lua_bind_expr:
+					"(type(unpack)==\"function\" and unpack) or (type(table)==\"table\" and table.unpack)",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: true,
+			},
+			VmPrim::MathFloor => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "FLR",
+				lua_bind_expr: "math.floor",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::Type => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "TYP",
+				lua_bind_expr: "type",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::RawGet => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::OpcodeDriven,
+				template_ident: "RGET",
+				lua_bind_expr: "rawget",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::RawSet => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::OpcodeDriven,
+				template_ident: "RSET",
+				lua_bind_expr: "rawset",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::SetMetatable => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "SMT",
+				lua_bind_expr: "setmetatable",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::Pcall => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "PCAL",
+				lua_bind_expr: "pcall",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::ToString => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "TSTR",
+				lua_bind_expr: "tostring",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::TableConcat => PrimMeta {
+				prim: self,
+				tier: InterpreterBase,
+				driver: D::InterpreterBase,
+				template_ident: "TCAT",
+				lua_bind_expr: "table.concat",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::Error => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::OpcodeDriven,
+				template_ident: "ERR",
+				lua_bind_expr: "error",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::GetMetatable => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::OpcodeDriven,
+				template_ident: "GMT",
+				lua_bind_expr: "getmetatable",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::Select => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::OpcodeDriven,
+				template_ident: "SEL",
+				lua_bind_expr: "select",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::ToNumber => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::OpcodeOrConstDriven,
+				template_ident: "TONUM",
+				lua_bind_expr: "tonumber",
+				luau_only: false,
+				v15_only: false,
+				has_fallback: false,
+			},
+			VmPrim::TablePack => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::OpcodeDriven,
+				template_ident: "TPACK",
+				// Equivalent `n = select("#", ...)` multivalue pack preserving middle & trailing nils.
+				lua_bind_expr:
+					"(type(table)==\"table\" and type(table.pack)==\"function\" and table.pack) or function(...) return {n=select(\"#\",...),...} end",
+				luau_only: true,
+				v15_only: true,
+				has_fallback: true,
+			},
+			VmPrim::Next => PrimMeta {
+				prim: self,
+				tier: ProgramDriven,
+				driver: D::GuardFlag,
+				template_ident: "NXT",
+				lua_bind_expr: "next",
+				luau_only: false,
+				v15_only: true,
+				has_fallback: false,
+			},
 		}
+	}
+
+	pub const fn tier(self) -> CapabilityTier {
+		self.meta().tier
+	}
+
+	pub const fn driver(self) -> PrimDriver {
+		self.meta().driver
 	}
 
 	/// Internal template local binding identifier (before `rename_vm_locals`).
 	pub const fn template_ident(self) -> &'static str {
-		match self {
-			VmPrim::StrByte => "BYTE",
-			VmPrim::StrSub => "SUB",
-			VmPrim::StrChar => "CHAR",
-			VmPrim::EnvGet => "GFE",
-			VmPrim::Unpack => "UNP",
-			VmPrim::MathFloor => "FLR",
-			VmPrim::Type => "TYP",
-			VmPrim::RawGet => "RGET",
-			VmPrim::RawSet => "RSET",
-			VmPrim::SetMetatable => "SMT",
-			VmPrim::Pcall => "PCAL",
-			VmPrim::ToString => "TSTR",
-			VmPrim::TableConcat => "TCAT",
-			VmPrim::Error => "ERR",
-			VmPrim::GetMetatable => "GMT",
-			VmPrim::Select => "SEL",
-			VmPrim::ToNumber => "TONUM",
-			VmPrim::TablePack => "TPACK",
-			VmPrim::Next => "NXT",
-		}
+		self.meta().template_ident
 	}
 
 	/// Lua expression used to acquire the primitive at VM initialization,
 	/// including explicit safe fallbacks where standard dialects/sandboxes vary.
 	pub const fn lua_bind_expr(self) -> &'static str {
-		match self {
-			VmPrim::StrByte => "(\"\")[\"byte\"]",
-			VmPrim::StrSub => "(\"\")[\"sub\"]",
-			VmPrim::StrChar => "(\"\")[\"char\"]",
-			// Safe fallback when `getfenv` is absent or restricted in a sandbox:
-			// returns `_G` without mutating or assuming `setfenv`.
-			VmPrim::EnvGet => "(type(getfenv)==\"function\" and getfenv) or function() return _G end",
-			// Standard Lua 5.1/Luau `unpack` with `table.unpack` fallback.
-			VmPrim::Unpack => "unpack or (table and table.unpack)",
-			VmPrim::MathFloor => "math.floor",
-			VmPrim::Type => "type",
-			VmPrim::RawGet => "rawget",
-			VmPrim::RawSet => "rawset",
-			VmPrim::SetMetatable => "setmetatable",
-			VmPrim::Pcall => "pcall",
-			VmPrim::ToString => "tostring",
-			VmPrim::TableConcat => "table.concat",
-			VmPrim::Error => "error",
-			VmPrim::GetMetatable => "getmetatable",
-			VmPrim::Select => "select",
-			VmPrim::ToNumber => "tonumber",
-			VmPrim::TablePack => "(table and table.pack) or function(...) return {n=select(\"#\",...),...} end",
-			VmPrim::Next => "next",
-		}
+		self.meta().lua_bind_expr
+	}
+
+	pub const fn is_luau_only(self) -> bool {
+		self.meta().luau_only
+	}
+
+	pub const fn is_v15_only(self) -> bool {
+		self.meta().v15_only
+	}
+
+	pub const fn has_fallback(self) -> bool {
+		self.meta().has_fallback
 	}
 }
 
@@ -237,7 +424,7 @@ pub const fn op_required_prims(op: Op) -> &'static [VmPrim] {
 		Op::GetTab => &[Type, RawGet, GetMetatable, ToString, Error],
 		Op::SetTab => &[Type, RawGet, RawSet, GetMetatable, ToString, Error],
 		Op::Call | Op::CallE | Op::CallM | Op::CallT => {
-			&[Type, GetMetatable, Error, Unpack, TablePack]
+			&[Type, GetMetatable, Error, Unpack, Select, TablePack]
 		}
 	}
 }
@@ -327,7 +514,11 @@ impl CapabilityManifest {
 	pub fn all(guard: bool, env_check: bool, bind_env: Option<&str>) -> Self {
 		Self {
 			active_ops: [true; N_OPS],
-			vm_prims: VmPrim::ALL.to_vec(),
+			vm_prims: VmPrim::ALL
+				.iter()
+				.copied()
+				.filter(|&p| p != VmPrim::Next || guard)
+				.collect(),
 			scaffold_prims: ScaffoldPrim::ALL.to_vec(),
 			has_float_const: true,
 			needs_mget: true,
@@ -343,6 +534,23 @@ impl CapabilityManifest {
 	#[inline]
 	pub fn has_prim(&self, p: VmPrim) -> bool {
 		self.vm_prims.contains(&p)
+	}
+
+	/// Authoritative gate deciding whether `prim` is bound into `P[slot]` for a
+	/// template build (`v15` vs legacy `vm`, `luau_target` vs generic Lua 5.1).
+	#[inline]
+	pub fn prim_enabled_in_template(&self, prim: VmPrim, v15: bool, luau_target: bool) -> bool {
+		if prim.is_luau_only() && !luau_target {
+			return false;
+		}
+		if prim.is_v15_only() && !v15 {
+			return false;
+		}
+		if v15 {
+			self.has_prim(prim)
+		} else {
+			prim.driver() != PrimDriver::GuardFlag
+		}
 	}
 
 	#[inline]
@@ -376,6 +584,51 @@ mod tests {
 		super::super::compiler::compile(&block, &table, &mut rng, false, scatter, false)
 	}
 
+	fn emit_template_for(src: &str, seed: u64, v15: bool, luau: bool, guard: bool) -> String {
+		let mut block = parser::parse(src, luau).expect("parse");
+		let table = symtab::resolve(&mut block);
+		let mut rng = crate::rng::Rng::new(seed);
+		let prog = super::super::compiler::compile(&block, &table, &mut rng, !luau, v15, false);
+		let caps = CapabilityManifest::from_program(&prog, guard, false, None);
+		let carrier_lengths: Vec<usize> = prog
+			.fns
+			.iter()
+			.map(|b| prog.carrier.encode(b).len())
+			.collect();
+		super::super::template::generate(
+			&prog.opmap,
+			&prog.slot_perm,
+			&prog.slot_perms,
+			(prog.lane_base, prog.lane_step),
+			&prog.carrier,
+			&carrier_lengths,
+			luau,
+			&mut rng,
+			prog.fns.len(),
+			v15,
+			prog.has_loadstr,
+			&prog.nop_sites,
+			&prog.operand_sums,
+			&prog.operand_sums2,
+			&prog.chaff_folds,
+			(prog.chaff_mul, prog.chaff_coeffs, prog.chaff_pos, prog.chaff_fn),
+			(prog.ck_km, prog.ck_kc),
+			(prog.mk1, prog.mk2),
+			(prog.blob_km, prog.blob_kc, prog.blob_seed, prog.blob_step),
+			prog.section_tags,
+			prog.consts_mask_safe,
+			&prog.block_starts,
+			&prog.s_indices,
+			false,
+			&prog.fv_sets,
+			(prog.fv_m1, prog.fv_mc),
+			None,
+			false,
+			guard,
+			&caps,
+		)
+	}
+
 	#[test]
 	fn minimal_const_return_omits_optional_prims() {
 		let prog = compile_luau("return 42", 7, true);
@@ -407,11 +660,63 @@ mod tests {
 	}
 
 	#[test]
-	fn every_op_declared_prims_are_valid() {
+	fn every_op_declared_prims_are_valid_and_discriminants_match_index() {
+		let mut idents = std::collections::BTreeSet::new();
+		for (idx, &p) in VmPrim::ALL.iter().enumerate() {
+			assert_eq!(p as usize, idx, "VmPrim::ALL order must match repr(u8)");
+			let meta = p.meta();
+			assert_eq!(meta.prim, p);
+			assert!(!meta.template_ident.is_empty());
+			assert!(!meta.lua_bind_expr.is_empty());
+			assert!(idents.insert(meta.template_ident), "duplicate template_ident");
+			let is_base = VmPrim::BASE.contains(&p);
+			assert_eq!(is_base, meta.tier == CapabilityTier::InterpreterBase);
+		}
 		for &op in &ALL_OPS {
 			for &p in op_required_prims(op) {
 				assert!(VmPrim::ALL.contains(&p));
 			}
 		}
+	}
+
+	#[test]
+	fn template_consumes_caps_lua_bind_expr_and_gates_luau_and_guard_prims() {
+		// 1. v15 + guard + call: must emit fallback expressions from VmPrim::lua_bind_expr
+		//    and bind `next` (`VmPrim::Next`).
+		let t_guard_call = emit_template_for("print(1, 2)", 42, true, true, true);
+		assert!(
+			t_guard_call.contains(VmPrim::EnvGet.lua_bind_expr()),
+			"template must emit VmPrim::EnvGet::lua_bind_expr()"
+		);
+		assert!(
+			t_guard_call.contains(VmPrim::Unpack.lua_bind_expr()),
+			"template must emit VmPrim::Unpack::lua_bind_expr()"
+		);
+		assert!(
+			t_guard_call.contains(VmPrim::TablePack.lua_bind_expr()),
+			"template must emit VmPrim::TablePack::lua_bind_expr() when calls exist"
+		);
+		assert!(
+			t_guard_call.contains("= next\n"),
+			"guard=true v15 template must bind VmPrim::Next"
+		);
+		let _ = parser::parse(&t_guard_call, true).expect("t_guard_call parses as valid Luau");
+
+		// 2. v15 + --no-guard + no call: must omit TablePack (`TPACK`) and Next (`NXT`)
+		let t_min_noguard = emit_template_for("return 42", 42, true, true, false);
+		assert!(!t_min_noguard.contains("table.pack"), "no call -> no table.pack");
+		assert!(!t_min_noguard.contains("TPACK"), "no call -> no unbound TPACK local");
+		assert!(!t_min_noguard.contains("= next\n"), "guard=false -> no next binding");
+		assert!(!t_min_noguard.contains("NXT"), "guard=false -> no unbound NXT local");
+		let _ = parser::parse(&t_min_noguard, true).expect("t_min_noguard parses as valid Luau");
+
+		// 3. Non-Luau template path (`luau = false`): must never bind Luau-only `TablePack`
+		//    and must parse cleanly under generic Lua 5.1 parser mode.
+		let t_lua51 = emit_template_for("print(1, 2)", 42, false, false, false);
+		assert!(!t_lua51.contains("table.pack"), "non-Luau template must not bind table.pack");
+		assert!(!t_lua51.contains("TPACK"), "non-Luau template must not emit TPACK");
+		assert!(t_lua51.contains(VmPrim::EnvGet.lua_bind_expr()));
+		assert!(t_lua51.contains(VmPrim::Unpack.lua_bind_expr()));
+		let _ = parser::parse(&t_lua51, false).expect("t_lua51 parses as valid Lua 5.1");
 	}
 }

@@ -99,6 +99,15 @@ def tokenize(src):
     return "".join(code), strings, longstrs
 
 
+def is_if_expr(code, i):
+    """True when `if` at index `i` is a Luau if-expression (`=if`, `(if`, `,if`, etc.)
+    rather than an `if ... then ... end` statement."""
+    p = i - 1
+    while p >= 0 and code[p] == " ":
+        p -= 1
+    return p >= 0 and code[p] in "=(,+-[{"
+
+
 def block_scan(code, cb):
     """关键字级块扫描（if 表达式修正）。cb(kind, word, i, blk)。"""
     n = len(code)
@@ -112,7 +121,7 @@ def block_scan(code, cb):
                 j += 1
             w = code[i:j]
             if w in PUSHKW:
-                if w == "if" and i > 0 and code[i - 1] == "=":
+                if w == "if" and is_if_expr(code, i):
                     cb("kw", w, i, blk)  # if 表达式：不计块
                 else:
                     blk += 1
@@ -192,7 +201,7 @@ def module_fields(code):
                 j += 1
             w = code[i:j]
             if w in PUSHKW:
-                if not (w == "if" and i > 0 and code[i - 1] == "="):
+                if not (w == "if" and is_if_expr(code, i)):
                     blk += 1
                 if w == "function" and blk == 1 and i > 0 and code[i - 1] == "=":
                     fn_stack.append(key_before(i))
@@ -235,7 +244,7 @@ def function_ranges(code):
                 j += 1
             w = code[i:j]
             if w in PUSHKW:
-                if not (w == "if" and i > 0 and code[i - 1] == "="):
+                if not (w == "if" and is_if_expr(code, i)):
                     blk += 1
                 if w == "function" and blk == 1 and i > 0 and code[i - 1] == "=":
                     j2 = i - 2

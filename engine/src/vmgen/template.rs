@@ -1,5 +1,6 @@
 
 use crate::rng::Rng;
+use crate::vmgen::caps::VmPrim;
 use crate::vmgen::handlers;
 use crate::vmgen::isa::{fold_key_nl, Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
 use crate::vmgen::strpool::StrPool;
@@ -10,53 +11,6 @@ const OP_NAMES: [&str; N_OPS] = [
 	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
 	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
 	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
-];
-
-const PRIM_SRC: [&str; 18] = [
-	"(\"\")[\"byte\"]",
-	"(\"\")[\"sub\"]",
-	"(\"\")[\"char\"]",
-	"getfenv",
-	"unpack",
-	"math.floor",
-	"type",
-	"error",
-	"getmetatable",
-	"rawget",
-	"rawset",
-	"setmetatable",
-	"select",
-	"pcall",
-	"tonumber",
-	"tostring",
-	"table.concat",
-	"table.pack",
-];
-
-const PRIM_NAME: [&str; 18] = [
-	"BYTE", "SUB", "CHAR", "GFE", "UNP", "FLR", "TYP", "ERR", "GMT", "RGET",
-	"RSET", "SMT", "SEL", "PCAL", "TONUM", "TSTR", "TCAT", "TPACK",
-];
-
-const PRIM_CAP: [super::caps::VmPrim; 18] = [
-	super::caps::VmPrim::StrByte,
-	super::caps::VmPrim::StrSub,
-	super::caps::VmPrim::StrChar,
-	super::caps::VmPrim::EnvGet,
-	super::caps::VmPrim::Unpack,
-	super::caps::VmPrim::MathFloor,
-	super::caps::VmPrim::Type,
-	super::caps::VmPrim::Error,
-	super::caps::VmPrim::GetMetatable,
-	super::caps::VmPrim::RawGet,
-	super::caps::VmPrim::RawSet,
-	super::caps::VmPrim::SetMetatable,
-	super::caps::VmPrim::Select,
-	super::caps::VmPrim::Pcall,
-	super::caps::VmPrim::ToNumber,
-	super::caps::VmPrim::ToString,
-	super::caps::VmPrim::TableConcat,
-	super::caps::VmPrim::TablePack,
 ];
 
 fn gen_dispatch_tree(
@@ -137,11 +91,11 @@ fn lua_dstr(bytes: &[u8]) -> String {
 	s
 }
 
-fn prim_slots(rng: &mut Rng) -> [u8; 18] {
+fn prim_slots(rng: &mut Rng) -> [u8; VmPrim::COUNT] {
 	let mut pool: Vec<u8> = (1..=80).collect();
 	rng.shuffle(&mut pool);
-	let mut out = [0u8; 18];
-	out.copy_from_slice(&pool[..18]);
+	let mut out = [0u8; VmPrim::COUNT];
+	out.copy_from_slice(&pool[..VmPrim::COUNT]);
 	out
 }
 
@@ -1040,9 +994,9 @@ mod micro_fusion_tests {
 
 	#[test]
 	fn core_string_primitives_bypass_replaceable_library_table() {
-		assert_eq!(PRIM_SRC[0], "(\"\")[\"byte\"]");
-		assert_eq!(PRIM_SRC[1], "(\"\")[\"sub\"]");
-		assert_eq!(PRIM_SRC[2], "(\"\")[\"char\"]");
+		assert_eq!(VmPrim::StrByte.lua_bind_expr(), "(\"\")[\"byte\"]");
+		assert_eq!(VmPrim::StrSub.lua_bind_expr(), "(\"\")[\"sub\"]");
+		assert_eq!(VmPrim::StrChar.lua_bind_expr(), "(\"\")[\"char\"]");
 	}
 
 	#[test]
@@ -1882,29 +1836,38 @@ __FVARM__        else
 	}
 
 	let slots = prim_slots(rng);
-	let prim_enabled = |i: usize| -> bool {
-		if i == 17 && !luau_target {
-			return false;
-		}
-		if v15 {
-			caps.has_prim(PRIM_CAP[i])
-		} else {
-			true
-		}
+	let prim_enabled = |prim: VmPrim| -> bool {
+		caps.prim_enabled_in_template(prim, v15, luau_target)
 	};
-	let mut bind_idx: Vec<usize> = (0..PRIM_SRC.len()).collect();
+	let mut bind_idx: Vec<usize> = (0..VmPrim::COUNT).collect();
 	rng.shuffle(&mut bind_idx);
 	let mut p_fill = String::from("local P = {}\n");
 	for &i in &bind_idx {
-		if prim_enabled(i) {
-			p_fill.push_str(&format!("  P[{}] = {}\n", slots[i], PRIM_SRC[i]));
+		let prim = VmPrim::ALL[i];
+		if prim_enabled(prim) {
+			p_fill.push_str(&format!("  P[{}] = {}\n", slots[i], prim.lua_bind_expr()));
 		}
 	}
-	let unpack_lhs: Vec<&str> = bind_idx.iter().map(|&i| PRIM_NAME[i]).collect();
-	let unpack_rhs: Vec<String> = bind_idx
+	let vm_scope_idx: Vec<usize> = bind_idx
+		.iter()
+		.copied()
+		.filter(|&i| {
+			let prim = VmPrim::ALL[i];
+			match prim {
+				VmPrim::TablePack | VmPrim::Next => prim_enabled(prim),
+				_ => true,
+			}
+		})
+		.collect();
+	let unpack_lhs: Vec<&str> = vm_scope_idx
+		.iter()
+		.map(|&i| VmPrim::ALL[i].template_ident())
+		.collect();
+	let unpack_rhs: Vec<String> = vm_scope_idx
 		.iter()
 		.map(|&i| {
-			if prim_enabled(i) {
+			let prim = VmPrim::ALL[i];
+			if prim_enabled(prim) {
 				format!("P[{}]", slots[i])
 			} else {
 				"nil".to_string()
@@ -1917,13 +1880,19 @@ __FVARM__        else
 		unpack_rhs.join(", ")
 	);
 
-	let mut run_idx: Vec<usize> = (0..PRIM_SRC.len()).collect();
+	let mut run_idx: Vec<usize> = (0..VmPrim::COUNT)
+		.filter(|&i| !matches!(VmPrim::ALL[i], VmPrim::TablePack | VmPrim::Next))
+		.collect();
 	rng.shuffle(&mut run_idx);
-	let run_lhs: Vec<&str> = run_idx.iter().map(|&i| PRIM_NAME[i]).collect();
+	let run_lhs: Vec<&str> = run_idx
+		.iter()
+		.map(|&i| VmPrim::ALL[i].template_ident())
+		.collect();
 	let run_rhs: Vec<String> = run_idx
 		.iter()
 		.map(|&i| {
-			if prim_enabled(i) {
+			let prim = VmPrim::ALL[i];
+			if prim_enabled(prim) {
 				format!("P[{}]", slots[i])
 			} else {
 				"nil".to_string()
@@ -3281,7 +3250,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			sigtail = sig_tail,
 			pz3_line = "local PZ3=(_qk-RTQCKX)%268435456",
 			pz4_line = "local PZ4=(_rc-RTPCX)%268435456",
-			select_slot = slots[12],
+			select_slot = slots[VmPrim::Select as usize],
 			envmix = env_mix_line,
 			qf = qf_expected,
 			cqb = chaff_block_e,
@@ -3456,6 +3425,7 @@ let chaff_lane = rng.int(1, 4) as usize;
             ];
             if guard {
                 v.push("EV");
+                v.push("NXT");
             }
             v
         };
@@ -3469,6 +3439,7 @@ let chaff_lane = rng.int(1, 4) as usize;
             v.push(vault_nonce_name.clone());
             if guard {
                 v.push("EV".to_string());
+                v.push("NXT".to_string());
             }
             v
         };
@@ -3815,7 +3786,7 @@ let f_ty = fold31("Vector3Vector3");
   local CENVPROBE{env_decl}
   {hboot_fill}{env_fill}do
     local LS = GFE(0)[{v_ls}]
-    local TSTR = GFE(0)[{v_ts}]
+    local TSTR = GFE(0)[{v_ts}] or TSTR
     local DBG = GFE(0)[{v_dbg}]
     local INF = (DBG == nil or (TYP(DBG) == {tablit} and DBG[{v_inf}] == nil)) and (function() return {clit} end) or (TYP(DBG) == {tablit} and DBG[{v_inf}])
     local OS_ = GFE(0)[{v_os}]
@@ -3921,7 +3892,7 @@ let f_ty = fold31("Vector3Vector3");
 
 	let callcap_src = if !need_call_rt {
 		String::from("local TP, callcap")
-	} else if v15 {
+	} else if v15 && luau_target {
 		String::from(
 			"local TP = TPACK
   local function callcap(f, args, nargs)
@@ -3931,7 +3902,8 @@ let f_ty = fold31("Vector3Vector3");
 		)
 	} else {
 		format!(
-			"local function callcap(f, args, nargs)
+			"local TP
+  local function callcap(f, args, nargs)
     local w = function(...)
       local t = {{ ... }}
       return t, SEL({hash}, ...)

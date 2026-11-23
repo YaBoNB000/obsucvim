@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
-"""P1 Capability Manifest & P3 String/Constant Lifecycle Regression Suite.
+"""P0/P1 Capability Binding Unification & P3 String/Constant Lifecycle Suite.
 
-Verifies end-to-end on emitted v15 artifacts:
-1. P1 Capability Pruning:
-   - Minimal arithmetic/return script emits ZERO unused host library bindings
-     (`buffer.`, `vector.`, `Vector2`, `Vector3`, `coroutine.`, `typeof`,
-     `rawget`, `rawset`, `rawequal`, `next`, `xpcall`, `newproxy` absent from
-     outer visible code when `--no-guard`).
-   - `--bind-env roblox` injects `Vector3` / `Vector2` / `typeof` / `task`.
-   - `--env-check` injects `buffer` / `coroutine` / `table.freeze` checks and
-     passes on stock Luau.
-   - Same-seed builds are byte-for-byte deterministic; distinct seeds produce
-     distinct layouts with identical runtime semantics across 6 seeds.
-2. P3 Lazy String Materialization & Special Numeric Constants:
-   - Short strings (MkStr <=5B), medium strings (<=64B single-chunk), long
-     strings (>64B multi-chunk up to 4KB), empty strings (`""`), binary/escaped
-     byte strings (`\\0\\1\\255\\n\\r\\\\"`), repeated reads of the same constant,
-     table keys, closure-captured strings, string comparisons & concatenation,
-     multi-function shared constants, and `+Inf`/`-Inf`/`NaN` round-trip
-     identically across 6 seeds under `LUAU_READONLY_GLOBALS=1`.
+Verifies end-to-end on emitted artifacts:
+1. Single-source-of-truth capability pruning & template binding:
+   - Minimal `--no-guard` arithmetic return script emits ZERO unused host APIs
+     (`buffer.`, `vector.`, `Vector2`, `Vector3`, `typeof`, `coroutine.`,
+     `rawget`, `rawset`, `rawequal`, `xpcall`, `newproxy`, `next`, `table.pack`)
+     and ZERO algebraic tautology predicates.
+   - Emitted `v15` / `vm` artifacts carry the exact `VmPrim::lua_bind_expr()`
+     fallbacks for `getfenv`, `unpack`/`table.unpack`, and (when calls exist on
+     Luau `v15`) `table.pack` -> `{n=select("#",...),...}`.
+   - `--bind-env roblox` injects `Vector3` / `typeof`; `--env-check` runs cleanly
+     on stock Luau; same-seed builds are byte-for-byte deterministic.
+2. Runtime fallback equivalence across 6 seeds (`1, 7, 42, 4242, 31337, 999999`)
+   and `guard=true` / `guard=false` (`--no-guard`) + `--preset vm`:
+   - `getfenv == nil` (`ENV.getfenv = nil`, `ENV._G = ENV`)
+   - `unpack == nil` (`ENV.unpack = nil` with `table.unpack` available)
+   - `table.pack == nil` (`ENV.table.pack = nil`, verifying middle & trailing
+     `nil` multivalue preservation via `select("#", ...)`, tail calls, varargs,
+     table identity, and function identity)
+   - Combined restricted sandbox (`getfenv == nil`, `unpack == nil`, AND
+     `table.pack == nil` simultaneously)
+3. P3 Lazy String Materialization & IEEE-754 Constants across 6 seeds under
+   `LUAU_READONLY_GLOBALS=1` + `--super-insn`.
 """
 import os
 import re
@@ -37,6 +41,45 @@ if not LUAU.exists():
 sys.path.insert(0, str(ROOT / "tests"))
 import artifact_profile as ap  # noqa: E402
 
+SEEDS = [1, 7, 42, 4242, 31337, 999999]
+
+
+P0_FALLBACK_WORKLOAD = r'''
+local function multi_with_nils(tag)
+    return tag, nil, 30, nil, nil
+end
+
+local function tail_caller(x)
+    return multi_with_nils("T:" .. tostring(x))
+end
+
+local function vararg_echo(...)
+    local n = select("#", ...)
+    local parts = { tostring(n) }
+    for i = 1, n do
+        parts[#parts + 1] = tostring(select(i, ...))
+    end
+    return table.concat(parts, ",")
+end
+
+local id_tbl = { k = "val" }
+local function id_fn() return 77 end
+local function ret_identities()
+    return id_tbl, id_fn
+end
+
+local a1, a2, a3, a4, a5 = multi_with_nils("M")
+local c_multi = select("#", multi_with_nils("C"))
+local c_tail = select("#", tail_caller(9))
+local t1, f1 = ret_identities()
+local long_s = "Fallback_Long_String_0123456789_abcdefghijklmnopqrstuvwxyz_ABCDEFGHIJKLMNOPQRSTUVWXYZ_End!"
+
+print("NILS", a1, tostring(a2), a3, tostring(a4), tostring(a5), c_multi, c_tail)
+print("VARG", vararg_echo(multi_with_nils("V")))
+print("IDENT", t1 == id_tbl, f1 == id_fn, f1())
+print("LONG", #long_s, long_s:sub(1, 20), long_s:sub(-4))
+'''
+
 
 P3_STRESS_LUA = r'''
 local empty = ""
@@ -48,7 +91,6 @@ local lit_long = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789
   .. "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_chunk2_boundary_check_64_128_192!"
 local bin = "\0\1\2\127\128\254\255\n\r\t\\\"'end"
 
--- Repeated accesses to the exact same string constant & table-key identity
 local tbl = {}
 tbl[lit_long] = 9001
 tbl[bin] = 9002
@@ -74,7 +116,6 @@ local r1, e1, blen, b1, b7 = c1("S1")
 local r2 = c2("S2")
 local tv, eq, llen = reader_a(lit_long)
 
--- Special IEEE-754 constants (+Inf, -Inf, NaN, -0.0, large exact int)
 local pinf, ninf, nanv = 1/0, -1/0, 0/0
 local bigi = 9007199254740991
 
@@ -88,13 +129,41 @@ print("IEEE", pinf == math.huge, ninf == -math.huge, nanv ~= nanv, bigi - 1 == 9
 '''
 
 
-def run_luau(path: Path) -> str:
+def long_str(s: str) -> str:
+    for lvl in range(1, 32):
+        eq = "=" * lvl
+        if f"]{eq}]" not in s:
+            return f"[{eq}[\n{s}]{eq}]"
+    raise RuntimeError("cannot wrap long string")
+
+
+def run_luau(path: Path, readonly: bool = True) -> str:
     env = os.environ.copy()
-    env["LUAU_READONLY_GLOBALS"] = "1"
+    if readonly:
+        env["LUAU_READONLY_GLOBALS"] = "1"
     p = subprocess.run([str(LUAU), str(path)], capture_output=True, text=True, timeout=15, env=env)
     if p.returncode != 0:
-        raise RuntimeError(f"luau failed ({p.returncode}): {p.stderr}")
+        raise RuntimeError(f"luau failed ({p.returncode}) on {path}: {p.stderr}")
     return p.stdout
+
+
+def run_in_sandbox(tmp: Path, tag: str, art_txt: str, env_setup: str) -> str:
+    harness = tmp / f"sb_{tag}.lua"
+    harness.write_text(
+        f"""local ART = {long_str(art_txt)}
+local REAL_G = getfenv(0)
+local ENV = {{}}
+for k, v in pairs(REAL_G) do
+    ENV[k] = v
+end
+ENV._G = ENV
+{env_setup}
+local chunk = assert(REAL_G.loadstring(ART, {tag!r}))
+setfenv(chunk, ENV)
+chunk()
+"""
+    )
+    return run_luau(harness, readonly=False).strip()
 
 
 def main() -> int:
@@ -110,7 +179,7 @@ def main() -> int:
             print(f"  [FAIL] {name}: {detail}")
             failed += 1
 
-    with tempfile.TemporaryDirectory(prefix="cap_p3_") as td:
+    with tempfile.TemporaryDirectory(prefix="cap_p0_p3_") as td:
         tmp = Path(td)
 
         # 1. Minimal capability pruning (--no-guard arithmetic return)
@@ -137,6 +206,7 @@ def main() -> int:
             r"\bxpcall\b",
             r"\bnewproxy\b",
             r"\bnext\b",
+            r"\btable\.pack\b",
         ]
         leaked = [pat for pat in banned_minimal if re.search(pat, txt)]
         check(
@@ -150,7 +220,91 @@ def main() -> int:
             f"predicates={preds}",
         )
 
-        # 2. --bind-env roblox injects Roblox primitives
+        # 2. Structural check on --preset vm (--no-body --no-strings --no-guard) & --preset v15
+        fb_src = tmp / "fb_src.lua"
+        fb_src.write_text(P0_FALLBACK_WORKLOAD)
+        vm_art = tmp / "fb_vm.lua"
+        v15_guard_art = tmp / "fb_v15_guard.lua"
+        v15_noguard_art = tmp / "fb_v15_noguard.lua"
+        subprocess.run(
+            [str(TOOL), "--preset", "vm", "--no-body", "--no-strings", "--no-guard", "--dialect", "luau", "--seed", "42", str(fb_src), str(vm_art)],
+            check=True,
+        )
+        subprocess.run([str(TOOL), "--preset", "v15", "--dialect", "luau", "--seed", "42", str(fb_src), str(v15_guard_art)], check=True)
+        subprocess.run([str(TOOL), "--preset", "v15", "--no-guard", "--dialect", "luau", "--seed", "42", str(fb_src), str(v15_noguard_art)], check=True)
+
+        vm_txt = vm_art.read_text()
+        g_txt = v15_guard_art.read_text()
+        ng_txt = v15_noguard_art.read_text()
+        check(
+            "vm_emits_getfenv_and_unpack_fallbacks_without_v15_only_prims",
+            bool(re.search(r"\bgetfenv\b", vm_txt))
+            and bool(re.search(r"\btable\.unpack\b", vm_txt))
+            and not bool(re.search(r"\btable\.pack\b", vm_txt))
+            and not bool(re.search(r"\bnext\b", vm_txt)),
+            "vm binds getfenv/table.unpack fallback, omits v15-only table.pack & next",
+        )
+        check(
+            "v15_emits_fallbacks_and_gates_next_on_guard",
+            bool(re.search(r"\bgetfenv\b", g_txt))
+            and bool(re.search(r"\btable\.unpack\b", g_txt))
+            and bool(re.search(r"\btable\.pack\b", g_txt))
+            and bool(re.search(r"\bnext\b", g_txt))
+            and not bool(re.search(r"\bnext\b", ng_txt)),
+            "v15 binds fallbacks; next present iff guard=true",
+        )
+
+        # 3. Runtime fallback equivalence across ALL 6 seeds (guard=true, guard=false, and --preset vm)
+        expected_fb = run_luau(fb_src, readonly=False).strip()
+
+        sandboxes = [
+            ("getfenv_nil", "ENV.getfenv = nil"),
+            ("unpack_nil", "ENV.unpack = nil"),
+            (
+                "table_pack_nil",
+                "ENV.table = setmetatable({}, { __index = function(_, k) if k == 'pack' then return nil end return REAL_G.table[k] end })",
+            ),
+            (
+                "all_three_fallbacks",
+                "ENV.getfenv = nil\nENV.unpack = nil\nENV.table = setmetatable({}, { __index = function(_, k) if k == 'pack' then return nil end return REAL_G.table[k] end })",
+            ),
+        ]
+
+        fb_ok = True
+        fb_fail_detail = ""
+        for s in SEEDS:
+            ag = tmp / f"fb_g_{s}.lua"
+            ang = tmp / f"fb_ng_{s}.lua"
+            subprocess.run([str(TOOL), "--preset", "v15", "--dialect", "luau", "--seed", str(s), str(fb_src), str(ag)], check=True)
+            subprocess.run([str(TOOL), "--preset", "v15", "--no-guard", "--dialect", "luau", "--seed", str(s), str(fb_src), str(ang)], check=True)
+            ag_t = ag.read_text()
+            ang_t = ang.read_text()
+            for sb_name, sb_setup in sandboxes:
+                for mode_name, art_t in [("guard", ag_t), ("noguard", ang_t)]:
+                    got_out = run_in_sandbox(tmp, f"{sb_name}_{mode_name}_{s}", art_t, sb_setup)
+                    if got_out != expected_fb:
+                        fb_ok = False
+                        fb_fail_detail = f"seed={s} mode={mode_name} sb={sb_name}: got={got_out!r}"
+                        break
+                if not fb_ok:
+                    break
+            if not fb_ok:
+                break
+        check(
+            "p0_runtime_fallbacks_6_seeds_guard_and_noguard",
+            fb_ok,
+            fb_fail_detail or f"{len(SEEDS)} seeds x 2 guard modes x {len(sandboxes)} sandboxes = {len(SEEDS)*2*len(sandboxes)} runs",
+        )
+
+        # Verify --preset vm (--no-body) in combined fallback sandbox as well
+        vm_out = run_in_sandbox(tmp, "vm_all_three", vm_txt, sandboxes[-1][1])
+        check(
+            "p0_runtime_fallbacks_preset_vm",
+            vm_out == expected_fb,
+            "preset vm (--no-body) with getfenv=nil + unpack=nil + table.pack=nil",
+        )
+
+        # 4. --bind-env roblox & --env-check
         bnd_art = tmp / "bnd.art.lua"
         subprocess.run(
             [str(TOOL), "--preset", "v15", "--bind-env", "roblox", "--dialect", "luau", "--seed", "42", str(min_src), str(bnd_art)],
@@ -162,8 +316,24 @@ def main() -> int:
             bool(re.search(r"\bVector3\b", btxt)) and bool(re.search(r"\btypeof\b", btxt)),
             "Vector3 + typeof present",
         )
+        envchk_art = tmp / "envchk.art.lua"
+        subprocess.run(
+            [str(TOOL), "--preset", "v15", "--env-check", "--dialect", "luau", "--seed", "42", str(p3_src := tmp / "p3_envchk.lua"), str(envchk_art)],
+            check=False,
+        ) if False else None
+        p3_env_src = tmp / "p3_envchk.lua"
+        p3_env_src.write_text(P3_STRESS_LUA)
+        subprocess.run(
+            [str(TOOL), "--preset", "v15", "--env-check", "--dialect", "luau", "--seed", "42", str(p3_env_src), str(envchk_art)],
+            check=True,
+        )
+        check(
+            "env_check_passes_on_stock_luau",
+            run_luau(envchk_art, readonly=True) == run_luau(p3_env_src, readonly=True),
+            "--env-check verified under LUAU_READONLY_GLOBALS=1",
+        )
 
-        # 3. Byte-for-byte determinism on same seed
+        # 5. Byte-for-byte determinism on same seed
         det_a = tmp / "det_a.lua"
         det_b = tmp / "det_b.lua"
         p3_src = tmp / "p3.lua"
@@ -172,12 +342,11 @@ def main() -> int:
         subprocess.run([str(TOOL), "--preset", "v15", "--dialect", "luau", "--seed", "777", str(p3_src), str(det_b)], check=True)
         check("same_seed_byte_identical", det_a.read_bytes() == det_b.read_bytes(), f"{det_a.stat().st_size} B")
 
-        # 4. P3 string & IEEE-754 constant semantics across 6 seeds + --super-insn
+        # 6. P3 string & IEEE-754 constant semantics across 6 seeds + --super-insn
         expected = run_luau(p3_src)
         blobs = set()
-        seeds = [1, 7, 42, 4242, 31337, 999999]
         all_eq = True
-        for s in seeds:
+        for s in SEEDS:
             out_p = tmp / f"p3_{s}.lua"
             subprocess.run([str(TOOL), "--preset", "v15", "--dialect", "luau", "--seed", str(s), str(p3_src), str(out_p)], check=True)
             blobs.add(out_p.read_bytes())

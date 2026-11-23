@@ -61,6 +61,7 @@ const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 	local print = pick("print", print)
 	local warn = pick("warn", nil)
 	local newproxy = pick("newproxy", nil)
+	local nextFn = pick("next", NXT)
 	local osTable = pick("os", os)
 	local dbgTable = pick("debug", debug)
 	local debugInfo
@@ -146,7 +147,7 @@ pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
 	for text in [
 		"type", "pcall", "xpcall", "error", "rawget", "rawset",
 		"getmetatable", "setmetatable", "tostring", "tonumber", "string",
-		"gmatch", "unpack", "table", "print", "warn", "newproxy", "debug",
+		"gmatch", "unpack", "next", "table", "print", "warn", "newproxy", "debug",
 		"info", "os", "clock", "getfenv", "_G", "function", "number",
 		"boolean", "l", "s", "[C]", ":(%d+):", "loadstring", "load",
 		"tddxhpfcpi", "lsphhfstdm", "vymgglkhqr",
@@ -171,7 +172,7 @@ pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
 }
 
 pub fn guard_prelude(rng: &mut Rng, luau: bool) -> String {
-	let guard_src = format!("local EV = nil\n{}", assemble_guard(rng));
+	let guard_src = format!("local EV, NXT = nil, next\n{}", assemble_guard(rng));
 	let parsed = parser::parse(&guard_src, luau).ok();
 	if let Some(mut block) = parsed {
 		let mut table = crate::symtab::resolve(&mut block);

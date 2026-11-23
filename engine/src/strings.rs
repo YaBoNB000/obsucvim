@@ -289,6 +289,7 @@ pub(crate) fn build_loader(
 	rng: &mut Rng,
 	reserved: &mut HashSet<String>,
 	key: &[u8],
+	memoize: bool,
 ) -> (Vec<Stmt>, SymId, String) {
 	let new_sym = |table: &mut SymTable, name: String| -> SymId {
 		let id = table.syms.len() as SymId;
@@ -431,45 +432,164 @@ pub(crate) fn build_loader(
 			},
 		],
 	};
-	let decoder_body = Block {
-		stmts: vec![
-			Stmt::Local {
-				names: vec![np.clone()],
-				syms: vec![sp],
-				values: vec![Some(Expr::Table {
-					fields: vec![TableField::Array(Expr::Vararg)],
-				})],
-			},
-			Stmt::Local {
-				names: vec![ns.clone()],
-				syms: vec![ss],
-				values: vec![Some(global_call("table", "concat", vec![p]))],
-			},
-			Stmt::Local {
-				names: vec![no.clone()],
-				syms: vec![so],
-				values: vec![Some(Expr::Table { fields: vec![] })],
-			},
-			Stmt::ForNum {
-				var: ni.clone(),
-				var_sym: si,
-				start: Box::new(num(1.0)),
-				limit: Box::new(Expr::Un {
-					op: UnOp::Len,
-					e: Box::new(s),
-				}),
-				step: None,
-				body: loop_body,
-			},
-			Stmt::Return(vec![global_call("table", "concat", vec![o])]),
-		],
+	let (cache_stmt_opt, dec_params, dec_param_syms, dec_vararg, decoder_body) = if memoize {
+		let ncache = next_name(reserved, rng);
+		let nhit = next_name(reserved, rng);
+		let npa = next_name(reserved, rng);
+		let npb = next_name(reserved, rng);
+		let npc = next_name(reserved, rng);
+		let scache = new_sym(table, ncache.clone());
+		let shit = new_sym(table, nhit.clone());
+		let spa = new_sym(table, npa.clone());
+		let spb = new_sym(table, npb.clone());
+		let spc = new_sym(table, npc.clone());
+
+		let cache_id = ident(&ncache, Some(scache));
+		let hit_id = ident(&nhit, Some(shit));
+		let pa = ident(&npa, Some(spa));
+		let pb = ident(&npb, Some(spb));
+		let pc = ident(&npc, Some(spc));
+
+		let ab = Expr::Bin {
+			op: BinOp::Concat,
+			l: Box::new(pa.clone()),
+			r: Box::new(pb.clone()),
+		};
+		let abc = Expr::Bin {
+			op: BinOp::Concat,
+			l: Box::new(ab.clone()),
+			r: Box::new(pc.clone()),
+		};
+		let two_or_one = Expr::Bin {
+			op: BinOp::Or,
+			l: Box::new(Expr::Bin {
+				op: BinOp::And,
+				l: Box::new(pb.clone()),
+				r: Box::new(ab),
+			}),
+			r: Box::new(pa),
+		};
+		let s_expr = Expr::Bin {
+			op: BinOp::Or,
+			l: Box::new(Expr::Bin {
+				op: BinOp::And,
+				l: Box::new(pc.clone()),
+				r: Box::new(abc),
+			}),
+			r: Box::new(two_or_one),
+		};
+
+		let body = Block {
+			stmts: vec![
+				Stmt::Local {
+					names: vec![ns.clone()],
+					syms: vec![ss],
+					values: vec![Some(s_expr)],
+				},
+				Stmt::Local {
+					names: vec![nhit.clone()],
+					syms: vec![shit],
+					values: vec![Some(Expr::Index {
+						obj: Box::new(cache_id.clone()),
+						idx: Box::new(s.clone()),
+					})],
+				},
+				Stmt::If {
+					cond: Box::new(Expr::Bin {
+						op: BinOp::Ne,
+						l: Box::new(hit_id.clone()),
+						r: Box::new(Expr::Nil),
+					}),
+					thenb: Block {
+						stmts: vec![Stmt::Return(vec![hit_id.clone()])],
+					},
+					elsifs: vec![],
+					elseb: None,
+				},
+				Stmt::Local {
+					names: vec![no.clone()],
+					syms: vec![so],
+					values: vec![Some(Expr::Table { fields: vec![] })],
+				},
+				Stmt::ForNum {
+					var: ni.clone(),
+					var_sym: si,
+					start: Box::new(num(1.0)),
+					limit: Box::new(Expr::Un {
+						op: UnOp::Len,
+						e: Box::new(s.clone()),
+					}),
+					step: None,
+					body: loop_body,
+				},
+				Stmt::Assign {
+					targets: vec![hit_id.clone()],
+					values: vec![global_call("table", "concat", vec![o])],
+				},
+				Stmt::Assign {
+					targets: vec![Expr::Index {
+						obj: Box::new(cache_id.clone()),
+						idx: Box::new(s),
+					}],
+					values: vec![hit_id.clone()],
+				},
+				Stmt::Return(vec![hit_id]),
+			],
+		};
+		let cache_stmt = Stmt::Local {
+			names: vec![ncache],
+			syms: vec![scache],
+			values: vec![Some(Expr::Table { fields: vec![] })],
+		};
+		(
+			Some(cache_stmt),
+			vec![npa, npb, npc],
+			vec![spa, spb, spc],
+			false,
+			body,
+		)
+	} else {
+		let body = Block {
+			stmts: vec![
+				Stmt::Local {
+					names: vec![np.clone()],
+					syms: vec![sp],
+					values: vec![Some(Expr::Table {
+						fields: vec![TableField::Array(Expr::Vararg)],
+					})],
+				},
+				Stmt::Local {
+					names: vec![ns.clone()],
+					syms: vec![ss],
+					values: vec![Some(global_call("table", "concat", vec![p]))],
+				},
+				Stmt::Local {
+					names: vec![no.clone()],
+					syms: vec![so],
+					values: vec![Some(Expr::Table { fields: vec![] })],
+				},
+				Stmt::ForNum {
+					var: ni.clone(),
+					var_sym: si,
+					start: Box::new(num(1.0)),
+					limit: Box::new(Expr::Un {
+						op: UnOp::Len,
+						e: Box::new(s),
+					}),
+					step: None,
+					body: loop_body,
+				},
+				Stmt::Return(vec![global_call("table", "concat", vec![o])]),
+			],
+		};
+		(None, vec![], vec![], true, body)
 	};
 
 	let k1 = key[0..KEY_LEN / 3].to_vec();
 	let k2 = key[KEY_LEN / 3..KEY_LEN * 2 / 3].to_vec();
 	let k3 = key[KEY_LEN * 2 / 3..KEY_LEN].to_vec();
 
-	let loader = vec![
+	let mut loader = vec![
 		Stmt::Local {
 			names: vec![n1, n2, n3],
 			syms: vec![s1, s2, s3],
@@ -520,18 +640,21 @@ pub(crate) fn build_loader(
 			}],
 		},
 	},
-		Stmt::LocalFunc {
-			name: dec_name.clone(),
-			sym: sdec,
-			func: Box::new(FuncDef {
-				params: vec![],
-				param_syms: vec![],
-				vararg: true,
-				body: decoder_body,
-				has_self: false,
-			}),
-		},
 	];
+	if let Some(cs) = cache_stmt_opt {
+		loader.push(cs);
+	}
+	loader.push(Stmt::LocalFunc {
+		name: dec_name.clone(),
+		sym: sdec,
+		func: Box::new(FuncDef {
+			params: dec_params,
+			param_syms: dec_param_syms,
+			vararg: dec_vararg,
+			body: decoder_body,
+			has_self: false,
+		}),
+	});
 	(loader, sdec, dec_name)
 }
 
@@ -549,7 +672,7 @@ pub fn apply_strings(
 	reserved.extend(table.syms.iter().map(|s| s.name.clone()));
 
 	let key: Vec<u8> = (0..KEY_LEN).map(|_| rng.int(0, 255) as u8).collect();
-	let (loader, dec_sym, dec_name) = build_loader(table, rng, &mut reserved, &key);
+	let (loader, dec_sym, dec_name) = build_loader(table, rng, &mut reserved, &key, true);
 	let cfg = Cfg {
 		key,
 		dec: dec_sym,

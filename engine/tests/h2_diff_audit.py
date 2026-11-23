@@ -165,7 +165,7 @@ def main():
         # G. H2-11：预净化 HBOOT 入口名本身随机，且参数序跨构建不同。
         siga, sigb = hboot_signature(da), hboot_signature(db)
         sig_shape = (
-            len(siga) in (25, 28, 29) and len(sigb) == len(siga)
+            len(siga) in (25, 28, 29, 30) and len(sigb) == len(siga)
             and len(set(siga)) == len(siga) and len(set(sigb)) == len(sigb)
             and all(re.fullmatch(r"_sp\d+_\d+", x) for x in siga + sigb)
         )
