@@ -642,7 +642,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 
 > 任务书：`obsucvim_phase17_security_first_tasks.md`（P0–P1、§4–§8）。本阶段原则：安全性优先；不得为体积更小或运行更快而削弱混淆强度、VM 保护、字符串保护或默认 Guard。唯一体积硬门槛：`print(6)\n` 默认 v15 产物 `<= 250,000 bytes`（§0.1/§7）。
 > 基线 HEAD：`69dcfc9cb27772b097726225908b3a3e22959b88`（分支 `arena/3f7093d7-obsucvim`，开工时工作树 clean，`.tools/bin` 已重建）。
-> 最终 HEAD：`9a36826fe9e165d1154cd4d939ad140047848370`（本节所在提交；工作树 clean 后回填，见 §17.6）。
+> 最终 HEAD：`47fcf268342220f0758b98f9af572c2782bae7fd`（Phase 17 主体提交，含本节 §17 初版；其后仅有本节 SHA 回填提交，以 `git log -1` 为准，见 §17.6）。
 > 安全评估报告：`docs/phase17_security_evaluation.md`（§6 五维评估 + NOT_RUN 声明）。
 
 ### 17.1 能力契约定案（P0，方案 A：纯 Lua fallback）
