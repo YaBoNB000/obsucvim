@@ -44,6 +44,11 @@ dialect: &'static str,
 	bind_env: Option<String>,
 	env_check: bool,
 	super_insn: bool,
+	polymorphic_vm: bool,
+	encrypt_consts: bool,
+	integrity_checks: bool,
+	opaque_pred: bool,
+	reg_perturb: bool,
 }
 
 fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
@@ -209,6 +214,11 @@ fn main() -> ExitCode {
 		bind_env: None,
 		env_check: false,
 		super_insn: false,
+		polymorphic_vm: false,
+		encrypt_consts: false,
+		integrity_checks: true,
+		opaque_pred: false,
+		reg_perturb: false,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -308,6 +318,15 @@ fn main() -> ExitCode {
 			}
 			"--env-check" => opts.env_check = true,
 			"--super-insn" => opts.super_insn = true,
+			"--polymorphic-vm" => {
+				opts.polymorphic_vm = true;
+				opts.super_insn = true;
+			}
+			"--encrypt-consts" => opts.encrypt_consts = true,
+			"--integrity-checks" => opts.integrity_checks = true,
+			"--no-integrity-checks" => opts.integrity_checks = false,
+			"--opaque-pred" => opts.opaque_pred = true,
+			"--reg-perturb" => opts.reg_perturb = true,
 s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
