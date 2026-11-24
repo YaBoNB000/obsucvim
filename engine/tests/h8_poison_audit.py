@@ -7,8 +7,10 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-TOOL = ROOT / "target/release/obsucvim"
-TOOLS = pathlib.Path("/home/user/luraph/.tools/bin")
+TOOL = pathlib.Path(os.environ["OBSUCVIM_BIN"]) if "OBSUCVIM_BIN" in os.environ else (
+    ROOT / "target/audit/release/obsucvim" if (ROOT / "target/audit/release/obsucvim").exists() else (
+    ROOT / "target/debug/obsucvim" if (ROOT / "target/debug/obsucvim").exists() else ROOT / "target/release/obsucvim"))
+TOOLS = (ROOT.parent / ".tools/bin")
 LUAU = TOOLS / "luau"
 if not LUAU.exists():
     LUAU = pathlib.Path("/home/user/tools/bin/luau")

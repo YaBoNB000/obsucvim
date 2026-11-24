@@ -2,67 +2,8 @@
 use crate::ast::{self, Expr, TableField};
 use crate::parser;
 use crate::rng::Rng;
+use crate::vmgen::caps::ScaffoldPrim;
 use crate::vmgen::isa::CARRIER_SPECIALS;
-
-const PRIM_DOTS: &[&str] = &[
-	"buffer.fill",
-	"buffer.create",
-	"buffer.len",
-	"buffer.copy",
-	"buffer.tostring",
-	"buffer.fromstring",
-	"buffer.readstring",
-	"buffer.readu8",
-	"buffer.readu16",
-	"buffer.readi16",
-	"buffer.readu32",
-	"buffer.readi32",
-	"buffer.readf32",
-	"buffer.readf64",
-	"buffer.writeu8",
-	"buffer.writei8",
-	"buffer.writeu32",
-	"bit32.bxor",
-	"bit32.band",
-	"bit32.bor",
-	"bit32.bnot",
-	"bit32.lshift",
-	"bit32.rshift",
-	"bit32.countrz",
-	"string.byte",
-	"string.char",
-	"string.sub",
-	"string.rep",
-	"string.find",
-	"string.match",
-	"string.gmatch",
-	"string.gsub",
-	"string.format",
-	"string.pack",
-	"string.unpack",
-	"table.create",
-	"table.pack",
-	"table.insert",
-	"table.concat",
-	"table.move",
-	"coroutine.create",
-	"coroutine.resume",
-	"coroutine.yield",
-	"coroutine.wrap",
-	"coroutine.status",
-	"coroutine.running",
-	"coroutine.close",
-	"coroutine.isyieldable",
-	"vector.create",
-];
-
-const PRIM_BARE: &[&str] = &[
-	"typeof", "setfenv", "getfenv", "pcall", "xpcall", "error", "next",
-	"select", "unpack", "tonumber", "tostring", "rawget", "rawset",
-	"assert", "type", "setmetatable", "getmetatable",
-];
-
-const ALPHA: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
 
 fn dot_value(path: &str) -> Expr {
 	let (lib, name) = path.split_once('.').unwrap();
@@ -82,11 +23,6 @@ fn dot_value(path: &str) -> Expr {
 		}),
 		name: name.to_string(),
 	}
-}
-
-pub fn boot_name(rng: &mut Rng) -> String {
-	let base = ALPHA[rng.int(0, 52) as usize] as char;
-	format!("{}C", base)
 }
 
 fn parse_expr(src: &str) -> Expr {
@@ -140,19 +76,22 @@ pub fn module_fields(
 	rng: &mut Rng,
 	exclude: &[i64],
 	slot_max: i64,
+	cap_slots: &[i64; 6],
 	bind_env: Option<&str>,
 	env_slots_in: Option<&[i64; 4]>,
 ) -> (Vec<TableField>, Option<[i64; 4]>) {
 	let top = std::cmp::max(126, slot_max);
 	let mut slots: Vec<i64> = (1..=top)
-		.filter(|n| !exclude.contains(n))
+		.filter(|n| !exclude.contains(n) && !cap_slots.contains(n))
 		.collect();
 	rng.shuffle(&mut slots);
 	let mut it = slots.into_iter();
 	let mut fields: Vec<TableField> = Vec::new();
 
-	for path in PRIM_DOTS.iter().chain(PRIM_BARE.iter()) {
-		let n = it.next().unwrap();
+	// Capability-scoped scaffold bindings: emit ONLY the 6 primitives actually
+	// consumed by the v15 chunk stream-cipher unmasker and 32-bit multiplier.
+	for (prim, &slot) in ScaffoldPrim::ALL.iter().zip(cap_slots.iter()) {
+		let path = prim.lua_expr();
 		let value = if path.contains('.') {
 			dot_value(path)
 		} else {
@@ -163,7 +102,7 @@ pub fn module_fields(
 		};
 		fields.push(TableField::Key {
 			key: Expr::Num {
-				value: n as f64,
+				value: slot as f64,
 				isfloat: false,
 			},
 			value,
@@ -276,6 +215,7 @@ pub fn module_fields(
 	(fields, env_slots_out)
 }
 
+#[allow(dead_code)]
 fn lua_bytes_lit(bytes: &[u8]) -> String {
 	let mut s = String::with_capacity(bytes.len() * 4 + 2);
 	s.push('"');
@@ -382,19 +322,187 @@ impl Names {
 	}
 }
 
-fn opaque_wrap(code: String, rng: &mut crate::rng::Rng, vname: &str) -> String {
-	let preds: [String; 4] = [
-		format!("((({v}*{v})+{v})%2)==0", v = vname),
-		format!("(({v}%3)*({v}%3))>=0", v = vname),
-		format!("(({v}+1)*({v}+1))>=({v}*{v})", v = vname),
-		format!("((({v}%5)*({v}%5))*(({v}%5)*({v}%5)))>=0", v = vname),
-	];
-	let p = &preds[rng.int(0, 3) as usize];
-	if rng.int(0, 1) == 0 {
-		format!("if {} then {} else local _={} end", p, code, vname)
-	} else {
-		format!("if not({}) then local _={} else {} end", p, vname, code)
+/// Wrap a dispatch leaf in a genuine runtime state invariant (or leave it
+/// unwrapped when binary-tree dispatch bounds already isolate `st`).
+/// Never emits algebraically constant identities (`x^2 >= 0`, `(x*x+x)%2 == 0`, etc.).
+fn state_guard_wrap(
+	st: i64,
+	code: String,
+	rng: &mut crate::rng::Rng,
+	vname: &str,
+	sumslot: usize,
+	auxslot: usize,
+	sdone: i64,
+) -> String {
+	if rng.int(0, 9) < 5 {
+		return code;
 	}
+	const MODS: [i64; 6] = [7, 11, 13, 17, 19, 23];
+	let m = MODS[rng.int(0, 5) as usize];
+	let k = rng.int(2, m - 1);
+	let c = rng.int(1, 89);
+	let rem = (st * k + c).rem_euclid(m);
+	match rng.int(0, 3) {
+		0 => format!(
+			"if ({v}*{k}+{c})%{m}=={rem} then {code} else {v}={sdone} end",
+			v = vname,
+		),
+		1 => format!(
+			"if C[{auxslot}]+{v}>={st} then {code} else {v}={sdone} end",
+			v = vname,
+		),
+		2 => {
+			let wrong = (rem + rng.int(1, m - 1)).rem_euclid(m);
+			format!(
+				"if ({v}*{k}+{c})%{m}~={wrong} then {code} else C[{auxslot}]={v};{v}={sdone} end",
+				v = vname,
+			)
+		}
+		_ => {
+			let wrong_v = st * k + rng.int(1, 29);
+			format!(
+				"if C[{sumslot}]>=0 and {v}*{k}~={wrong_v} then {code} else {v}={sdone} end",
+				v = vname,
+			)
+		}
+	}
+}
+
+/// Generate a polymorphic outer-machine staging step with varied arity (`5..=9`),
+/// genuine rolling-register updates, and randomized return-tuple permutation.
+#[allow(clippy::too_many_arguments)]
+fn gen_filler_staging(
+	fi: usize,
+	ret: i64,
+	nm: &mut Names,
+	rng: &mut Rng,
+	sumslot: usize,
+	auxslot: usize,
+	cap_slots: &[i64; 6],
+	r_slot: i64,
+	decoy_a: i64,
+	decoy_b: i64,
+) -> String {
+	// Keep ~70% of staging functions at arity >= 7 (7, 8, or 9 formal params)
+	// while ~30% use 5 or 6 formal params for genuine wrapper signature diversity.
+	let extra_regs: usize = match fi % 10 {
+		0 => 3, // total 5 params: (b, C, r0, r1, r2)
+		1 | 2 => 4, // total 6 params
+		3..=6 => 5, // total 7 params
+		7 | 8 => 6, // total 8 params
+		_ => 7, // total 9 params
+	};
+	let mut regs: Vec<String> = (0..extra_regs)
+		.map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d", "i"]))
+		.collect();
+	rng.shuffle(&mut regs);
+	let params_csv = regs.join(",");
+
+	// Note on outer-machine calling convention:
+	// `lhs6` = `sv, s1, s2, s3, s4, s5` and steps return `ret, C, a0, a1, a2, a3, a4`,
+	// so after step 1 `s1` (`regs[0]`) holds `C` while `s2..s5` (`regs[1..=4]`) hold
+	// rolling integers. Always operate on `regs[1]`/`regs[2]` and emit integers in `ret_regs`.
+	let r0 = &regs[1];
+	let r1 = &regs[2];
+	let r2 = if regs.len() > 3 { &regs[3] } else { &regs[1] };
+	let int_pool: Vec<String> = regs[1..]
+		.iter()
+		.take(4)
+		.cloned()
+		.collect();
+	let mut ret_regs: Vec<String> = (0..5)
+		.map(|i| int_pool[i % int_pool.len()].clone())
+		.collect();
+	rng.shuffle(&mut ret_regs);
+
+	let k1 = rng.int(3, 251);
+	let k2 = rng.int(5, 509);
+	let m1 = [4093i64, 8191, 16381, 32749, 65521][rng.int(0, 4) as usize];
+	let tmp = nm.take_avoid(&["b", "C", "i"]);
+
+	let body = match fi % 10 {
+		0 => {
+			ret_regs[0] = tmp.clone();
+			format!(
+				"local {tmp}=(({r0}+{r1})%{m1}<{thr})and {da} or {db};{tmp}=({tmp}+{r2}*{k1})%65536;",
+				thr = m1 / 2,
+				da = decoy_a,
+				db = decoy_b,
+			)
+		}
+		1 => {
+			format!(
+				"if ({r0}+{k1})%7<{thr} then {r0}+={k2} else {r1}=({r1}+{r2}+{k1})%{m1} end;",
+				thr = rng.int(2, 5),
+			)
+		}
+		2 => {
+			ret_regs[1] = tmp.clone();
+			format!(
+				"local {tmp}=if {r0}>{r1} then ({r0}-{r1}+{k1})%{m1} else ({r1}-{r0}+{k2})%{m1};",
+			)
+		}
+		3 => {
+			let steps = rng.int(2, 4);
+			ret_regs[0] = tmp.clone();
+			format!(
+				"local {tmp}={r0}%4096;for i=1,{steps} do {tmp}=({tmp}*{k1}+{r1}+i)%{m1} end;",
+			)
+		}
+		4 => {
+			let lim = rng.int(3, 9);
+			let stp = rng.int(2, 5);
+			ret_regs[2] = tmp.clone();
+			format!(
+				"local {tmp}={r0}%16+{lim};while {tmp}>{lim} do {tmp}-={stp};{r1}=({r1}+{tmp})%65536 end;",
+			)
+		}
+		5 => {
+			let dsel = nm.take_avoid(&["b", "C", "i", &tmp]);
+			ret_regs[0] = tmp.clone();
+			format!(
+				"local {dsel}=(C[{sumslot}]~={r0})and {da} or {db};local {tmp}=((b[{r_slot}][1] or 0)%65536+{r1}+{dsel})%{m1};",
+				da = decoy_a,
+				db = decoy_b,
+			)
+		}
+		6 => {
+			let r_mod = rng.int(5, 11);
+			format!(
+				"if {r0}%{r_mod}==0 then {r0}=({r0}+{k1})%65536 elseif {r1}%3==1 then {r1}+={k2} else {r2}=({r2}+{r0})%{m1} end;",
+			)
+		}
+		7 => {
+			format!(
+				"do local {tmp}=(({r0}~={r1})and {da} or {db});{r0}={r1};{r1}=({tmp}+{r2}*{k1})%{m1} end;",
+				da = decoy_a,
+				db = decoy_b,
+			)
+		}
+		8 => {
+			let bxor_slot = cap_slots[1];
+			let dsel = nm.take_avoid(&["b", "C", "i", &tmp]);
+			ret_regs[0] = tmp.clone();
+			format!(
+				"local {dsel}=(C[{auxslot}]==0)and {da} or {db};local {tmp}=b[{bxor_slot}]({r0}%65536,({r1}+{dsel})%65536);",
+				da = decoy_a,
+				db = decoy_b,
+			)
+		}
+		_ => {
+			ret_regs[0] = format!("({}+{})%{}", r1, k1, m1);
+			ret_regs[3] = format!("({}+{})%65536", r0, k2);
+			String::new()
+		}
+	};
+
+	format!(
+		"function(b,C,{params}) {body}return {ret},C,{rets} end",
+		params = params_csv,
+		body = body,
+		ret = ret,
+		rets = ret_regs.join(","),
+	)
 }
 
 // 惰性局部（V-06/V-07 修复）：所有形态都探测一个运行期槽（C[slot]），
@@ -413,7 +521,13 @@ fn idle_local(rng: &mut crate::rng::Rng, name: &str, probe: &str, a: i64, b: i64
 		0 => format!("local {name}={};", idle_val(rng, probe, a, b)),
 		1 => format!("local {name};if {probe}==nil then {name}={b} else {name}={a} end;"),
 		2 => format!("local {name}={b};if {probe}~=nil then {name}={a} end;"),
-		_ => format!("local {name};do local _t={probe};{name}=(_t==nil)and {b} or {a} end;"),
+		_ => {
+			let tmp = ["_t", "_u", "_v"]
+				.into_iter()
+				.find(|&cand| cand != name && cand != probe)
+				.unwrap_or("_w");
+			format!("local {name};do local {tmp}={probe};{name}=({tmp}==nil)and {b} or {a} end;")
+		}
 	}
 }
 
@@ -453,26 +567,6 @@ pub fn decoy_slots(max_carrier_len: usize, avoid: &[i64]) -> (i64, i64) {
 	(d1, d2)
 }
 
-fn coded_name(out: &mut String, var: &str, name: &str, sc_slot: i64, rng: &mut Rng) {
-	let codes: Vec<u8> = name.bytes().collect();
-	let mut pos: Vec<usize> = (0..codes.len()).collect();
-	rng.shuffle(&mut pos);
-	out.push_str(&format!("local {var}t={{}};"));
-	for (i, &c) in codes.iter().enumerate() {
-		out.push_str(&format!("{var}t[{}]={c};", pos[i] + 1));
-	}
-	let mut inv = vec![0usize; codes.len()];
-	for (i, &p) in pos.iter().enumerate() {
-		inv[i] = p + 1;
-	}
-	out.push_str(&format!("local {var}o={{"));
-	out.push_str(&inv.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(","));
-	out.push_str(&format!(
-		"}};local {var}=\"\";for {var}i=1,#{var}o do {var}={var}..b[{sc}]({var}t[{var}o[{var}i]]) end;",
-		sc = sc_slot
-	));
-}
-
 fn draw_state_names(nm: &mut Names) -> [String; 6] {
 	const FIXED: &[&str] = &[
 		"b", "C", "u", "z", "Z", "o", "w", "K", "G", "q", "M", "F", "H",
@@ -508,6 +602,7 @@ fn st_pair_expr(
 	format!("(b[{}][{}]+b[{}][{}])", s0, p1 + 1, s1slot, p2 + 1)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn scaffold(
 	rng: &mut Rng,
 	interp_src: &str,
@@ -522,6 +617,7 @@ pub fn scaffold(
 	carrier: &crate::vmgen::isa::Carrier,
 	bw_slots: &[i64],
 	prim_extra: (i64, i64),
+	cap_slots: &[i64; 6],
 	kfrag: &[i64],
 	st_slots: &[i64],
 	interp_globals: &[String],
@@ -657,20 +753,27 @@ let v2h = nm.take();
 			c3 = st_pair_expr(&mut st1, &mut st2, &mut st1_free, &mut st2_free, st_slots[0], st_slots[1], kc3, rng),
 		)),
 	));
-	let mut fillers: Vec<String> = ["p1", "p2", "p3", "p4", "p5"].iter().map(|s| s.to_string()).collect();
+	let mut fillers: Vec<String>;
 	let mut state_i = 0usize;
-	let mut step = |i: &mut usize| -> (i64, i64) {
+	let step = |i: &mut usize| -> (i64, i64) {
 		let d = states[*i];
 		let r = states[*i + 1];
 		*i += 1;
 		(d, r)
 	};
 
+	let init_regs: [i64; 5] = [
+		rng.int(17, 16381),
+		rng.int(19, 16381),
+		rng.int(23, 16381),
+		rng.int(29, 16381),
+		rng.int(31, 16381),
+	];
 	fields.push(named(
 		init.clone(),
 		parse_expr(&format!(
-			"function(b,...) return true,{},nil,nil,nil,nil,nil,nil,nil,nil,nil,nil end",
-			states[0]
+			"function(b,...) return true,{},{},{},{},{},{},nil,nil,nil,nil,nil end",
+			states[0], init_regs[0], init_regs[1], init_regs[2], init_regs[3], init_regs[4]
 		)),
 	));
 	fields.push(named(
@@ -688,11 +791,19 @@ let v2h = nm.take();
 		)),
 	));
 
+	let (s_band, s_bxor, s_extract, s_lshift, s_rshift, s_tcat) = (
+		cap_slots[0],
+		cap_slots[1],
+		cap_slots[2],
+		cap_slots[3],
+		cap_slots[4],
+		cap_slots[5],
+	);
 	fields.push(named(
 		mul.clone(),
-		parse_expr(
-			"function(b,u,z) local Z=bit32.band; u,z=Z(u,4294967295),Z(z,4294967295); local o,w=Z(u,65535),bit32.rshift; local K,G,q=w(u,16),Z(z,65535),w(z,16); return Z(o*G+bit32.lshift(Z(o*q+K*G,65535),16),4294967295)%4294967296 end",
-		),
+		parse_expr(&format!(
+			"function(b,u,z) local Z=b[{s_band}]; u,z=Z(u,4294967295),Z(z,4294967295); local o,w=Z(u,65535),b[{s_rshift}]; local K,G,q=w(u,16),Z(z,65535),w(z,16); return Z(o*G+b[{s_lshift}](Z(o*q+K*G,65535),16),4294967295)%4294967296 end",
+		)),
 	));
 	fields.push(named(
 		modulo.clone(),
@@ -892,8 +1003,8 @@ let start_word = all_words.len() + 1;
 				let mut s = String::new();
 				for step in 0..4u16 {
 					s.push_str(&format!(
-						"{t}[{ti}]=b[{sc}](bit32.bxor({wd}%256,({kn}+{ti})%256));",
-						t = nt, ti = nti, wd = nwd, kn = nkn, sc = prim_extra.1
+						"{t}[{ti}]=b[{sc}](b[{s_bxor}]({wd}%256,({kn}+{ti})%256));",
+						t = nt, ti = nti, wd = nwd, kn = nkn, sc = prim_extra.1, s_bxor = s_bxor
 					));
 					if step < 3 {
 						s.push_str(&format!("{}=({}-{}%256)/256;", nwd, nwd, nwd));
@@ -903,8 +1014,8 @@ let start_word = all_words.len() + 1;
 				s
 			} else {
 				format!(
-					"{t}[#{t}+1]=b[{sc}](bit32.bxor({wd}%256,({kn}+{ti})%256),bit32.bxor(bit32.extract({wd},8,8),({kn}+{ti}+1)%256),bit32.bxor(bit32.extract({wd},16,8),({kn}+{ti}+2)%256),bit32.bxor(bit32.extract({wd},24,8),({kn}+{ti}+3)%256));{ti}={ti}+4;",
-					t = nt, ti = nti, wd = nwd, kn = nkn, sc = prim_extra.1
+					"{t}[#{t}+1]=b[{sc}](b[{s_bxor}]({wd}%256,({kn}+{ti})%256),b[{s_bxor}](b[{s_ext}]({wd},8,8),({kn}+{ti}+1)%256),b[{s_bxor}](b[{s_ext}]({wd},16,8),({kn}+{ti}+2)%256),b[{s_bxor}](b[{s_ext}]({wd},24,8),({kn}+{ti}+3)%256));{ti}={ti}+4;",
+					t = nt, ti = nti, wd = nwd, kn = nkn, sc = prim_extra.1, s_bxor = s_bxor, s_ext = s_extract
 				)
 			};
 			let word_src = if rng.int(0, 1) == 0 {
@@ -988,18 +1099,18 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 			let qr = nm.take_avoid(CH_AVOID);
 			let final_concat = if trim_style && divmod_bytes {
 				format!(
-					"table.concat({t},nil,1,{blen})",
-					t = nt, blen = blen
+					"b[{s_tc}]({t},nil,1,{blen})",
+					s_tc = s_tcat, t = nt, blen = blen
 				)
 			} else if trim_style {
 				format!(
-					"(\"\")[\"sub\"](table.concat({t},nil,1,{nw}),1,{blen})",
-					t = nt, nw = nw, blen = blen
+					"(\"\")[\"sub\"](b[{s_tc}]({t},nil,1,{nw}),1,{blen})",
+					s_tc = s_tcat, t = nt, nw = nw, blen = blen
 				)
 			} else {
 				format!(
-					"(\"\")[\"sub\"](table.concat({t}),1,{blen})",
-					t = nt, blen = blen
+					"(\"\")[\"sub\"](b[{s_tc}]({t}),1,{blen})",
+					s_tc = s_tcat, t = nt, blen = blen
 				)
 			};
 			let src = format!(
@@ -1011,7 +1122,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				 {segs}\
 				 {qc_src} {qr_src} \
 				 C[{idx}]={final_concat}; \
-				 return {ret},C,{rc},{ra},{rd},{re},{rb} end",
+				 return {ret},C,{rc},{rb},{rd},{re},{ra} end",
 				idx = k * CHUNKS + j + 1,
 				segs = seg_code,
 				sw = sw,
@@ -1046,25 +1157,22 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 		}
 	}
 
-	for _ in 0..filler {
-		fillers = (0..5).map(|_| nm.take_avoid(&["b", "C", "Q", "R", "d"])).collect();
-		rng.shuffle(&mut fillers);
-		let (ra, rb, rc, rd, re) = (fillers[0].as_str(), fillers[1].as_str(), fillers[2].as_str(), fillers[3].as_str(), fillers[4].as_str());
+	for fi in 0..filler {
 		let (st, ret) = step(&mut state_i);
 		let name = nm.take();
 		let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];
 		let decoy_b = states[rng.int((states.len() / 2) as i64, (states.len() - 1) as i64) as usize];
-		let qn = nm.take_avoid(&["b", "C"]);
-		let src = format!(
-			"function(b,C,{ra},{rb},{rc},{rd},{re}) {qn_src} \
-			 return {ret},C,{rb},{rc},{rd},{re},{ra} end",
-			ret = ret,
-			ra = ra,
-			rb = rb,
-			rc = rc,
-			rd = rd,
-			re = re,
-			qn_src = idle_local(rng, &qn, &format!("C[{sumslot}]"), decoy_a, decoy_b),
+		let src = gen_filler_staging(
+			fi,
+			ret,
+			&mut nm,
+			rng,
+			sumslot,
+			auxslot,
+			cap_slots,
+			st_slots[0],
+			decoy_a,
+			decoy_b,
 		);
 		fields.push(named(name.clone(), parse_expr(&src)));
 		leaves.push((
@@ -1080,7 +1188,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 		let (st, ret) = step(&mut state_i);
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {interp} \
-			 C[{vmslot}]={vm}; return {ret},C,{rc},{ra},{rd},{re},{rb} end",
+			 C[{vmslot}]={vm}; return {ret},C,{rc},{rb},{rd},{re},{ra} end",
 			interp = interp_src,
 			vmslot = vmslot,
 			vm = vm_name,
@@ -1119,7 +1227,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 			 local E=function(...) return C[{vmslot}]({vm_args}) end; \
 			 C[{auxslot}],C[{entryslot}]={wrap_n},function(...) return b[{r2}](b,E,...) end; \
 			 b.{ehandler}=C[{entryslot}]; \
-			 return {ret},C,{ra},{rc},{rd},{re},{rb} end",
+			 return {ret},C,{rb},{rc},{rd},{re},{ra} end",
 			vmslot = vmslot,
 			vm_args = vm_args,
 			auxslot = auxslot,
@@ -1193,7 +1301,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 		}
 		let src = format!(
 			"function(b,C,{ra},{rb},{rc},{rd},{re}) {body} C[{verifyslot}]=s; \
-			 return {ret},C,{rb},{ra},{rc},{re},{rd} end",
+			 return {ret},C,{rb},{rc},{re},{rd},{ra} end",
 			body = body,
 			verifyslot = verifyslot,
 			ret = ret,
@@ -1213,10 +1321,12 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 let (st, _ret) = step(&mut state_i);
 		let v2n: Vec<String> = (0..5).map(|_| nm.take_avoid(&["b", "C"])).collect();
 		let src = format!(
-			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]~=C[{sumslot}] then C[{sumslot}]=C[{sumslot}]+7919 end; \
+			"function(b,C,{n0},{n1},{n2},{n3},{n4}) if C[{verifyslot}]~=C[{sumslot}] then C[{sumslot}]=C[{sumslot}]+7919; C[{entryslot}]=nil; C[{vmslot}]=nil end; \
 			 return {sdone},C,{n1},{n2},{n3},{n4},{n0} end",
 			verifyslot = verifyslot,
 			sumslot = sumslot,
+			entryslot = entryslot,
+			vmslot = vmslot,
 			sdone = sdone,
 			n0 = v2n[0],
 			n1 = v2n[1],
@@ -1243,7 +1353,12 @@ let (st, _ret) = step(&mut state_i);
 	{
 		let wrapped: Vec<(i64, String)> = leaves
 			.iter()
-			.map(|(st, code)| (*st, opaque_wrap(code.clone(), rng, &sv)))
+			.map(|(st, code)| {
+				(
+					*st,
+					state_guard_wrap(*st, code.clone(), rng, &sv, sumslot, auxslot, sdone),
+				)
+			})
 			.collect();
 		let tree = dispatch_tree(&sv, &wrapped, 0, wrapped.len());
 		let max_leaf = leaves.last().unwrap().0;
@@ -1302,4 +1417,21 @@ let (st, _ret) = step(&mut state_i);
 	}
 
 	(fields, fc)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::idle_local;
+
+	#[test]
+	fn idle_local_never_shadows_target_when_name_is_underscore_t() {
+		for seed in 1u64..=128 {
+			let mut rng = crate::rng::Rng::new(seed);
+			let src = idle_local(&mut rng, "_t", "s", 83, 184);
+			assert!(
+				!src.contains("local _t;do local _t="),
+				"seed {seed} shadowed target local _t: {src}"
+			);
+		}
+	}
 }

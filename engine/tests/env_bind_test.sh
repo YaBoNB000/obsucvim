@@ -9,7 +9,11 @@
 # 可独立运行，也可被 run_tests.sh source（复用计数器）。
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TOOL="$ROOT/target/release/obsucvim"
+TOOL="${OBSUCVIM_BIN:-$ROOT/target/release/obsucvim}"
+AUDIT_TOOL="${OBSUCVIM_AUDIT_BIN:-$ROOT/target/audit/release/obsucvim}"
+if [ ! -x "$AUDIT_TOOL" ]; then
+	if [ -x "$ROOT/target/debug/obsucvim" ]; then AUDIT_TOOL="$ROOT/target/debug/obsucvim"; else AUDIT_TOOL="$TOOL"; fi
+fi
 SRC="$ROOT/tests/cases/basics.lua"
 
 TOOLS_BIN=/home/user/tools/bin
@@ -60,14 +64,14 @@ fi
 # 前移消费 + 元钥匙流消费）；未绑定态只保留无害的 ef1 声明，无折叠消费。
 # （㊺ 正向等价/顺序守卫见 faithful_stub_test.sh。）
 rm -f /tmp/vm_tsrc.lua
-OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
+OBSUCVIM_VM_TSRC=1 "$AUDIT_TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
 if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "Vector3\.new" "$BG_TMP/bound2.lua"; then
 	pass=$((pass+1))
 else
 	gf "envval" "绑定态缺少环境值折叠消费（ef1 钥匙流项 / 槽捕获）"
 fi
 rm -f /tmp/vm_tsrc.lua
-OBSUCVIM_VM_TSRC=1 "$TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound2.lua" >/dev/null 2>&1
+OBSUCVIM_VM_TSRC=1 "$AUDIT_TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound2.lua" >/dev/null 2>&1
 if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null; then
 	gf "envval-leak" "未绑定产物混入环境值折叠消费"
 else

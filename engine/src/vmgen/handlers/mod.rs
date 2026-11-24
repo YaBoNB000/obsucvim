@@ -143,6 +143,7 @@ pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool, mk: (u16, u16), luau
 			}
 		}
 		"MkStr" => mkstr::code(fmt, mk),
+		"Nop" => nop::code(fmt),
 		_ => panic!("unknown opcode name {name}"),
 	}
 }

@@ -5,7 +5,9 @@
 # execution so lazy tables cannot evade the check by being empty at call time.
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-BIN="$REPO/engine/target/release/obsucvim"
+BIN="${OBSUCVIM_BIN:-$REPO/engine/target/release/obsucvim}"
+AUDIT_BIN="${OBSUCVIM_AUDIT_BIN:-$REPO/engine/target/audit/release/obsucvim}"
+if [ ! -x "$AUDIT_BIN" ]; then if [ -x "$REPO/engine/target/debug/obsucvim" ]; then AUDIT_BIN="$REPO/engine/target/debug/obsucvim"; else AUDIT_BIN="$BIN"; fi; fi
 LUAU="${LUAU:-$REPO/.tools/bin/luau}"
 LUAC="${LUAU_COMPILE:-$REPO/.tools/bin/luau-compile}"
 SRC="$REPO/engine/tests/fixtures/targets/R062_src.lua"
@@ -21,7 +23,7 @@ python3 "$REPO/engine/tests/v15_short_name_audit.py" "$TMP/target.lua"
 # This regression executes under stock Luau; v15 output no longer depends on
 # executor-specific attestation APIs.
 OBSUCVIM_VM_TSRC=1 OBSUCVIM_KEY_MANIFEST="$TMP/keys.txt" \
-    "$BIN" --preset v15 --seed 63063 "$SRC" "$TMP/static-audit.lua"
+    "$AUDIT_BIN" --preset v15 --seed 63063 "$SRC" "$TMP/static-audit.lua"
 python3 "$REPO/engine/tests/key_literal_check.py" \
     "$TMP/static-audit.lua" "$TMP/keys.txt" --quiet
 python3 - "$TMP/vm_tsrc.lua" <<'PY'

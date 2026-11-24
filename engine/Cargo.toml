@@ -4,6 +4,14 @@ version = "0.2.0"
 edition = "2021"
 description = "Commercial-grade Lua 5.1 / Luau obfuscator with custom VM"
 
+[features]
+default = []
+# White-box audit/diagnostic env hooks (OBSUCVIM_KEY_MANIFEST, OBSUCVIM_VM_RAW,
+# OBSUCVIM_VM_TSRC, OBSUCVIM_NOISE_AUDIT, OBSUCVIM_PROFILE_AUDIT, etc.).
+# Disabled in default production `--release` builds so key/source export paths
+# are compiled out completely.
+audit-hooks = []
+
 [dependencies]
 # std-only on purpose: the sandbox cannot reach crates.io (see HANDOFF.md)
 

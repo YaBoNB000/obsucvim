@@ -1,5 +1,6 @@
 
 use crate::rng::Rng;
+use crate::vmgen::caps::VmPrim;
 use crate::vmgen::handlers;
 use crate::vmgen::isa::{fold_key_nl, Carrier, OpMap, CARRIER_SPECIALS, N_OPS};
 use crate::vmgen::strpool::StrPool;
@@ -10,30 +11,6 @@ const OP_NAMES: [&str; N_OPS] = [
 	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
 	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
 	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
-];
-
-const PRIM_SRC: [&str; 16] = [
-	"(\"\")[\"byte\"]",
-	"(\"\")[\"sub\"]",
-	"(\"\")[\"char\"]",
-	"getfenv",
-	"unpack",
-	"math.floor",
-	"type",
-	"error",
-	"getmetatable",
-	"rawget",
-	"rawset",
-	"setmetatable",
-	"select",
-	"pcall",
-	"tonumber",
-	"tostring",
-];
-
-const PRIM_NAME: [&str; 16] = [
-	"BYTE", "SUB", "CHAR", "GFE", "UNP", "FLR", "TYP", "ERR", "GMT", "RGET",
-	"RSET", "SMT", "SEL", "PCAL", "TONUM", "TSTR",
 ];
 
 fn gen_dispatch_tree(
@@ -114,11 +91,11 @@ fn lua_dstr(bytes: &[u8]) -> String {
 	s
 }
 
-fn prim_slots(rng: &mut Rng) -> [u8; 16] {
+fn prim_slots(rng: &mut Rng) -> [u8; VmPrim::COUNT] {
 	let mut pool: Vec<u8> = (1..=80).collect();
 	rng.shuffle(&mut pool);
-	let mut out = [0u8; 16];
-	out.copy_from_slice(&pool[..16]);
+	let mut out = [0u8; VmPrim::COUNT];
+	out.copy_from_slice(&pool[..VmPrim::COUNT]);
 	out
 }
 
@@ -488,8 +465,8 @@ struct MicroLits {
 	table_: String,
 	index: String,
 	newindex: String,
-	char_: String,
-	byte_: String,
+	_char_: String,
+	_byte_: String,
 	empty: String,
 	add: String,
 	add_op: String,
@@ -545,8 +522,8 @@ impl MicroLits {
 			table_: pool.lit("table"),
 			index: pool.lit("__index"),
 			newindex: pool.lit("__newindex"),
-			char_: pool.lit("char"),
-			byte_: if include_loadstr { pool.lit("byte") } else { String::new() },
+			_char_: pool.lit("char"),
+			_byte_: if include_loadstr { pool.lit("byte") } else { String::new() },
 			empty: pool.lit(""),
 			add: pool.lit("__add"),
 			add_op: pool.lit("add"),
@@ -597,7 +574,7 @@ impl MicroLits {
 struct MicroShard {
 	codes: [u8; M_COUNT],
 	field_perm: [usize; 3],
-	shape: u8,
+	_shape: u8,
 }
 
 fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
@@ -609,7 +586,7 @@ fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
 	MicroShard {
 		codes,
 		field_perm: [fp[0], fp[1], fp[2]],
-		shape,
+		_shape: shape,
 	}
 }
 
@@ -800,10 +777,8 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		// V19 R5-b：strseal 镜像——非线性折叠（交叉半积+高位回混）+ 明文级联 _pv。
 		// 本 handler 作用域无 FLR——整除用幂二次 (x-(x%D))/D 同式镜面。
 		M_LOAD_STR => format!(
-			"local q=T[y] local st=O[3] local step=O[4] local by={empty}[{byte_}] local ch={empty}[{char_}] local out={empty} local _pv=0 for i=1,#q do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(by(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 out=out..ch(_v) _pv=_v end T[x]=out",
+			"local q=T[y] local st=O[3] local step=O[4] local n=#q local out={empty} local _pv=0 if n>0 then if n<=64 then local _ob={{}} for i=1,n do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(BYTE(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 _ob[i]=_v _pv=_v end out=CHAR(UNP(_ob,1,n)) else local _ot,_on,_ob,_ok={{}},0,{{}},0 for i=1,n do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(BYTE(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 _ok=_ok+1 _ob[_ok]=_v _pv=_v if _ok==64 then _on=_on+1 _ot[_on]=CHAR(UNP(_ob,1,64)) _ok=0 end end if _ok>0 then _on=_on+1 _ot[_on]=CHAR(UNP(_ob,1,_ok)) end out=TCAT(_ot) end end T[x]=out",
 			empty = lit.empty,
-			byte_ = lit.byte_,
-			char_ = lit.char_,
 		),
 		M_NOT => "T[x] = not T[y]".to_string(),
 		M_NEW_TABLE => "T[x] = {}".to_string(),
@@ -872,8 +847,8 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		),
 		M_NOP => nop.to_string(),
 		M_MKSTR => format!(
-			"local ms=({mk1}*O[1]+{mk2})%65536 local q1=(O[2]-ms)%65536 local q2=(O[3]-ms)%65536 local q3=(O[4]-ms)%65536 local n=FLOOR(q3/256) local q={{q1%256,FLOOR(q1/256),q2%256,FLOOR(q2/256),q3%256}} local ch={empty}[{char_}] local s={empty} for j=1,n do s=s..ch(q[j]) end V[O[1]+1]=s",
-			mk1 = lit.mk1, mk2 = lit.mk2, empty = lit.empty, char_ = lit.char_,
+			"local ms=({mk1}*O[1]+{mk2})%65536 local q1=(O[2]-ms)%65536 local q2=(O[3]-ms)%65536 local q3=(O[4]-ms)%65536 local n=FLOOR(q3/256) local q={{q1%256,FLOOR(q1/256),q2%256,FLOOR(q2/256),q3%256}} V[O[1]+1]=(n>0) and CHAR(UNP(q,1,n)) or {empty}",
+			mk1 = lit.mk1, mk2 = lit.mk2, empty = lit.empty,
 		),
 		M_RETURN => {
 			let lb = frame_slot(0);
@@ -1019,9 +994,9 @@ mod micro_fusion_tests {
 
 	#[test]
 	fn core_string_primitives_bypass_replaceable_library_table() {
-		assert_eq!(PRIM_SRC[0], "(\"\")[\"byte\"]");
-		assert_eq!(PRIM_SRC[1], "(\"\")[\"sub\"]");
-		assert_eq!(PRIM_SRC[2], "(\"\")[\"char\"]");
+		assert_eq!(VmPrim::StrByte.lua_bind_expr(), "(\"\")[\"byte\"]");
+		assert_eq!(VmPrim::StrSub.lua_bind_expr(), "(\"\")[\"sub\"]");
+		assert_eq!(VmPrim::StrChar.lua_bind_expr(), "(\"\")[\"char\"]");
 	}
 
 	#[test]
@@ -1068,6 +1043,51 @@ fn micro_tree(items: &[(u8, String)]) -> String {
 // V19 R6-a：工厂形态多态——名随机构、签名尾挂 0..=3 个死参（签名计数
 // 每篇产物在 15..=18 间抖动，「参数数==15 的唯一函数」正则锚点灭绝；
 // 另有形态等价副本 decoy 分流命中数，见发射点）。死参永不参与语义。
+fn micro_rank_tree(items: &[(usize, String)], rev: bool) -> String {
+	if items.is_empty() {
+		return String::new();
+	}
+	if items.len() == 1 {
+		return items[0].1.clone();
+	}
+	let mid = items.len() / 2;
+	let pivot_rank = items[mid - 1].0;
+	if rev {
+		format!(
+			"if rk > {} then {} else {} end",
+			pivot_rank,
+			micro_rank_tree(&items[mid..], false),
+			micro_rank_tree(&items[..mid], true)
+		)
+	} else {
+		format!(
+			"if rk <= {} then {} else {} end",
+			pivot_rank,
+			micro_rank_tree(&items[..mid], true),
+			micro_rank_tree(&items[mid..], false)
+		)
+	}
+}
+
+fn micro_rank_ternary(items: &[(usize, String)]) -> String {
+	if items.len() <= 2 {
+		return micro_rank_tree(items, false);
+	}
+	let n = items.len();
+	let a = n / 3;
+	let b = (2 * n) / 3;
+	let r1 = items[a - 1].0;
+	let r2 = items[b - 1].0;
+	format!(
+		"if rk <= {} then {} elseif rk <= {} then {} else {} end",
+		r1,
+		micro_rank_ternary(&items[..a]),
+		r2,
+		micro_rank_ternary(&items[a..b]),
+		micro_rank_ternary(&items[b..])
+	)
+}
+
 fn micro_factory_source(
 	kinds: &[usize],
 	variant: u8,
@@ -1083,53 +1103,68 @@ fn micro_factory_source(
 		.collect();
 	rng.shuffle(&mut items);
 	let order: Vec<usize> = items.iter().map(|x| x.0).collect();
-	let dispatch = if items.is_empty() {
+	let ranked: Vec<(usize, String)> = items
+		.into_iter()
+		.enumerate()
+		.map(|(idx, (_, body))| (idx + 1, body))
+		.collect();
+	let dispatch = if ranked.is_empty() {
 		String::new()
 	} else {
-		match variant % 2 {
-			0 => items
-				.iter()
-				.enumerate()
-				.map(|(i, (_, body))| {
+		let tree = match variant % 4 {
+			0 => micro_rank_tree(&ranked, false),
+			1 => {
+				let evens: Vec<(usize, String)> =
+					ranked.iter().filter(|(r, _)| r % 2 == 0).cloned().collect();
+				let odds: Vec<(usize, String)> =
+					ranked.iter().filter(|(r, _)| r % 2 == 1).cloned().collect();
+				if evens.is_empty() || odds.is_empty() {
+					micro_rank_tree(&ranked, false)
+				} else {
 					format!(
-						"{} op == zC[{}] then {} ",
-						if i == 0 { "if" } else { "elseif" },
-						i + 1,
-						body
+						"if rk % 2 == 0 then {} else {} end",
+						micro_rank_tree(&evens, false),
+						micro_rank_tree(&odds, true)
 					)
-				})
-				.collect::<String>() + "end",
-			_ => items
-				.iter()
-				.enumerate()
-				.map(|(i, (_, body))| {
-					format!(
-						"{} zC[{}] == op then {} ",
-						if i == 0 { "if" } else { "elseif" },
-						i + 1,
-						body
-					)
-				})
-				.collect::<String>() + "end",
-		}
+				}
+			}
+			2 => micro_rank_ternary(&ranked),
+			_ => micro_rank_tree(&ranked, true),
+		};
+		format!("local rk = zC[op] if rk then {} end", tree)
 	};
 	let mut extra = String::new();
 	for dp in dead_params {
 		extra.push(',');
 		extra.push_str(dp);
 	}
+	let step_body = format!(
+		"local d1=(BYTE(zB,_ip)-(zM+_ip*zS)%256)%256 local d2=(BYTE(zB,_ip+1)-(zM+(_ip+1)*zS)%256)%256 local d3=(BYTE(zB,_ip+2)-(zM+(_ip+2)*zS)%256)%256 DK[1],DK[2],DK[3]=d1,d2,d3 local op,x,y=DK[z1],DK[z2],DK[z3] {dispatch}",
+		dispatch = dispatch
+	);
+	let loop_src = match (variant / 4) % 3 {
+		0 => format!(
+			"local _ip=ip while _ip<=pe do {step} _ip=_ip+3 end",
+			step = step_body
+		),
+		1 => format!("for _ip=ip,pe,3 do {step} end", step = step_body),
+		_ => format!(
+			"if ip<=pe then local _ip=ip repeat {step} _ip=_ip+3 until _ip>pe end",
+			step = step_body
+		),
+	};
 	let src = format!(
-		"local function {fname}(E,a,b,c,d,o,R,N,zB,zM,zS,zC,z1,z2,z3{extra}) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local n=(BYTE(zB,o)-(zM+o*zS)%256)%256 local ip=o+1 local pe=ip+n-1 while ip<=pe do local d1=(BYTE(zB,ip)-(zM+ip*zS)%256)%256 local d2=(BYTE(zB,ip+1)-(zM+(ip+1)*zS)%256)%256 local d3=(BYTE(zB,ip+2)-(zM+(ip+2)*zS)%256)%256 ip=ip+3 local DK={{d1,d2,d3}} local op,x,y=DK[z1],DK[z2],DK[z3] {dispatch} end for _ti=1,3 do T[_ti]=nil end DK=nil for _oi=1,4 do O[_oi]=nil end end ",
+		"local function {fname}(E,a,b,c,d,o,R,N,zB,zM,zS,zC,z1,z2,z3{extra}) local V,C,S,X,G,vargs,vargc,ups,makefn,mget,resolve_call,HAS_LEN_META,FLOOR,ERR,TYP,GMT,RGET,RSET=E[1],E[2],E[3],E[4],E[5],E[6],E[7],E[8],E[9],E[10],E[11],E[13],E[15],E[16],E[17],E[18],E[19],E[20] local vd=E.vd vargc=(vargc-vd)%65536 local O={{a,b,c,d}} local T={{}} local DK={{}} local n=(BYTE(zB,o)-(zM+o*zS)%256)%256 local ip=o+1 local pe=ip+n-1 {loop_src} DK[1],DK[2],DK[3]=nil,nil,nil for _ti=1,3 do T[_ti]=nil end for _oi=1,4 do O[_oi]=nil end end ",
 		fname = fname,
 		extra = extra,
-		dispatch = dispatch,
+		loop_src = loop_src,
 	);
 	(src, order)
 }
 
 #[allow(clippy::too_many_arguments)]
 fn micro_shard_wrapper(
-	_index: usize,
+	index: usize,
 	shard: &MicroShard,
 	order: &[usize],
 	fname: &str,
@@ -1141,27 +1176,31 @@ fn micro_shard_wrapper(
 	for (physical, logical) in shard.field_perm.iter().enumerate() {
 		logical_pos[*logical] = physical + 1;
 	}
-	let csv = order
+	let map_entries = order
 		.iter()
-		.map(|&k| shard.codes[k].to_string())
+		.enumerate()
+		.map(|(rank, &k)| format!("[{}]={}", shard.codes[k], rank + 1))
 		.collect::<Vec<_>>()
 		.join(",");
+	let zc_name = format!("_zc{}_{}", index, shard.codes[0]);
+	let mut x = String::new();
+	for da in dead_args {
+		x.push(',');
+		x.push_str(da);
+	}
 	format!(
-		"local {w}=function(E,a,b,c,d,o,R,N) return {f}(E,a,b,c,d,o,R,N,{mb},{ms},{mt},{{{csv}}},{p1},{p2},{p3}{x}) end ",
+		"local {zc}={{{map_entries}}} local {w}=function(E,a,b,c,d,o,R,N) return {f}(E,a,b,c,d,o,R,N,{mb},{ms},{mt},{zc},{p1},{p2},{p3}{x}) end ",
+		zc = zc_name,
+		map_entries = map_entries,
 		w = wname,
 		f = fname,
 		mb = snames.0,
 		ms = snames.1,
 		mt = snames.2,
-		csv = csv,
 		p1 = logical_pos[0],
 		p2 = logical_pos[1],
 		p3 = logical_pos[2],
-		x = if dead_args.is_empty() {
-			String::new()
-		} else {
-			format!(",{}", dead_args.join(","))
-		},
+		x = x,
 	)
 }
 
@@ -1359,6 +1398,7 @@ pub fn generate(
 	env_slots: Option<&[i64; 4]>,
 	env_check: bool,
 	guard: bool,
+	caps: &super::caps::CapabilityManifest,
 ) -> String {
 	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
 	let mut oc_items = Vec::new();
@@ -1448,13 +1488,18 @@ pub fn generate(
 		}
 	};
 	let mut items: Vec<(String, u8)> = (0..active_op_count)
+		.filter(|&i| !v15 || caps.active_ops[i])
 		.map(|i| (OP_NAMES[i].to_string(), map.to_wire[0][i]))
 		.collect();
 	if v15 {
 		items.push(("NopA".to_string(), map.nop_alias[0]));
 	}
 	rng.shuffle(&mut items);
-	let branches = gen_dispatch_tree(&items, &mut body_of, rng, 0);
+	let branches = if !v15 {
+		gen_dispatch_tree(&items, &mut body_of, rng, 0)
+	} else {
+		String::new()
+	};
 
 	// V19 R5-b：mb() 镜像 isa::ConstLcg（fold_key_nl 非线性 + _cpv 明文级联）。
 	let const_loop = r#"local _mc = ("")["char"]
@@ -1478,11 +1523,35 @@ pub fn generate(
         local lo = mb()
         local hi = mb()
         local l = lo + hi * 256
-        local xs = ""
-        for j = 1, l do
-          xs = xs .. _mc(mb())
+        if l == 0 then
+          C[i] = ""
+        elseif l <= 64 then
+          local _cb = {}
+          for j = 1, l do _cb[j] = mb() end
+          C[i] = _mc(UNP(_cb, 1, l))
+        else
+          local _ct, _cn, _cb, _ck = {}, 0, {}, 0
+          for j = 1, l do
+            _ck = _ck + 1
+            _cb[_ck] = mb()
+            if _ck == 64 then
+              _cn = _cn + 1
+              _ct[_cn] = _mc(UNP(_cb, 1, 64))
+              _ck = 0
+            end
+          end
+          if _ck > 0 then
+            _cn = _cn + 1
+            _ct[_cn] = _mc(UNP(_cb, 1, _ck))
+          end
+          C[i] = TCAT(_ct)
         end
-        C[i] = xs
+      elseif t == 5 then
+        C[i] = 1 / 0
+      elseif t == 6 then
+        C[i] = -1 / 0
+      elseif t == 7 then
+        C[i] = 0 / 0
       else
         local m = 0
         local sh = 1
@@ -1501,10 +1570,9 @@ pub fn generate(
           sh2 = sh2 * 128
         end
         local kk = FLR(kp / 2) - 2048
-        local pw = 1
-        if kk >= 0 then for j = 1, kk do pw = pw * 2 end else for j = 1, 0 - kk do pw = pw / 2 end end
-        local v = m * pw
-        if kp % 2 == 1 then v = 0 - v end
+        local v = m
+        if kk >= 0 then for j = 1, kk do v = v * 2 end else for j = 1, 0 - kk do v = v / 2 end end
+        if kp % 2 == 1 then v = -v end
         C[i] = v
       end
     end"#;
@@ -1685,7 +1753,7 @@ __FVARM__        else
         st = 3
       end
     end
-    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, C = C, S = S, ck = CK, ck2 = CK2, W = W, SA = SA, SB = SB, SC = SC, SD = SD__FVRET__ }
+    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, nc = nconst, C = C, S = S, ck = CK, ck2 = CK2, W = W, SA = SA, SB = SB, SC = SC, SD = SD__FVRET__ }
   end"#
             .replace("__UNMASK__", &unmask_pre)
             .replace("__TAGS__", &tag_defs)
@@ -1758,7 +1826,7 @@ __FVARM__        else
 		String::new()
 	};
 
-	if std::env::var("OBSUCVIM_VM_DBG").is_ok() {
+	if crate::audit_gate::audit_enabled("OBSUCVIM_VM_DBG") {
 		eprintln!("[gen] slot_perm={:?} reserved={}", slot_perm, carrier.reserved);
 	}
 	let mut pos_of = [1u8; 4];
@@ -1767,16 +1835,43 @@ __FVARM__        else
 	}
 
 	let slots = prim_slots(rng);
-	let mut bind_idx: Vec<usize> = (0..PRIM_SRC.len()).collect();
+	let prim_enabled = |prim: VmPrim| -> bool {
+		caps.prim_enabled_in_template(prim, v15, luau_target)
+	};
+	let mut bind_idx: Vec<usize> = (0..VmPrim::COUNT).collect();
 	rng.shuffle(&mut bind_idx);
 	let mut p_fill = String::from("local P = {}\n");
 	for &i in &bind_idx {
-		p_fill.push_str(&format!("  P[{}] = {}\n", slots[i], PRIM_SRC[i]));
+		let prim = VmPrim::ALL[i];
+		if prim_enabled(prim) {
+			p_fill.push_str(&format!("  P[{}] = {}\n", slots[i], prim.lua_bind_expr()));
+		}
 	}
-	let unpack_lhs: Vec<&str> = bind_idx.iter().map(|&i| PRIM_NAME[i]).collect();
-	let unpack_rhs: Vec<String> = bind_idx
+	let vm_scope_idx: Vec<usize> = bind_idx
 		.iter()
-		.map(|&i| format!("P[{}]", slots[i]))
+		.copied()
+		.filter(|&i| {
+			let prim = VmPrim::ALL[i];
+			match prim {
+				VmPrim::TablePack | VmPrim::Next => prim_enabled(prim),
+				_ => true,
+			}
+		})
+		.collect();
+	let unpack_lhs: Vec<&str> = vm_scope_idx
+		.iter()
+		.map(|&i| VmPrim::ALL[i].template_ident())
+		.collect();
+	let unpack_rhs: Vec<String> = vm_scope_idx
+		.iter()
+		.map(|&i| {
+			let prim = VmPrim::ALL[i];
+			if prim_enabled(prim) {
+				format!("P[{}]", slots[i])
+			} else {
+				"nil".to_string()
+			}
+		})
 		.collect();
 	let prim_unpack = format!(
 		"local {} = {}",
@@ -1784,12 +1879,24 @@ __FVARM__        else
 		unpack_rhs.join(", ")
 	);
 
-	let mut run_idx: Vec<usize> = (0..PRIM_SRC.len()).collect();
+	let mut run_idx: Vec<usize> = (0..VmPrim::COUNT)
+		.filter(|&i| !matches!(VmPrim::ALL[i], VmPrim::TablePack | VmPrim::Next))
+		.collect();
 	rng.shuffle(&mut run_idx);
-	let run_lhs: Vec<&str> = run_idx.iter().map(|&i| PRIM_NAME[i]).collect();
+	let run_lhs: Vec<&str> = run_idx
+		.iter()
+		.map(|&i| VmPrim::ALL[i].template_ident())
+		.collect();
 	let run_rhs: Vec<String> = run_idx
 		.iter()
-		.map(|&i| format!("P[{}]", slots[i]))
+		.map(|&i| {
+			let prim = VmPrim::ALL[i];
+			if prim_enabled(prim) {
+				format!("P[{}]", slots[i])
+			} else {
+				"nil".to_string()
+			}
+		})
 		.collect();
 	let mut run_unpack = format!(
 		"local {} = {}",
@@ -2036,20 +2143,22 @@ __FVARM__        else
   end"#;
 	let decarrier_fn = format!(
 		r#"local function decarrier(s)
-    local acc = ""
+    local _at, _an = {{}}, 0
     local i = 1
     local n = #s
     local resv = {}
     while i <= n do
+      _an = _an + 1
       if BYTE(s, i) == resv then
-        acc = acc .. (TK[SUB(s, i, i + 4)] or "")
+        _at[_an] = TK[SUB(s, i, i + 4)] or ""
         i = i + 5
       else
-        acc = acc .. SUB(s, i, i)
+        _at[_an] = SUB(s, i, i)
         i = i + 1
       end
     end
-    local raw = ""
+    local acc = TCAT(_at)
+    local _rt, _rn = {{}}, 0
     n = #acc
     for i = 1, n, 5 do
       local v = 0
@@ -2062,8 +2171,10 @@ __FVARM__        else
       local b2 = v % 256; v = FLR(v / 256)
       local b3 = v % 256; v = FLR(v / 256)
       local b4 = v % 256
-      raw = raw .. CHAR(b1, b2, b3, b4)
+      _rn = _rn + 1
+      _rt[_rn] = CHAR(b1, b2, b3, b4)
     end
+    local raw = TCAT(_rt)
     local ln = BYTE(raw, 1) + BYTE(raw, 2) * 256 + BYTE(raw, 3) * 65536 + BYTE(raw, 4) * 16777216
     return SUB(raw, 5, 4 + ln)
   end"#,
@@ -2155,6 +2266,14 @@ __FVARM__        else
 				format!("_mt{:02x}{}", rng.int(0, 255), i),
 			));
 		}
+		let hw_extra_sig = |rng: &mut Rng| -> &'static str {
+			match rng.int(0, 3) {
+				0 => "",
+				1 => ",_hu1",
+				2 => ",_hu1,_hu2",
+				_ => ",_hu1,_hu2,_hu3",
+			}
+		};
 		for (name, wire) in &items {
 			if let Some(recipe) = micro_recipe(name) {
 				let mut variants = Vec::with_capacity(n_micro_shards);
@@ -2175,9 +2294,11 @@ __FVARM__        else
 					chain_epilogue(rng, &wk)
 				};
 				let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng, &wrapper_names);
+				let hsig = hw_extra_sig(rng);
 				micro_fill.push_str(&format!(
-					"HW2[({wire}+AV)%256]=function(E,a,b,c,d) {route}; {tail} end ",
+					"HW2[({wire}+AV)%256]=function(E,a,b,c,d{hsig}) {route}; {tail} end ",
 					wire = *wire as u16,
+					hsig = hsig,
 					route = route,
 					tail = micro_tail,
 				));
@@ -2237,28 +2358,40 @@ __FVARM__        else
 				variants.push(v);
 			}
 			let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng, &wrapper_names);
+			let hsig = hw_extra_sig(rng);
 			micro_fill.push_str(&format!(
-				"HW2[({wire}+AV)%256]=function(E,a,b,c,d) {route}; return end ",
+				"HW2[({wire}+AV)%256]=function(E,a,b,c,d{hsig}) {route}; return end ",
 				wire = *wire as u16,
+				hsig = hsig,
 				route = route,
 			));
 		}
-		// V17 P1-b：super-insn 发射端——tail-less 白名单件 + trampoline 派发槽。
-		// 码位布局（防幻影修正：nop_alias 已占 base+43，空闲区自 base+44 起 20 码位）：
-		//   trampoline_k : base(t)+44+k  (k < FUSE_TOP_K)
-		//   tail-less_j  : base(t)+48+j  (j = FUSE_TAIL_OPS 内序号)
-		// trampoline 运行时经 E.bt.fv[k+1]（+fvm 解掩码）现解本函数词汇的
-		// (wA,wB) 两个 tail-less 码位，顺序内嵌调用；链尾照旧 chain_epilogue。
 		if super_insn {
-			let mut used_t: std::collections::BTreeSet<usize> =
-				std::collections::BTreeSet::new();
+			let mut used_t: std::collections::BTreeMap<
+				usize,
+				(std::collections::BTreeSet<u8>, usize),
+			> = std::collections::BTreeMap::new();
 			for (fi, v) in fv_sets.iter().enumerate() {
 				if !v.is_empty() && fi < s_indices.len() {
-					used_t.insert(s_indices[fi] as usize);
+					let entry = used_t
+						.entry(s_indices[fi] as usize)
+						.or_insert_with(|| (std::collections::BTreeSet::new(), 0));
+					if v.len() > entry.1 {
+						entry.1 = v.len();
+					}
+					for &(wa, wb) in v {
+						entry.0.insert(wa);
+						entry.0.insert(wb);
+					}
 				}
 			}
-			for &t in &used_t {
+			for (&t, (used_fops, max_k)) in &used_t {
 				for (j, op) in super::fuse::FUSE_TAIL_OPS.iter().enumerate() {
+					let op_idx = super::isa::op_index(*op) as u8;
+					if !used_fops.contains(&op_idx) {
+						continue;
+					}
+					let w_u8 = super::isa::OpMap::fused_tail_code(t, j);
 					let op_name = OP_NAMES[super::isa::op_index(*op)];
 					let recipe = micro_recipe(op_name)
 						.expect("whitelist op must have a micro recipe");
@@ -2270,24 +2403,27 @@ __FVARM__        else
 							&micro_shards,
 							&mut micro_used,
 							&mut micro_carriers,
-							rng,
+						rng,
 						);
 						variants.push(v);
 					}
 					let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng, &wrapper_names);
+					let hsig = hw_extra_sig(rng);
 					micro_fill.push_str(&format!(
-						"HW2[({w}+AV)%256]=function(E,a,b,c,d) {route}; return end ",
-						w = super::isa::OpMap::fused_tail_code(t, j) as u16,
+						"HW2[({w}+AV)%256]=function(E,a,b,c,d{hsig}) {route}; return end ",
+						w = w_u8 as u16,
+						hsig = hsig,
 						route = route,
 					));
 				}
-				for k in 0..super::fuse::FUSE_TOP_K {
+				for k in 0..*max_k {
 					let w = super::isa::OpMap::fused_tramp_code(t, k) as u16;
 					let tail = chain_epilogue(rng, &wk);
+					let hsig = hw_extra_sig(rng);
 					micro_fill.push_str(&format!(
-						// V19 R5-b：fv 掩码镜像 fuse::fv_mask_nl（NL16，1-based 下标演化）。
-					"HW2[({w}+AV)%256]=function(E,a,b,c,d) local fv=E.bt.fv local _m=(E.bt.fvm+{k1}*(E.bt.fvm%251+1))%65536 _m=(_m+(_m%256)*((_m-(_m%256))/256))%65536 _m=(_m*257+((_m-(_m%64))/64))%65536 local fe=(fv[{k1}]-_m)%65536 local wa=fe%256 HW2[(wa+AV)%256](E,a,b,c,d) fe=((fe-wa)/256)%256 HW2[(fe+AV)%256](E,c,d,c,d); {tail} end ",
+					"HW2[({w}+AV)%256]=function(E,a,b,c,d{hsig}) local fv=E.bt.fv local _m=(E.bt.fvm+{k1}*(E.bt.fvm%251+1))%65536 _m=(_m+(_m%256)*((_m-(_m%256))/256))%65536 _m=(_m*257+((_m-(_m%64))/64))%65536 local fe=(fv[{k1}]-_m)%65536 local wa=fe%256 HW2[(wa+AV)%256](E,a,b,c,d) fe=((fe-wa)/256)%256 HW2[(fe+AV)%256](E,c,d,c,d); {tail} end ",
 						w = w,
+						hsig = hsig,
 						k1 = k + 1,
 						tail = tail,
 					));
@@ -2371,7 +2507,7 @@ __FVARM__        else
 			let mut kinds_all: Vec<usize> = kinds_set.into_iter().collect();
 			kinds_all.sort_unstable();
 			if !kinds_all.is_empty() {
-				let variant = rng.int(0, 1) as u8;
+				let variant = rng.int(0, 11) as u8;
 				let (fsrc, order) = micro_factory_source(
 					&kinds_all,
 					variant,
@@ -2689,23 +2825,20 @@ __FVARM__        else
 				String::new()
 			};
 			let mut s = String::from(
-				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 ",
+				"local Ct = pf.C local m = pf.nc or 0 local ct, cn, csb, csl, co = {}, {}, {}, {}, {} local si = 1 ",
 			);
-			// V19 M2 R1：ct/csb 车道 SALT 直加 → lane 专属 NL 像 _svk（与 CDEC 镜像）。
 			s.push_str(&sv_ct_ep);
 			s.push_str(
 				"for j = 1, m do co[j] = si local cbase = (PS + i * PT + _svk + qf * CQC + ((bz%65521)*((i*KI+j*NI+qf)%65521))%268435456",
 			);
 			s.push_str(&cenv_off);
 			s.push_str(
-				// V19 R5-b：常量段 ct/csb 密封链——stj/stp 换 fold_key_nl 同式非线性，
-				// 字符串字节流并入 _pv2 明文级联（与下方 CDEC 解码文本严格镜面）。
-				") % 268435456 local v=Ct[j] local tv=TYP(v) local _pv2 = 0 local stj=(cbase+j*CKJ)%268435456 stj=(KM*stj+KC)%268435456 stj=(KM*stj+KC)%268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local pj=tv==\"string\" and CSJ or CNJ local stp=(cbase+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 if tv == \"number\" then if v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + _sp % 65536 else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(ns, cb) + _spb % 256) % 256 _pv2 = BYTE(ns, cb) si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(v, cb) + _spb % 256) % 256 _pv2 = BYTE(v, cb) si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end end",
+				") % 268435456 local v=Ct[j] local tv=TYP(v) local _pv2 = 0 local stj=(cbase+j*CKJ)%268435456 stj=(KM*stj+KC)%268435456 stj=(KM*stj+KC)%268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local pj=tv==\"string\" and CSJ or CNJ local stp=(cbase+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 if tv == \"number\" then if v ~= v then ct[j] = (6 + tm[1] + stj) % 65536 elseif v == 1/0 then ct[j] = (6 + tm[2] + stj) % 65536 elseif v == -1/0 then ct[j] = (6 + tm[3] + stj) % 65536 elseif v == 0 and 1 / v < 0 then ct[j] = (6 + tm[4] + stj) % 65536 elseif v % 1 == 0 and v > -1125899906842624 and v < 1125899906842624 then ct[j] = (tm[2] + stj) % 65536 cn[j] = v + _sp % 65536 else local ns = TOSTR(v) ct[j] = (tm[6] + stj) % 65536 csl[j] = #ns for cb = 1, #ns do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(ns, cb) + _spb % 256) % 256 _pv2 = BYTE(ns, cb) si = si + 1 end end elseif tv == \"string\" then ct[j] = (tm[3] + stj) % 65536 csl[j] = #v for cb = 1, #v do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 csb[si] = (BYTE(v, cb) + _spb % 256) % 256 _pv2 = BYTE(v, cb) si = si + 1 end elseif tv == \"boolean\" then if v then ct[j] = (tm[4] + stj) % 65536 else ct[j] = (tm[5] + stj) % 65536 end else ct[j] = (tm[1] + stj) % 65536 end Ct[j] = nil end pf.C = nil pf.nc = nil",
 			);
 			s
 		} else {
 			String::from(
-				"local Ct = pf.C local m = 0 for j in pairs(Ct) do if j > m then m = j end end local ct, cn, csb, csl = nil, nil, nil, nil",
+				"local Ct = pf.C local m = pf.nc or 0 local ct, cn, csb, csl = nil, nil, nil, nil",
 			)
 		};
 		// V17 P1-b 修复（R072）：EP[i] 是选择性字段拷贝，原表漏拷 fv/fvm，
@@ -2824,7 +2957,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			);
 		}
 		let enc_body = format!(
-			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _sn=0 for _si=1,3 do local _so=(_si<3) and {{}} or function() end local _ts=TOSTR(_so) for _i=1,#_ts do _sn=(_sn*31+BYTE(_ts,_i))%268435456 _sn=(_sn+(_sn%16384)*((_sn-(_sn%16384))/16384))%268435456 end end SALT=(_sn*257+((_sn-(_sn%65536))/65536))%268435456 if TYP(CLK)==\"function\" and TYP(PCAL)==\"function\" then local _cko,_ckv=PCAL(CLK) if _cko and TYP(_ckv)==\"number\" then SALT=(SALT+(_ckv%65536))%268435456 end end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local bz=(BD+(pf.iz1%65521)*(1+(i+FQ)%65521)+(pf.iz2%65521)*(1+(i+KQ)%65521))%268435456 pf.iz1=nil pf.iz2=nil local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS+(bz%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} {svkm}local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(bz%65521)*CI2+(_svq%65521))%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 {svbx}for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + _sv + qf * CQB + ((bz%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(bz%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(bz%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
+			"local P = PF_ local EP = {{}} local QAG=0 local SALT = 0 do local _sn=0 for _si=1,3 do local _so=(_si<3) and {{}} or function() end local _ts=TOSTR(_so) for _i=1,#_ts do _sn=(_sn*31+BYTE(_ts,_i))%268435456 _sn=(_sn+(_sn%16384)*((_sn-(_sn%16384))/16384))%268435456 end end SALT=(_sn*257+((_sn-(_sn%65536))/65536))%268435456 if TYP(CLK)==\"function\" and TYP(PCAL)==\"function\" then local _cko,_ckv=PCAL(CLK) if _cko and TYP(_ckv)==\"number\" then SALT=(SALT+FLR(_ckv*1000000)%65536)%268435456 end end end local BL = {{ {blists} }} local S_IDX = {{{s_idxs}}} local QP={{{qpos}}} local CM,CA,CB,CC,CD,CP,CF,CQB,CQC,FQ,FI,KQ,KI,BQ,BI,LB,LS,TB,TS,RQ,RI,RS,RP,MQ,MI,MM,MA,NQ,NI,PM,CM2,CQ2,CI2,CNJ,CSJ={cm},{ca},{cb},{cc},{cd},{cp},{cf},{cqb},{cqc},{fq},{fi},{kq},{ki},{bq},{bi},{lb},{ls},{tb},{ts},{rq},{ri},{rs},{rp},{mq},{mi},{mm},{ma},{nq},{ni},{pm},{cm2},{cq2},{ci2},{cnj},{csj} for i = 1, #P do local pf = P[i] local bz=(BD+(pf.iz1%65521)*(1+(i+FQ)%65521)+(pf.iz2%65521)*(1+(i+KQ)%65521))%268435456 pf.iz1=nil pf.iz2=nil local qf=(i*CF)%65521 local qp=QP[i] for qj=1,#qp do local q=qp[qj] qf=(qf*CM+pf.SA[q]*CA+pf.SB[q]*CB+pf.SC[q]*CC+pf.SD[q]*CD+q*CP)%65521 end qf=qf+1 QAG=(QAG*257+qf)%268435456 local fkm=2*((KM+qf*FQ+i*FI)%16000000)+1 local fkc=(KC+qf*KQ+i*KI)%268435456 local fpb=(PB+qf*BQ+i*BI)%268435456 local frp=3+((qf*RQ+i*RI)%7) local dp=(LB+i*LS)%24 local pl={{0,1,2,3}} local pm={{}} local ds={{6,2,1,1}} for ps=1,4 do local pk=ps==4 and 0 or FLR(dp/ds[ps]) if ps<4 then dp=dp%ds[ps] end pm[ps]=pl[pk+1] for z=pk+1,#pl-1 do pl[z]=pl[z+1] end pl[#pl]=nil end local pbs=1 for ps=1,4 do if pm[ps]==1 then pbs=ps break end end local td=(TB+i*TS+(bz%720)*(1+MQ%719))%720 local tl={{0,1,2,3,4,5}} local tm={{}} local tf={{120,24,6,2,1,1}} for tx=1,6 do local tk=tx==6 and 0 or FLR(td/tf[tx]) if tx<6 then td=td%tf[tx] end tm[tx]=tl[tk+1] for z=tk+1,#tl-1 do tl[z]=tl[z+1] end tl[#tl]=nil end local bs = BL[i] local nb = #bs local bl, bo, bm = {{}}, {{}}, {{}} for bi = 1, nb do local s0 = bs[bi] local e0 = (bi < nb) and (bs[bi + 1] - 1) or #pf.W bl[bi] = e0 - s0 + 1 bm[s0] = bi bo[bi] = (bi > 1) and (bo[bi - 1] + bl[bi - 1] * 5) or 1 end local ST={{pf.SA,pf.SB,pf.SC,pf.SD}} {svkm}local Wt,ks=pf.W,ST[pbs] local km = {{}} for j = 1, #Wt do if {cw} then local ci=ks[j]+1 local ct=(ci*CM2+qf*CQ2+i*CI2+(bz%65521)*CI2+(_svq%65521))%65521 ks[j]=ct km[#km+1]=ct km[#km+1]=ci end end local bx = {{}} local xo = 1 {svbx}for bi = 1, nb do local s0 = bs[bi] local st = (PS + i * PT + s0 * fpb + _sv + qf * CQB + ((bz%65521)*((i*FI+qf*FQ+s0*RP)%65521))%268435456) % 268435456 for p = s0, s0 + bl[bi] - 1 do {enc_lanes} if (p-s0+1)%frp==0 then st=(st+qf*RS+p*RP)%268435456 end end end local st = (PS + i * PT + SALT) % 268435456 {cblock} local mst=(qf*MQ+i*MI+MA+(bz%65536)*((i+MQ)%65536))%65536 local mu={{}} for uj=1,#pf.upsrc do mst=(mst*MM+MA+uj)%65536 mu[uj]=(pf.upsrc[uj]+mst)%65536 end local mnp=(pf.nparams+(qf*NQ+i*NI+MA+(bz%65536)*((i+NI)%65536))%65536)%65536 mst=nil EP[i] = {{ bs = bs, bl = bl, bo = bo, bm = bm, bx = bx, sx = (i+PM)%65521, S = pf.S, dispatchS = S_IDX[i], us = mu, np = mnp, km = km, {cfields} }} pf.W, pf.SA, pf.SB, pf.SC, pf.SD, pf.upsrc = nil, nil, nil, nil, nil, nil P[i] = false end for i = 1, #EP do local km = EP[i].km for j = 1, #km, 2 do EP[i][km[j]] = EP[km[j+1]] km[j]=nil km[j+1]=nil end EP[i].km = nil end return EP[#EP], SALT, QAG",
 			blists = bl_lists.join(", "),
 			s_idxs = s_idx_lists.join(", "),
 			qpos = qpos_lists.join(","),
@@ -2928,7 +3061,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			.collect::<String>()
 			+ "else BD=(BD+BSSKPX)%268435456 end";
 		let mut bss_static_src = format!(
-			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch_arm}{dispatch} _bi=_bi+1 end end end",
+			"function(BYTE,CHAR,FLR,SUB,AL,TK,decarrier,r16,CKM,CKC,BKM,BKC,BSEED,BSTEP,TYP,TOSTR,UNP,TCAT,PCAL,CLK) local OS={{{os}}} local OS2={{{os2}}} {parse} return function(FN_,NOPA,PS,PT,KM,KC,PB,CKJ) local PF_={{}} local _bp={{{program}}} local _bc=0 _bc=(_bc*257+{mask})%268435456 _bc=(_bc*257+{step})%268435456 for _bj=1,#_bp do _bc=(_bc*257+_bp[_bj])%268435456 end local BD=(_bc-{expected})%268435456 local _bi=1 while _bi<=#_bp do local _op=(_bp[_bi]-({mask}+_bi*{step})%256)%256 {dispatch_arm}{dispatch} _bi=_bi+1 end end end",
 			os = os_list,
 			os2 = os_list2,
 			parse = parse_fn,
@@ -2951,24 +3084,22 @@ let chaff_lane = rng.int(1, 4) as usize;
 			};
 			let base_env_s = if cenv_active { " + cef" } else { "" };
 			let mut s = String::from(
-				"function(q, CHAR, UNP, TONUM) local fi=((q.sx-PM-1)%65521)+1 local ct, cn, csb, csl, co = q.ct, q.cn, q.csb, q.csl, q.co ",
+				"function(q, CHAR, UNP, TONUM, TCAT, SMT) local fi=((q.sx-PM-1)%65521)+1 local ct, cn, csb, csl, co = q.ct, q.cn, q.csb, q.csl, q.co ",
 			);
 			s.push_str(&tag_decode_rt);
 			s.push_str(probe_call);
-			// V19 M2 R1：CDEC base 的 SLTC 直加 → 同式 NL 像 _svk（与编码侧镜面）。
 			s.push_str(&sv_ct_rt);
 			s.push_str(&format!(
 				"local pzc=((PZ2%65521)*((fi+KQ)%65521)+(PZ3%65521)*((QF[fi]+KI)%65521)+(PZ4%65521)*((fi+NQ)%65521)+(MZD%65521)*((QF[fi]+NI)%65521))%268435456 local base = (PS + fi * PT + _svk + QF[fi] * CQC + pzc{}) % 268435456 ",
 				base_env_s
 			));
 			s.push_str(
-				// V19 R5-b：CDEC 解码镜像——非线性折叠 + _pv2 明文级联（与 boot 编码侧镜面）。
-				"local SCH = (\"\")[\"char\"] local C = {} local done = {} local MT = {} MT.__index = function(t, j) if done[j] then return rawget(t, j) end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local ty = (ct[j] - stj) % 65536 local pj=ty==tm[3] and CSJ or CNJ local stp=(base+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 local _pv2 = 0 local v if ty == tm[2] then v = cn[j] - _sp % 65536 elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 s = s .. SCH(_b) _pv2 = _b si = si + 1 end if ty == tm[3] then return s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true rawset(t, j, v) return v end return setmetatable(C, MT) end",
+				"local C = {} local done = {} local MT = {} MT.__index = function(t, j) if done[j] then return nil end if ct[j] == nil then done[j] = true return nil end local stj = (base + j * CKJ) % 268435456 stj = (KM * stj + KC) % 268435456 stj = (KM * stj + KC) % 268435456 local _sj=(stj+(stj%16384)*((stj-(stj%16384))/16384))%268435456 _sj=(_sj*257+((_sj-(_sj%65536))/65536))%268435456 stj=_sj%65536 local ty = (ct[j] - stj) % 65536 local pj=ty==tm[3] and CSJ or CNJ local stp=(base+j*pj)%268435456 stp=(KM*stp+KC)%268435456 stp=(KM*stp+KC)%268435456 local _sp=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _sp=(_sp*257+((_sp-(_sp%65536))/65536))%268435456 local _pv2 = 0 local v if ty == tm[2] then v = cn[j] - _sp % 65536 elseif ty == 6 + tm[1] then v = 0/0 elseif ty == 6 + tm[2] then v = 1/0 elseif ty == 6 + tm[3] then v = -1/0 elseif ty == 6 + tm[4] then v = -1/(1/0) elseif ty == tm[3] or ty == tm[6] then local l = csl[j] local si = co[j] local s = \"\" if l > 0 then if l <= 64 then local _sb = {} for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 _sb[x] = _b _pv2 = _b si = si + 1 end s = CHAR(UNP(_sb, 1, l)) else local _st, _sn, _sb, _sk = {}, 0, {}, 0 for x = 1, l do stp = (KM * stp + KC + _pv2) % 268435456 local _spb=(stp+(stp%16384)*((stp-(stp%16384))/16384))%268435456 _spb=(_spb*257+((_spb-(_spb%65536))/65536))%268435456 local _b=(csb[si] - _spb % 256) % 256 _sk = _sk + 1 _sb[_sk] = _b _pv2 = _b si = si + 1 if _sk == 64 then _sn = _sn + 1 _st[_sn] = CHAR(UNP(_sb, 1, 64)) _sk = 0 end end if _sk > 0 then _sn = _sn + 1 _st[_sn] = CHAR(UNP(_sb, 1, _sk)) end s = TCAT(_st) end end if ty == tm[3] then return s else v = TONUM(s) end elseif ty == tm[4] then v = true elseif ty == tm[5] then v = false end done[j] = true if v ~= nil then t[j] = v end return v end return SMT(C, MT) end",
 			);
 			s
 		} else {
 			String::from(
-				"function(q, CHAR, UNP, TONUM) local C = q.C return C end",
+				"function(q, CHAR, UNP, TONUM, TCAT, SMT) local C = q.C return C end",
 			)
 		};
 
@@ -3029,7 +3160,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			store = cache_store,
 		);
 		let rt_newe = format!(
-			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    local vd=(QF[fi]*NQ+fi*NI+MM)%65521\n    local pg=((PZ1%65521)*((fi+FQ)%65521)+(PZ2%65521)*((QF[fi]+KQ)%65521)+(PZ3%65521)*((fi+NI)%65521)+(PZ4%65521)*((QF[fi]+RI)%65521)+(MZD%65521)*((fi+MM)%65521))%268435456\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
+			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    local vd=(QF[fi]*NQ+fi*NI+MM)%65521\n    local pg=((PZ1%65521)*((fi+FQ)%65521)+(PZ2%65521)*((QF[fi]+KQ)%65521)+(PZ3%65521)*((fi+NI)%65521)+(PZ4%65521)*((QF[fi]+RI)%65521)+(MZD%65521)*((fi+MM)%65521))%268435456\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM, TCAT, SMT)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
 		);
 		let (sig_tail, env_mix_line, env_coef2) = if env_check {
@@ -3118,7 +3249,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			sigtail = sig_tail,
 			pz3_line = "local PZ3=(_qk-RTQCKX)%268435456",
 			pz4_line = "local PZ4=(_rc-RTPCX)%268435456",
-			select_slot = slots[12],
+			select_slot = slots[VmPrim::Select as usize],
 			envmix = env_mix_line,
 			qf = qf_expected,
 			cqb = chaff_block_e,
@@ -3284,19 +3415,31 @@ let chaff_lane = rng.int(1, 4) as usize;
             nonce = vault_nonce,
             ckj = vault_ckj_e
         );
-        let shell_params: Vec<&str> = vec![
-            "AL", "BYTE", "CHAR", "FLR", "SUB", "CARR1_", "CARR2_", "CARR3_", "CARR4_", "EV",
-            "FN_", "NOPA_", "TK_", "DC1", "R16", "CKM_", "CKC_", "BKM_",
-            "BKC_", "BSEED_", "BSTEP_", "TYP_", "TSTR_", "GET_", "NONCE_",
-        ];
+        let shell_params: Vec<&str> = {
+            let mut v = vec![
+                "AL", "BYTE", "CHAR", "FLR", "SUB", "CARR1_", "CARR2_", "CARR3_", "CARR4_",
+                "FN_", "NOPA_", "TK_", "DC1", "R16", "CKM_", "CKC_", "BKM_",
+                "BKC_", "BSEED_", "BSTEP_", "TYP_", "TSTR_", "UNP_", "TCAT_", "PCAL_", "CLK_",
+                "GET_", "NONCE_",
+            ];
+            if guard {
+                v.push("EV");
+                v.push("NXT");
+            }
+            v
+        };
         let shell_args: Vec<String> = {
             let mut v: Vec<String> = vec![
-                "AL", "BYTE", "CHAR", "FLR", "SUB", "FN", "FN", "FN", "FN", "EV",
+                "AL", "BYTE", "CHAR", "FLR", "SUB", "FN", "FN", "FN", "FN",
                 "FN", "NOPA", "TK", "decarrier", "r16", "CKM", "CKC", "BKM",
-                "BKC", "BSEED", "BSTEP", "TYP", "TSTR",
+                "BKC", "BSEED", "BSTEP", "TYP", "TSTR", "UNP", "TCAT", "PCAL", "CLK",
             ].into_iter().map(|x| x.to_string()).collect();
             v.push(vault_get_name.clone());
             v.push(vault_nonce_name.clone());
+            if guard {
+                v.push("EV".to_string());
+                v.push("NXT".to_string());
+            }
             v
         };
         let n_par = shell_params.len();
@@ -3352,7 +3495,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 		manifest_key("HBOOT_PHASE_CK", hb_phase_checksum as u64);
 		manifest_key("HBOOT_PHASE_POISON", hb_phase_poison as u64);
         let hb_factory =
-            "_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_)".to_string();
+            "_lv1=BSSF_(BYTE,CHAR,FLR,SUB,AL,TK_,DC1,R16,CKM_,CKC_,BKM_,BKC_,BSEED_,BSTEP_,TYP_,TSTR_,UNP_,TCAT_,PCAL_,CLK_)".to_string();
 		let hb_execute =
 			"_b1,_b2,_b3=_lv1(FN_,NOPA_,PS_,PT_,KM_,KC_,(PB_+HD1)%268435456,CKJ_)".to_string();
 		let hb_seal = "_ready=1".to_string();
@@ -3409,7 +3552,7 @@ let chaff_lane = rng.int(1, 4) as usize;
 			m1 = SH_M1,
 			m2 = SH_M2,
 		);
-		if std::env::var("OBSUCVIM_HBOOT_DBG").is_ok() {
+		if crate::audit_gate::audit_enabled("OBSUCVIM_HBOOT_DBG") {
 			eprintln!("HBOOT_POST_SAN: {}", hboot_src);
 		}
 		let hboot_static_src =
@@ -3537,6 +3680,10 @@ let f_ty = fold31("Vector3Vector3");
 		let nlok_delta_e = ke.key_expr(nlok_delta, None, rng);
 		manifest_key("NLOK_DELTA", nlok_delta as u64);
 		let strlit = pool.lit("string");
+		let tablit = pool.lit("table");
+		let fnlit = pool.lit("function");
+		let clit = pool.lit("[C]");
+		let ev_bind = if guard { "local EV = GFE(1) " } else { "" };
 		let probe_mix_hi = (probe_mix * 65536) % KEY_MOD;
 		let probe_mix_hi_e = ke.key_expr(probe_mix_hi, None, rng);
 		manifest_key("PROBE_MIX_HI", probe_mix_hi as u64);
@@ -3551,7 +3698,7 @@ let f_ty = fold31("Vector3Vector3");
 			"(({})-({}))%268435456",
 			meta_seed_full, meta_seed_e
 		);
-		if std::env::var("OBSUCVIM_BIND_DBG").is_ok() {
+		if crate::audit_gate::audit_enabled("OBSUCVIM_BIND_DBG") {
 			eprintln!(
 				"MIRROR hbd_clean=0 meta_seed={} comp={} env_exp={} c_fold={}",
 				meta_seed, comp, env_exp, c_fold
@@ -3579,16 +3726,17 @@ let f_ty = fold31("Vector3Vector3");
 					obf_num(rng.int(17, 47) as u64, rng)
 				)),
 				_ => av_fold.push_str(&format!(
-					"local avc = CLK and CLK() or 0 local avn = FLR(avc * {}) for avj = 1, 5 do AV = (AV * {} + avn % 256) % 268435456 avn = FLR(avn / 256) end ",
+					"local avc = TYP(CLK) == {fnlit} and CLK() or 0 local avn = FLR(avc * {}) for avj = 1, 5 do AV = (AV * {} + avn % 256) % 268435456 avn = FLR(avn / 256) end ",
 					obf_num((rng.int(100_001, 9_999_999) | 1) as u64, rng),
-					obf_num(rng.int(17, 47) as u64, rng)
+					obf_num(rng.int(17, 47) as u64, rng),
+					fnlit = fnlit,
 				)),
 			}
 		}
         let hw_expand = if v15 {
-            // R073 体积：别名拷贝逐对展开折叠为 pairs 表循环（语义逐条等价）。
+            // R073 体积 + P2-C：仅对本构建活跃 opcode 展开方言别名拷贝。
             let mut hw_pairs: Vec<String> = Vec::new();
-            for i in 0..active_op_count {
+            for i in (0..active_op_count).filter(|&i| caps.active_ops[i]) {
                 let base = map.to_wire[0][i] as u16;
                 for tt in 1..4 {
                     let w = map.to_wire[tt][i] as u16;
@@ -3631,15 +3779,15 @@ let f_ty = fold31("Vector3Vector3");
   local MZD = 0
   local SH1, SH2
   local HPH
-  local PD = function() local z0, z1 = 0, 1 while z0 < 4294967296 do z0 = (z0 * 1103515245 + 12345) % 268435456 z1 = (z1 * 80659 + 95050511) % 268435456 if z0 == z1 and z0 == 123456789 then break end end end
+  local PD = function() local z0, z1 = 0, 1 while z0 < 65536 do z0 = z0 + 1 z1 = (z1 * 80659 + 95050511 + z0) % 268435456 end local zf = false zf = zf[zf] local zn return zn[z1] end
   local MPF
   local CLK
   local CENVPROBE{env_decl}
   {hboot_fill}{env_fill}do
     local LS = GFE(0)[{v_ls}]
-    local TSTR = GFE(0)[{v_ts}]
+    local TSTR = GFE(0)[{v_ts}] or TSTR
     local DBG = GFE(0)[{v_dbg}]
-    local INF = DBG and DBG[{v_inf}]
+    local INF = (DBG == nil or (TYP(DBG) == {tablit} and DBG[{v_inf}] == nil)) and (function() return {clit} end) or (TYP(DBG) == {tablit} and DBG[{v_inf}])
     local OS_ = GFE(0)[{v_os}]
     CLK = OS_ and OS_[{v_clock}]
     local pb = 0
@@ -3657,22 +3805,14 @@ let f_ty = fold31("Vector3Vector3");
 -- baseline; two CONSECUTIVE windows slower than 100x baseline perturb a
 -- frame-local numeric lane. Its per-function delay changes both later block
 -- keys and the selected micro shard; no global flag or fixed poison literal.
-    do
+    {pcall_pre_guard}do
       local ok, sr = PCAL(function() return INF(LS, {v_s}) end)
       if ok and TYP(sr) == {strlit} then
         for i = 1, #sr do pb = (pb * 31 + BYTE(sr, i)) % 268435456 end
       end
       pb = (pb + (ok and 0 or {nlok_delta})) % 268435456
     end
-    {env_a}{env_b}{env_c}{env_probe}local EV = {{}}
-    do
-      local _evs = GFE(1)
-      if TYP(_evs) == "table" then
-        local _evk, _evv = next(_evs)
-        while _evk ~= nil do EV[_evk] = _evv _evk, _evv = next(_evs, _evk) end
-      end
-    end
-    do
+    {env_a}{env_b}{env_c}{env_probe}{ev_bind}do
       {av_fold}
     end
 -- NOTE (H4-2C1): BSS is now a one-shot static numeric phase machine. It is
@@ -3694,7 +3834,7 @@ let f_ty = fold31("Vector3Vector3");
     if not _hok then {hbootfail} end
     HW, MPF, SALT, SH1, SH2, CHQ{hp_recv} = _r1() _r1 = nil{env_extract}
     {hp_stash}
-    {ct_fill}{cx_fill}for w, f in pairs(HW) do if w < 256 then HW2[(w + AV) % 256] = f end end
+    {ct_fill}{cx_fill}for w = 0, 255 do local f = HW[w] if f then HW2[(w + AV) % 256] = f end end
     {micro_fill}{hw_expand}{env_mzd}
     HW = nil
   end"#,
@@ -3709,7 +3849,12 @@ let f_ty = fold31("Vector3Vector3");
 		hp_stash = hp_stash,
 		vault_def = vault_def,
 		vault_args = vault_args,
-		hbootfail = "PD()",
+		hbootfail = if guard { "PD()" } else { "_r1()" },
+		pcall_pre_guard = if guard {
+			format!("if TYP(PCAL) ~= {fnlit} then PD() end ")
+		} else {
+			String::new()
+		},
 		env_decl = env_decl,
 		env_frag_decl = env_frag_decl,
 		env_extract = env_extract,
@@ -3720,7 +3865,7 @@ let f_ty = fold31("Vector3Vector3");
 			env_b = env_gate_b,
 			env_c = env_gate_c,
 			env_probe = cenv_probe,
-			strlit = strlit,
+			strlit = strlit, tablit = tablit, clit = clit, ev_bind = ev_bind,
 			v_ls = v_ls, v_ts = v_ts, v_dbg = v_dbg, v_inf = v_inf,
 			v_os = v_os, v_clock = v_clock,
 			v_s = v_s,
@@ -3731,7 +3876,7 @@ let f_ty = fold31("Vector3Vector3");
 			shcc1 = sh_cc1_e, shcc2 = sh_cc2_e, shccc = sh_ccc_e,
 		);
 		hfrag = build.clone();
-		if std::env::var("OBSUCVIM_BUILD_DBG").is_ok() {
+		if crate::audit_gate::audit_enabled("OBSUCVIM_BUILD_DBG") {
 			eprintln!("BUILD_DBG: {}", build);
 		}
 		String::new()
@@ -3745,19 +3890,24 @@ let f_ty = fold31("Vector3Vector3");
 		(fetch, branches)
 	};
 
-	let callcap_src = if v15 {
-		format!(
-			"local TP = GFE(0)[{table}][{pack}]
+	let need_call_rt = !v15 || caps.has_prim(super::caps::VmPrim::TablePack);
+	let need_mget_rt = !v15 || caps.has_prim(super::caps::VmPrim::GetMetatable);
+	let need_len_meta = !v15 || caps.is_op_active(super::isa::Op::Len);
+
+	let callcap_src = if !need_call_rt {
+		String::from("local TP, callcap")
+	} else if v15 && luau_target {
+		String::from(
+			"local TP = TPACK
   local function callcap(f, args, nargs)
     local r = TP(f(U(args, 1, nargs)))
     return r, r.n
   end",
-			table = pool.lit("table"),
-			pack = pool.lit("pack"),
 		)
 	} else {
 		format!(
-			"local function callcap(f, args, nargs)
+			"local TP
+  local function callcap(f, args, nargs)
     local w = function(...)
       local t = {{ ... }}
       return t, SEL({hash}, ...)
@@ -3767,13 +3917,21 @@ let f_ty = fold31("Vector3Vector3");
 			hash = pool.lit("#"),
 		)
 	};
-	let rt_helpers = format!(
-		"local function mget(x, k)
+	let mget_src = if need_mget_rt {
+		format!(
+			"local function mget(x, k)
     local mt = GMT(x)
     if TYP(mt) == {table} then return mt[k], false end
     return nil, mt ~= nil
-  end
-  local function resolve_call(f)
+  end",
+			table = pool.lit("table"),
+		)
+	} else {
+		String::from("local mget")
+	};
+	let resolve_call_src = if need_call_rt {
+		format!(
+			"local function resolve_call(f)
     if TYP(f) == {function} then return f, false end
     local mt = GMT(f)
     if TYP(mt) == {table} then
@@ -3784,21 +3942,27 @@ let f_ty = fold31("Vector3Vector3");
         if TYP(cf) == {function} then return cf, false end
       end
     elseif mt ~= nil then
-      -- A protected __metatable value is intentionally opaque. Keep the
-      -- object callable through Luau's native path instead of indexing the
-      -- protection sentinel as if it were the real metatable.
       return f, false
     end
     ERR({callmsg} .. TYP(f) .. {value}, 0)
-  end
-  {callcap}",
-		function = pool.lit("function"),
-		call = pool.lit("__call"),
-		table = pool.lit("table"),
-		callmsg = pool.lit("attempt to call a "),
-		value = pool.lit(" value"),
-		callcap = callcap_src,
-	);
+  end",
+			function = pool.lit("function"),
+			call = pool.lit("__call"),
+			table = pool.lit("table"),
+			callmsg = pool.lit("attempt to call a "),
+			value = pool.lit(" value"),
+		)
+	} else {
+		String::from("local resolve_call")
+	};
+	let rt_helpers = format!("{}\n  {}\n  {}", mget_src, resolve_call_src, callcap_src);
+	let len_probe_src = if need_len_meta {
+		String::from(
+			"local _probe = SMT({}, { __len = function() return 99 end })\n  local HAS_LEN_META = (_probe == nil) or false\n  do\n    local okp, vp = PCAL(function() return #_probe end)\n    HAS_LEN_META = okp and vp == 99\n  end",
+		)
+	} else {
+		String::from("local HAS_LEN_META = false")
+	};
 	let ms_block = if v15 { pool.boot_block() } else { String::new() };
 
 	let vm_params = params.clone();
@@ -3809,8 +3973,7 @@ let f_ty = fold31("Vector3Vector3");
 		entry_run, entry_pf
 	);
 	let run_block: String = if v15 {
-		run_unpack = String::new();
-		run_soa = String::new();
+		let _ = (&run_unpack, &run_soa);
 		let call_tail = if env_check { ", EVD" } else { "" };
 		format!(
 			"local RUN = RTFRAG(RPK1, RPK2, RPK3, RPK4, RPK5, SALT, P, G, U, FLOOR, MS, AV, HW2, TP, mget, resolve_call, callcap, HAS_LEN_META, CT1, CT2, CT3, CT4, CX1, CX2, CX3, CX4, CLK, SH1, SH2, RPK6, RPK7, RPK8, RPK9, RPK10, RPK11, CKJ, CENVPROBE, MZD{}) RTFRAG = nil",
@@ -3848,12 +4011,7 @@ let f_ty = fold31("Vector3Vector3");
   local G = GFE(0)
   local U = UNP
   local FLOOR = FLR
-  local _probe = SMT({{}}, {{ __len = function() return 99 end }})
-  local HAS_LEN_META = (_probe == nil) or false
-  do
-    local okp, vp = PCAL(function() return #_probe end)
-    HAS_LEN_META = okp and vp == 99
-  end
+  {len_probe}
   {rt_helpers}
   {hub_decl}
   {run_block}
@@ -3874,6 +4032,7 @@ end
 		decode_seg = decode_seg,
 		ck_consts = ck_consts,
 		parse_fn = parse_fn_vis,
+		len_probe = len_probe_src,
 		rt_helpers = rt_helpers,
 		ms_block = ms_block,
 	)

@@ -455,18 +455,24 @@ impl Const {
 				out.push(lcg.mask(*b as u8));
 			}
 			Const::Num(v) => {
-				out.push(lcg.mask(4));
-				let (neg, m, k) = num_to_dyadic(*v);
-				let mut mbytes: Vec<u8> = Vec::new();
-				encode_varint64(&mut mbytes, m);
-				for b in &mbytes {
-					out.push(lcg.mask(*b));
-				}
-				let kpack = (((k + 2048) * 2 + neg as i32) as u64) & 0xFFFF;
-				let mut kbytes: Vec<u8> = Vec::new();
-				encode_varint64(&mut kbytes, kpack);
-				for b in &kbytes {
-					out.push(lcg.mask(*b));
+				if v.is_nan() {
+					out.push(lcg.mask(7));
+				} else if v.is_infinite() {
+					out.push(lcg.mask(if v.is_sign_negative() { 6 } else { 5 }));
+				} else {
+					out.push(lcg.mask(4));
+					let (neg, m, k) = num_to_dyadic(*v);
+					let mut mbytes: Vec<u8> = Vec::new();
+					encode_varint64(&mut mbytes, m);
+					for b in &mbytes {
+						out.push(lcg.mask(*b));
+					}
+					let kpack = (((k + 2048) * 2 + neg as i32) as u64) & 0xFFFF;
+					let mut kbytes: Vec<u8> = Vec::new();
+					encode_varint64(&mut kbytes, kpack);
+					for b in &kbytes {
+						out.push(lcg.mask(*b));
+					}
 				}
 			}
 			Const::Str(b) => {
@@ -708,5 +714,644 @@ mod tests {
 			}
 		}
 		assert!(diff > 3000, "nonlinear fold must diverge broadly, diff={diff}");
+	}
+
+	#[test]
+	fn op_meta_covers_all_43_ops_consistently() {
+		assert_eq!(ALL_OPS.len(), N_OPS);
+		for (i, &op) in ALL_OPS.iter().enumerate() {
+			assert_eq!(op_index(op), i);
+			assert_eq!(Op::from_index(i), Some(op));
+			let m = op.meta();
+			assert_eq!(m.op, op);
+			assert_eq!(m.name, OP_NAMES[i]);
+			assert_eq!(Op::from_name(m.name), Some(op));
+			// Any opcode that alters PC non-linearly, calls host functions, or is
+			// multi-return sensitive must NEVER be marked fuse_head_ok or fuse_tail_ok.
+			if m.pc_effect != PcEffect::Fallthrough || m.may_call_host || m.multiret_sensitive {
+				assert!(
+					!m.fuse_head_ok && !m.fuse_tail_ok,
+					"unsafe fuse flag on {}",
+					m.name
+				);
+			}
+		}
+		assert_eq!(Op::from_index(N_OPS), None);
+	}
+
+	#[test]
+	fn const_encode_roundtrips_ieee754_signed_zero_nan_inf_and_binary_strings() {
+		let samples = vec![
+			Const::Nil,
+			Const::Bool(false),
+			Const::Bool(true),
+			Const::Num(0.0),
+			Const::Num(-0.0),
+			Const::Num(f64::INFINITY),
+			Const::Num(f64::NEG_INFINITY),
+			Const::Num(f64::NAN),
+			Const::Num(9_007_199_254_740_991.0),
+			Const::Num(-9_007_199_254_740_991.0),
+			Const::Num(1.2345678901234567e-200),
+			Const::Num(f64::MIN_POSITIVE),
+			Const::Str(Vec::new()),
+			Const::Str((0u8..=255).collect()),
+			Const::Str(vec![b'Z'; 300]),
+		];
+
+		let mut enc = Vec::new();
+		let mut enc_lcg = ConstLcg::new(0x1234_5678, 1_103_515_245 % 268_435_456 | 1, 12_345);
+		for c in &samples {
+			c.encode(&mut enc, &mut enc_lcg);
+		}
+
+		let mut dec_lcg = ConstLcg::new(0x1234_5678, 1_103_515_245 % 268_435_456 | 1, 12_345);
+		let mut pos = 0usize;
+		let mut mb = || {
+			let b = dec_lcg.unmask(enc[pos]);
+			pos += 1;
+			b
+		};
+
+		for expected in &samples {
+			let tag = mb();
+			match expected {
+				Const::Nil => assert_eq!(tag, 0),
+				Const::Bool(b) => {
+					assert_eq!(tag, 1);
+					assert_eq!(mb() == 1, *b);
+				}
+				Const::Num(ev) if ev.is_nan() => assert_eq!(tag, 7),
+				Const::Num(ev) if ev.is_infinite() => {
+					assert_eq!(tag, if ev.is_sign_negative() { 6 } else { 5 });
+				}
+				Const::Num(ev) => {
+					assert_eq!(tag, 4);
+					let mut m: u64 = 0;
+					let mut sh: u64 = 1;
+					loop {
+						let bb = mb() as u64;
+						if bb < 128 {
+							m += bb * sh;
+							break;
+						}
+						m += (bb - 128) * sh;
+						sh *= 128;
+					}
+					let mut kp: u64 = 0;
+					let mut sh2: u64 = 1;
+					loop {
+						let bb = mb() as u64;
+						if bb < 128 {
+							kp += bb * sh2;
+							break;
+						}
+						kp += (bb - 128) * sh2;
+						sh2 *= 128;
+					}
+					let kk = (kp / 2) as i32 - 2048;
+					let mut v = m as f64;
+					if kk >= 0 {
+						for _ in 0..kk {
+							v *= 2.0;
+						}
+					} else {
+						for _ in 0..(-kk) {
+							v /= 2.0;
+						}
+					}
+					if kp % 2 == 1 {
+						v = -v;
+					}
+					assert_eq!(
+						v.to_bits(),
+						ev.to_bits(),
+						"IEEE-754 bit mismatch for {ev:?} (got {v:?})"
+					);
+				}
+				Const::Str(eb) => {
+					assert_eq!(tag, 3);
+					let lo = mb() as usize;
+					let hi = mb() as usize;
+					let len = lo + hi * 256;
+					assert_eq!(len, eb.len());
+					let got: Vec<u8> = (0..len).map(|_| mb()).collect();
+					assert_eq!(&got, eb);
+				}
+			}
+		}
+		assert_eq!(pos, enc.len());
+	}
+
+	#[test]
+	fn all_43_ops_have_parseable_handlers_in_luau_and_lua51() {
+		for (i, &_op) in ALL_OPS.iter().enumerate() {
+			let name = OP_NAMES[i];
+			for &v15 in &[false, true] {
+				let nf = super::super::handlers::n_formats(name, v15);
+				assert!(nf >= 1, "handler {name} has 0 formats");
+				for fmt in 0..nf {
+					for &luau_target in &[true, false] {
+						if v15 && !luau_target {
+							continue;
+						}
+						let mut pool = super::super::strpool::StrPool::new(!v15);
+						let body = super::super::handlers::gen(
+							name,
+							fmt,
+							v15,
+							&mut pool,
+							(17, 29),
+							luau_target,
+						);
+						let wrapped = format!("local function _h()\n{}\nend\n", body);
+						assert!(
+							crate::parser::parse(&wrapped, luau_target).is_ok(),
+							"handler {name} fmt={fmt} v15={v15} luau={luau_target} failed to parse:\n{wrapped}"
+						);
+					}
+				}
+			}
+		}
+	}
+}
+
+/// Canonical ordered names of all 43 VM opcodes, matching `op_index` / `ALL_OPS` 1-to-1.
+pub const OP_NAMES: [&str; N_OPS] = [
+	"Jmp", "Jf", "Jt", "LoadNil", "LoadK", "Move", "Add", "Sub", "Mul", "Div",
+	"Mod", "Pow", "Concat", "Unm", "Not", "Len", "Lt", "Le", "Gt", "Ge", "Eq",
+	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
+	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
+	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
+];
+
+/// Canonical ordered table of all 43 VM opcodes, matching `op_index` / `OP_NAMES` 1-to-1.
+pub const ALL_OPS: [Op; N_OPS] = [
+	Op::Jmp, Op::Jf, Op::Jt, Op::LoadNil, Op::LoadK, Op::Move, Op::Add, Op::Sub,
+	Op::Mul, Op::Div, Op::Mod, Op::Pow, Op::Concat, Op::Unm, Op::Not, Op::Len,
+	Op::Lt, Op::Le, Op::Gt, Op::Ge, Op::Eq, Op::Ne, Op::Idiv, Op::NewTab,
+	Op::GetTab, Op::SetTab, Op::TabN, Op::CallT, Op::Closure, Op::Call,
+	Op::VarArgTab, Op::VarArgC, Op::VarArgTabN, Op::GetGlobal, Op::SetGlobal,
+	Op::GetUp, Op::SetUp, Op::Return, Op::Nop, Op::CallE, Op::CallM,
+	Op::MkStr, Op::LoadStr,
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperandRole {
+	Unused,
+	RegRead,
+	RegWrite,
+	RegRange,
+	ConstIdx,
+	ProtoIdx,
+	UpvalIdx,
+	JumpTarget,
+	ImmVal,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PcEffect {
+	Fallthrough,
+	UnconditionalJmp,
+	ConditionalJmp,
+	FrameTransfer,
+	FrameReturn,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OpMeta {
+	pub op: Op,
+	pub name: &'static str,
+	pub role_a: OperandRole,
+	pub role_b: OperandRole,
+	pub role_c: OperandRole,
+	pub pc_effect: PcEffect,
+	pub may_call_host: bool,
+	pub touches_env_or_upv: bool,
+	pub multiret_sensitive: bool,
+	pub fuse_head_ok: bool,
+	pub fuse_tail_ok: bool,
+}
+
+impl Op {
+	pub fn from_index(idx: usize) -> Option<Op> {
+		ALL_OPS.get(idx).copied()
+	}
+
+	pub fn from_name(name: &str) -> Option<Op> {
+		OP_NAMES
+			.iter()
+			.position(|&n| n == name)
+			.and_then(Self::from_index)
+	}
+
+	/// Explicit semantic boundary metadata for handler polymorphism, wrapper
+	/// arity specialization, continuation epilogue selection, and super-insn fusion.
+	pub const fn meta(self) -> OpMeta {
+		use OperandRole::*;
+		use PcEffect::*;
+		match self {
+			Op::Jmp => OpMeta {
+				op: self,
+				name: "Jmp",
+				role_a: JumpTarget,
+				role_b: Unused,
+				role_c: Unused,
+				pc_effect: UnconditionalJmp,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Jf => OpMeta {
+				op: self,
+				name: "Jf",
+				role_a: RegRead,
+				role_b: JumpTarget,
+				role_c: Unused,
+				pc_effect: ConditionalJmp,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Jt => OpMeta {
+				op: self,
+				name: "Jt",
+				role_a: RegRead,
+				role_b: JumpTarget,
+				role_c: Unused,
+				pc_effect: ConditionalJmp,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::LoadNil => OpMeta {
+				op: self,
+				name: "LoadNil",
+				role_a: RegRange,
+				role_b: ImmVal,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: true,
+				fuse_tail_ok: false,
+			},
+			Op::LoadK => OpMeta {
+				op: self,
+				name: "LoadK",
+				role_a: RegWrite,
+				role_b: ConstIdx,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: true,
+				fuse_tail_ok: true,
+			},
+			Op::MkStr => OpMeta {
+				op: self,
+				name: "MkStr",
+				role_a: RegWrite,
+				role_b: RegRange,
+				role_c: ImmVal,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::LoadStr => OpMeta {
+				op: self,
+				name: "LoadStr",
+				role_a: RegWrite,
+				role_b: ConstIdx,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Move => OpMeta {
+				op: self,
+				name: "Move",
+				role_a: RegWrite,
+				role_b: RegRead,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: true,
+				fuse_tail_ok: true,
+			},
+			Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow | Op::Idiv => OpMeta {
+				op: self,
+				name: match self {
+					Op::Add => "Add",
+					Op::Sub => "Sub",
+					Op::Mul => "Mul",
+					Op::Div => "Div",
+					Op::Mod => "Mod",
+					Op::Pow => "Pow",
+					Op::Idiv => "Idiv",
+					_ => "",
+				},
+				role_a: RegWrite,
+				role_b: RegRead,
+				role_c: RegRead,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Unm => OpMeta {
+				op: self,
+				name: "Unm",
+				role_a: RegWrite,
+				role_b: RegRead,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Not => OpMeta {
+				op: self,
+				name: "Not",
+				role_a: RegWrite,
+				role_b: RegRead,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Len => OpMeta {
+				op: self,
+				name: "Len",
+				role_a: RegWrite,
+				role_b: RegRead,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Concat | Op::Eq | Op::Ne | Op::Lt | Op::Le | Op::Gt | Op::Ge => OpMeta {
+				op: self,
+				name: match self {
+					Op::Concat => "Concat",
+					Op::Eq => "Eq",
+					Op::Ne => "Ne",
+					Op::Lt => "Lt",
+					Op::Le => "Le",
+					Op::Gt => "Gt",
+					Op::Ge => "Ge",
+					_ => "",
+				},
+				role_a: RegWrite,
+				role_b: RegRead,
+				role_c: RegRead,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::NewTab => OpMeta {
+				op: self,
+				name: "NewTab",
+				role_a: RegWrite,
+				role_b: Unused,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::GetTab => OpMeta {
+				op: self,
+				name: "GetTab",
+				role_a: RegWrite,
+				role_b: RegRead,
+				role_c: RegRead,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::SetTab => OpMeta {
+				op: self,
+				name: "SetTab",
+				role_a: RegRead,
+				role_b: RegRead,
+				role_c: RegRead,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::TabN => OpMeta {
+				op: self,
+				name: "TabN",
+				role_a: RegRead,
+				role_b: RegRange,
+				role_c: ImmVal,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::GetUp => OpMeta {
+				op: self,
+				name: "GetUp",
+				role_a: RegWrite,
+				role_b: UpvalIdx,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: true,
+				multiret_sensitive: false,
+				fuse_head_ok: true,
+				fuse_tail_ok: false,
+			},
+			Op::SetUp => OpMeta {
+				op: self,
+				name: "SetUp",
+				role_a: UpvalIdx,
+				role_b: RegRead,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: true,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::GetGlobal => OpMeta {
+				op: self,
+				name: "GetGlobal",
+				role_a: RegWrite,
+				role_b: ConstIdx,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: true,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::SetGlobal => OpMeta {
+				op: self,
+				name: "SetGlobal",
+				role_a: ConstIdx,
+				role_b: RegRead,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: true,
+				touches_env_or_upv: true,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Closure => OpMeta {
+				op: self,
+				name: "Closure",
+				role_a: RegWrite,
+				role_b: ProtoIdx,
+				role_c: Unused,
+				// Consumes `nups` inline capture pseudo-instructions by advancing E.ip!
+				pc_effect: ConditionalJmp,
+				may_call_host: false,
+				touches_env_or_upv: true,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Call => OpMeta {
+				op: self,
+				name: "Call",
+				role_a: RegRange,
+				role_b: ImmVal,
+				role_c: ImmVal,
+				pc_effect: FrameTransfer,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::CallE | Op::CallM | Op::CallT => OpMeta {
+				op: self,
+				name: match self {
+					Op::CallE => "CallE",
+					Op::CallM => "CallM",
+					Op::CallT => "CallT",
+					_ => "",
+				},
+				role_a: RegRange,
+				role_b: ImmVal,
+				role_c: ImmVal,
+				pc_effect: FrameTransfer,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: true,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::VarArgTab => OpMeta {
+				op: self,
+				name: "VarArgTab",
+				role_a: RegWrite,
+				role_b: ImmVal,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: true,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::VarArgC => OpMeta {
+				op: self,
+				name: "VarArgC",
+				role_a: RegRange,
+				role_b: ImmVal,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: true,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Return => OpMeta {
+				op: self,
+				name: "Return",
+				role_a: RegRange,
+				role_b: ImmVal,
+				role_c: Unused,
+				pc_effect: FrameReturn,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: true,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::Nop => OpMeta {
+				op: self,
+				name: "Nop",
+				role_a: Unused,
+				role_b: Unused,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::VarArgTabN => OpMeta {
+				op: self,
+				name: "VarArgTabN",
+				role_a: RegRange,
+				role_b: ImmVal,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: false,
+				multiret_sensitive: true,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+		}
 	}
 }

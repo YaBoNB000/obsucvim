@@ -13,7 +13,7 @@ pub fn apply_body(
 	reserved: &mut HashSet<String>,
 	luau: bool,
 ) {
-	let tim = std::env::var("OBSUCVIM_TIMING").is_ok();
+	let tim = crate::audit_gate::audit_enabled("OBSUCVIM_TIMING");
 	let mut tmark = std::time::Instant::now();
 	let mut tlog = |name: &str| {
 		if tim {
@@ -41,7 +41,7 @@ pub fn apply_body(
 	rsv.extend(table.globals.iter().cloned());
 	rsv.extend(table.syms.iter().map(|s| s.name.clone()));
 	rsv.insert("loadstring".to_string());
-	let (loader, dec_sym, dec_name) = build_loader(table, rng, &mut rsv, &key);
+	let (loader, dec_sym, dec_name) = build_loader(table, rng, &mut rsv, &key, false);
 	tlog("build_loader");
 
 	let mut chunk_syms: Vec<SymId> = Vec::new();

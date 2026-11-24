@@ -529,3 +529,191 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
   默认 guard 样例曾报 `attempt to compare nil <= nil`。用户选择默认 guard 保持开启并不跑 trace；
   `example_guard_no_debug.txt` 与随后简化 debug source 检查的 `example_guard_source_probe.txt` 均在 Delta 正常。
   当前根目录 `example.txt` 已重生为后者的字节副本，具体 hash 与验证见 §13.4。
+
+---
+
+## 15. P0–P5 能力最小化、状态不变量、常量分块物化、守卫硬化与发布门禁（2026-11-22）
+
+本节记录在 §14 通用 Luau 基线之上完成的 P0–P5 架构收敛与可验证指标；不恢复任何 §14 已退役的 executor-binding / key-host / EVKEY / tier-2 探针机制。P0–P5 对照剖析以历史 `example.txt`（148,769 B，SHA-256 `00e7ee9136cc3e5d73deff03cbee31509884734b45ea0184c2851fcadb6d6ecd`）为改前基线；验收后按用户指令将根目录 `example.txt` 更新为 `a = 999` 的默认 `v15` 混淆产物（`--preset v15 --dialect luau --seed 42`，101,834 B，SHA-256 `b2fbad2231f5a6d37aae0f6f0897c8e2e4ed67bc5f2a7b250cb72a1fdd3675e1`）。
+
+### 15.1 关键改动摘要
+
+- **P0 产物诊断剖析器（`engine/tests/artifact_profile.py`）**：基于自包含 Luau 词法/AST 分析器输出字节数、token/AST 节点、全局宿主 API 引用、短/长字符串常量、可证恒真/恒假谓词、外层 staging 与内层 `HW2` 包装簇集中度，以及构建/运行耗时与子进程 Peak RSS，支持单产物剖析与 7 语料 × 6 seed 回归对比。
+- **P1 按需能力清单与隐式全局清零（`engine/src/vmgen/caps.rs`, `v15.rs`, `template.rs`）**：将外层模块表原语与内层 `P`/辅助函数拆分为 `InterpreterBase`（引导与常量/帧基础设施必需）和 `ProgramDriven`（由 `VmProgram` 活跃指令、浮点常量及 `--guard`/`--env-check`/`--bind-env`/`--super-insn` 标志确定性推导）；裁剪未使用 `(op, dialect)` 槽与未命中 `--super-insn` 融合尾槽，保留动态全局经运行时环境表 `G` 解析；补齐 `template.rs` 局部声明，消除旧产物中的 `DK`、`Qe`、`qA` 隐式全局读写；清理 `v15=true` 分支下不可达旧模板拼接死路径。
+- **P2 真实状态不变量与分派/包装多样化（`v15.rs`, `template.rs`）**：移除代数/奇偶恒真 `opaque_wrap` 与 `if false` 死分支，改用绑定初始化与运行期真实状态槽的 `state_guard_wrap`（AST 可证代数恒真分支与线性恒等分支均降为 `0`）；外层 `gen_filler_staging` 扩展为 `10` 类状态转移骨架 × `5..=9` 参数签名（最高单簇占比由 `27.4%–29.8%` 降至 `3.5%–4.4%`）；内层 Micro-VM 引入 `zC` 稀疏秩映射表、`12` 种工厂形态（4 种秩分派树 × 3 种循环骨架）与 `5..=8` 参 `HW2` 包装；`--super-insn` 维持显式 opt-in。
+- **P3 分块字符串物化、特殊数值常量与明文边界（`template.rs`, `handlers/loadstr.rs`, `compiler.rs`）**：将 `CDEC`、`LoadStr` 与 `M_LOAD_STR` 的逐字符 `..` 累加改为 `64` 字节分块 `CHAR(UNP(..., 1, k))` + `TCAT` 的 $O(L)$ 装配；`CDEC` 支持 IEEE-754 `±Inf` 与 `NaN`；将 `SALT` 时钟折叠改为 `FLR(_ckv*1000000)%65536` 整数域计算以避免浮点取模漂移。静态常量串沿用「每函数首次读取解码并写回该函数常量代理缓存」设计以保证热循环性能与 table key 相等性；首次读取后明文串在函数生命周期内驻留运行时内存，动态 hook 或内存转储仍可观测已求值常量，静态混淆对此不作过度承诺。
+- **P4 通用守卫阶段分类与沙箱兼容性硬化（`anti/mod.rs`, `guard.rs`, `template.rs`）**：新增 `STAGE_MANIFEST` 五阶段元数据表（`core`/`env`/`debug`/`canary`/`misc`），区分必选核心原语（`type`/`pcall`/`error`/`rawget`/`rawset`/`getmetatable`/`setmetatable`）与可选宿主 API（`xpcall`/`debug`/`debug.info`/`os`/`os.clock`/`newproxy`/`warn`/`unpack`/`loadstring`/`load`）：缺失可选 API 放行，非预期类型、伪造 `[C]` 来源、Lua 包装核心原语/加载器或破坏元表锁则静默 fail-closed；修正 `stage_env` 为 `pcall(function() return gfe(1) end)` 以正确读取 `setfenv` 闭包环境并兼容受保护字符串/表元表沙箱；`stage_debug` 在局部环境隐藏 `debug` 时回退检查 `getfenv(0)` 宿主 `debug.info`。新增超时隔离的 `engine/tests/guard_matrix_test.py`（31 场景）。
+- **P5 编译期审计钩子门禁、Luau 基准与样例更新（`audit_gate.rs`, `Cargo.toml`, `bench_presets.sh`, `examples/`）**：新增默认关闭的 `audit-hooks` feature，生产 `cargo build --release` 在编译期禁用 `OBSUCVIM_KEY_MANIFEST`、`OBSUCVIM_VM_RAW`、`OBSUCVIM_VM_TSRC`、`OBSUCVIM_NOISE_AUDIT`、`OBSUCVIM_PROFILE_AUDIT`、`OBSUCVIM_*_DBG` 与 `OBSUCVIM_TIMING`，且同 seed 产物与 `--features audit-hooks` 构建逐字节一致（`prod_audit_gate_test.sh`）；将 `bench_presets.sh` 升级为 Luau `0.735` 8 类语料 × 7 模式基准；通过 `gen_examples.sh` 重生 `engine/examples/*.v15.luau.lua` 全部 37 个样例。
+
+### 15.2 验证状态与明确边界
+
+- `cargo check --all-targets`、`cargo test --release`（**72 passed / 0 failed / 1 ignored** + 水印集成测试 **4 passed**）通过；本地 `.tools/bin` 最小工具链不含 `rustfmt` 组件（`cargo fmt` 不可用）。
+- `run_tests.sh`（**169 PASS / 0 FAIL**）、`run_presets.sh`（**370 PASS / 0 FAIL**）、`multiseed.sh`（**FAIL=0**，含 R064 **24 seeds**）、`vm_semantics_regression.sh`、`guard_matrix_test.py`（**31/31 PASS**）、`capability_manifest_test.py`（**6/6 PASS**，含 `--super-insn` 与字符串/`±Inf`/`NaN` 多 seed 等价）、`prod_audit_gate_test.sh`、`defense_audit.sh`（**20 PASS / 0 FAIL**）、`v15_fingerprint.py`（**32/32 PASS**）、`security_fingerprint.py`（**5/5 PASS**）、`h2`..`h8`、`r061_bypass_audit.py`、`redteam_probe_regression.py` 及 `bench_presets.sh`（56/56 组合等价）全部通过。
+- **真实执行器边界**：上述兼容性测试均在本地 stock Luau `0.735`、`LUAU_READONLY_GLOBALS=1` 及受控模拟环境矩阵中完成；未在真实第三方执行器（如 Delta 等）实机运行本轮新产物前，不声称特定执行器版本已通过实机验收。
+
+---
+
+## 16. P0–P2 原语契约收口、守卫清单双向对齐、强制审计门禁与同输入/同 seed Worktree A/B 基准（2026-11-22）
+
+本节记录针对 §15 代码复审四项遗留工程问题的收口改动、回归期间捕获并修复的两处真实缺陷，以及基于隔离 `git worktree` 对改动前基线提交 `f583c2c3c9c66770c38169dc6547d10c85025555` 的同输入、同 seed、同主机实测 A/B 数据。
+
+### 16.1 输入语义口径澄清（`print(6)` vs `a = 999`）
+
+为避免跨轮对比混淆不同输入脚本，本节严格区分两类微基准产物：
+- **根目录 `example.txt`（提交产物）**：输入源码为 `a = 999\n`（7 B），以 `--preset v15 --dialect luau --seed 42` 生成，当前大小 **102,394 B**，SHA-256 `b79e79c3b534d54b1d1a5db999e7281a463621719eda78f582ac16de4b1b45bf`；通过 `.tools/bin/luau-compile`、stock Luau 运行验证（`a == 999`）与 `v15_fingerprint.py`（**32/32 PASS**）。
+- **同输入微基准 `01_micro_print6`（A/B 对照口径）**：输入源码固定为 `print(6)\n`（9 B），用于与 `f583c2c3` 基线在完全相同输入与相同 6 个 seed（`1, 7, 42, 4242, 31337, 999999`）下对比：默认 `v15` 6-seed 中位体积由 **`147,400 B` 降至 `106,343 B`（`-27.9%`）**，`v15 --no-guard` 由 **`141,954 B` 降至 `100,709 B`（`-29.1%`）**。下述 §16.3 所有 A/B 对比表均严格遵循「同一输入文件 + 同一 seed + 同一命令标志」，不再将 `a = 999` 与历史 `print(6)` 直接相减。
+
+### 16.2 关键工程改动摘要
+
+- **P0 原语绑定契约统一与运行期降级收口（`engine/src/vmgen/caps.rs`, `template.rs`, `engine/tests/capability_manifest_test.py`）**：
+  - 删除 `template.rs` 中与 `caps.rs` 平行的旧硬编码数组 `PRIM_SRC`、`PRIM_NAME`、`PRIM_CAP` 及硬编码下标 `slots[12]`，改为统一由 `VmPrim::ALL`（`0..19`）单一数据源提供槽位名、驱动分类、模板启用谓词 `prim_enabled_in_template(v15, guard)` 与 Lua 绑定表达式 `lua_bind_expr()`（`Select` 统一取 `slots[VmPrim::Select as usize]`）。
+  - 统一 `v15` 与 `--preset vm` 的三项能力降级语义：`Getfenv` 在宿主缺失 `getfenv` 时回退至 `function() return type(_G)=="table" and _G or {} end`（宿主存在原生 `getfenv` 时维持 `local G = GFE(0)` 以保持 R064 `setfenv` 字符串表反挂钩契约 `0/0/0`）；`Unpack` 按 `unpack -> table.unpack -> 纯 Lua 切片降级` 三级回退；`TablePack`（仅 `v15`）按 `table.pack -> { n = select("#", ...), ... }` 回退，保证含中间/末尾 `nil` 的多返回值计数与解包语义一致；`callcap` 仅在 `v15 && luau_target` 下发射。
+  - 扩展 `capability_manifest_test.py`（**11/11 PASS**）与 `caps.rs` 单元测试，覆盖 `getfenv == nil`、`unpack == nil`、`table.pack == nil` 及三者同时缺失在 6 个 seed × `--guard`/`--no-guard` + `--preset vm --no-body` 下的运行期等价性。
+- **P1-A 守卫阶段元数据双向对齐与矩阵扩展（`engine/src/anti/mod.rs`, `guard.rs`, `template.rs`, `engine/tests/guard_matrix_test.py`）**：
+  - 将 `next` 显式纳入 `STAGE_MANIFEST`（`stage_misc` 可选能力）：`next == nil` 放行，`type(next) ~= "function"` 或空表/单键表迭代语义失真则静默 fail-closed；`v15`（经 `HBOOT` 第 30 参传入 `NXT`）与非 `v15` `guard_prelude` 同步接线。
+  - 将 `STAGE_MANIFEST` 的 `test_ids` 与 `guard_matrix_test.py` 建立**双向精确对齐**（Rust 单元测试解析 Python 用例表校验每个 `test_id` 真实存在且无孤儿项；Python 运行时反向解析 `anti/mod.rs` 校验双向集合相等），并将守卫矩阵由 31 项扩展至 **46/46 PASS**（新增 `print`+`warn` 同时缺失、`print` 重定向、`setfenv` `__index` 代理表、`unpack`/`table.unpack` 互备与全缺、`os`/`os.clock` 缺失与非函数篡改、`next` 缺失/篡改，以及 `--guard` vs `--no-guard` 同篡改差分对照）。
+- **P1-B 生产二进制零审计泄漏强制门禁（`engine/src/audit_gate.rs`, `engine/tests/prod_audit_gate_test.sh`）**：
+  - 将原先「未编译 `audit-hooks` 二进制时跳过对照」的软检查改为**硬门禁**：若 `engine/target/audit/release/obsucvim` 缺失或早于源码/Cargo 配置则自动执行 `cargo build --release --features audit-hooks --target-dir engine/target/audit`（失败即非零退出）。
+  - 在全部 8 个内部审计环境变量同时注入下，验证生产二进制 `target/release/obsucvim` 零审计文件落盘、零 `stderr` 内部标记，且在 `v15`、`v15 --no-guard`、`v15 --super-insn`、`vm` 四种模式下与干净环境的 `audit-hooks` 构建逐字节一致；同时对 `audit-hooks` 二进制做正面对照，并内置 3 项反向自检（模拟文件泄漏、`stderr` 泄漏、跨构建字节漂移均确认拦截失败）。
+- **全量回归期间捕获并修复的两处真实缺陷（`engine/src/vmgen/v15.rs`, `engine/src/strings.rs`, `body.rs`）**：
+  1. `v15.rs::idle_local` 局部遮蔽缺陷：`multiseed.sh` 在 `stress_multival` `seed=31337` 捕获运行期 `attempt to perform arithmetic (add) on number and nil`——当外层名称池 `nm.take_avoid(...)` 抽中 `"_t"` 且 `idle_local` 命中第 4 分支 `local {name}; do local _t={probe}; {name}=(_t==nil) and ... end` 时，内层 `local _t` 遮蔽外层 `_t` 导致外层保持 `nil`；现改为从 `["_t", "_u", "_v"]` 选取与 `name`/`probe` 均不冲突的临时名并补充单元测试。
+  2. `strings.rs::build_loader` 重复逐字节解密开销：旧版 legacy 预设（`low`/`medium`/`high`/`vm`/`max`，不含 `v15`）字符串解密器每次调用均重新分配 `{...}` 并逐字节 `string.char` 解密，与 `junk.rs` 注入的 `#dec(...)` 叠加后导致 `--preset vm`/`max` 在 `stress_bigtable` 热路径出现重度放大；现为 `apply_strings` 解密器增加局部表 `cache[s]` 记忆化（`body.rs` 整包一次性加载维持原非缓存路径，`v15` 完全不经过 `strings.rs`），使 `stress_bigtable` 在 `--preset vm` 6 个 seed 下耗时由 `4.4s–30s+` 降至 `0.51s–1.36s`。
+
+### 16.3 Worktree 同输入 / 同 seed 实测 A/B 对比（`f583c2c3` vs 当前分支）
+
+复现入口：`bash engine/tests/ab_compare.sh`（驱动 `engine/tests/ab_compare.py`，自动以 `git worktree add --detach` 检出并编译基线提交 `f583c2c3c9c66770c38169dc6547d10c85025555`，机器可读原始数据与摘要表写入 `engine/tests/results/ab_baseline_f583c2c3.{json,md}`）。
+- **测试环境**：`Linux 6.1.158+ (x86_64)`，`Intel(R) Xeon(R) @ 2.60GHz`（2 核，`3939.9 MB` RAM），`rustc 1.88.0`，Luau `0.735`，6 seeds `[1, 7, 42, 4242, 31337, 999999]`，每点顺序执行 `3` 轮 Linux `wait4` 计时/RSS 采样（共 **480/480** 构建点语义等价 + `luau-compile` 语法通过，同 seed 确定性 **PASS**，异 seed 6/6 互异）。
+
+#### 表 A：默认 `v15`（`--guard` 开启，6-seed 中位数 / p90）
+
+| Corpus | In (B) | Base Out (B) | Cand Out (B) | Δ Bytes | Base→Cand Tokens | Base→Cand AST | APIs (B→C) | ConstP / Par+Lin (B→C) | StgTop% (B→C) | Build ms Med/p90 (B→C) | Run ms Med/p90 (B→C) | Peak RSS KB (B→C) | Eq / Det / Rnd |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `01_micro_print6` | 9 | 147,400 | 106,343 | -27.9% | 68,060→48,066 (-29.4%) | 41,190→28,976 (-29.6%) | 71→28 | 87.5(52.5)→10.0(0.0) | 27.4%→4.1% | 110.1/126.5→88.8/132.8 | 25.7/32.9→24.2/32.0 | 22000→22000 | 6/6/Y/6 |
+| `02_basics` | 713 | 162,678 | 146,370 | -10.0% | 74,013→66,912 (-9.6%) | 45,190→40,774 (-9.8%) | 71→28 | 87.5(51.0)→10.0(0.0) | 27.4%→5.1% | 107.5/138.5→110.9/148.7 | 31.5/41.1→34.6/44.3 | 22000→22000 | 6/6/Y/6 |
+| `03_strings` | 1737 | 167,599 | 144,753 | -13.6% | 76,118→64,553 (-15.2%) | 46,716→39,766 (-14.9%) | 71→28 | 87.5(50.5)→10.0(0.0) | 27.9%→3.8% | 106.3/131.3→94.0/141.0 | 43.0/59.6→35.1/46.7 | 22000→22000 | 6/6/Y/6 |
+| `04_luau_escapes` | 301 | 144,112 | 111,419 | -22.7% | 67,394→50,257 (-25.4%) | 40,727→30,362 (-25.4%) | 71→28 | 86.5(52.5)→10.0(0.0) | 26.0%→4.0% | 120.3/147.7→90.6/132.0 | 26.9/31.4→25.8/32.3 | 22000→22000 | 6/6/Y/6 |
+| `05_functions` | 1953 | 254,726 | 237,577 | -6.7% | 124,851→118,792 (-4.8%) | 79,708→75,910 (-4.8%) | 71→28 | 92.0(46.5)→10.0(0.0) | 5.7%→5.3% | 156.5/204.9→166.3/216.6 | 554.6/682.5→485.4/688.9 | 55928→48208 | 6/6/Y/6 |
+| `06_control` | 1511 | 179,236 | 166,255 | -7.2% | 82,734→77,588 (-6.2%) | 51,130→48,174 (-5.8%) | 71→28 | 88.5(51.0)→10.0(0.0) | 22.6%→3.8% | 123.4/172.6→111.1/130.1 | 56.6/67.5→40.7/60.4 | 22000→22000 | 6/6/Y/6 |
+| `07_metatables` | 1711 | 225,699 | 207,012 | -8.3% | 108,504→101,460 (-6.5%) | 68,786→64,518 (-6.2%) | 71→28 | 87.5(53.5)→10.0(0.0) | 8.2%→4.3% | 140.3/209.8→134.8/173.1 | 67.8/95.7→51.5/65.0 | 22000→22000 | 6/6/Y/6 |
+| `08_multival` | 1364 | 188,436 | 170,103 | -9.7% | 89,023→79,861 (-10.3%) | 55,418→49,772 (-10.2%) | 71→28 | 83.5(57.0)→10.0(0.0) | 18.3%→4.2% | 111.0/144.8→92.5/98.4 | 54.1/66.5→32.0/46.6 | 22000→22000 | 6/6/Y/6 |
+| `09_coroutine` | 1448 | 190,404 | 166,026 | -12.8% | 91,630→79,078 (-13.7%) | 57,164→49,591 (-13.2%) | 71→28 | 86.5(54.0)→10.0(0.0) | 15.7%→4.0% | 114.4/152.7→87.2/119.5 | 39.9/55.3→28.9/40.7 | 22000→22000 | 6/6/Y/6 |
+| `10_real_algo` | 787 | 174,660 | 161,198 | -7.7% | 82,423→75,958 (-7.8%) | 50,963→47,089 (-7.6%) | 71→28 | 86.0(55.5)→10.0(0.0) | 20.2%→3.0% | 102.0/143.8→104.7/147.7 | 43.2/55.5→38.4/53.6 | 22000→22000 | 6/6/Y/6 |
+
+#### 表 B：`v15 --no-guard`（6-seed 中位数 / p90）
+
+| Corpus | Base Out (B) | Cand Out (B) | Δ Bytes | Base→Cand Tokens | APIs (B→C) | Build ms Med/p90 (B→C) | Run ms Med/p90 (B→C) | Eq / Det / Rnd |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `01_micro_print6` | 141,954 | 100,709 | -29.1% | 65,855→44,567 (-32.3%) | 69→20 | 127.1/159.1→78.2/113.1 | 37.8/69.5→22.6/33.5 | 6/6/Y/6 |
+| `02_basics` | 158,119 | 140,545 | -11.1% | 71,858→63,179 (-12.1%) | 69→21 | 100.4/129.9→92.5/97.9 | 32.7/48.1→25.9/37.3 | 6/6/Y/6 |
+| `03_strings` | 163,602 | 137,816 | -15.8% | 73,217→61,237 (-16.4%) | 69→22 | 140.6/169.7→97.1/144.4 | 57.0/80.1→37.0/54.4 | 6/6/Y/6 |
+| `04_luau_escapes` | 140,406 | 104,041 | -25.9% | 65,255→47,160 (-27.7%) | 69→20 | 103.4/126.4→69.6/87.9 | 24.7/33.6→18.1/27.1 | 6/6/Y/6 |
+| `05_functions` | 250,145 | 232,435 | -7.1% | 122,787→115,769 (-5.7%) | 69→23 | 149.8/231.5→144.0/201.6 | 579.5/859.4→424.7/537.6 | 6/6/Y/6 |
+| `06_control` | 173,057 | 159,496 | -7.8% | 80,243→74,362 (-7.3%) | 69→23 | 109.1/133.0→98.0/112.9 | 42.3/50.5→35.5/59.1 | 6/6/Y/6 |
+| `07_metatables` | 222,396 | 202,865 | -8.8% | 107,500→98,783 (-8.1%) | 69→23 | 132.9/174.6→121.5/163.9 | 53.1/72.2→44.9/70.1 | 6/6/Y/6 |
+| `08_multival` | 184,576 | 161,149 | -12.7% | 87,449→76,562 (-12.4%) | 69→22 | 115.0/146.1→101.0/136.8 | 53.4/64.6→38.8/56.4 | 6/6/Y/6 |
+| `09_coroutine` | 183,733 | 158,314 | -13.8% | 88,470→75,702 (-14.4%) | 69→22 | 102.8/150.8→100.7/124.7 | 37.5/52.1→34.9/41.8 | 6/6/Y/6 |
+| `10_real_algo` | 170,118 | 153,149 | -10.0% | 80,160→72,780 (-9.2%) | 69→23 | 168.6/204.8→160.1/188.7 | 61.4/75.3→54.6/73.1 | 6/6/Y/6 |
+
+#### 表 C：Legacy 预设对照（`vm` 与 `high`，6-seed 中位数）
+
+| Corpus | Stock Luau ms | `vm` Out B (B→C, Δ%) | `vm` Run ms Med/p90 (B→C) | `high` Out B (B→C, Δ%) | `high` Run ms Med/p90 (B→C) | Eq |
+|---|---:|---:|---:|---:|---:|---:|
+| `01_micro_print6` | 2.84 | 179,556→186,009 (+3.6%) | 59.7/72.2→43.1/56.0 | 13,405→16,598 (+23.8%) | 6.4/8.0→6.3/7.9 | 12/12 |
+| `02_basics` | 3.15 | 213,399→215,266 (+0.9%) | 98.3/152.6→44.9/77.0 | 21,557→25,343 (+17.6%) | 6.3/8.3→6.8/8.2 | 12/12 |
+| `03_strings` | 3.82 | 229,710→242,643 (+5.6%) | 139.0/181.9→53.1/79.1 | 34,211→38,117 (+11.4%) | 9.7/15.6→10.7/14.6 | 12/12 |
+| `04_luau_escapes` | 3.47 | 181,149→193,715 (+6.9%) | 43.3/63.7→38.1/75.4 | 16,302→19,822 (+21.6%) | 6.1/9.4→6.6/8.9 | 12/12 |
+| `05_functions` | 3.90 | 233,765→243,624 (+4.2%) | 573.0/1101.3→143.1/221.0 | 90,320→93,811 (+3.9%) | 94.8/129.6→37.3/43.4 | 12/12 |
+| `06_control` | 2.98 | 231,206→241,755 (+4.6%) | 114.1/190.8→86.0/99.4 | 67,458→70,430 (+4.4%) | 21.0/26.5→18.9/22.9 | 12/12 |
+| `07_metatables` | 2.88 | 239,902→249,411 (+4.0%) | 131.1/274.8→53.9/90.7 | 73,861→77,382 (+4.8%) | 13.7/16.2→14.3/23.6 | 12/12 |
+| `08_multival` | 2.99 | 217,763→232,132 (+6.6%) | 100.1/183.7→48.4/64.9 | 55,420→58,801 (+6.1%) | 11.5/14.1→12.1/14.5 | 12/12 |
+| `09_coroutine` | 2.73 | 215,446→230,188 (+6.8%) | 82.0/133.4→44.0/61.9 | 30,966→34,427 (+11.2%) | 7.9/12.0→7.8/8.3 | 12/12 |
+| `10_real_algo` | 2.88 | 208,923→221,050 (+5.8%) | 79.7/152.1→46.3/76.5 | 53,214→57,304 (+7.7%) | 14.0/20.6→15.1/20.6 | 12/12 |
+
+**说明（Legacy 预设体积微增原因）**：`vm` 与 `high` 预设默认开启 `guard_prelude` + 能力降级闭环与字符串解密缓存表，固定前置约增加 `~3.2 KB`–`12 KB`（小脚本相对百分比更高），换取沙箱兼容闭环与 **10/10 语料在 `vm` 下的显著运行提速**（如 `05_functions` 中位运行耗时由 `573.0 ms` 降至 `143.1 ms`）。
+
+### 16.4 全量门禁结果与安全边界重申
+
+- **全量验证结果**：`cargo test --release`（**75 passed / 0 failed / 1 ignored** + 水印集成测试 **4 passed**）；`capability_manifest_test.py`（**11/11 PASS**）；`guard_matrix_test.py`（**46/46 PASS**，含 `STAGE_MANIFEST` 双向同步校验）；`prod_audit_gate_test.sh`（**PASS**，4 模式双二进制等效 + 3 项反向自检）；`run_tests.sh`（**169 PASS / 0 FAIL**，含 `wtf-port` **23/23** 与 `R064` 字符串表挂钩 `0/0/0`）；`run_presets.sh`（**370 PASS / 0 FAIL**）；`multiseed.sh`（**FAIL=0**，含 R064 **24 seeds**）；`vm_semantics_regression.sh`（**PASS**）；`defense_audit.sh`（**20 PASS / 0 FAIL**）；`faithful_stub_test.sh`（**5/5 PASS**）；`v15_fingerprint.py`（`example.txt` 与 7 个校准 seed 全部 **32/32 PASS**）；`h2`..`h8`、`r061_bypass_audit.py`、`redteam_probe_regression.py`、`bench_presets.sh`（**56/56 PASS**）全部通过。
+- **能力边界重申**：
+  1. 静态字符串常量首次求值解码后缓存于对应函数生命周期内的代理表；在真实宿主环境下的运行期动态插桩、内存转储或录制重放仍可观测已求值明文常量，静态混淆对此不作过度安全承诺。
+  2. 本轮全部兼容性与守卫矩阵验证基于 stock Luau `0.735`、`LUAU_READONLY_GLOBALS=1` 及受控模拟环境完成；未在特定第三方真实执行器（如 Delta 等）实机验证本轮产物前，不声称该执行器实机已验收。
+
+## 17. Phase 17 安全优先加固（2026-11-23）
+
+> 任务书：`obsucvim_phase17_security_first_tasks.md`（P0–P1、§4–§8）。本阶段原则：安全性优先；不得为体积更小或运行更快而削弱混淆强度、VM 保护、字符串保护或默认 Guard。唯一体积硬门槛：`print(6)\n` 默认 v15 产物 `<= 250,000 bytes`（§0.1/§7）。
+> 基线 HEAD：`69dcfc9cb27772b097726225908b3a3e22959b88`（分支 `arena/3f7093d7-obsucvim`，开工时工作树 clean，`.tools/bin` 已重建）。
+> 最终 HEAD：`47fcf268342220f0758b98f9af572c2782bae7fd`（Phase 17 主体提交，含本节 §17 初版；其后仅有本节 SHA 回填提交，以 `git log -1` 为准，见 §17.6）。
+> 安全评估报告：`docs/phase17_security_evaluation.md`（§6 五维评估 + NOT_RUN 声明）。
+
+### 17.1 能力契约定案（P0，方案 A：纯 Lua fallback）
+
+- `engine/src/vmgen/caps.rs`：`VmPrim::Unpack::lua_bind_expr()` 由两级（`unpack` → `table.unpack`）扩展为 Scheme A 三级回退：`(type(unpack)=="function" and unpack) or (type(table)=="table" and type(table.unpack)=="function" and table.unpack) or <纯 Lua 递归切片解包器 _uf>`。两种 API 同时缺失属于**可兼容场景**（走完整 fallback），不再由 Guard 拒绝；`STAGE_MANIFEST` 按“可替代 API 组”表达该契约，不再把两个 API 标为互不相关、可同时缺失的普通 optional API。
+- `engine/src/vmgen/handlers/loadstr.rs`：统一 `LoadStr` 原语名（`BYTE`/`SUB`/`CONC`/`CH`/`UNPK`），消除 `unpack or table.unpack` 旁路。
+- `engine/src/vmgen/handlers/mod.rs` + `handlers/nop.rs`：接线 `"Nop" => nop::code(fmt)`，消除 `"Nop"` panic。
+- `engine/tests/capability_manifest_test.py`：补上“`unpack` 与 `table.unpack` 同时缺失”场景与“`table.unpack` 存在但返回错误”场景；`table.unpack` 行为验证检查实际返回值、nil 保留、起止索引与空区间（不只 `pcall` 成功）；新增 `f64::MIN_POSITIVE = 2.2250738585072014e-308` 端到端运行期校验。结果 **11 PASS / 0 FAIL**。
+
+### 17.2 Guard 正确性与误报控制（P1）
+
+- `engine/src/guard.rs` + `engine/src/anti/mod.rs`：`abort()` 改为有界 65,536 步 fail-closed（消除无界循环导致的宿主线程挂起）；`STAGE_MANIFEST` 扩展并与 `guard_matrix_test.py` 保持双向精确同步（Rust 单元测试解析 Python 用例表 + Python 反向解析 `anti/mod.rs`，重复/孤儿 ID 即 CI 失败）；7-core `[C]` 检查（`pcall`、`xpcall`、`type`、`select`、`tostring`、`rawget`、`setmetatable`）+ 双 `checkUnpack`。
+- `engine/src/vmgen/template.rs`：`PD()` 有界 65,536 步；`pcall_pre_guard` 在 `HBOOT` 之前；`--no-guard` 与 `hbootfail` 分离；IEEE-754 `-0.0` 保留（`1/x == -math.huge`）；`const_loop` 直接 `v = m` 缩放，移除 FTZ 危险的次正规中间值 `2^-1074`。
+- `engine/tests/guard_matrix_test.py`：结果分类拆分 `GuardRejected` / `RuntimeError` / `Timeout` / `CompileError` / `HarnessError`；每个篡改用例带 `--no-guard` 差分对照（同输入同环境变体在 `--no-guard` 下通过、`--guard` 下拒绝）；payload 执行标记确认拒绝发生在 payload 运行前；方案 A 下“两种 unpack 均缺失”为允许场景，不再误判为 Guard 成功。结果 **72 PASS / 0 FAIL**（直方图 `{'OK': 26, 'GuardRejected': 39}` + 6 项负向自检）。
+
+### 17.3 VM/ISA/字符串一致性与防篡改矩阵（§4）
+
+- `engine/src/vmgen/isa.rs`：新增 IEEE-754（`-0.0`、`f64::MIN_POSITIVE`、`NaN`、`±Inf`）与二进制字符串往返测试 + 全 43 opcode 的 Luau/Lua5.1 handler 解析测试。
+- `engine/src/vmgen/v15.rs`（关键安全修复）：外层 `v2h` 完整性门 `verifyslot ~= sumslot` 此前仅改写未读的 `C[sumslot]` 即返回 `sdone`（篡改可静默执行）；现改为 `C[entryslot]=nil; C[vmslot]=nil`，篡改必在 payload 前 fail-closed。
+- `engine/tests/vm_tamper_matrix_test.py`（新增）：基于自有 fixture 的 60-case 黑盒篡改矩阵（3 seed × 20 case：15 VM 篡改 + 5 对照），覆盖 VM carrier、常量/密封字符串、opcode/operand 流、分派/micro-wrapper、完整性校验/阶段机；每 case 记录改动位置、字节数、预期分类、退出码、stdout/stderr、payload 标记。结果 **60 PASS / 0 FAIL**（`TamperRejectedFault 42`、`TamperRejectedPoisonedOutput 3`、`DeadDataIgnored 9`、`SyntaxCompileError 3`、`CleanExecution 3`），机器可读结果见 `engine/tests/results/vm_tamper_matrix.json`。
+- 诚实边界：静态产物保护与“运行时明文不可观测”明确区分；字符串首次解码后在函数生命周期内缓存，运行期 hook/dump/重放仍可观测（见 §17.6）。
+
+### 17.4 唯一 250 KB 门槛（§7）与生产隔离（§5）
+
+- `engine/tests/print_size_gate.sh`（新增）：精确输入 `print(6)\n`，生产 release binary + `--preset v15 --dialect luau --seed <seed>`（默认 Guard 开启），6 个固定 seed `{1, 7, 42, 4242, 31337, 999999}` 逐个构建；每 seed 校验完整文件 `<= 250000 bytes`、水印存在、`luau-compile` 解析、stock Luau 执行输出 `6` 且退出码 0；记录每 seed 大小 + SHA-256、binary SHA-256、源码 commit SHA；以最大值作为 gate 结果。
+  - seed=1：110,139 B，SHA-256 `f25cdd940285b84e99565035c2fdc0ad8d48a79ea110256df22029d333265b81`
+  - seed=7：106,193 B，SHA-256 `57119cc95b7c0a617eaad24d22a3828c3cff0f7ce95369232a2383fe93fec293`
+  - seed=42：106,252 B，SHA-256 `cbde6b7716c7f3844ba27babb68c9b113e991627e148ddd8f33243dd43c01a8f`
+  - seed=4242：106,484 B，SHA-256 `a6d7d2acabf0753d1f01e0069f6db53d4eca08a70a0ff2c1fb0bea28060986c0`
+  - seed=31337：110,332 B，SHA-256 `2873b188e01f202246916da7dd632cdb5012d28615e0b4a6470917ab21063a07`
+  - seed=999999：111,351 B，SHA-256 `fce7b850f85854e3bf9c9661ba2f5eab3f2d09018697500630aafc01b0d4c436`
+  - **最大值 111,351 B <= 250,000 B（余量 138,649 B），6/6 PASS。** 其他语料不设体积/耗时/RSS 门槛（`ab_compare.sh` 480/480 语义等价仅作观察数据，见 `engine/tests/results/ab_baseline_f583c2c3.{json,md}`）。
+- `engine/tests/prod_audit_gate_test.sh`：覆盖全部 12 个 `OBSUCVIM_*` 钩子（含 `OBSUCVIM_VM_RAW` 早退语义：生产版注入后仍输出正常产物且与同配置 audit-hooks 正常构建逐字节一致；audit-hooks 正向调用显式设置 `OBSUCVIM_VM_RAW=1` 并核验 VM 中间表示结构/可解析性）；生产 binary 零审计文件落盘、零 `stderr` 内部标记；`audit-hooks` 构建缺失/过期即自动重建（失败即非零退出）。结果 **PASS**（5 构建模式双二进制等效 + 3 项反向自检）。
+- 构建身份：生产 binary SHA-256 `df926259cebeae18eb49f7eca429d6eea30455827c6bde504ff8b380d81e4002`；audit-hooks binary SHA-256 `fe1ed6882ff35ac451e4fb3ccbdf88430ba37907f9dfcaa1c210abdf98761359`；`rustc 1.88.0`；stock Luau（`.tools/bin/luau`）。
+
+### 17.5 真实运行过的验证矩阵（§8，逐项结果）
+
+| 命令 | 结果 |
+|---|---|
+| `cargo check --all-targets` | PASS（仅既有 warnings） |
+| `cargo test --release` | **77 passed / 0 failed / 1 ignored** + 水印集成 **4 passed** |
+| `bash engine/tests/run_tests.sh` | **169 PASS / 0 FAIL**（含 wtf-port 23/23） |
+| `bash engine/tests/run_presets.sh` | **370 PASS / 0 FAIL** |
+| `bash engine/tests/multiseed.sh` | **FAIL=0**（含 R064 24 seeds） |
+| `bash engine/tests/vm_semantics_regression.sh` | **PASS** |
+| `bash engine/tests/defense_audit.sh` | **20 PASS / 0 FAIL** |
+| `bash engine/tests/faithful_stub_test.sh` | **5/5 PASS** |
+| `python3 engine/tests/capability_manifest_test.py` | **11 PASS / 0 FAIL** |
+| `python3 engine/tests/guard_matrix_test.py` | **72 PASS / 0 FAIL** |
+| `python3 engine/tests/vm_tamper_matrix_test.py` | **60 PASS / 0 FAIL** |
+| `bash engine/tests/prod_audit_gate_test.sh` | **PASS** |
+| `bash engine/tests/print_size_gate.sh` | **6/6 PASS**（max 111,351 B） |
+| `bash engine/tests/env_bind_test.sh` | **6 PASS / 0 FAIL** |
+| `python3 engine/tests/v15_fingerprint.py example.txt` | **32/32 PASS** |
+| `python3 engine/tests/security_fingerprint.py example.txt <src>` | **5/5 PASS**（S1–S5） |
+| `python3 engine/tests/h2_diff_audit.py` 等 H2–H8（7 脚本） | 全部 **PASS** |
+| `python3 engine/tests/h4_loader_audit.py --enforce-zero` | **ZERO-LOADER GATE: PASS** |
+| `python3 engine/tests/r061_bypass_audit.py` | **PASS** |
+| `python3 engine/tests/redteam_probe_regression.py` | **PASS** |
+| `python3 engine/tests/mobile_print_probe_test.py` | **6/6** |
+| `bash engine/tests/wtf_port_test.sh` | **23 PASS / 0 FAIL** |
+| `bash engine/tests/ab_compare.sh` | **480/480** 语义等价（观察数据） |
+| `git diff --check` / `bash -n` / Python 语法 | 全部 clean |
+
+- **失败与未执行项**：本轮无失败项。`v15_test.sh` 在当前仓库不存在（等价项为 `v15_fingerprint.py` + `v15_short_name_audit.py`，已执行前者）；§6.2 独立评估者流程 **NOT_RUN**（无独立评估者，见安全评估报告 §7）；第三方执行器实机 **未实测**。
+- **样例重生成**：`engine/examples/*.v15.luau.lua`（37 例，`gen_examples.sh`，`--seed 42`）与根 `example.txt`（输入 `a = 999\n`，`--preset v15 --dialect luau --seed 42`，104,224 B，SHA-256 `9a9148c463516fc678967c07035fac759cb5402524c2377aea5cbac08a921867`）已用本轮引擎重生成；`example.txt` 通过 `luau-compile` 与 stock Luau 运行验证。
+
+### 17.6 安全边界与未完成项
+
+1. 运行时明文可观测性：字符串首次解码后缓存于函数生命周期内；运行期动态插桩、内存转储、录制重放仍可观测已求值明文。本阶段不承诺“运行时明文不可观测”，不声称“不可逆”“无法破解”。
+2. 第三方执行器未实测：全部验证基于 stock Luau + `LUAU_READONLY_GLOBALS=1` 及受控模拟环境；未在特定第三方执行器实机验证前，不声称该执行器实机已验收。
+3. §6.2 独立评估（未参与实现者的固定预算评估）：**NOT_RUN**，不以内部静态指标替代。
+4. 退役路径未恢复：executor binding、key-host、EVKEY/EVKX、XTOK/XPROBE、EXG 与 executor 专用 tier-2 探测保持移除；未新增 crates.io 依赖（保持 std-only）；`audit-hooks` 保持显式 opt-in，未变为默认生产 feature。
+5. 本阶段未为体积/速度削弱任何保护：默认 v15 Guard 保持开启，`--super-insn` 保持 opt-in，字符串密封与完整性校验未降级；`print(6)` 达标靠既有结构余量（max 111,351 B），无需任何保护删减。
