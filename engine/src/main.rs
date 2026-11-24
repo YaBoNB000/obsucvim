@@ -3,6 +3,7 @@ mod anti;
 mod antidbg;
 mod audit_gate;
 mod guard;
+mod limits;
 mod ast;
 mod body;
 mod flatten;

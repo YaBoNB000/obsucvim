@@ -595,8 +595,8 @@ fn st_pair_expr(
 ) -> String {
 	let e1 = if v > 0 { rng.int(0, v) } else { 0 };
 	let e2 = v - e1;
-	let p1 = f1.pop().expect("st table exhaustion");
-	let p2 = f2.pop().expect("st table exhaustion");
+	let p1 = f1.pop().unwrap_or_else(|| crate::limits::fatal("input exceeds compiler limit: st table exhaustion"));
+	let p2 = f2.pop().unwrap_or_else(|| crate::limits::fatal("input exceeds compiler limit: st table exhaustion"));
 	st1[p1] = e1;
 	st2[p2] = e2;
 	format!("(b[{}][{}]+b[{}][{}])", s0, p1 + 1, s1slot, p2 + 1)

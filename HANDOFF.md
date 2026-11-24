@@ -717,3 +717,28 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 3. §6.2 独立评估（未参与实现者的固定预算评估）：**NOT_RUN**，不以内部静态指标替代。
 4. 退役路径未恢复：executor binding、key-host、EVKEY/EVKX、XTOK/XPROBE、EXG 与 executor 专用 tier-2 探测保持移除；未新增 crates.io 依赖（保持 std-only）；`audit-hooks` 保持显式 opt-in，未变为默认生产 feature。
 5. 本阶段未为体积/速度削弱任何保护：默认 v15 Guard 保持开启，`--super-insn` 保持 opt-in，字符串密封与完整性校验未降级；`print(6)` 达标靠既有结构余量（max 111,351 B），无需任何保护删减。
+
+## 18. Phase 18 工程鲁棒性与预算内加固（2026-11-23）
+
+### 自查：Task P0-1（编译前资源预算检查）
+- 实施位置：`engine/src/limits.rs`、`engine/src/main.rs`、`engine/src/parser.rs`
+- 实施方式：按 §0.4 二分校准算法实测并设置 `MAX_TOPLEVEL_FUNC_DECLS = 32`（`low=41, high=42`）、`MAX_TOPLEVEL_STMTS = 2385`（`low=2982, high=2983`）、`MAX_CLOSURE_NEST_DEPTH = 15`（`low=19, high=20`）、`MAX_EXPR_PARSE_DEPTH = 2906`（`low=3633, high=3634`），在 `Parser::subexpr`、`Parser::funcbody`、`Parser::parse` 入口/出口计数并干净返回 `ParseError`。
+- 验收命令 1：`cd engine && cargo test --release` → 退出码 0（`77 passed; 0 failed; 1 ignored` + `4 passed`）→ 通过
+- 验收命令 2：`bash engine/tests/print_size_gate.sh` → 退出码 0（`min=106193B, max=111351B <= 250000B`，余量 `138649B`）→ 通过
+- 验收命令 3：`bash engine/tests/defense_audit.sh` → 退出码 0（`PASS 20 FAIL 0`）→ 通过
+- 体积影响：改动前 `111,351 B` → 改动后 `111,351 B`，差值 `0 B`
+- 本 Task 总结论：通过
+
+### 自查：Task P0-2（消除输入可达的裸 panic）
+- 实施位置：`engine/src/limits.rs:fatal`、`engine/src/vmgen/compiler.rs`、`engine/src/vmgen/v15.rs`
+- 实施方式：将 `H3 sparse register pool exhausted`、`slot overflow`、`st table exhaustion` 三处输入可达裸 `panic!/assert!/expect` 替换为 `limits::fatal(...)`（单行 `error:` 输出 + `exit(1)`）。
+- 验收命令 1：`cd engine && cargo test --release` → 退出码 0（`77 passed; 0 failed; 1 ignored` + `4 passed`）→ 通过
+- 验收命令 2：`bash engine/tests/print_size_gate.sh` → 退出码 0（`max=111351B`）→ 通过
+- 体积影响：改动前 `111,351 B` → 改动后 `111,351 B`，差值 `0 B`
+- 本 Task 总结论：通过
+
+### 自查：Task P0-3（建立鲁棒性回归套件）
+- 实施位置：`engine/tests/robustness_gate_test.py`
+- 实施方式：覆盖 C1（100 顶层函数）、C2（3000 顶层语句）、C3（20 层嵌套闭包）、C4（20000 层嵌套括号），校验非零退出且无 `panicked at`/`SIGABRT`/`SIGSEGV`。
+- 验收命令 1：`python3 engine/tests/robustness_gate_test.py` → 退出码 0（`ROBUSTNESS GATE PASS: 4/4`）→ 通过
+- 本 Task 总结论：通过

@@ -353,12 +353,12 @@ impl<'a> Ctx<'a> {
 		let low_max = n.max(1) + (n / 2).min(64).max(8);
 		let high_start = (low_max + 1).max(96);
 		let high_end = 4095usize.min(u16::MAX as usize);
-		assert!(
-			high_start <= u16::MAX as usize
-				&& high_end >= high_start
-				&& high_end - high_start + 1 >= n_high,
-			"H3 sparse register pool exhausted"
-		);
+		if !(high_start <= u16::MAX as usize
+			&& high_end >= high_start
+			&& high_end - high_start + 1 >= n_high)
+		{
+			crate::limits::fatal("input exceeds compiler limit: H3 sparse register pool exhausted");
+		}
 		let mut low_pool: Vec<u16> = (1..=low_max as u16).collect();
 		let mut high_pool: Vec<u16> = (high_start as u16..=high_end as u16).collect();
 		self.rng.shuffle(&mut low_pool);
@@ -2746,7 +2746,7 @@ let _ = has_vararg;
 		let (bytes, nops, osum, osum2, chaff, blocks) = child.finish(nregs, child_index);
 			self.program.block_starts[child_index] = blocks;
 		self.next_fn_slot = slot_end;
-		if child_index >= self.program.fns.len() { panic!("slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot); }
+		if child_index >= self.program.fns.len() { crate::limits::fatal(&format!("input exceeds compiler limit: slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot)); }
 		self.program.fns[child_index] = bytes;
 		self.program.nop_sites[child_index] = nops;
 		self.program.operand_sums[child_index] = osum;

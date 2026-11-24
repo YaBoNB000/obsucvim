@@ -1,6 +1,7 @@
 
 use crate::ast::*;
 use crate::lexer::{InterpPart, Lexer, TokKind, Token};
+use crate::limits;
 
 const UNARY_PRIO: u8 = 8;
 
@@ -9,6 +10,8 @@ struct Parser {
 	i: usize,
 	luau: bool,
 	loops: u32,
+	expr_depth: usize,
+	closure_depth: usize,
 }
 
 impl Parser {
@@ -313,6 +316,22 @@ self.eat(TokKind::Punct, Some("?"));
 	}
 
 	fn funcbody(&mut self, has_self: bool) -> Result<FuncDef, ParseError> {
+		self.closure_depth += 1;
+		if self.closure_depth > limits::MAX_CLOSURE_NEST_DEPTH {
+			let d = self.closure_depth;
+			self.closure_depth -= 1;
+			return Err(self.err(&format!(
+				"input exceeds compiler limit: closure nesting depth = {}, max allowed = {}",
+				d,
+				limits::MAX_CLOSURE_NEST_DEPTH
+			)));
+		}
+		let res = self.funcbody_inner(has_self);
+		self.closure_depth -= 1;
+		res
+	}
+
+	fn funcbody_inner(&mut self, has_self: bool) -> Result<FuncDef, ParseError> {
 		self.expect(TokKind::Punct, Some("("))?;
 		let mut params: Vec<String> = Vec::new();
 		let mut vararg = false;
@@ -680,6 +699,22 @@ self.next();
 	}
 
 	fn subexpr(&mut self, limit: u8) -> Result<Expr, ParseError> {
+		self.expr_depth += 1;
+		if self.expr_depth > limits::MAX_EXPR_PARSE_DEPTH {
+			let d = self.expr_depth;
+			self.expr_depth -= 1;
+			return Err(self.err(&format!(
+				"input exceeds compiler limit: expression parse depth = {}, max allowed = {}",
+				d,
+				limits::MAX_EXPR_PARSE_DEPTH
+			)));
+		}
+		let res = self.subexpr_inner(limit);
+		self.expr_depth -= 1;
+		res
+	}
+
+	fn subexpr_inner(&mut self, limit: u8) -> Result<Expr, ParseError> {
 		let t = self.peek(0).clone();
 		if t.kind == TokKind::Punct && (t.text == "-" || t.text == "#") {
 			self.next();
@@ -1160,7 +1195,7 @@ fn parse_expr_snippet(src: &str, luau: bool) -> Result<Expr, ParseError> {
 	let toks = lexer
 		.tokens()
 		.map_err(|e| ParseError { line: e.line, msg: e.msg })?;
-	let mut p = Parser { toks, i: 0, luau, loops: 0 };
+	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0 };
 	let e = p.exp()?;
 	if p.peek(0).kind != TokKind::Eof {
 		return Err(ParseError {
@@ -1176,13 +1211,38 @@ pub fn parse(src: &str, luau: bool) -> Result<Block, ParseError> {
 	let toks = lexer
 		.tokens()
 		.map_err(|e| ParseError { line: e.line, msg: e.msg })?;
-	let mut p = Parser { toks, i: 0, luau, loops: 0 };
+	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0 };
 	let block = p.block()?;
 	if p.peek(0).kind != TokKind::Eof {
 		let t = p.peek(0);
 		return Err(ParseError {
 			line: t.line,
 			msg: format!("unexpected token after block: '{}'", t.text),
+		});
+	}
+	if block.stmts.len() > limits::MAX_TOPLEVEL_STMTS {
+		return Err(ParseError {
+			line: 1,
+			msg: format!(
+				"input exceeds compiler limit: top-level statements = {}, max allowed = {}",
+				block.stmts.len(),
+				limits::MAX_TOPLEVEL_STMTS
+			),
+		});
+	}
+	let fn_decls = block
+		.stmts
+		.iter()
+		.filter(|s| matches!(s, Stmt::LocalFunc { .. } | Stmt::FuncDecl { .. }))
+		.count();
+	if fn_decls > limits::MAX_TOPLEVEL_FUNC_DECLS {
+		return Err(ParseError {
+			line: 1,
+			msg: format!(
+				"input exceeds compiler limit: top-level function declarations = {}, max allowed = {}",
+				fn_decls,
+				limits::MAX_TOPLEVEL_FUNC_DECLS
+			),
 		});
 	}
 	Ok(block)
