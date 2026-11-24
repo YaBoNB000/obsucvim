@@ -742,3 +742,23 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 实施方式：覆盖 C1（100 顶层函数）、C2（3000 顶层语句）、C3（20 层嵌套闭包）、C4（20000 层嵌套括号），校验非零退出且无 `panicked at`/`SIGABRT`/`SIGSEGV`。
 - 验收命令 1：`python3 engine/tests/robustness_gate_test.py` → 退出码 0（`ROBUSTNESS GATE PASS: 4/4`）→ 通过
 - 本 Task 总结论：通过
+
+### 18.x 威胁模型分级（P1-4）与性能使用边界（P2-2）
+
+- **威胁模型分级**：
+  - **L1（静态源码/AST 恢复）**：由 `v15` 外层壳、VM 字节码、`strseal` 字符串密封与 `obf_num` 数值混淆防护；静态产物中不出现明文常量。
+  - **L2（受控篡改/环境劫持）**：由 `Guard`（7-core `[C]` 检查、双 `checkUnpack`、有界 65,536 步 `abort()`/`PD()`）与 `v2h` 完整性门（`verifyslot ~= sumslot` 时清零 `C[entryslot]`/`C[vmslot]`）防护。
+  - **L3（运行期动态插桩/内存转储/录制重放）**：**明确不承诺防护**；字符串首次求值解码后在函数生命周期内可被动态观测，不得声称“不可逆”。
+- **性能使用边界**：
+  - 唯一体积硬门槛：`print(6)\n` 默认 v15 六种子最大值 `111,351 B <= 250,000 B`（内部缓冲 `<= 245,000 B`，余量 `133,649 B`）。
+  - 编译前资源上限（§0.4 校准）：顶层函数声明 `<= 32`、顶层语句 `<= 2385`、闭包嵌套深度 `<= 15`、表达式解析深度 `<= 2906`；超限统一返回单行 `error:` 并非零退出。
+
+### P4 强制全量回归汇总
+
+- `cargo test --release`：`77 passed; 0 failed; 1 ignored` + `4 passed`（watermark）
+- `defense_audit.sh`：`20 PASS / 0 FAIL`
+- `print_size_gate.sh`：`6/6 PASS`（`min=106,193 B, max=111,351 B <= 250,000 B`）
+- `guard_matrix_test.py`：`72 PASS / 0 FAIL`
+- `vm_tamper_matrix_test.py`：`60 PASS / 0 FAIL`
+- `capability_manifest_test.py`：`11 PASS / 0 FAIL`
+- `robustness_gate_test.py`：`4/4 PASS`（C1–C4 干净拒绝）
