@@ -738,6 +738,9 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 验收命令 3：`bash engine/tests/defense_audit.sh` → 退出码 0（`PASS 20 FAIL 0`）→ 通过
 - 体积影响：改动前 `111,351 B` → 改动后 `111,351 B`，差值 `0 B`
 - 本 Task 总结论：通过
+- **P4 审查补充（2026-11-25）**——对照任务书复查时发现本 Task 的资源预算检查漏了一种输入可达的资源上限，并核实了一条容量边界：
+  1. **常量区长度 u16 上界（已补）**：`Ctx::finish` 用 `encode_u16var(&mut consts_sec, csec.len() as u16)` 写入每函数常量区的字节长度，而常量区里有密封字符串的全文。单个函数内密封常量总长超过 `65,535 B` 时该长度**回绕**，编译器仍然 rc=0 产出产物，但产物在加载/运行时报错（审查实测 `v15`：65,495 B 字面量 → `luau: ... attempt to index boolean`，≥90,000 B → `Out of local registers`；`high` 预设到 100 KB 仍正常）。这是 P0-1「编译前资源预算检查」要拦的同类问题（输入可达、编译期可判定、却静默产出坏产物），现改为 `limits::MAX_CONSTS_SECTION_BYTES = 65_535` 的干净拒绝：`error: input exceeds compiler limit: constant section = 65536 bytes, max allowed = 65535 per function`。该值是**格式决定的结构上限**（u16 varint），不是 §0.4 二分出来的性能预算，所以没有 low/high 校准；实测边界（seed 42，`local s = "<N 个 a>" print(#s)`）：`N=65,494` 编译且产物打印 `65494`，`N=65,495` 干净拒绝（此时 csec 恰为 65,536 B）。回归用例：`robustness_gate_test.py` 的 `H_consts_section_under_limit`（N = 65,471，编译且运行正确）/ `H_consts_section_over_limit`（N = 65,536，干净拒绝）。
+  2. **v15 预设的全程序闭包容量边界（记录，未改）**：C1 样例「100 个顶层 `local function` → `st table exhaustion`」背后的真实约束是 `v15.rs` 的 S 表——`st1/st2` 各 48 个槽，6 个被密钥生成表达式固定占用，之后**每个 carrier 分片**占用 1 个；小程序每个函数 1 片，所以 `v15`/`vm` 一个程序最多 **main + 41 个闭包**（实测：41 个匿名函数 `rc=0`，42 个 → `error: input exceeds compiler limit: st table exhaustion`；15 个顶层函数各含 3 个闭包 = 45 同样拒绝）。`MAX_TOPLEVEL_FUNC_DECLS = 32` 只拦顶层**声明**，匿名/嵌套闭包不计入，但超出时是干净的 rc=1 错误（P0-2 已把该 panic 改为 `limits::fatal`），不是崩溃。要提高容量必须改 S 表形状（牵动 `slot_perms`/H4-5B 车道方言、37 个示例与指纹基线），超出 Phase 18 范围，这里只如实记录为 `v15`/`vm` 的使用边界；`low/medium/high` 预设不受此限。
 
 - 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 自查：Task P0-2（消除输入可达的裸 panic）
@@ -747,11 +750,84 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 验收命令 2：`bash engine/tests/print_size_gate.sh` → 退出码 0（`max=111351B`）→ 通过
 - 体积影响：改动前 `111,351 B` → 改动后 `111,351 B`，差值 `0 B`
 - 本 Task 总结论：通过
+- **P4 审查修订（2026-11-25）**——对照任务书逐条复核时发现一处漏网，并补齐任务书要求但此前缺失的归类表附件：
+  1. **漏网的输入可达裸 panic（已修）**：`while true do local function f() break end end`（以及 `for ... do local f = function() continue end end`、`repeat`/`for-in`/表值/实参/return/if 表达式里的任意闭包形态）在修复前 `--preset v15`/`vm` 均为 `thread 'main' panicked at src/vmgen/compiler.rs:2365:53: break outside loop`（rc=101）；`high` 预设则把这份非法程序编译成运行期报错的产物。根因：`parser.rs` 的循环计数器 `self.loops` 在 `funcbody` 里没有清零，函数体内的 `break`/`continue` 借用了外层循环的计数而被接受，到 vmgen 时子函数的 `loops` 栈为空。Lua 5.1 / Luau 都把这判为 `break statement must be inside a loop`。修复：`funcbody` 进入函数体前把 `loops` 置 0、退出时恢复 → 三个预设统一变成干净的 `error: parse error line 1: 'break' outside of a loop`。为什么 P0-2 当时没抓到：(a) 该处 `expect` 上方已有一条声称「parser 已拒绝」的 `// invariant:` 注释，注释本身是错的；(b) `flatten.rs` 里同一前提是用 `assert!` 守的，而任务书第一步的 grep 模式（`\.unwrap\(\)|\.expect\(|panic!`）**不含 `assert!`/`unreachable!`**。因此本轮归类表按扩展模式（加 `unreachable!`/`assert!`/`assert_eq!`）重做，并补了 `// invariant:` 说明（template.rs 7 处、flatten/compiler/isa/v15/rng_check 的 `assert!` 6 处此前没有）。回归：robustness 场景 G 两份负向样本 + 一份合法对照，单测 `p0_c5_slots::c5_break_or_continue_inside_function_inside_loop_is_a_parse_error`（9 种闭包位置 × 两种语句 + 3 个合法对照）；另用 173 份边界输入（空文件、BOM、CRLF、NUL、二进制 chunk、goto/标签、类型标注、字符串插值、复合赋值、300 参数/300 upvalue/250 局部变量、250 层表、2000 项二元链、非法转义、未闭合字符串等）× `v15`/`high`/`vm` 三个预设做了审查扫描：修复前 2 次 `panicked at`（都是本条），修复后 0 次。
+  2. **归类表附件（任务书第二步要求的 `panic 位置 | 归类 | 判定依据`）**：当前 HEAD 上任务书 grep 命中 **153 行** = 测试模块 87 行（`#[cfg(test)]` 之后，不在范围）+ **28 行 `self.expect(`**（`parser.rs` 的 `Parser::expect` 方法，返回 `Result<Token, ParseError>`，是干净报错路径，grep 把同名方法误计为 `Option::expect`）+ 37 行生产 panic 站点 + 1 行注释。扩展模式（`+unreachable!/assert!/assert_eq!`）后生产站点共 **56 处**，与下表行数相等（差值 0）；全部归「内部不变量」，每处上方都有 `// invariant:` 说明（`grep -rc "// invariant:" engine/src` = 58）。表由 `engine/tools/panic_classification_table.py` 生成（有未归类站点时脚本退出码非 0）。审查前归为「输入可达」并已改成 `limits::fatal`/`Result` 的站点不在此表（`H3 sparse register pool exhausted`、`slot overflow`、`st table exhaustion`、`upvalue descriptor miss` 及 P0-1 的五个解析期预算），它们现在都是单行 `error:` + `exit(1)`。
+
+<details>
+<summary>P0-2 附件：生产代码 panic 站点归类表（56 行，最终 HEAD 上重新生成）</summary>
+
+| panic 位置 | 归类 | 判定依据 |
+|---|---|---|
+| `engine/src/flatten.rs:169` | 内部不变量 | 内部不变量：parser.rs stat() 在 loops==0 时拒绝，funcbody 把 loops 清零后再解析函数体（P4 审查修复），Break 只会出现在循环上下文 <br>`assert!(ctx.inner, "break outside loop (parser must reject)");` |
+| `engine/src/flatten.rs:175` | 内部不变量 | 内部不变量：同上（continue） <br>`assert!(ctx.inner, "continue outside loop (parser must reject)");` |
+| `engine/src/flatten.rs:305` | 内部不变量 | 内部不变量：make_loop 只由 Stmt::While/Repeat/ForNum/ForGen 分支调用 <br>`_ => unreachable!("make_loop called on a non-loop"),` |
+| `engine/src/flatten.rs:330` | 内部不变量 | 内部不变量：对循环语句枚举的全部分支做了穷尽匹配，`_` 仅剩非循环节点 <br>`_ => unreachable!(),` |
+| `engine/src/flatten.rs:846` | 内部不变量 | 内部不变量：build_graph 为循环节点固定生成单一后继 <br>`_ => panic!("loop node must have a single successor"),` |
+| `engine/src/flatten.rs:904` | 内部不变量 | 内部不变量：build_graph 先 push 入口块再 dispatch_chain <br>`.expect("machine has at least one block");` |
+| `engine/src/flatten.rs:1050` | 内部不变量 | 内部不变量：lower 前的 rewire 阶段把全部 Succ::Cont 改写为目标块；parser 保证 continue 仅在循环内 <br>`Succ::Cont => unreachable!("continue must be rewired"),` |
+| `engine/src/flatten.rs:1077` | 内部不变量 | 内部不变量：lower 前的 rewire 阶段把全部 Succ::Cont 改写为目标块；parser 保证 continue 仅在循环内 <br>`Succ::Cont => unreachable!("continue must be rewired"),` |
+| `engine/src/flatten.rs:1111` | 内部不变量 | 内部不变量：build_graph 为循环节点固定生成单一后继 <br>`Some(Succ::Cont) => unreachable!("continue must be rewired"),` |
+| `engine/src/flatten.rs:1119` | 内部不变量 | 内部不变量：build_graph 为循环节点固定生成单一后继 <br>`_ => panic!("loop node must have a single successor"),` |
+| `engine/src/mangle.rs:139` | 内部不变量 | 内部不变量：SymbolTable::new 压入根作用域，push/pop 在同一代码路径成对 <br>`self.scopes.last_mut().expect("root name scope").push(name.clone());` |
+| `engine/src/parser.rs:21` | 内部不变量 | 内部不变量：lexer 总是追加 EOF token，toks 非空 <br>`self.toks.get(self.i + ahead).unwrap_or_else(\|\| self.toks.last().unwrap())` |
+| `engine/src/rng_check.rs:19` | 内部不变量 | 内部不变量：独立自检 bin（rng_check），不读任何输入 <br>`assert_eq!(a, b);` |
+| `engine/src/symtab.rs:56` | 内部不变量 | 内部不变量：resolve() 以根作用域开始，每个 block 的 push/pop 成对 <br>`self.scopes.last_mut().unwrap().push((name.to_string(), id));` |
+| `engine/src/vmgen/compiler.rs:298` | 内部不变量 | 内部不变量：Ctx::new* 压入根作用域，compile_block 的 push/pop 成对 <br>`self.scopes.last_mut().unwrap().insert(s, k);` |
+| `engine/src/vmgen/compiler.rs:422` | 内部不变量 | 内部不变量：同上 <br>`assert_eq!(tau.len(), nu, "upvalue permutation length mismatch");` |
+| `engine/src/vmgen/compiler.rs:630` | 内部不变量 | 内部不变量：H3-6 噪声放置器的自检（算法自身性质，不来自输入数值） <br>`assert!(` |
+| `engine/src/vmgen/compiler.rs:970` | 内部不变量 | 内部不变量：查表键是编译期 opcode 名，白名单为静态表（fuse.rs FUSE_WHITELIST） <br>`.expect("vocab pairs are whitelist-only by construction");` |
+| `engine/src/vmgen/compiler.rs:1654` | 内部不变量 | 内部不变量：perm 由 `vec![0,1,2,3]` 构造，长度恒为 4 <br>`let slot_perm: [u8; 4] = perm.try_into().unwrap();` |
+| `engine/src/vmgen/compiler.rs:1666` | 内部不变量 | 内部不变量：tag_pool 为静态 8 元素池 <br>`let section_tags: [u8; 8] = tag_pool[..8].try_into().unwrap();` |
+| `engine/src/vmgen/compiler.rs:2029` | 内部不变量 | 内部不变量：上一行 `last_is_call` 由 values[nv-1] 为 Some 推出，且 nv>0 <br>`let call = values[nv - 1].as_ref().unwrap();` |
+| `engine/src/vmgen/compiler.rs:2377` | 内部不变量 | 内部不变量（P4 审查前**为假**）：原注释称 parser 已拒绝循环外 break，但 loops 计数器曾泄漏进嵌套函数体，`while true do local function f() break end end` 实际触发此 panic（rc=101）。已修 parser.rs funcbody，并加 robustness G 场景 + 单测钉住 <br>`let (l_end, _) = *self.loops.last().expect("break outside loop");` |
+| `engine/src/vmgen/compiler.rs:2382` | 内部不变量 | 内部不变量：同上（continue，Luau 方言） <br>`let (_, l_cont) = *self.loops.last().expect("continue outside loop");` |
+| `engine/src/vmgen/compiler.rs:2389` | 内部不变量 | 内部不变量：`es.is_empty()` 分支已提前 return <br>`} else if is_call(es.last().unwrap()) {` |
+| `engine/src/vmgen/compiler.rs:2396` | 内部不变量 | 内部不变量：所在的 `else if is_call(es.last().unwrap())` 分支已证明末元素存在 <br>`let call = es.last().unwrap().clone();` |
+| `engine/src/vmgen/compiler.rs:2402` | 内部不变量 | 内部不变量：同上 <br>`} else if matches!(es.last().unwrap(), Expr::Vararg) {` |
+| `engine/src/vmgen/compiler.rs:2569` | 内部不变量 | 内部不变量：对 AST Expr/Target 枚举的全部分支穷尽匹配，`_` 仅剩该处已在上层处理的变体 <br>`_ => unreachable!(),` |
+| `engine/src/vmgen/compiler.rs:2711` | 内部不变量 | 内部不变量：对 AST Expr/Target 枚举的全部分支穷尽匹配，`_` 仅剩该处已在上层处理的变体 <br>`_ => unreachable!(),` |
+| `engine/src/vmgen/compiler.rs:2756` | 内部不变量 | 内部不变量：对 AST Expr/Target 枚举的全部分支穷尽匹配，`_` 仅剩该处已在上层处理的变体 <br>`_ => unreachable!(),` |
+| `engine/src/vmgen/compiler.rs:2766` | 内部不变量 | 内部不变量：仅在 `is_call(e)` 为真的分支内调用，call_tail 对同一谓词返回 Some <br>`let tail = Self::call_tail(e).unwrap().clone();` |
+| `engine/src/vmgen/compiler.rs:2791` | 内部不变量 | 内部不变量：仅在 `is_call(e)` 为真的分支内调用，call_tail 对同一谓词返回 Some <br>`let tail = Self::call_tail(e).unwrap().clone();` |
+| `engine/src/vmgen/compiler.rs:2810` | 内部不变量 | 内部不变量：仅在 `is_call(e)` 为真的分支内调用，call_tail 对同一谓词返回 Some <br>`let tail = Self::call_tail(e).unwrap().clone();` |
+| `engine/src/vmgen/compiler.rs:2905` | 内部不变量 | 内部不变量：up_perm 由 derive_upvalue_permutation(ups.len()) 为本帧构造，索引 u < ups.len() <br>`.expect("parent upvalue permutation missing");` |
+| `engine/src/vmgen/handlers/mod.rs:150` | 内部不变量 | 内部不变量：name 来自 isa.rs 静态 OP_NAMES <br>`_ => panic!("unknown opcode name {name}"),` |
+| `engine/src/vmgen/handlers/mod.rs:175` | 内部不变量 | 内部不变量：对静态 BinOp 枚举穷尽匹配 <br>`_ => unreachable!("unknown arithmetic metamethod {mm}"),` |
+| `engine/src/vmgen/handlers/mod.rs:229` | 内部不变量 | 内部不变量：native 为模板内静态比较表达式字符串 <br>`let op = native.split_whitespace().nth(1).expect("comparison operator");` |
+| `engine/src/vmgen/isa.rs:154` | 内部不变量 | 内部不变量：两个调用点传入 isa::N_OPS / N_OPS-1（编译期常量） <br>`assert!(active_count > 0 && active_count <= N_OPS);` |
+| `engine/src/vmgen/isa.rs:514` | 内部不变量 | 内部不变量：glyphs 为固定 95 字节静态表 <br>`let alphabet: [u8; 94] = glyphs[1..].try_into().unwrap();` |
+| `engine/src/vmgen/template.rs:120` | 内部不变量 | 内部不变量：唯一调用点传入 program.fns 的长度列表，永不为空 <br>`assert!(!carrier_lengths.is_empty(), "KeyEmitter needs the main carrier");` |
+| `engine/src/vmgen/template.rs:255` | 内部不变量 | 内部不变量：pool 由同一静态 boot 名单构造，b 必在其中 <br>`pool.iter().position(\|&x\| x == b).unwrap() + 1` |
+| `engine/src/vmgen/template.rs:597` | 内部不变量 | 内部不变量：M_COUNT 为编译期常量且 < 244 <br>`let codes: [u8; M_COUNT] = pool[..M_COUNT].try_into().unwrap();` |
+| `engine/src/vmgen/template.rs:688` | 内部不变量 | 内部不变量：name 来自静态微码表，MICRO_SUPER_NAMES 与之一一对应（模板测试钉住） <br>`.unwrap_or_else(\|\| panic!("multi-record micro recipe missing superoperator: {n` |
+| `engine/src/vmgen/template.rs:936` | 内部不变量 | 内部不变量：唯一调用方 micro_op_body 仅在 index >= M_SUPER_BASE 时进入 <br>`_ => unreachable!(),` |
+| `engine/src/vmgen/template.rs:944` | 内部不变量 | 内部不变量：唯一调用方 micro_op_body 仅在 index >= M_SUPER_BASE 时进入 <br>`.expect("superoperator index below base");` |
+| `engine/src/vmgen/template.rs:948` | 内部不变量 | 内部不变量：index < M_COUNT = M_SUPER_BASE + MICRO_SUPER_NAMES.len() <br>`.expect("superoperator index out of range");` |
+| `engine/src/vmgen/template.rs:950` | 内部不变量 | 内部不变量：每个 MICRO_SUPER_NAMES 条目在静态表里都有配方（模板测试钉住） <br>`let primitive = micro_primitive_recipe(name).expect("superoperator recipe missin` |
+| `engine/src/vmgen/v15.rs:10` | 内部不变量 | 内部不变量：path 为 include_str 静态模板里的库.函数名 <br>`let (lib, name) = path.split_once('.').unwrap();` |
+| `engine/src/vmgen/v15.rs:36` | 内部不变量 | 内部不变量：仅当 include_str 的静态模板解析失败，与用户输入无关 <br>`panic!("v15 static source")` |
+| `engine/src/vmgen/v15.rs:40` | 内部不变量 | 内部不变量：静态模板源码非空 <br>`match block.stmts.pop().unwrap() {` |
+| `engine/src/vmgen/v15.rs:42` | 内部不变量 | 内部不变量：静态模板的 local 语句恒有初值 <br>`ast::Stmt::Local { mut values, .. } => values.pop().unwrap().unwrap(),` |
+| `engine/src/vmgen/v15.rs:44` | 内部不变量 | 内部不变量：对静态模板语句的 match 仅接受 Local，其余分支在静态源里不存在 <br>`_ => unreachable!(),` |
+| `engine/src/vmgen/v15.rs:138` | 内部不变量 | 内部不变量：静态模板迭代器元素个数固定 <br>`let n = it.next().unwrap();` |
+| `engine/src/vmgen/v15.rs:149` | 内部不变量 | 内部不变量：静态模板迭代器元素个数固定 <br>`let n = it.next().unwrap();` |
+| `engine/src/vmgen/v15.rs:591` | 内部不变量 | 内部不变量：循环恰好压入 6 个名字 <br>`out.try_into().unwrap()` |
+| `engine/src/vmgen/v15.rs:903` | 内部不变量 | 内部不变量：all_words 与 bw_slots 均来自 include_str 静态模板 <br>`assert!(` |
+| `engine/src/vmgen/v15.rs:1374` | 内部不变量 | 内部不变量：静态模板至少产生一个叶子 <br>`let max_leaf = leaves.last().unwrap().0;` |
+
+</details>
 
 ### 自查：Task P0-3（建立鲁棒性回归套件）
 - 实施位置：`engine/tests/robustness_gate_test.py`、`engine/tests/robustness_test.sh`
-- 实施方式：每个已校准维度各跑两个样本——`threshold` 必须干净编译、`threshold+1` 必须单行 `error:` 干净拒绝，并校验无 `panicked at`/`SIGABRT`/`SIGSEGV`/`RUST_BACKTRACE`。阈值一律从 `engine/src/limits.rs` 解析，不在测试里复制魔法数字。覆盖 C1（顶层函数 32/33）、C2（顶层语句 2385/2386）、C3（闭包嵌套 15/16）、C4（表达式深度 2736/2737）、C6（块嵌套 5656/5657）、C5（非法赋值目标）。`robustness_test.sh` 额外要求产物能通过 `luau-compile` 语法检查，并以 `source` 方式并入 `run_tests.sh`。
-- 验收命令 1：`python3 engine/tests/robustness_gate_test.py` → 退出码 0（`ROBUSTNESS GATE PASS: 11/11`）→ 通过
+- 实施方式：每个已校准维度各跑两个样本——`threshold` 必须干净编译、`threshold+1` 必须单行 `error:` 干净拒绝，并校验无 `panicked at`/`SIGABRT`/`SIGSEGV`/`RUST_BACKTRACE`。阈值一律从 `engine/src/limits.rs` 解析，不在测试里复制魔法数字。覆盖 C1（顶层函数 32/33）、C2（顶层语句 2385/2386）、C3（闭包嵌套 15/16）、C4（表达式深度 2736/2737）、C6（块嵌套 5656/5657）。`robustness_test.sh` 额外要求产物能通过 `luau-compile` 语法检查，并以 `source` 方式并入 `run_tests.sh`。
+- **P4 审查修订（2026-11-25）——场景 E 此前写错了**：原实现把「非法赋值目标」标成 C5，但任务书的 C5 是 `child_index >= fns.len()`（`compiler.rs` compile_function 的槽位越界）。按任务书「追溯调用链得到的触发条件」重新推导：槽表 `fns: vec![Vec::new(); total]` 的 `total` 来自 `count_fns_count`，而 `compile_function` 只在 `Stmt::LocalFunc` / `Stmt::FuncDecl` / `Expr::Function` 三类节点各调用一次，`count_stmt`/`count_expr` 又穷尽了全部含子表达式的 AST 变体——所以 C5 的触发条件是「某个会编译成闭包、但计数器没枚举到的语法位置」。据此重写：
+  - **场景 E（真正的 C5）**：把闭包放进 `count_stmt`/`count_expr` 枚举到的**每一个**语法位置（local 初值、表数组/键/下标值、调用与方法实参、被调用者、if/elseif/else 条件、while/repeat 条件、for-num 的 start/limit/step、for-in 迭代器、各循环体、do 体、一元/二元操作数、if 表达式两臂、下标键、concat、嵌套捕获）共 40 个 `function`，要求干净编译、`luau-compile` 通过、**且产物在参考解释器下的输出与源码一致**。配套单测 `p0_c5_slots::c5_count_fns_matches_compiled_closure_slots` 直接断言 `count_fns_count(&block) == program.fns.len() - 1`（40 == 40）。40 个而非更多是因为 `v15` 的 S 表容量为 main + 41 闭包（见 P0-1 审查补充第 2 条）。
+  - 顺手把 `compile_function` 里的 `slot overflow` 检查**前移**到 `child_index` 产生之后、任何以它为下标的写入（`s_indices`/`block_starts`/`fns`）之前：原来检查在 `s_indices[child_index] = ...` 之后，而 `s_indices` 比 `fns` 多 1 个元素，计数若少 2 以上会先在 `s_indices` 写入处裸 panic 而到不了干净拒绝。
+  - 原「非法赋值目标」用例保留但改名为 `G_invalid_assignment_target`，不再冒充 C5。
+  - **新增场景 G（P0-2 审查发现，见 P0-2 补充）**：`while true do local function f() break end end` / `for i=1,2 do local f = function() continue end end` 必须被解析器干净拒绝（`'break'/'continue' outside of a loop`），并保留一个合法位置的对照样本。
+  - **新增场景 H（P0-1 审查补充）**：常量区 u16 上界的两份样本（65,471 B 编译且运行正确 / 65,536 B 干净拒绝）。
+- 验收命令 1：`python3 engine/tests/robustness_gate_test.py` → 退出码 0（`ROBUSTNESS GATE PASS: 16/16`，原 11 项 + `E_c5_closure_positions` + 3 个 G 项 + 2 个 H 项）→ 通过
   ```
   thresholds: funcs=32 stmts=2385 closure=15 expr=2736 block=5656
     [PASS] C1_funcs_threshold: compiled cleanly at threshold 32
@@ -763,12 +839,17 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
     [PASS] C4_expr_depth_threshold: compiled cleanly at threshold 2736
     [PASS] C4_expr_depth_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: expression parse depth = 2737, max allowed = 2736
     [PASS] C6_block_depth_threshold: compiled cleanly at threshold 5656
-    [PASS] C6_block_depth_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: block nesting depth = 5657, max allowed = 5656
-    [PASS] C5_invalid_assignment_target: rejected cleanly :: error: invalid assignment target
-  ROBUSTNESS GATE PASS: 11/11
+      [PASS] C6_block_depth_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: block nesting depth = 5657, max allowed = 5656
+    [PASS] E_c5_closure_positions: compiled cleanly at threshold 0
+    [PASS] G_invalid_assignment_target: rejected cleanly :: error: invalid assignment target
+    [PASS] G_break_inside_function_in_loop: rejected cleanly :: error: parse error line 1: 'break' outside of a loop
+    [PASS] G_continue_inside_function_in_loop: rejected cleanly :: error: parse error line 1: 'continue' outside of a loop
+    [PASS] H_consts_section_under_limit: compiled cleanly at threshold 65471
+    [PASS] H_consts_section_over_limit: rejected cleanly :: error: input exceeds compiler limit: constant section = 65577 bytes, max allowed = 65535 per function
+  ROBUSTNESS GATE PASS: 16/16
   ```
-- 验收命令 2：`bash engine/tests/robustness_test.sh` → 退出码 0（`ROBUSTNESS PASS: 12   FAIL: 0`，`ALL ROBUSTNESS GREEN`）→ 通过
-- 验收命令 3：`bash engine/tests/run_tests.sh` → 退出码 0（`PASS checks: 181   FAIL: 0`，`ALL GREEN`；含 `ROBUSTNESS PASS: 12`）→ 通过
+- 验收命令 2：`bash engine/tests/robustness_test.sh` → 退出码 0（`ROBUSTNESS PASS: 19   FAIL: 0`，`ALL ROBUSTNESS GREEN`；其中 `E_c5_closure_positions_run artifact output == source output under luau`、`H_consts_section_under_limit_run artifact prints 65471 under luau`）→ 通过
+- 验收命令 3：`bash engine/tests/run_tests.sh` → 退出码 0（`PASS checks: 188   FAIL: 0`，`ALL GREEN`；含 `ROBUSTNESS PASS: 19`——较 Phase 18 开始时的 181 多出的 7 项全部来自本套件 12 → 19）→ 通过
 - 本 Task 总结论：通过
 
 - 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
@@ -950,25 +1031,25 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
   - 第 4 步（P1-1/P1-2/P1-3/P3-1 新增测试结果）已覆盖：这 4 个自查小节都在补写范围内，逐条复核通过
 - 本 Task 总结论：通过
 
-### P4 强制全量回归汇总（最终 HEAD `61a91fd` 上全部重跑）
+### P4 强制全量回归汇总（最终 HEAD 上全部重跑；2026-11-25 审查修订版）
 
 本阶段按要求**不使用**前面各 Task 记录的结果，全部命令在最终 HEAD 上重新执行一遍。
-执行环境：`arena/723e28ef-obsucvim`，HEAD `61a91fd`，工作区干净，工具链 rustc 1.88.0 /
-Luau 0.735（沙箱重置后由 `engine/tools/rebuild_tools.sh` 重建）。
+执行环境：`arena/723e28ef-obsucvim`，工具链 rustc 1.88.0 / Luau 0.735（沙箱重置后由 `engine/tools/rebuild_tools.sh` 重建），工作区干净。
+最终 HEAD = `fde415a`（上一轮 P4 提交）+ 本提交（P4 审查修订：P0-1 常量区上界、P0-2 break/continue 修复与归类表、P0-3 场景 E 重写、本节）。上一次 P4（`fde415a`）只写了命令结果表、没有任务书第 4 步要求的 11 行 Task×证据总表，也没有第 6 步收尾陈述，提交信息也不是规定文本——本次全部补齐，并按任务书第 5 步把审查发现的「不通过」修到通过后**整套重跑**（§0.5 + 全部专项门禁）。
+
+#### 0.5 节全量回归（最终 HEAD，原始结果；均为内部自测指标）
 
 | # | 验收命令 | 最终 HEAD 上的原始结果 |
 | --- | --- | --- |
-| 1 | `cd engine && cargo test --release` | `test result: ok. 82 passed; 0 failed; 1 ignored` + `test result: ok. 4 passed; 0 failed` |
-| 2 | `bash engine/tests/run_tests.sh` | `PASS checks: 181   FAIL: 0` → `ALL GREEN` |
+| 1 | `cd engine && cargo test --release` | `test result: ok. 84 passed; 0 failed; 1 ignored` + `test result: ok. 4 passed; 0 failed`（较上轮 +2：`p0_c5_slots::*`） |
+| 2 | `bash engine/tests/run_tests.sh` | `PASS checks: 188   FAIL: 0` → `ALL GREEN`（含 `ROBUSTNESS PASS: 19`） |
 | 3 | `bash engine/tests/multiseed.sh` | `multiseed done: FAIL=0`（含 `R064 nested-upvalue seed stability PASS (24 seeds)`） |
 | 4 | `bash engine/tests/defense_audit.sh` | `防御审计: PASS 20   FAIL 0` → `ALL DEFENSES ACTIVE` |
 | 5 | `bash engine/tests/print_size_gate.sh` | `PRINT SIZE GATE PASS: 6/6 seeds verified (min=109267B, max=112607B <= 250000B cap; headroom=137393B)` |
-| 6 | `python3 engine/tests/v15_fingerprint.py example.txt` | `通过 32/32` |
-| 7 | `python3 engine/tests/security_fingerprint.py example.txt <src>` | `安全指纹: 5/5 通过, 0 红, S6 运行等价见官方矩阵` |
-| 8 | `python3 engine/tests/guard_matrix_test.py` | `guard_matrix_test: 80 PASS, 0 FAIL`（含 P1-3 的 8 个 canary 场景与 `stage_manifest_bidirectional_sync`） |
-| 9 | `python3 engine/tests/vm_tamper_matrix_test.py` | `vm_tamper_matrix_test: 60 PASS, 0 FAIL` |
-| 10 | `python3 engine/tests/capability_manifest_test.py` | `capability_manifest_test: 11 PASS, 0 FAIL` |
-| 11 | `python3 engine/tests/robustness_gate_test.py` + `bash engine/tests/robustness_test.sh` | `ROBUSTNESS GATE PASS: 11/11` + `ROBUSTNESS PASS: 12   FAIL: 0` |
+| 6 | `python3 engine/tests/v15_fingerprint.py ../example.txt` | `通过 32/32` |
+| 7 | `python3 engine/tests/security_fingerprint.py ../example.txt <src=a = 999>` | `安全指纹: 5/5 通过, 0 红, S6 运行等价见官方矩阵` |
+
+**审查修订对产物零影响的直接证据**：用最终二进制按 `gen_examples.sh` 同参数（`--preset v15 --dialect luau --seed 42`）重生成全部 37 个 `tests/cases/*.lua` 的产物，与已提交的 `engine/examples/*.v15.luau.lua` **逐字节相同（37/37）**；`a = 999` 的产物与根目录 `example.txt` 逐字节相同。本次改动只触及解析期拒绝路径（非法程序）、编译期资源上限（原本会产出坏产物的程序）和注释/测试，合法程序的产物不变，`print_size_gate` 最大值仍是 `112,607 B`。
 
 **Phase 18 专项门禁（同样在最终 HEAD 上重跑）**
 
@@ -978,23 +1059,52 @@ Luau 0.735（沙箱重置后由 `engine/tools/rebuild_tools.sh` 重建）。
 | `python3 engine/tests/canary_runtime_test.py`（P1-3） | `CANARY RUNTIME PASS: 4   FAIL: 0` |
 | `bash engine/tests/charhook_test.sh`（P1-3） | `CHARHOOK PASS: 4   FAIL: 0` |
 | `bash engine/tests/string_primitive_hook_test.sh`（P1-3） | `[minimal] byte/sub/char=0/0/0`、`[R064] 0/0/0` |
-| `bash engine/tests/wtf_port_test.sh` | `wtf-port env-check regression: 23 PASS, 0 FAIL` |
-| `bash engine/tests/r064_seed_stability_test.sh` | `R064 nested-upvalue seed stability PASS (24 seeds)` |
-| `bash engine/tests/bench_presets.sh` | 56/56 组合输出等价 `PASS`；`v15` 减速 9.0×（`basics`）–1203.1×（`stress_bigtable`） |
-| `AB_BASELINE_REF=2a31e69 bash engine/tests/ab_compare.sh` | 10 语料 × 4 模式 = **40 个组合全部 `semantic_eq 6/6` / `luau_compile 6/6` / `same_seed_det True`**；输出字节变化区间 `-1.94%`（`basics/v15_noguard`）–`+6.51%`（`micro_print6/high`），运行耗时变化区间 `-11.80%`–`+23.14%`（噪声级，见下） |
-| `python3 engine/tests/attack_blackbox/*.py`（P3-1） | 4 个脚本全部产出三档结论：`constant_folding 部分成功` / `dead_code_elimination 失败` / `trace_devirtualization 部分成功` / `cfg_simplification 失败` |
+| `python3 engine/tests/guard_matrix_test.py`（P1-3） | `guard_matrix_test: 80 PASS, 0 FAIL`（histogram `{'OK': 30, 'GuardRejected': 43}`） |
+| `python3 engine/tests/vm_tamper_matrix_test.py` | `vm_tamper_matrix_test: 60 PASS, 0 FAIL` |
+| `python3 engine/tests/capability_manifest_test.py` | `capability_manifest_test: 11 PASS, 0 FAIL` |
+| `python3 engine/tests/v15_fingerprint.py engine/examples/basics.v15.luau.lua` + `security_fingerprint.py ... basics.lua` | `通过 32/32` / `安全指纹: 5/5 通过, 0 红` |
+| `python3 engine/tests/robustness_gate_test.py` + `bash engine/tests/robustness_test.sh`（P0-3） | `ROBUSTNESS GATE PASS: 16/16` + `ROBUSTNESS PASS: 19   FAIL: 0` |
+| `bash engine/tests/bench_presets.sh`（P2-1/P2-2） | 56/56 组合 `PASS`；`v15` 减速 9.1×（`basics`）–1278.9×（`stress_bigtable`），`functions` 109.2× |
+| `python3 engine/tests/attack_blackbox/*.py`（P3-1） | `constant_folding 部分成功` / `dead_code_elimination 失败` / `trace_devirtualization 部分成功` / `cfg_simplification 失败` |
+| 审查扫描（非套件）：173 份边界输入 × `v15`/`high`/`vm` | 修复前 `panicked at` 2 次（均为 break/continue 嵌套函数），修复后 0 次 |
+
+#### 任务书第 3–4 步：11 个 Task 的实施证据 / 生效证据总表
+
+| Task | 实施证据命令 | 实施证据结果 | 生效验证命令 | 生效验证结果 | 结论 |
+|---|---|---|---|---|---|
+| P0-1 | `grep -n "MAX_TOPLEVEL_FUNC_DECLS\|MAX_TOPLEVEL_STMTS\|MAX_CLOSURE_NEST_DEPTH\|MAX_EXPR_PARSE_DEPTH" engine/src/limits.rs`；审查补充 `grep -n MAX_CONSTS_SECTION_BYTES engine/src/limits.rs` | 四个常量均存在且非 0：`MAX_TOPLEVEL_FUNC_DECLS: usize = 32`、`MAX_TOPLEVEL_STMTS: usize = 2385`、`MAX_CLOSURE_NEST_DEPTH: usize = 15`、`MAX_EXPR_PARSE_DEPTH: usize = 2736`（另 `MAX_BLOCK_NEST_DEPTH = 5656`）；`MAX_CONSTS_SECTION_BYTES: usize = 65_535` | `python3 engine/tests/robustness_gate_test.py`；`bash engine/tests/robustness_test.sh` | `ROBUSTNESS GATE PASS: 16/16`（C1–C4/C6 的 threshold 干净编译、threshold+1 单行 `error: input exceeds compiler limit: ...`；`H_consts_section_over_limit: rejected cleanly :: error: input exceeds compiler limit: constant section = 65577 bytes, max allowed = 65535 per function`）；`ROBUSTNESS PASS: 19 FAIL: 0`，`H_consts_section_under_limit_run artifact prints 65471 under luau` | 通过 |
+| P0-2 | `grep -rcE "\.unwrap\(\)\|\.expect\(\|panic!" engine/src --include="*.rs" \| awk -F: '{s+=$2} END{print s}'`；扩展模式归类表 `python3 engine/tools/panic_classification_table.py` | `153` 行 = 测试模块 87 + `Parser::expect` 方法 28（非 panic）+ 生产站点 37 + 注释 1；扩展（`+unreachable!/assert!`）生产站点 56 = P0-2 附件表 56 行（差值 0）；`grep -rc "// invariant:" engine/src` = 58 | `bash engine/tests/robustness_test.sh`（场景 G）；`cd engine && cargo test --release p0_c5_slots`；173 份边界输入 × 3 预设扫描 | `G_break_inside_function_in_loop rejected cleanly: error: parse error line 1: 'break' outside of a loop`、`G_continue_inside_function_in_loop ... 'continue' outside of a loop`、`G_control_break_inside_loop compiles cleanly`；`c5_break_or_continue_inside_function_inside_loop_is_a_parse_error ... ok`；扫描 0 次 `panicked at` | 通过（审查前**不通过**：1 处输入可达裸 panic，已修） |
+| P0-3 | `grep -n "robustness_test.sh" engine/tests/run_tests.sh` | `191:source "$ROOT/tests/robustness_test.sh"` | `bash engine/tests/robustness_test.sh`；`bash engine/tests/run_tests.sh` | `ROBUSTNESS PASS: 19   FAIL: 0`（`E_c5_closure_positions compiles cleanly (rc 0, artifact 396722 B, luau-compile OK)`、`E_c5_closure_positions_run artifact output == source output under luau`）；`PASS checks: 188   FAIL: 0` | 通过（审查前场景 E 标错，已按 C5 重写） |
+| P1-1 | `ls engine/tests/string_cache_dump_test.*`；`grep -n "sealed_total_counts\|fn loadstr_flags" engine/src/vmgen/strseal.rs engine/src/vmgen/compiler.rs` | `engine/tests/string_cache_dump_test.py`；`strseal.rs:sealed_total_counts`、`compiler.rs:527 loadstr_flags(...)`、`compiler.rs:1559 is_clearable/is_last` 实现行可定位 | `python3 engine/tests/string_cache_dump_test.py`；`python3 engine/tests/v15_fingerprint.py engine/examples/basics.v15.luau.lua`；`python3 engine/tests/security_fingerprint.py engine/examples/basics.v15.luau.lua engine/tests/cases/basics.lua`；`cargo test --release p1_cache` | `STRING CACHE DUMP PASS: 7   FAIL: 0`（10 个单次引用标记不进缓存）；`通过 32/32`；`安全指纹: 5/5 通过, 0 红`；5 个 `p1_cache::*` 测试 ok（在最终二进制、P2-1 之后重跑） | 通过 |
+| P1-2 | `grep -n "is_clearable\|str_clearable\|sealed_clearable" engine/src/vmgen/compiler.rs` | `compiler.rs:94/182/527/1559/1563/1648`（`sealed_clearable(block)` → `loadstr_flags` 的 `is_last && is_clearable` → `0x4000` 清空位） | `python3 engine/tests/string_cache_dump_test.py`；`cargo test --release p1_cache`；`bash engine/tests/print_size_gate.sh` | `STRING CACHE DUMP PASS: 7   FAIL: 0`（multi-use 全清 / loop-body 不清 / closure 不清三项）；`constants_referenced_inside_a_loop_are_never_cleared`、`constants_referenced_from_a_nested_closure_are_never_cleared` ok；`6/6 seeds verified (max=112607B)` | 通过（循环回边/闭包捕获场景按 P1-2 范围声明不清空，非缺陷） |
+| P1-3 | `grep -n "canary" engine/src/anti/mod.rs` | 16 行：`("strcanary", ANTI_STRCANARY, "stage_strcanaries()")`（:589 附近）及 `canary1_char_value_clean` … `canary4_char_byte_roundtrip_tamper` 共 8 个 `test_id`（4 个 canary 项的正/负向） | `python3 engine/tests/guard_matrix_test.py`；`python3 engine/tests/canary_runtime_test.py`；`bash engine/tests/charhook_test.sh`；`bash engine/tests/string_primitive_hook_test.sh` | `guard_matrix_test: 80 PASS, 0 FAIL`（含 8 个 canary 场景）；`CANARY RUNTIME PASS: 4   FAIL: 0`；`CHARHOOK PASS: 4   FAIL: 0`；`[minimal] 0/0/0`、`[R064] 0/0/0`（均在最终二进制上重跑） | 通过（透明转发包装器类 hook 不拦截，为 P1-3 实测声明的边界） |
+| P1-4 | `grep -n "威胁模型分级" HANDOFF.md`；`sed -n '/^### 18.1/,/^### 自查：Task P2-1/p' HANDOFF.md \| grep -c "<[^>]*>"` | `939:### 18.1 威胁模型分级（P1-4）`；占位符命中 `0` | 人工复核 §18.1/§18.2 的数字来源（P1-1 夹具 10/14、P1-3 实测拦截清单、`bench_presets.sh`） | §18.1 三级威胁模型与 §18.2 性能边界均无 `<...>` 占位符，数字与本轮重跑一致 | 通过 |
+| P2-1 | `git log --oneline \| grep "P2-1"`；`grep -n "FUSE_WHITELIST" engine/src/vmgen/fuse.rs` | `5e7ca9d Phase18 P0-1/P0-2/P0-3/P1-1/P1-2/P1-3/P1-4/P2-1/P2-2: robustness, cache policy, canaries, docs`（1 命中；**为合并提交而非独立 `Phase18 P2-1:` 提交**，见下方偏差说明）；`FUSE_WHITELIST` 仅含 `(LoadK,Move)`/`(Move,Move)`/`(LoadNil,Move)`/`(GetUp,Move)`/`(Move,LoadK)` 五个纯搬运对 | `bash engine/tests/bench_presets.sh`；`gen_examples.sh` 同参数重生成 37 个示例比对 | `56/56` 组合 `PASS`，`v15` 9.1×–1278.9×；37/37 示例逐字节相同（P2-1 加入 0 个 opcode，产物不变） | 通过（最终加入 **0 个** opcode；「默认恒定生效的融合子集」按 0.6 节如实记为未实施，原因见 P2-1 自查） |
+| P2-2 | `grep -n "性能使用边界" HANDOFF.md` | `950:### 18.2 性能使用边界（P2-2）`、`997:### 自查：Task P2-2（在文档里明确性能使用边界）` | 人工复核 §18.2 数字与本轮 `bench_presets.sh` | §18.2 无占位符；区间 9.4×–1229.5× 为 P2-1 完成时的实测，本轮重测 9.1×–1278.9× 在同一量级（噪声） | 通过 |
+| P3-1 | `ls engine/tests/attack_blackbox/` | `README.md  _common.py  cfg_simplification.py  constant_folding.py  dead_code_elimination.py  trace_devirtualization.py`（4 脚本 + README） | `python3 engine/tests/attack_blackbox/{constant_folding,dead_code_elimination,trace_devirtualization,cfg_simplification}.py` | `BLACKBOX_VERDICT constant_folding 部分成功` / `dead_code_elimination 失败` / `trace_devirtualization 部分成功` / `cfg_simplification 失败` | 通过（探针结论如实记录：2 失败 / 2 部分成功，未调整判定标准） |
+| P3-2 | `grep -n "PASS" HANDOFF.md docs/phase17_security_evaluation.md` + 按 `#` 小节扫描限定语 | `HANDOFF.md` 含 `PASS` 的小节 25 个、缺限定语 0；`phase17_security_evaluation.md` 5 个、缺 0（含本次新增的 P4 各表格小节，重扫后补了 1 处限定语） | 同上（本节表格以「内部自测指标」限定语收尾） | 与 P3-2 完成时一致：0 个缺限定语小节 | 通过 |
+
+**与任务书的流程偏差（如实记录，不可回溯修复）**
+
+- 任务书要求每 Task 一个 `Phase18 <Task>: <desc>` 小提交。P0-1…P2-2 九个 Task 在实施期间遇到沙箱重置，本地提交历史丢失、工作区保留，恢复后只能合并成一个提交 `5e7ca9d`；P3-1/P3-2/P4 各自独立提交（`529d7f2`/`61a91fd`/`fde415a`）。因此 `git log --oneline | grep "P2-1"` 命中的是合并提交的信息，不是独立提交。已 push 的历史不允许 force push，故保持原样并在此说明。
+- 上一轮 P4（`fde415a`）的提交信息为英文 `Phase18 P4: re-run every acceptance command on the final HEAD and record the summary`，且缺第 4 步总表与第 6 步收尾陈述；本提交以规定信息 `Phase18 P4: 审查阶段汇总，HANDOFF.md §18 完整记录` 补齐。
 
 **预算结算（0.6 节第 1 条要求）**
 
 - 基线（改动前 6-seed 最大值）：`111,351 B`
 - 最终（6-seed 最大值）：`112,607 B`
-- **累计消耗：`+1,256 B`**；按内部标准 `245,000 B` 计，**剩余余量 `132,393 B`**
-- 分项：P0 `+0 B`；P1-1 `+8 B`；P1-2 `+0 B`；P1-3 `+1,248 B`（`< 2,048 B` 子预算）；P1-4/P2-1/P2-2/P3-1/P3-2 `+0 B`
-- 跨预设影响（`ab_compare` 实测，非 `print(6)` 单点）：新增的 `strcanary` 守卫阶段让所有**带 guard** 的预设增大约 `1.2 KB`（`high` 档 `+1.09%`–`+6.51%`，`v15_noguard` `-1.94%`–`+1.64%`）。所有预设仍远低于 `245,000 B`（最大为 `high` 的 `96,723 B`），不构成门槛问题，但必须记在这里而不是只报 `print(6)`。
+- **改动前 111,351 B → 改动后 112,607 B，累计消耗 +1,256 B，剩余余量 132,393 B**（内部标准 245,000 B）
+- 分项：P0 `+0 B`（含审查补充）；P1-1 `+8 B`；P1-2 `+0 B`；P1-3 `+1,248 B`（`< 2,048 B` 子预算）；P1-4/P2-1/P2-2/P3-1/P3-2 `+0 B`；P4 审查修订 `+0 B`（37/37 示例逐字节相同）
+- 跨预设影响（上一轮 `ab_compare.sh`，基线 `2a31e69`，本轮代码对合法程序产物不变故沿用）：新增 `strcanary` 守卫阶段让所有带 guard 的预设增大约 `1.2 KB`（`high` 档 `+1.09%`–`+6.51%`），所有预设仍远低于 `245,000 B`。
 
 **P4 结论**
 
-- 11 项主验收命令 + 8 项 Phase 18 专项门禁在最终 HEAD 上全部通过，无 FAIL。
-- 后做的 Task 没有破坏先做的 Task：P1-1/P1-2 的 `string_cache_dump` 仍 `7/7`，P1-3 的 `canary_runtime`/`charhook`/`string_primitive_hook` 仍全绿，P0 的 `robustness` 仍 `11/11` + `12/12`。
-- `ab_compare.sh` 的默认基线 `f583c2c3` 不在本分支历史中（`unknown revision`），本轮改用分支基点 `2a31e69` 作为 `AB_BASELINE_REF` 完成同输入/同 seed A/B；这一点如实记录，不声称"用默认基线跑过"。
-- 本节自身的写入会使 HEAD 再前进一个提交（纯文档），上表的命令是在写入前的 `61a91fd` 上执行的。
+- 11 项主验收命令 + 全部 Phase 18 专项门禁在最终 HEAD 上全部通过，无 FAIL；总表 11 行全部「通过」。
+- 审查发现并修复 3 项漏改：P0-2 漏网的 break/continue 嵌套函数裸 panic；P0-3 场景 E 标错（已按 C5 重写并加计数==槽数单测）；P0-1 漏掉的常量区 u16 上界（已加干净拒绝）。另补齐 P0-2 归类表附件、P4 总表与收尾陈述、规定提交信息。
+- 后做的 Task 没有破坏先做的 Task：P1-1/P1-2 的 `string_cache_dump` 仍 `7/7`，P1-3 的 `canary_runtime`/`charhook`/`string_primitive_hook`/`guard_matrix` 仍全绿，P0 的 `robustness` 仍全绿（16/16 + 19/19）。
+- `ab_compare.sh` 的默认基线 `f583c2c3` 不在本分支历史中，上一轮改用分支基点 `2a31e69`；本轮以 37/37 示例逐字节相同作为「产物不变」的直接证据，未重跑 `ab_compare.sh`，不声称跑过。
+- 本节自身的写入会使 HEAD 再前进一个提交（代码修订 + 文档），上表的命令是在写入前的工作区（内容等同本提交）上执行的。
+
+Phase 18 审查阶段（P4）于 2026-11-25 完成，共 11 个 Task，全部实施并验证生效（含 3 项按设计明确声明为 best-effort 范围之外：P1-2 循环回边/闭包捕获的常量不清空、P1-3 透明转发包装器类 hook 不拦截、P2-1 「默认恒定生效的融合子集」未实施（0 个可加候选））。
+
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。

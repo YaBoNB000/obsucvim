@@ -116,6 +116,7 @@ struct KeyEmitter<'a> {
 
 impl<'a> KeyEmitter<'a> {
 	fn new(carrier_lengths: &'a [usize]) -> KeyEmitter<'a> {
+		// invariant: the only caller passes program.fns (one carrier per function incl. main), which is never empty
 		assert!(!carrier_lengths.is_empty(), "KeyEmitter needs the main carrier");
 		KeyEmitter { carrier_lengths }
 	}
@@ -247,6 +248,7 @@ fn boot_names_block(rng: &mut Rng, names: &[(&str, &str)], obf_num: &dyn Fn(i64,
 		let idx: Vec<String> = name
 			.bytes()
 			.map(|b| {
+				// invariant: `pool` is built from the very same static boot-name table this closure iterates, so every byte `b` is present
 				format!(
 					"{}[{}]",
 					ta,
@@ -591,6 +593,7 @@ struct MicroShard {
 fn new_micro_shard(rng: &mut Rng, shape: u8) -> MicroShard {
 	let mut pool: Vec<u8> = (7..=250).collect();
 	rng.shuffle(&mut pool);
+	// invariant: M_COUNT is a compile-time constant (M_SUPER_BASE + MICRO_SUPER_NAMES.len(), < 244) and the pool is a fixed 244-entry range
 	let codes: [u8; M_COUNT] = pool[..M_COUNT].try_into().unwrap();
 	let mut fp = vec![0usize, 1, 2];
 	rng.shuffle(&mut fp);
@@ -678,6 +681,7 @@ fn micro_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 	if primitive.len() <= 1 {
 		return Some(primitive);
 	}
+	// invariant: `name` comes from the static micro-op table and every multi-record primitive recipe has an entry in the static MICRO_SUPER_NAMES list (pinned by the template test `MICRO_SUPER_NAMES.contains(&name)`)
 	let slot = MICRO_SUPER_NAMES
 		.iter()
 		.position(|candidate| *candidate == name)
@@ -928,17 +932,21 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 			let n = call_slot(8, 4);
 			format!("local q={q} local n={n} for j=1,N do q[n+j]=R[j] end V[O[3]+1]=n+N", q=q, n=n)
 		}
+		// invariant: `index` is a static micro-op code below M_SUPER_BASE (the caller routes index >= M_SUPER_BASE to micro_super_body) and the arms above cover every M_* code in that static range
 		_ => unreachable!(),
 	}
 }
 
 fn micro_super_body(index: usize, lit: &MicroLits, nop: &str) -> String {
+	// invariant: the only caller (micro_op_body) enters here with index >= M_SUPER_BASE
 	let slot = index
 		.checked_sub(M_SUPER_BASE)
 		.expect("superoperator index below base");
+	// invariant: index < M_COUNT = M_SUPER_BASE + MICRO_SUPER_NAMES.len(), both compile-time constants, so slot is inside the static name list
 	let name = *MICRO_SUPER_NAMES
 		.get(slot)
 		.expect("superoperator index out of range");
+	// invariant: every MICRO_SUPER_NAMES entry has a primitive recipe in the static table (pinned by the template tests)
 	let primitive = micro_primitive_recipe(name).expect("superoperator recipe missing");
 	let mut body = String::new();
 	for (kind, x, y) in primitive {

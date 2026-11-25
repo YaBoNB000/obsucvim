@@ -418,6 +418,7 @@ impl<'a> Ctx<'a> {
 		let mut consumed: Vec<usize> = (0..nu).collect();
 		self.rng.shuffle(&mut consumed);
 		let tau = self.up_perm.clone();
+		// invariant: up_perm is built by derive_upvalue_permutation(ups.len()) for this very frame, so its length is nu by construction
 		assert_eq!(tau.len(), nu, "upvalue permutation length mismatch");
 		let old_upsrc = std::mem::take(&mut self.upsrc);
 		self.upsrc.resize(nu, 0);
@@ -620,6 +621,8 @@ impl<'a> Ctx<'a> {
 
 			let final_mask = call_window_mask(&self.code);
 			for (idx, ins) in self.code.iter().enumerate() {
+				// invariant: self-check of the H3-6 noise placer, which only ever targets
+				// dead registers outside open call-result windows by its own construction
 				let is_window_op = matches!(
 					ins.op,
 					Op::Call | Op::CallE | Op::CallM | Op::CallT | Op::Return
@@ -923,6 +926,15 @@ impl<'a> Ctx<'a> {
 			isa::ConstLcg::new(ckseed as u32, self.program.ck_km, self.program.ck_kc);
 		for c in &self.consts {
 			c.encode(&mut csec, &mut lcg);
+		}
+		// Phase 18 P4 audit: the section length below is a `u16` varint; reject
+		// instead of wrapping it and emitting an unloadable artifact.
+		if csec.len() > crate::limits::MAX_CONSTS_SECTION_BYTES {
+			crate::limits::fatal(&format!(
+				"input exceeds compiler limit: constant section = {} bytes, max allowed = {} per function",
+				csec.len(),
+				crate::limits::MAX_CONSTS_SECTION_BYTES
+			));
 		}
 		let mut consts_sec = Vec::new();
 		isa::encode_u16var(&mut consts_sec, self.consts.len() as u16);
@@ -2856,6 +2868,17 @@ let _ = has_vararg;
 
 		let child_index = self.next_fn_slot;
 		self.next_fn_slot += 1;
+		// C5 fail-closed path. The check has to precede *every* index derived
+		// from child_index (s_indices / block_starts / fns): `fns` has `total`
+		// entries but `s_indices` has `total + 1`, so an undercount of two or
+		// more used to escape this check and die as a bare index-out-of-bounds
+		// panic on the s_indices write instead (P4 audit). The precondition
+		// itself is an internal invariant: count_fns_count walks the same
+		// Block that is compiled and every compile_function call corresponds to
+		// exactly one counted node (Stmt::LocalFunc / Stmt::FuncDecl /
+		// Expr::Function); `c5_count_fns_matches_compiled_closure_slots`
+		// pins that for every syntactic closure position.
+		if child_index >= self.program.fns.len() { crate::limits::fatal(&format!("input exceeds compiler limit: slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot)); }
 		let up_seed = (self.program.blob_seed as u64)
 			^ (self.program.blob_km as u64).rotate_left(11)
 			^ (self.program.blob_kc as u64).rotate_left(23)
@@ -2933,7 +2956,6 @@ let _ = has_vararg;
 		let (bytes, nops, osum, osum2, chaff, blocks) = child.finish(nregs, child_index);
 			self.program.block_starts[child_index] = blocks;
 		self.next_fn_slot = slot_end;
-		if child_index >= self.program.fns.len() { crate::limits::fatal(&format!("input exceeds compiler limit: slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot)); }
 		self.program.fns[child_index] = bytes;
 		self.program.nop_sites[child_index] = nops;
 		self.program.operand_sums[child_index] = osum;
@@ -3758,5 +3780,98 @@ fn identical_plaintexts_share_one_sealed_constant() {
 		}
 		assert_eq!(seeds.len(), 2);
 		assert_eq!(seeds[0], seeds[1], "identical plaintext must dedup");
+	}
+}
+
+/// Phase 18 P0-3 场景 E / P4 审查补充：C5（`child_index >= fns.len()`）的前置条件是
+/// `count_fns_count` 漏计某个会被 `compile_function` 编译成子函数的 AST 节点。本用例把
+/// 闭包放进 `count_stmt` / `count_expr` 枚举到的**每一个**语法位置，断言
+/// 计数 == 实际编译出的子函数槽数（`program.fns.len() - 1`，main 占最后一槽）。
+/// 同时钉住 P4 审查发现的那条输入可达 panic：函数体内的 `break`/`continue`
+/// 不跨越函数边界，必须在解析阶段干净拒绝。
+#[cfg(test)]
+mod p0_c5_slots {
+	use super::*;
+	use crate::parser;
+	use crate::symtab;
+	use crate::vmgen::strseal;
+
+	const POSITIONS: &str = "local function lf() return 1 end
+local a = function() return 2 end
+local obj = {}
+function obj:m(x) return function() return x end end
+function obj.f() return 3 end
+local t = { function() return 4 end, k = function() return 5 end, [1] = function() return 6 end }
+local key = (function() return 9 end)()
+t[key] = 9
+print(function() return 7 end)
+local r = (function() return 8 end)()
+local x = true and function() return 10 end or 1
+local y = not function() return false end
+local i = t[function() return 1 end]
+local z = a and (function() return 1 end) or function() return 2 end
+local acc = 0
+if (function() return true end)() then acc = acc + (function() return 1 end)()
+elseif (function() return false end)() then acc = acc + (function() return 2 end)()
+else acc = acc + (function() return 3 end)() end
+while (function() return false end)() do local w = function() end end
+local u
+repeat u = function() acc = acc + 4 end until (function() return true end)()
+u()
+for i = (function() return 1 end)(), (function() return 2 end)(), (function() return 1 end)() do local b = function() return i end end
+for k, v in (function() return pairs({}) end)() do local c = function() end end
+do local d = function() acc = acc + 5 end d() end
+local e = (\"x\"):rep(1, (function() return \"\" end)())
+local m = (\"abc\"):sub((function() return 1 end)(), 2)
+local n = t.a
+local q = if x then function() return 11 end else function() return 12 end
+local up = 6
+local function o() return function() return function() return up end end end
+local s = \"x\" .. (function() return \"y\" end)()
+print(lf(), a(), obj.f(), obj:m(7)(), r, i, z, acc, e, m, q(), o()()(), s)
+";
+
+	fn counted_vs_compiled(src: &str) -> (usize, usize) {
+		// 与 main.rs 的流水线同序：parse -> symtab -> seal -> vmgen::compile。
+		let mut block = parser::parse(src, true).expect("test chunk parses");
+		let table = symtab::resolve(&mut block);
+		strseal::seal_literals(&mut block, &mut Rng::new(4242));
+		let counted = count_fns_count(&block);
+		let program = compile(&block, &table, &mut Rng::new(42), false, true, false, true);
+		(counted, program.fns.len() - 1)
+	}
+
+	#[test]
+	fn c5_count_fns_matches_compiled_closure_slots() {
+		let (counted, slots) = counted_vs_compiled(POSITIONS);
+		// 语料里没有注释/字符串包含 "function"，关键字个数就是闭包个数。
+		assert_eq!(POSITIONS.matches("function").count(), 40);
+		assert_eq!(counted, 40, "count_fns_count must see every closure");
+		assert_eq!(counted, slots, "count must equal the number of compiled closure slots");
+	}
+
+	#[test]
+	fn c5_break_or_continue_inside_function_inside_loop_is_a_parse_error() {
+		let cases = [
+			"while true do local function f() break end end",
+			"while true do local f = function() break end end",
+			"for i=1,2 do local f = function() continue end end",
+			"repeat local function f() break end until false",
+			"for k,v in pairs({}) do local function f() break end end",
+			"while true do pcall(function() break end) end",
+			"while true do local f = function() return function() break end end end",
+			"while true do t = { function() continue end } end",
+			"while true do local x = true and function() break end or 1 end",
+		];
+		for src in cases {
+			match parser::parse(src, true) {
+				Err(e) => assert!(e.msg.contains("outside of a loop"), "{src} -> {}", e.msg),
+				Ok(_) => panic!("must be rejected by the parser: {src}"),
+			}
+		}
+		// 对照：合法位置（循环体内、非函数体）仍然接受。
+		assert!(parser::parse("for i=1,2 do if i==2 then break end end", true).is_ok());
+		assert!(parser::parse("for i=1,2 do if i==2 then continue end end", true).is_ok());
+		assert!(parser::parse("while true do local f = function() return 1 end f() break end", true).is_ok());
 	}
 }

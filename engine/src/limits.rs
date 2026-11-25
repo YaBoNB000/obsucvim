@@ -18,6 +18,15 @@ pub const MAX_CLOSURE_NEST_DEPTH: usize = 15; // calibrated from bad=20: low=19,
 pub const MAX_EXPR_PARSE_DEPTH: usize = 2736; // calibrated from bad=20000: low=3421, high=3422
 pub const MAX_BLOCK_NEST_DEPTH: usize = 5656; // calibrated from bad=20000: low=7070, high=7071
 
+/// Structural bound (not a bisected budget): the per-function constants
+/// section stores its own byte length as a `u16` varint
+/// (`encode_u16var(&mut consts_sec, csec.len() as u16)` in `Ctx::finish`),
+/// so a function whose encoded constants exceed 65,535 B used to wrap that
+/// length and ship an artifact that fails at load time instead of being
+/// rejected (found by the Phase 18 P4 audit: a single 65,495-byte sealed
+/// literal in one function was the first failing specimen).
+pub const MAX_CONSTS_SECTION_BYTES: usize = 65_535;
+
 pub struct DepthGuard {
     depth: usize,
     max: usize,

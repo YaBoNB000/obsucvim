@@ -165,11 +165,13 @@ fn emit_stmt(
 			None
 		}
 		Stmt::Break => {
+			// invariant: the parser rejects `break` outside a loop, including inside a function nested in a loop (parser.rs funcbody zeroes the loop counter), so a Break statement only ever reaches a loop context
 			assert!(ctx.inner, "break outside loop (parser must reject)");
 			ctx.blocks[cur].succ.push(Succ::Brk);
 			None
 		}
 		Stmt::Continue => {
+			// invariant: same parser guarantee as Break above
 			assert!(ctx.inner, "continue outside loop (parser must reject)");
 			ctx.blocks[cur].succ.push(Succ::Cont);
 			None

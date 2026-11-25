@@ -899,6 +899,7 @@ let start_word = all_words.len() + 1;
 	fields.push(slotted(kfrag[3], split_field(bc0_a, rng)));
 	fields.push(slotted(kfrag[4], split_field(bc0_b, rng)));
 	let n_slots_needed = (all_words.len() + BW_SLOT_WORDS - 1) / BW_SLOT_WORDS;
+	// invariant: all_words and bw_slots both derive from the static v15 template source (include_str), never from user input
 	assert!(
 		n_slots_needed <= bw_slots.len(),
 		"not enough BW slots: need {} have {}",

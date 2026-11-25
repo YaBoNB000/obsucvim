@@ -15,6 +15,7 @@ fn main() {
         a = next_split(a);
         b = ((A as u128 * b as u128) % (MOD as u128)) as u64;
         if a == 0 { a = 1; }
+        // invariant: standalone self-check binary (rng_check), no input involved
         assert_eq!(a, b);
     }
     println!("split == exact for 100 steps: OK");

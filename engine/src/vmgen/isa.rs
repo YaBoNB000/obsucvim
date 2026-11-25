@@ -150,6 +150,7 @@ impl OpMap {
 	}
 
 	pub fn new_with_count(rng: &mut crate::rng::Rng, active_count: usize) -> OpMap {
+		// invariant: the two callers pass isa::N_OPS or isa::N_OPS - 1 (compile-time constants)
 		assert!(active_count > 0 && active_count <= N_OPS);
 		let mut to_wire = [[0u8; N_OPS]; 4];
 		let mut nop_alias = [0u8; 4];

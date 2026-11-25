@@ -344,7 +344,16 @@ self.eat(TokKind::Punct, Some("?"));
 				limits::MAX_CLOSURE_NEST_DEPTH
 			)));
 		}
+		// `break` / `continue` never cross a function boundary (Lua 5.1 and
+		// Luau both reject `while true do local function f() break end end`
+		// with "break statement must be inside a loop"), so the body is parsed
+		// with a zeroed loop counter. Before Phase 18 P0-2 the counter leaked
+		// through, the statement reached vmgen with an empty loop stack and
+		// hit the bare `expect("break outside loop")` panic (P4 audit).
+		let outer_loops = self.loops;
+		self.loops = 0;
 		let res = self.funcbody_inner(has_self);
+		self.loops = outer_loops;
 		self.closure_depth -= 1;
 		res
 	}
