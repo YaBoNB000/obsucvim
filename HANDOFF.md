@@ -904,6 +904,25 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 验收命令：人工核对。§18.2 内无 `<...>` 占位符；所有数字均来自本轮 `bash engine/tests/bench_presets.sh` 的输出 → 通过
 - 本 Task 总结论：通过
 
+### 自查：Task P3-1（加入"仅基于公开通用技术"的对抗测试）
+
+- 实施位置：`engine/tests/attack_blackbox/`（`README.md` + `_common.py` + 4 个脚本），`engine/tests/run_tests.sh`（仅加注释，不接入计数）
+- 实施方式：新建 `attack_blackbox/`，`README.md` 按任务书给定文字固定；4 个脚本分别对应常量折叠、死代码消除、基于执行轨迹的去虚拟化、控制流图简化，输入固定为 `tests/cases/{basics,control,real_algo}.lua`，用默认 `v15` 预设混淆后分析，一律输出「成功 / 部分成功 / 失败」三档结论加原始数字。**编写过程中没有查看 `engine/src/vmgen/` 下任何实现**（只用了公开 CLI 与 `getmetatable("").__index == string` 这类公开事实）。
+- 验收命令 1：4 个脚本都能跑完并产出三档结论之一 → 通过
+  - `python3 tests/attack_blackbox/constant_folding.py` → `BLACKBOX_VERDICT constant_folding 部分成功`
+  - `python3 tests/attack_blackbox/dead_code_elimination.py` → `BLACKBOX_VERDICT dead_code_elimination 失败`
+  - `python3 tests/attack_blackbox/trace_devirtualization.py` → `BLACKBOX_VERDICT trace_devirtualization 部分成功`
+  - `python3 tests/attack_blackbox/cfg_simplification.py` → `BLACKBOX_VERDICT cfg_simplification 失败`
+- 验收命令 2：4 个结果全部记入本节（见下），未因结果难看调整判定标准 → 通过
+- 验收命令 3：`bash engine/tests/run_tests.sh` → `PASS checks: 181   FAIL: 0`（新增脚本不接入 PASS/FAIL 统计，`run_tests.sh` 内已按要求单独注释标注）→ 通过
+- **四个脚本的真实结果（无论好坏，逐条如实记录）**：
+  - 针对**常量折叠**技术的黑盒测试：**部分成功**。把产物里所有"纯数字算术"子表达式按 Lua 语义（`/` 为浮点除、`%` 为 Lua 取模）求值，3 个语料共得到 584 个不同数值；原始语料 30 个数字字面量中命中 21 个（70.0%）。但**同尺寸、同量级的诱饵集合**（每个真值取最近的不在语料里的整数）也命中 11 个（36.7%），说明"小整数在 150 KB 产物里到处都是"，真正的超额信号只有 **10/30 = 33%**。结论：常量折叠能拿到一部分字面量，但远不足以还原常量表；判定为部分成功，不是成功。
+  - 针对**死代码消除**技术的黑盒测试：**失败**。检测器在合成正例（按构造约 50% 为死代码）上测得 **45.7%**，证明检测器本身有效；但在 3 个产物上只测得 `0.06% / 0.00% / 0.04%`，均值 **0.03%**，反而**低于**原始语料自身的检测器误报基线均值 **1.59%**（`control.lua` 里那句 `if false then print(...) end` 是真实死代码），超额 **-1.56%**。结论：产物里没有可供 DCE 删除的静态死代码，DCE 无收益。
+  - 针对**基于执行轨迹的去虚拟化**技术的黑盒测试：**部分成功**。本 Luau 构建没有 `debug.sethook`，攻击者唯一能记录的轨迹是字符串原语调用；把同一程序编译成 3 次循环与 300 次循环两个产物，`string.char` 调用数 1314 → 1864（**1.419×**），`string.byte` 调用数 4801 → 47098（**9.810×**），而真实指令轨迹本应是 ~100×；两个轨迹的前 64 个参数个数签名**完全相同**（都是 `1,1,1,...`）。结论：轨迹能泄露"执行量变多了"这一事实，但读不出循环次数，也无法据此重建控制流。
+  - 针对**控制流图简化**技术的黑盒测试：**失败**。产物在 `while true do ... end` 分派器里的分支臂数量为 `194 / 158 / 187`（seed 42），其中"单语句可合并"的只有 `12 / 1 / 12`，平均可合并率 **4.4%**；换到 seed 4242 后臂数变成 `185 / 196 / 27`，**臂数不稳定**（`control` 158→196、`real_algo` 187→27）。结论：分派器形状每次构建都重排，既没有可合并的冗余块，也无法针对固定形状写一次简化器。
+- 诚实边界：以上 4 个脚本都是**静态/半静态**的通用技术复现，不包含针对本引擎的专用 hook；它们的结论只说明"这 4 类公开技术单独使用时拿不到多少东西"，**不构成**"不可逆向"的证明（见 §18.1 Tier 2 与 §8）。
+- 本 Task 总结论：通过
+
 ### P4 强制全量回归汇总
 
 - `cargo test --release`：`77 passed; 0 failed; 1 ignored` + `4 passed`（watermark）

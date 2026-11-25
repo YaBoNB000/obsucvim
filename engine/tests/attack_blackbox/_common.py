@@ -92,34 +92,29 @@ def long_string(src: str) -> str:
 # The generic "hook the string table and dump every decoded byte" harness that
 # public deobfuscation write-ups start from. It knows nothing about the VM.
 HOOK_BODY = r'''
+-- Generic harvester shape: wrap the string primitives *in place* (the string
+-- metatable's __index is the global string table in Luau, so this covers the
+-- VM's own binding too) and log the argument count of every call.
 local hits = {byte = 0, sub = 0, char = 0}
 local trace = {}
-local copied = {}
-for k, v in pairs(string) do copied[k] = v end
 for _, name in ipairs({"byte", "sub", "char"}) do
-    local fn = string[name]
-    copied[name] = function(...)
+    local real = string[name]
+    string[name] = function(...)
         hits[name] = hits[name] + 1
         if name == "char" then
-            local n = select("#", ...)
-            trace[#trace + 1] = n
+            trace[#trace + 1] = select("#", ...)
         end
-        return fn(...)
+        return real(...)
     end
 end
-local env = {}
-for k, v in pairs(_G) do env[k] = v end
-env._G = env
-env.string = copied
 local chunk = assert(loadstring(ART, "blackbox"))
-setfenv(chunk, env)
 local ok, err = pcall(chunk)
 print("BLACKBOX_RUN_OK", ok, err)
 print("BLACKBOX_HOOKS", hits.byte, hits.sub, hits.char)
 local parts = {}
 for i = 1, #trace do parts[i] = tostring(trace[i]) end
 print("BLACKBOX_TRACE_LEN", #trace)
-print("BLACKBOX_TRACE", table.concat(parts, ","))
+print("BLACKBOX_TRACE_SIG", table.concat(parts, ",", 1, math.min(#trace, 64)))
 '''
 
 

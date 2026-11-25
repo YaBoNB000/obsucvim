@@ -233,6 +233,9 @@ if ! bash "$ROOT/tests/wtf_port_test.sh"; then
 	fail=$((fail + 1)); failed+=("wtf-port/env-check")
 fi
 
+# Phase 18 P3-1: engine/tests/attack_blackbox/*.py 是黑盒分析性测试，结果见
+# HANDOFF §18，不计入本脚本的 PASS/FAIL 统计（按任务书要求保持独立）。
+
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"
 if [[ $fail -gt 0 ]]; then
