@@ -42,6 +42,7 @@ executor 认证绑定、key-host 转录链和 EVKEY 路径已移除（详见 §1
 **v15 产物不带字符串密封时与旧锚点逐字节一致**；本轮只改了 legacy VM 的 LoadStr 解码
 handler，v15 发射路径未动，所以上述两个锚点与整理前相同。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 2.1 本轮修掉的缺陷：legacy VM 字符串密封解码失配
 
 现象：`--vm`（默认 `--vm-seal-strings`）产物在 Luau 下把字符串读成垃圾字节（`basics`
@@ -196,6 +197,7 @@ python3 tests/v15_fingerprint.py
 
 ---
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ## 7. 已知问题与限制
 
 1. **E4 明文痕迹**（见 §6），真实缺口，优先级高于任何外观问题。
@@ -435,6 +437,7 @@ git show --stat 68b9187 | head
 - `git diff --check` 通过。环境指纹 fail-closed 的模拟反例见上述 env-check/tier-2/D15 结果；`envcheck.rs`
   未改。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 13.3 明确边界与用户验收约定
 
 - Agent 未独立在真实 Roblox/executor 中正向运行绑定产物。用户最初约定「未反馈问题即视为通过」，但
@@ -532,6 +535,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 
 ---
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ## 15. P0–P5 能力最小化、状态不变量、常量分块物化、守卫硬化与发布门禁（2026-11-22）
 
 本节记录在 §14 通用 Luau 基线之上完成的 P0–P5 架构收敛与可验证指标；不恢复任何 §14 已退役的 executor-binding / key-host / EVKEY / tier-2 探针机制。P0–P5 对照剖析以历史 `example.txt`（148,769 B，SHA-256 `00e7ee9136cc3e5d73deff03cbee31509884734b45ea0184c2851fcadb6d6ecd`）为改前基线；验收后按用户指令将根目录 `example.txt` 更新为 `a = 999` 的默认 `v15` 混淆产物（`--preset v15 --dialect luau --seed 42`，101,834 B，SHA-256 `b2fbad2231f5a6d37aae0f6f0897c8e2e4ed67bc5f2a7b250cb72a1fdd3675e1`）。
@@ -563,6 +567,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - **根目录 `example.txt`（提交产物）**：输入源码为 `a = 999\n`（7 B），以 `--preset v15 --dialect luau --seed 42` 生成，当前大小 **102,394 B**，SHA-256 `b79e79c3b534d54b1d1a5db999e7281a463621719eda78f582ac16de4b1b45bf`；通过 `.tools/bin/luau-compile`、stock Luau 运行验证（`a == 999`）与 `v15_fingerprint.py`（**32/32 PASS**）。
 - **同输入微基准 `01_micro_print6`（A/B 对照口径）**：输入源码固定为 `print(6)\n`（9 B），用于与 `f583c2c3` 基线在完全相同输入与相同 6 个 seed（`1, 7, 42, 4242, 31337, 999999`）下对比：默认 `v15` 6-seed 中位体积由 **`147,400 B` 降至 `106,343 B`（`-27.9%`）**，`v15 --no-guard` 由 **`141,954 B` 降至 `100,709 B`（`-29.1%`）**。下述 §16.3 所有 A/B 对比表均严格遵循「同一输入文件 + 同一 seed + 同一命令标志」，不再将 `a = 999` 与历史 `print(6)` 直接相减。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 16.2 关键工程改动摘要
 
 - **P0 原语绑定契约统一与运行期降级收口（`engine/src/vmgen/caps.rs`, `template.rs`, `engine/tests/capability_manifest_test.py`）**：
@@ -579,11 +584,13 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
   1. `v15.rs::idle_local` 局部遮蔽缺陷：`multiseed.sh` 在 `stress_multival` `seed=31337` 捕获运行期 `attempt to perform arithmetic (add) on number and nil`——当外层名称池 `nm.take_avoid(...)` 抽中 `"_t"` 且 `idle_local` 命中第 4 分支 `local {name}; do local _t={probe}; {name}=(_t==nil) and ... end` 时，内层 `local _t` 遮蔽外层 `_t` 导致外层保持 `nil`；现改为从 `["_t", "_u", "_v"]` 选取与 `name`/`probe` 均不冲突的临时名并补充单元测试。
   2. `strings.rs::build_loader` 重复逐字节解密开销：旧版 legacy 预设（`low`/`medium`/`high`/`vm`/`max`，不含 `v15`）字符串解密器每次调用均重新分配 `{...}` 并逐字节 `string.char` 解密，与 `junk.rs` 注入的 `#dec(...)` 叠加后导致 `--preset vm`/`max` 在 `stress_bigtable` 热路径出现重度放大；现为 `apply_strings` 解密器增加局部表 `cache[s]` 记忆化（`body.rs` 整包一次性加载维持原非缓存路径，`v15` 完全不经过 `strings.rs`），使 `stress_bigtable` 在 `--preset vm` 6 个 seed 下耗时由 `4.4s–30s+` 降至 `0.51s–1.36s`。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 16.3 Worktree 同输入 / 同 seed 实测 A/B 对比（`f583c2c3` vs 当前分支）
 
 复现入口：`bash engine/tests/ab_compare.sh`（驱动 `engine/tests/ab_compare.py`，自动以 `git worktree add --detach` 检出并编译基线提交 `f583c2c3c9c66770c38169dc6547d10c85025555`，机器可读原始数据与摘要表写入 `engine/tests/results/ab_baseline_f583c2c3.{json,md}`）。
 - **测试环境**：`Linux 6.1.158+ (x86_64)`，`Intel(R) Xeon(R) @ 2.60GHz`（2 核，`3939.9 MB` RAM），`rustc 1.88.0`，Luau `0.735`，6 seeds `[1, 7, 42, 4242, 31337, 999999]`，每点顺序执行 `3` 轮 Linux `wait4` 计时/RSS 采样（共 **480/480** 构建点语义等价 + `luau-compile` 语法通过，同 seed 确定性 **PASS**，异 seed 6/6 互异）。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 #### 表 A：默认 `v15`（`--guard` 开启，6-seed 中位数 / p90）
 
 | Corpus | In (B) | Base Out (B) | Cand Out (B) | Δ Bytes | Base→Cand Tokens | Base→Cand AST | APIs (B→C) | ConstP / Par+Lin (B→C) | StgTop% (B→C) | Build ms Med/p90 (B→C) | Run ms Med/p90 (B→C) | Peak RSS KB (B→C) | Eq / Det / Rnd |
@@ -652,12 +659,14 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - `engine/src/vmgen/handlers/mod.rs` + `handlers/nop.rs`：接线 `"Nop" => nop::code(fmt)`，消除 `"Nop"` panic。
 - `engine/tests/capability_manifest_test.py`：补上“`unpack` 与 `table.unpack` 同时缺失”场景与“`table.unpack` 存在但返回错误”场景；`table.unpack` 行为验证检查实际返回值、nil 保留、起止索引与空区间（不只 `pcall` 成功）；新增 `f64::MIN_POSITIVE = 2.2250738585072014e-308` 端到端运行期校验。结果 **11 PASS / 0 FAIL**。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 17.2 Guard 正确性与误报控制（P1）
 
 - `engine/src/guard.rs` + `engine/src/anti/mod.rs`：`abort()` 改为有界 65,536 步 fail-closed（消除无界循环导致的宿主线程挂起）；`STAGE_MANIFEST` 扩展并与 `guard_matrix_test.py` 保持双向精确同步（Rust 单元测试解析 Python 用例表 + Python 反向解析 `anti/mod.rs`，重复/孤儿 ID 即 CI 失败）；7-core `[C]` 检查（`pcall`、`xpcall`、`type`、`select`、`tostring`、`rawget`、`setmetatable`）+ 双 `checkUnpack`。
 - `engine/src/vmgen/template.rs`：`PD()` 有界 65,536 步；`pcall_pre_guard` 在 `HBOOT` 之前；`--no-guard` 与 `hbootfail` 分离；IEEE-754 `-0.0` 保留（`1/x == -math.huge`）；`const_loop` 直接 `v = m` 缩放，移除 FTZ 危险的次正规中间值 `2^-1074`。
 - `engine/tests/guard_matrix_test.py`：结果分类拆分 `GuardRejected` / `RuntimeError` / `Timeout` / `CompileError` / `HarnessError`；每个篡改用例带 `--no-guard` 差分对照（同输入同环境变体在 `--no-guard` 下通过、`--guard` 下拒绝）；payload 执行标记确认拒绝发生在 payload 运行前；方案 A 下“两种 unpack 均缺失”为允许场景，不再误判为 Guard 成功。结果 **72 PASS / 0 FAIL**（直方图 `{'OK': 26, 'GuardRejected': 39}` + 6 项负向自检）。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 17.3 VM/ISA/字符串一致性与防篡改矩阵（§4）
 
 - `engine/src/vmgen/isa.rs`：新增 IEEE-754（`-0.0`、`f64::MIN_POSITIVE`、`NaN`、`±Inf`）与二进制字符串往返测试 + 全 43 opcode 的 Luau/Lua5.1 handler 解析测试。
@@ -665,6 +674,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - `engine/tests/vm_tamper_matrix_test.py`（新增）：基于自有 fixture 的 60-case 黑盒篡改矩阵（3 seed × 20 case：15 VM 篡改 + 5 对照），覆盖 VM carrier、常量/密封字符串、opcode/operand 流、分派/micro-wrapper、完整性校验/阶段机；每 case 记录改动位置、字节数、预期分类、退出码、stdout/stderr、payload 标记。结果 **60 PASS / 0 FAIL**（`TamperRejectedFault 42`、`TamperRejectedPoisonedOutput 3`、`DeadDataIgnored 9`、`SyntaxCompileError 3`、`CleanExecution 3`），机器可读结果见 `engine/tests/results/vm_tamper_matrix.json`。
 - 诚实边界：静态产物保护与“运行时明文不可观测”明确区分；字符串首次解码后在函数生命周期内缓存，运行期 hook/dump/重放仍可观测（见 §17.6）。
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 17.4 唯一 250 KB 门槛（§7）与生产隔离（§5）
 
 - `engine/tests/print_size_gate.sh`（新增）：精确输入 `print(6)\n`，生产 release binary + `--preset v15 --dialect luau --seed <seed>`（默认 Guard 开启），6 个固定 seed `{1, 7, 42, 4242, 31337, 999999}` 逐个构建；每 seed 校验完整文件 `<= 250000 bytes`、水印存在、`luau-compile` 解析、stock Luau 执行输出 `6` 且退出码 0；记录每 seed 大小 + SHA-256、binary SHA-256、源码 commit SHA；以最大值作为 gate 结果。
@@ -729,6 +739,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 体积影响：改动前 `111,351 B` → 改动后 `111,351 B`，差值 `0 B`
 - 本 Task 总结论：通过
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 自查：Task P0-2（消除输入可达的裸 panic）
 - 实施位置：`engine/src/limits.rs:fatal`、`engine/src/vmgen/compiler.rs`、`engine/src/vmgen/v15.rs`
 - 实施方式：将 `H3 sparse register pool exhausted`、`slot overflow`、`st table exhaustion` 三处输入可达裸 `panic!/assert!/expect` 替换为 `limits::fatal(...)`（单行 `error:` 输出 + `exit(1)`）。
@@ -760,6 +771,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 验收命令 3：`bash engine/tests/run_tests.sh` → 退出码 0（`PASS checks: 181   FAIL: 0`，`ALL GREEN`；含 `ROBUSTNESS PASS: 12`）→ 通过
 - 本 Task 总结论：通过
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 自查：Task P1-1（单次引用常量不进缓存）
 
 - 实施位置：`engine/src/vmgen/strseal.rs`（明文去重 + `sealed_total_counts`/`sealed_clearable`）、`engine/src/vmgen/compiler.rs`（`loadstr_flags()`、`Ctx::apply_loadstr_flags()`）、`engine/src/vmgen/template.rs`（`M_READ_C` 掩码 + `M_LOAD_STR` 惰性缓存）、`engine/src/vmgen/handlers/loadstr.rs`
@@ -781,6 +793,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 体积影响：改动前 `111,351 B` → 改动后 `111,359 B`（`print(6)` 六种子最大值），差值 `+8 B`，远低于 `<= 245,000 B` 内部标准
 - 本 Task 总结论：通过
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 自查：Task P1-2（可证明单次静态作用域内用后清空缓存槽）
 
 - 实施位置：`engine/src/vmgen/strseal.rs`（`sealed_clearable` / `collect_clearable` / `block_has_loop` / `nested_bodies`）、`engine/src/vmgen/compiler.rs`（`loadstr_flags()` 的 `is_last` + `is_clearable` 判定）
@@ -792,6 +805,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 体积影响：`+0 B`（相对 P1-1 完成后的 `111,359 B`；清空逻辑与缓存写入在同一条 `M_LOAD_STR` 微码内，未新增指令）
 - 本 Task 总结论：通过
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 自查：Task P1-3（扩展运行时 canary，提高"通用收割脚本"失效概率）
 
 - 实施位置：`engine/src/vmgen/isa.rs`（`Op::Canary = 42`、`N_OPS = 44`、`OP_NAMES` 插入 `"Canary"`）、`engine/src/vmgen/template.rs`（`M_CANARY = 59` 微码、`MicroLits.canary_a/abc/z/char`、`canary_locals` 绑定 `STBL`/`RAWEQ`、`"Canary"` recipe）、`engine/src/vmgen/compiler.rs`（`Ctx.canary`、`insert_canaries()`、`call_window_mask`）、`engine/src/vmgen/caps.rs`（`Canary → [StrChar, StrByte, Type]`）、`engine/src/anti/mod.rs`（新守卫阶段 `strcanary` + `STAGE_MANIFEST` 条目）、`engine/src/vmgen/handlers/canary.rs`（legacy `--vm` 内联有界 abort）、`engine/tests/guard_matrix_test.py`（8 个新场景）、`engine/tests/canary_runtime_test.py`（新增）
@@ -832,6 +846,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
   - 实测（seed 42，payload 内篡改后 `print("CANARY_RAN")`）：`string.char = 123` → 拦截；`string.char = function(...) end` / `return ""` / `string = { char = string.char, byte = string.byte }` → **未拦截**，载荷正常跑完。原因：VM 在分片入口一次性绑定 `CHAR`/`BYTE`/`STBL`（R021），而 `string_primitive_hook_test.sh` 的 `0/0/0` 硬约束禁止 canary 经环境 `string` 表做活调用，所以无法在"不误伤透明包装器"的前提下识别这类替换。这一条不得被写成"canary 可挡住运行期 hook"。
 - 本 Task 总结论：通过
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 自查：Task P1-4（把威胁模型写进 HANDOFF.md）
 
 - 实施位置：`HANDOFF.md` §18.1（威胁模型分级）、§18.2（性能使用边界）
@@ -897,6 +912,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - **未做及原因（记为"不通过，原因"而不是硬做）**：任务书要求的"新增一个不受 `--super-insn` 控制、默认恒定生效的融合子集"没有实施。要让任何融合默认开启，必须在 `compiler.rs:723/947/1656`（fused 流、词汇表、fv 掩码）与 `template.rs:1439/1649/1741/1754`（`TFV`、`tags[7]`、`e1_e2`、fused trampoline）之外再穿一条 `fuse_default` 门，并推翻 `fuse.rs` 文件头第 1 条写死的"off 态产物字节恒等"不变量，同时让 37 个已提交 `examples/*.v15.luau.lua`、`example.txt`、`v15_fingerprint.py` 的 32 条形态基线全部失效重钉。由于前 8 名里不存在"可融合但尚未融合"的 opcode，预期收益为 0，而回归面覆盖整个 v15 发射器，风险收益不成立，按 0.6 节第 3/4 条的精神如实记为未实施。
 - 本 Task 总结论：通过（最终加入 **0 个** opcode；不是"满额 8 个"，也不是"中途因体积停止"，而是统计上没有可加的候选）
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
 ### 自查：Task P2-2（在文档里明确性能使用边界）
 
 - 实施位置：`HANDOFF.md` §18.2
@@ -923,6 +939,17 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 诚实边界：以上 4 个脚本都是**静态/半静态**的通用技术复现，不包含针对本引擎的专用 hook；它们的结论只说明"这 4 类公开技术单独使用时拿不到多少东西"，**不构成**"不可逆向"的证明（见 §18.1 Tier 2 与 §8）。
 - 本 Task 总结论：通过
 
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
+### 自查：Task P3-2（把"X/X PASS"类指标降级陈述）
+
+- 实施位置：`HANDOFF.md`（全文 18 处小节）、`docs/phase17_security_evaluation.md`（无需改动）
+- 实施方式：按任务书第 1 步 `grep -n "PASS" HANDOFF.md docs/phase17_security_evaluation.md` 列出全部命中（`HANDOFF.md` 89 行 / `phase17_security_evaluation.md` 6 行），按小节为单位检查限定语（"不构成安全证明 / 不代表 / 不声称 / 不承诺 / 仅作观察 / NOT_RUN / 未实测 / 限制"），对**不含任何限定语**的小节在末尾补一句"该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。"
+- 验收命令：重跑第 1 步的 grep 并逐个小节复核
+  - `HANDOFF.md`：含 `PASS` 的小节 **23** 个，补限定语前 **18** 个缺限定语，补后 **0** 个 → 通过
+  - `docs/phase17_security_evaluation.md`：含 `PASS` 的小节 **5** 个，缺限定语 **0** 个（原文已带）→ 通过
+  - 第 4 步（P1-1/P1-2/P1-3/P3-1 新增测试结果）已覆盖：这 4 个自查小节都在补写范围内，逐条复核通过
+- 本 Task 总结论：通过
+
 ### P4 强制全量回归汇总
 
 - `cargo test --release`：`77 passed; 0 failed; 1 ignored` + `4 passed`（watermark）
@@ -932,3 +959,5 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - `vm_tamper_matrix_test.py`：`60 PASS / 0 FAIL`
 - `capability_manifest_test.py`：`11 PASS / 0 FAIL`
 - `robustness_gate_test.py`：`4/4 PASS`（C1–C4 干净拒绝）
+
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
