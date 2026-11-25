@@ -565,6 +565,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 
 为避免跨轮对比混淆不同输入脚本，本节严格区分两类微基准产物：
 - **根目录 `example.txt`（提交产物）**：输入源码为 `a = 999\n`（7 B），以 `--preset v15 --dialect luau --seed 42` 生成，当前大小 **102,394 B**，SHA-256 `b79e79c3b534d54b1d1a5db999e7281a463621719eda78f582ac16de4b1b45bf`；通过 `.tools/bin/luau-compile`、stock Luau 运行验证（`a == 999`）与 `v15_fingerprint.py`（**32/32 PASS**）。
+- **`example.txt` 更新（2026-11-25，用户指令）**：根目录 `example.txt` 已替换为 `print(777)\n`（11 B）的默认产品形态产物——`engine/target/release/obsucvim --preset v15 --dialect luau --seed 42 print777.lua example.txt`，**111,131 B**，SHA-256 `b7d4a10e5c434fcc99fabf37d577dd72b99717a716c8166e14db42be53460d88`；同 seed 重复生成逐字节相同。验证：`luau-compile` 通过、stock Luau 运行输出 `777`、`v15_fingerprint.py example.txt` **32/32**、`security_fingerprint.py example.txt <print777 源>` **5/5**；产物中不含独立的 `777` 数字字面量（仅解码器常量 `16777216` 内含该子串）。此后 §0.5 的 `security_fingerprint.py example.txt <src>` 应以 `print(777)\n` 为 `<src>`；上文与 §17.5 记录的 `a = 999` 产物参数为历史口径。
 - **同输入微基准 `01_micro_print6`（A/B 对照口径）**：输入源码固定为 `print(6)\n`（9 B），用于与 `f583c2c3` 基线在完全相同输入与相同 6 个 seed（`1, 7, 42, 4242, 31337, 999999`）下对比：默认 `v15` 6-seed 中位体积由 **`147,400 B` 降至 `106,343 B`（`-27.9%`）**，`v15 --no-guard` 由 **`141,954 B` 降至 `100,709 B`（`-29.1%`）**。下述 §16.3 所有 A/B 对比表均严格遵循「同一输入文件 + 同一 seed + 同一命令标志」，不再将 `a = 999` 与历史 `print(6)` 直接相减。
 
 - 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
