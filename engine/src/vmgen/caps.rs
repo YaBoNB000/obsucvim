@@ -412,6 +412,8 @@ pub const fn op_required_prims(op: Op) -> &'static [VmPrim] {
 		| Op::Nop => &[],
 		Op::MkStr => &[StrChar, MathFloor],
 		Op::LoadStr => &[StrByte, StrChar, Unpack, TableConcat, MathFloor],
+		// Phase 18 P1-3: distributed runtime string-cache canaries.
+		Op::Canary => &[StrChar, StrByte, Type],
 		Op::GetGlobal | Op::SetGlobal => &[EnvGet],
 		Op::Closure => &[Select],
 		Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow => {
@@ -512,7 +514,7 @@ impl CapabilityManifest {
 		}
 	}
 
-	/// Full capability manifest (all 43 ops active).
+	/// Full capability manifest (all 44 ops active).
 	pub fn all(guard: bool, env_check: bool, bind_env: Option<&str>) -> Self {
 		Self {
 			active_ops: [true; N_OPS],
@@ -583,14 +585,14 @@ mod tests {
 		let mut block = parser::parse(src, true).expect("parse luau");
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(seed);
-		super::super::compiler::compile(&block, &table, &mut rng, false, scatter, false)
+		super::super::compiler::compile(&block, &table, &mut rng, false, scatter, false, false)
 	}
 
 	fn emit_template_for(src: &str, seed: u64, v15: bool, luau: bool, guard: bool) -> String {
 		let mut block = parser::parse(src, luau).expect("parse");
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(seed);
-		let prog = super::super::compiler::compile(&block, &table, &mut rng, !luau, v15, false);
+		let prog = super::super::compiler::compile(&block, &table, &mut rng, !luau, v15, false, guard);
 		let caps = CapabilityManifest::from_program(&prog, guard, false, None);
 		let carrier_lengths: Vec<usize> = prog
 			.fns
@@ -626,6 +628,7 @@ mod tests {
 			(prog.fv_m1, prog.fv_mc),
 			None,
 			false,
+			guard,
 			guard,
 			&caps,
 		)

@@ -10,7 +10,7 @@ const OP_NAMES: [&str; N_OPS] = [
 	"Mod", "Pow", "Concat", "Unm", "Not", "Len", "Lt", "Le", "Gt", "Ge", "Eq",
 	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
 	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
-	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
+	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "Canary", "LoadStr",
 ];
 
 fn gen_dispatch_tree(
@@ -448,7 +448,8 @@ const M_FUSE_VARGC: usize = 55;
 const M_FUSE_BRANCH_FALSE: usize = 56;
 const M_FUSE_BRANCH_TRUE: usize = 57;
 const M_FUSE_VARARG_TABLE: usize = 58;
-const M_SUPER_BASE: usize = 59;
+const M_CANARY: usize = 59;
+const M_SUPER_BASE: usize = 60;
 const MICRO_SUPER_NAMES: [&str; 23] = [
 	"LoadStr", "GetGlobal", "SetGlobal", "Add", "Sub", "Mul", "Div", "Mod", "Pow", "Idiv",
 	"Unm", "Len", "Concat", "Lt", "Le", "Gt", "Ge", "Eq", "Ne", "TabN", "VarArgTabN",
@@ -467,6 +468,11 @@ struct MicroLits {
 	newindex: String,
 	_char_: String,
 	_byte_: String,
+	canary_a: String,
+	canary_abc: String,
+	canary_z: String,
+	canary_char: String,
+	canary_byte: String,
 	empty: String,
 	add: String,
 	add_op: String,
@@ -524,6 +530,11 @@ impl MicroLits {
 			newindex: pool.lit("__newindex"),
 			_char_: pool.lit("char"),
 			_byte_: if include_loadstr { pool.lit("byte") } else { String::new() },
+			canary_a: pool.lit("A"),
+			canary_abc: pool.lit("abc"),
+			canary_z: pool.lit("Z"),
+			canary_char: pool.lit("char"),
+			canary_byte: pool.lit("byte"),
 			empty: pool.lit(""),
 			add: pool.lit("__add"),
 			add_op: pool.lit("add"),
@@ -653,6 +664,7 @@ fn micro_primitive_recipe(name: &str) -> Option<Vec<(usize, u8, u8)>> {
 			(M_READ_V, 3, 3),
 			(M_SET_TABLE, 0, 0),
 		],
+		"Canary" => vec![(M_CANARY, 0, 0)],
 		"Nop" | "NopA" => vec![(M_NOP, 0, 0)],
 		"MkStr" => vec![(M_MKSTR, 0, 0)],
 		"Return" => vec![(M_RETURN, 0, 0)],
@@ -744,6 +756,25 @@ fn frame_slot(logical: usize) -> String {
 	format!("E[E.rb+{}*E.cs]", logical)
 }
 
+/// Phase 18 P1-1/P1-2: audit-only cache-write / cache-clear reporters.
+/// Empty in production builds so the artifact carries no audit channel.
+#[cfg(feature = "audit-hooks")]
+fn sc_dump_hook() -> &'static str {
+	" if OBSUCVIM_SC_DUMP then OBSUCVIM_SC_DUMP[#OBSUCVIM_SC_DUMP+1]=out end"
+}
+#[cfg(not(feature = "audit-hooks"))]
+fn sc_dump_hook() -> &'static str {
+	""
+}
+#[cfg(feature = "audit-hooks")]
+fn sc_clr_hook() -> &'static str {
+	" if OBSUCVIM_SC_CLR then OBSUCVIM_SC_CLR[#OBSUCVIM_SC_CLR+1]=out end"
+}
+#[cfg(not(feature = "audit-hooks"))]
+fn sc_clr_hook() -> &'static str {
+	""
+}
+
 fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	if index >= M_SUPER_BASE {
 		return micro_super_body(index, lit, nop);
@@ -777,7 +808,9 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		// V19 R5-b：strseal 镜像——非线性折叠（交叉半积+高位回混）+ 明文级联 _pv。
 		// 本 handler 作用域无 FLR——整除用幂二次 (x-(x%D))/D 同式镜面。
 		M_LOAD_STR => format!(
-			"local q=T[y] local st=O[3] local step=O[4] local n=#q local out={empty} local _pv=0 if n>0 then if n<=64 then local _ob={{}} for i=1,n do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(BYTE(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 _ob[i]=_v _pv=_v end out=CHAR(UNP(_ob,1,n)) else local _ot,_on,_ob,_ok={{}},0,{{}},0 for i=1,n do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(BYTE(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 _ok=_ok+1 _ob[_ok]=_v _pv=_v if _ok==64 then _on=_on+1 _ot[_on]=CHAR(UNP(_ob,1,64)) _ok=0 end end if _ok>0 then _on=_on+1 _ot[_on]=CHAR(UNP(_ob,1,_ok)) end out=TCAT(_ot) end end T[x]=out",
+			"local kf=O[2] local cached=kf>=32768 if cached then kf=kf-32768 end local clr=kf>=16384 if clr then kf=kf-16384 end local out if cached then local sc=E.sc if sc then out=sc[kf+1] end end if out==nil then local q=C[kf+1] local st=O[3] local step=O[4] local n=#q local _pv=0 out={empty} if n>0 then if n<=64 then local _ob={{}} for i=1,n do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(BYTE(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 _ob[i]=_v _pv=_v end out=CHAR(UNP(_ob,1,n)) else local _ot,_on,_ob,_ok={{}},0,{{}},0 for i=1,n do st=(st*257+step+i+_pv)%65521 local _x=(st+(st%256)*((st-(st%256))/256))%65521 _x=(_x*257+((_x-(_x%256))/256))%65521 local _v=(BYTE(q,i)-(((_x%256)+(((_x-(_x%256))/256)%256))%256))%256 _ok=_ok+1 _ob[_ok]=_v _pv=_v if _ok==64 then _on=_on+1 _ot[_on]=CHAR(UNP(_ob,1,64)) _ok=0 end end if _ok>0 then _on=_on+1 _ot[_on]=CHAR(UNP(_ob,1,_ok)) end out=TCAT(_ot) end end if cached then if E.sc==nil then E.sc={{}} end E.sc[kf+1]=out{dump} end end T[x]=out if clr and E.sc then E.sc[kf+1]=nil{clr_dump} end",
+			dump = sc_dump_hook(),
+			clr_dump = sc_clr_hook(),
 			empty = lit.empty,
 		),
 		M_NOT => "T[x] = not T[y]".to_string(),
@@ -844,6 +877,17 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 			"local o,j,w=T[1],T[2],T[3] if TYP(o)~={table_} then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then f[j]=w elseif hidden then o[j]=w else ERR({msg}..TYP(o)..{index_with}..TSTR(j)..{index_quote},0) end else if RGET(o,j)==nil then local f,hidden=mget(o,{newindex}) if TYP(f)=={function} then f(o,j,w) elseif f~=nil then f[j]=w elseif hidden then o[j]=w else RSET(o,j,w) end else RSET(o,j,w) end end",
 			table_ = lit.table_, newindex = lit.newindex, function = lit.function,
 			msg = lit.index_msg, index_with = lit.index_with_msg, index_quote = lit.index_quote,
+		),
+		// Phase 18 P1-3: distributed runtime string-cache canary. `PD()` is the
+		// guard's bounded fail-closed abort (guard builds only).
+		M_CANARY => format!(
+			"do local c=O[1] local ok=(c==0 and RAWEQ(CHAR(65),{lit_a}) and TYP(STBL[{char_}])=={function})or(c==1 and RAWEQ(#({lit_abc}),3) and TYP(STBL[{char_}])=={function})or(c==2 and TYP(STBL)=={table_} and TYP(STBL[{char_}])=={function})or(c==3 and RAWEQ(CHAR(BYTE({lit_z})),{lit_z}) and TYP(STBL[{char_}])=={function}) if not ok then PD() end end",
+			lit_a = lit.canary_a,
+			lit_abc = lit.canary_abc,
+			lit_z = lit.canary_z,
+			char_ = lit.canary_char,
+			table_ = lit.table_,
+			function = lit.function,
 		),
 		M_NOP => nop.to_string(),
 		M_MKSTR => format!(
@@ -1398,6 +1442,7 @@ pub fn generate(
 	env_slots: Option<&[i64; 4]>,
 	env_check: bool,
 	guard: bool,
+	canary: bool,
 	caps: &super::caps::CapabilityManifest,
 ) -> String {
 	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
@@ -3426,6 +3471,15 @@ let chaff_lane = rng.int(1, 4) as usize;
                 v.push("EV");
                 v.push("NXT");
             }
+            // Phase 18 P1-3: the distributed string-cache canaries need the
+            // guard's bounded fail-closed abort, the environment-resolved
+            // `string` table and `rawequal`. Guard-only so that `--no-guard`
+            // artifacts keep emitting zero unused host APIs.
+            if guard && canary {
+                v.push("PD");
+                v.push("STBL");
+                v.push("RAWEQ");
+            }
             v
         };
         let shell_args: Vec<String> = {
@@ -3439,6 +3493,11 @@ let chaff_lane = rng.int(1, 4) as usize;
             if guard {
                 v.push("EV".to_string());
                 v.push("NXT".to_string());
+            }
+            if guard && canary {
+                v.push("PD".to_string());
+                v.push("string".to_string());
+                v.push("rawequal".to_string());
             }
             v
         };
@@ -3780,6 +3839,7 @@ let f_ty = fold31("Vector3Vector3");
   local SH1, SH2
   local HPH
   local PD = function() local z0, z1 = 0, 1 while z0 < 65536 do z0 = z0 + 1 z1 = (z1 * 80659 + 95050511 + z0) % 268435456 end local zf = false zf = zf[zf] local zn return zn[z1] end
+  {canary_locals}
   local MPF
   local CLK
   local CENVPROBE{env_decl}
@@ -3874,6 +3934,14 @@ let f_ty = fold31("Vector3Vector3");
 			pblock = pblock_e,
 			shcb1 = sh_cb1_e, shcb2 = sh_cb2_e, shcbc = sh_cbc_e,
 			shcc1 = sh_cc1_e, shcc2 = sh_cc2_e, shccc = sh_ccc_e,
+			// Phase 18 P1-3: chunk-level bindings for the distributed canaries.
+			// Declared next to `PD` (the guard's bounded fail-closed abort) so
+			// the micro-op factory can capture them as upvalues.
+			canary_locals = if guard && canary {
+				"local STBL = string local RAWEQ = rawequal "
+			} else {
+				""
+			},
 		);
 		hfrag = build.clone();
 		if crate::audit_gate::audit_enabled("OBSUCVIM_BUILD_DBG") {
@@ -3982,7 +4050,9 @@ let f_ty = fold31("Vector3Vector3");
 	} else {
 		let run_head = String::new();
 		let pc_decl = String::from("local pc = 1\n    ");
-		let ln_decl = "local lastn = 0\n    local lastbase = 0\n    ";
+		// Phase 18 P1-1: per-frame string cache for the legacy LoadStr handler
+		// (single-reference constants never touch it).
+		let ln_decl = "local lastn = 0\n    local lastbase = 0\n    local _scache = {}\n    ";
 		let run_loop = format!("while true do\n      {}\n      {}\n    end", fetch, branches);
 		format!(
 			"local run\n  {mk}\n  run = function(pf, V, ups, vargs, vargc)\n    {run_head}{run_unpack}\n    {run_soa}\n    {pc_decl}{o_decl}{ln_decl}{handler_defs}{run_loop}\n  end",

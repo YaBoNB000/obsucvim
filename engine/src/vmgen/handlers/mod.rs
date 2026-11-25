@@ -25,7 +25,8 @@ pub mod loadk;
 pub mod loadnil;
 pub mod loadstr;
 pub mod lt;
-pub mod mkstr;
+pub mod canary;
+mod mkstr;
 pub mod mod_;
 #[path = "move.rs"]
 pub mod move_;
@@ -143,7 +144,9 @@ pub fn gen(name: &str, fmt: u8, v15: bool, p: &mut StrPool, mk: (u16, u16), luau
 			}
 		}
 		"MkStr" => mkstr::code(fmt, mk),
+		"Canary" => canary::code(fmt),
 		"Nop" => nop::code(fmt),
+		// invariant: the opcode name table is static; names come from isa.rs OP_NAMES, not from input
 		_ => panic!("unknown opcode name {name}"),
 	}
 }
@@ -168,6 +171,7 @@ pub(crate) fn bin_op_body(
 			"__div" => "div",
 			"__mod" => "mod",
 			"__pow" => "pow",
+			// invariant: the metamethod table is a static 8-entry list matched exhaustively
 			_ => unreachable!("unknown arithmetic metamethod {mm}"),
 		};
 		let open = p.lit("attempt to perform arithmetic (");
@@ -221,6 +225,7 @@ pub(crate) fn cmp_body(
 	let meta = p.lit(mm);
 	let msg = p.lit("attempt to compare ");
 	let with = p.lit(" with ");
+	// invariant: native is a static comparison-op template string with a fixed two-token shape
 	let op = native.split_whitespace().nth(1).expect("comparison operator");
 	let op = p.lit(op);
 	let space = p.lit(" ");

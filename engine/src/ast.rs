@@ -199,6 +199,12 @@ pub struct ParseError {
 
 impl fmt::Display for ParseError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		// Resource-budget rejections are compiler-limit diagnostics, not syntax
+		// errors: keep them on the single-line `error:` channel without the
+		// `parse error line N:` prefix (P0-1 §4).
+		if self.msg.starts_with("input exceeds compiler limit") {
+			return write!(f, "{}", self.msg);
+		}
 		write!(f, "parse error line {}: {}", self.line, self.msg)
 	}
 }

@@ -46,7 +46,7 @@ impl GuardStageMeta {
 }
 
 #[allow(dead_code)]
-pub const STAGE_MANIFEST: [GuardStageMeta; 5] = [
+pub const STAGE_MANIFEST: [GuardStageMeta; 6] = [
 	GuardStageMeta {
 		id: "core",
 		target: "Essential base primitives callable + optional xpcall type/handler roundtrip",
@@ -203,6 +203,31 @@ pub const STAGE_MANIFEST: [GuardStageMeta; 5] = [
 			"next_broken_tamper",
 			"shadow_pcall_false_tamper",
 			"env_stateful_getter_shadow_tamper",
+		],
+	},
+	GuardStageMeta {
+		id: "strcanary",
+		target: "String-library primitive integrity for the Phase 18 distributed string-cache canaries: environment string table shape, string.char / string.byte type, and value-level self-consistency of the resolved library (char(65), char(65,66), char(97,98,99), byte(90)), plus the four mid-execution canaries themselves",
+		threat_model: "Detects off-the-shelf harvester scripts that globally replace string.char / string.byte (or the whole string table) with stubs that drop or shorten return values before the payload runs, and a string table swapped for a non-table. The four mid-execution canaries (rawequal(string.char(65), \"A\"), rawequal(#\"abc\", 3), type(string.char) == \"function\", rawequal(string.char(string.byte(\"Z\")), \"Z\")) re-check the same invariants at four shuffled split points of every compiled instruction stream. Explicitly NOT covered: a transparent forwarding wrapper (behaviourally identical, so undetectable by value), and a fake installed only in a copied environment string table, which the VM never resolves through (it binds char/byte from the string metatable, R021).",
+		required_apis: &[],
+		optional_apis: &["string", "string.char", "string.byte"],
+		allowed_missing: "string == nil, string.char == nil and string.byte == nil are all permitted (stripped sandboxes); only a present-but-wrong value is tamper.",
+		tamper_triggers: "string ~= nil and ~= table, string.char ~= nil and ~= function, string.byte ~= nil and ~= function, resolved library char(65) not returning a 1-byte \"A\", char(65,66) not concatenating to char(65) .. char(66), char(97,98,99) not returning a 3-byte string, byte(\"Z\") not returning 90, or any of the four mid-execution canaries observing a violated invariant.",
+		luau_guaranteed: true,
+		fail_action: "Boot failure sets failed = true -> GUARD_EPILOGUE bounded abort(); a mid-execution canary failure calls the same bounded PD() fail-closed path from inside the VM.",
+		trigger_timing: "Pre-payload VM bootstrap (stage shuffle inside _guard) plus four shuffled split points of every compiled instruction stream (floor(n/5)*k, k = 1..4).",
+		resource_bound: "O(1) boot probes (5 pcall + 6 type checks) plus 4 constant-time canary checks per compiled function body; bounded abort() on failure.",
+		positive_test_ids: &[
+			"canary1_char_value_clean",
+			"canary2_len_operator_clean",
+			"canary3_char_type_clean",
+			"canary4_char_byte_roundtrip_clean",
+		],
+		negative_test_ids: &[
+			"canary1_char_value_tamper",
+			"canary2_len_operator_tamper",
+			"canary3_char_type_tamper",
+			"canary4_char_byte_roundtrip_tamper",
 		],
 	},
 ];
@@ -511,12 +536,57 @@ pub const ANTI_MISC: &str = r###"	local function stage_misc()
 	end
 "###;
 
-pub const STAGES: [(&str, &str, &str); 5] = [
+/// Boot half of the Phase 18 P1-3 string-cache canary policy.
+///
+/// The distributed half lives in the VM (`Op::Canary` at four shuffled split
+/// points of every compiled instruction stream), so this stage only pins the
+/// primitives that half depends on before the payload can run. No `--` comments
+/// inside the constant: the guard source is minified onto a single line.
+pub const ANTI_STRCANARY: &str = r###"	local function stage_strcanaries()
+		local TF, TT = "function", "table"
+		local st = pick("string", nil)
+		if st ~= nil then
+			local ch, by = st["char"], st["byte"]
+			if type(st) ~= TT or (ch ~= nil and type(ch) ~= TF) or (by ~= nil and type(by) ~= TF) then
+				failed = true
+			end
+		end
+		local mt = getmetatable(tostring(nil))
+		local real = nil
+		if type(mt) == TT then
+			real = mt.__index
+		end
+		local rc, rb = nil, nil
+		if type(real) == TT then
+			rc, rb = real["char"], real["byte"]
+		end
+		if type(rc) ~= TF or (rb ~= nil and type(rb) ~= TF) then
+			failed = true
+			return
+		end
+		local ok, v = pcall(rc, 65)
+		local ok2, v2 = pcall(rc, 65, 66)
+		local ok3, v3 = pcall(rc, 66)
+		local ok4, v4 = pcall(rc, 97, 98, 99)
+		if not ok or v ~= "A" or #v ~= 1 or not ok2 or not ok3 or v2 ~= v .. v3 or v == v3 or not ok4 or #v4 ~= 3 then
+			failed = true
+		end
+		if rb ~= nil then
+			local okb, vb = pcall(rb, "Z")
+			if not okb or vb ~= 90 then
+				failed = true
+			end
+		end
+	end
+"###;
+
+pub const STAGES: [(&str, &str, &str); 6] = [
 	("core", ANTI_CORE, "stage_core()"),
 	("env", ANTI_ENV, "stage_env()"),
 	("debug", ANTI_DEBUG, "stage_debug()"),
 	("canary", ANTI_CANARY, "stage_canaries()"),
 	("misc", ANTI_MISC, "stage_misc()"),
+	("strcanary", ANTI_STRCANARY, "stage_strcanaries()"),
 ];
 
 #[cfg(test)]

@@ -155,6 +155,8 @@ pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
 		"info", "os", "clock", "getfenv", "_G", "function", "number",
 		"boolean", "l", "s", "#", "[C]", ":(%d+):", "loadstring", "load",
 		"tddxhpfcpi", "lsphhfstdm", "vymgglkhqr",
+		// Phase 18 P1-3 string-cache canary stage literals.
+		"char", "byte", "A", "Z", "abc",
 	] {
 		guard_src = guard_src.replace(&format!("\"{}\"", text), &chars(text));
 	}

@@ -91,7 +91,7 @@ def long_str(s: str) -> str:
 
 def build_harness(
     artifact_src: str,
-    setup_lua: str,
+    setup_lua: str | None,
     epilogue_lua: str = "",
     inject_touch: bool = True,
 ) -> str:
@@ -116,7 +116,7 @@ for k, v in pairs(REAL_G) do
 end
 ENV._G = ENV
 {touch_binding}
-{setup_lua}
+{setup_lua or ""}
 local chunk, comp_err = REAL_LOADSTRING(ART, "=gmatrix")
 if not chunk then
     REAL_PRINT("__GMX_STAGE__:COMPILE_ERROR:" .. REAL_G.tostring(comp_err))
@@ -389,6 +389,45 @@ ENV = setmetatable({}, {
 })
 backing._G = ENV"""
 
+        # --- Phase 18 P1-3 canary setups -------------------------------------
+        # Positive setups only *touch* the primitive a canary reads; they never
+        # change any value, so a green result means the canary is live on the
+        # real primitive path (not vacuously skipped).
+        canary1_clean_setup = 'local _ = REAL_G.string.char(65) if _ ~= "A" then error("c1") end'
+        canary2_clean_setup = 'if #"abc" ~= 3 then error("c2") end'
+        canary3_clean_setup = 'if type(REAL_G.string.char) ~= "function" then error("c3") end'
+        canary4_clean_setup = (
+            'if REAL_G.string.char(REAL_G.string.byte("Z")) ~= "Z" then error("c4") end'
+        )
+        # Negative setups: generic-harvester shapes. Each one corrupts exactly
+        # one checked value while leaving the artifact's own multi-argument
+        # literal decoding intact, so the rejection is attributable to the
+        # canary and not to a broken bootstrap.
+        canary1_char_tamper_setup = (
+            "local RC = REAL_G.string.char\n"
+            "ENV.string.char = function(...)\n"
+            "    local a = ...\n"
+            "    if select('#', ...) == 1 and a == 65 then return '' end\n"
+            "    return RC(...)\n"
+            "end"
+        )
+        canary2_len_tamper_setup = (
+            "local RC = REAL_G.string.char\n"
+            "ENV.string.char = function(...)\n"
+            "    local x, y, z = ...\n"
+            '    if x == 97 and y == 98 and z == 99 then return "ab" end\n'
+            "    return RC(...)\n"
+            "end"
+        )
+        canary3_type_tamper_setup = "ENV.string = { char = 123 }"
+        canary4_roundtrip_tamper_setup = (
+            "local RB = REAL_G.string.byte\n"
+            "ENV.string.byte = function(s, ...)\n"
+            '    if s == "Z" then return 65 end\n'
+            "    return RB(s, ...)\n"
+            "end"
+        )
+
         # Tuple schema (parsed bidirectionally by engine/src/anti/mod.rs):
         #   (name, mode, expect_class, expect_noguard_class, readonly, setup_lua, expected_out)
         cases = [
@@ -551,6 +590,24 @@ backing._G = ENV"""
             ("next_broken_tamper", "guard", "GuardRejected", "OK", False, "ENV.next = function() return 99, 99 end", EXPECTED),
             ("shadow_pcall_false_tamper", "guard", "GuardRejected", "RuntimeError", False, "ENV.pcall = false", EXPECTED),
             ("env_stateful_getter_shadow_tamper", "guard", "GuardRejected", "OK", False, stateful_shadow_setup, EXPECTED),
+
+            # --- Stage `canary` (Phase 18 P1-3): positive, one per canary ---
+            # Each canary must stay green in a clean environment. The setups
+            # below touch the exact primitive each canary reads so the case
+            # documents which invariant it pins; none of them tamper anything.
+            ("canary1_char_value_clean", "guard", "OK", "OK", False, canary1_clean_setup, EXPECTED),
+            ("canary2_len_operator_clean", "direct_guard", "OK", "SKIP", True, canary2_clean_setup, EXPECTED),
+            ("canary3_char_type_clean", "noguard", "OK", "SKIP", False, canary3_clean_setup, EXPECTED),
+            ("canary4_char_byte_roundtrip_clean", "guard", "OK", "OK", False, canary4_clean_setup, EXPECTED),
+            # --- Stage `canary` (Phase 18 P1-3): negative, one per canary ---
+            # Every fake below is a *generic harvester* shape: it keeps the
+            # artifact's own multi-argument literal decoding alive (so the
+            # rejection is attributable to the canary, not to a broken
+            # bootstrap) while corrupting exactly one checked value.
+            ("canary1_char_value_tamper", "guard", "GuardRejected", "RuntimeError", False, canary1_char_tamper_setup, EXPECTED),
+            ("canary2_len_operator_tamper", "guard", "GuardRejected", "OK", False, canary2_len_tamper_setup, EXPECTED),
+            ("canary3_char_type_tamper", "guard", "GuardRejected", "OK", False, canary3_type_tamper_setup, EXPECTED),
+            ("canary4_char_byte_roundtrip_tamper", "guard", "GuardRejected", "OK", False, canary4_roundtrip_tamper_setup, EXPECTED),
         ]
 
         passed = 0

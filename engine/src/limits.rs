@@ -1,9 +1,22 @@
-//! Pre-compilation resource budget limits calibrated via §0.4 binary search.
+//! Pre-compilation resource budget limits calibrated via §0.4 binary search
+//! (`tools/calibrate_limits.py`).
+//!
+//! low / high are the measured safe / failing values on the final parser:
+//!   MAX_TOPLEVEL_FUNC_DECLS  low=41    high=42     -> floor(41*0.8)    = 32
+//!   MAX_TOPLEVEL_STMTS       low=2995  high=2996   -> floor(2995*0.8)  = 2396
+//!                             (retained 2385 from the earlier low=2982 run:
+//!                              the more conservative of the two measurements)
+//!   MAX_CLOSURE_NEST_DEPTH   low=19    high=20     -> floor(19*0.8)    = 15
+//!                             (C3 sample no longer panics in the current tree;
+//!                              the earlier calibration is retained unchanged)
+//!   MAX_EXPR_PARSE_DEPTH     low=3421  high=3422   -> floor(3421*0.8)  = 2736
+//!   MAX_BLOCK_NEST_DEPTH     low=7070  high=7071   -> floor(7070*0.8)  = 5656
 
 pub const MAX_TOPLEVEL_FUNC_DECLS: usize = 32; // calibrated from bad=100: low=41, high=42
 pub const MAX_TOPLEVEL_STMTS: usize = 2385; // calibrated from bad=3000: low=2982, high=2983
 pub const MAX_CLOSURE_NEST_DEPTH: usize = 15; // calibrated from bad=20: low=19, high=20
-pub const MAX_EXPR_PARSE_DEPTH: usize = 2906; // calibrated from bad=20000: low=3633, high=3634
+pub const MAX_EXPR_PARSE_DEPTH: usize = 2736; // calibrated from bad=20000: low=3421, high=3422
+pub const MAX_BLOCK_NEST_DEPTH: usize = 5656; // calibrated from bad=20000: low=7070, high=7071
 
 pub struct DepthGuard {
     depth: usize,

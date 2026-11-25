@@ -426,19 +426,27 @@ def build_mutations_for_artifact(art_txt: str, seed: int) -> list[dict]:
     )
 
     # 5d. Outer v15 staging key-checksum (`KSUM`) rolling Horner step `b:MOD(b:MUL(s,31)+...)`
-    # Use step index 1 (`k = 1`, where `s = ksum_0 > 0`) because at `k = 0`, `s = 0` so `0*31 == 0*37`.
-    ks_matches = list(re.finditer(r"((\w+):\w+\(\2:\w+\(\w+,)(31)(\)\+)", art_txt))
-    if len(ks_matches) < 2:
-        raise RuntimeError(f"seed={seed}: cannot locate >=2 outer staging KSUM Horner steps (*31)")
-    m_ksum = ks_matches[1]
+    # Target step index 1 *of a Horner chain* (`k = 1`, where `s = ksum_0 > 0`), not the
+    # second `*31` occurrence in the file: at `k = 0` the accumulator is still 0, so
+    # `0*31 == 0*37` and the mutation is a no-op. Chains are identified by their
+    # (object, accumulator) pair, which keeps the targeting stable no matter how many
+    # independent chains the emitter happens to place before the live one.
+    ks_matches = list(re.finditer(r"((\w+):\w+\(\2:\w+\((\w+),)(31)(\)\+)", art_txt))
+    ks_chains: dict[tuple[str, str], list[int]] = {}
+    for ks_i, ks_m in enumerate(ks_matches):
+        ks_chains.setdefault((ks_m.group(2), ks_m.group(3)), []).append(ks_i)
+    ks_chain = next((idxs for idxs in ks_chains.values() if len(idxs) >= 2), None)
+    if ks_chain is None:
+        raise RuntimeError(f"seed={seed}: cannot locate an outer staging KSUM Horner chain (>=2 *31 steps)")
+    m_ksum = ks_matches[ks_chain[1]]
     add(
         "outer_key_ksum_horner_perturb",
         "integrity_checksum_and_phase_machine",
         "TamperRejected",
-        m_ksum.start(3),
+        m_ksum.start(4),
         m_ksum.group(0),
-        f"{m_ksum.group(1)}37{m_ksum.group(4)}",
-        art_txt[: m_ksum.start(3)] + "37" + art_txt[m_ksum.end(3) :],
+        f"{m_ksum.group(1)}37{m_ksum.group(5)}",
+        art_txt[: m_ksum.start(4)] + "37" + art_txt[m_ksum.end(4) :],
         "perturb outer staging KSUM rolling accumulator multiplier (*31 -> *37 at k=1)",
     )
 

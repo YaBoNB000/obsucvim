@@ -44,9 +44,10 @@ pub enum Op {
 	CallM,
 	MkStr,
 	LoadStr,
+	Canary,
 }
 
-pub const N_OPS: usize = 43;
+pub const N_OPS: usize = 44;
 
 pub fn op_base() -> [u8; N_OPS] {
 	#[allow(clippy::declare_interior_mutable_const)]
@@ -63,7 +64,7 @@ pub fn op_base() -> [u8; N_OPS] {
 		(Op::VarArgTabN, 32), (Op::GetGlobal, 33), (Op::SetGlobal, 34),
 		(Op::GetUp, 35), (Op::SetUp, 36), (Op::Return, 37), (Op::Nop, 38),
 		(Op::CallE, 39), (Op::CallM, 40),
-		(Op::MkStr, 41), (Op::LoadStr, 42),
+		(Op::MkStr, 41), (Op::Canary, 42), (Op::LoadStr, 43),
 	];
 	let mut out = [0u8; N_OPS];
 	for (op, code) in t {
@@ -117,7 +118,8 @@ pub fn op_index(op: Op) -> usize {
 		Op::CallE => 39,
 		Op::CallM => 40,
 		Op::MkStr => 41,
-		Op::LoadStr => 42,
+		Op::Canary => 42,
+		Op::LoadStr => 43,
 	}
 }
 
@@ -130,7 +132,7 @@ pub fn op_from_index(i: u8) -> Op {
 		Op::GetTab, Op::SetTab, Op::TabN, Op::CallT, Op::Closure, Op::Call,
 		Op::VarArgTab, Op::VarArgC, Op::VarArgTabN, Op::GetGlobal, Op::SetGlobal,
 		Op::GetUp, Op::SetUp, Op::Return, Op::Nop, Op::CallE, Op::CallM,
-		Op::MkStr, Op::LoadStr,
+		Op::MkStr, Op::Canary, Op::LoadStr,
 	];
 	REV[i as usize]
 }
@@ -360,6 +362,8 @@ pub fn unused_operands(op: Op) -> [bool; 4] {
 		| Op::Ne | Op::Idiv | Op::GetTab | Op::SetTab | Op::TabN => [false, false, false, true],
 		Op::NewTab | Op::VarArgTab | Op::VarArgC => [false, true, true, true],
 		Op::CallT | Op::Call | Op::CallM | Op::Return | Op::MkStr | Op::LoadStr => [false, false, false, false],
+		// a = canary id, b/c/d unused
+		Op::Canary => [false, true, true, true],
 		Op::CallE => [false, false, true, false],
 		Op::Nop => [true, true, true, true],
 	}
@@ -505,6 +509,7 @@ impl Carrier {
 		let mut glyphs: Vec<u8> = (32u8..=126).collect();
 		rng.shuffle(&mut glyphs);
 		let reserved = glyphs[0];
+		// invariant: glyphs is a fixed 95-byte static table, so glyphs[1..] has exactly 94 bytes
 		let alphabet: [u8; 94] = glyphs[1..].try_into().unwrap();
 		let mut tokens = dummy_tokens();
 		for i in 0..10 {
@@ -717,7 +722,7 @@ mod tests {
 	}
 
 	#[test]
-	fn op_meta_covers_all_43_ops_consistently() {
+	fn op_meta_covers_all_44_ops_consistently() {
 		assert_eq!(ALL_OPS.len(), N_OPS);
 		for (i, &op) in ALL_OPS.iter().enumerate() {
 			assert_eq!(op_index(op), i);
@@ -844,7 +849,7 @@ mod tests {
 	}
 
 	#[test]
-	fn all_43_ops_have_parseable_handlers_in_luau_and_lua51() {
+	fn all_44_ops_have_parseable_handlers_in_luau_and_lua51() {
 		for (i, &_op) in ALL_OPS.iter().enumerate() {
 			let name = OP_NAMES[i];
 			for &v15 in &[false, true] {
@@ -876,16 +881,16 @@ mod tests {
 	}
 }
 
-/// Canonical ordered names of all 43 VM opcodes, matching `op_index` / `ALL_OPS` 1-to-1.
+/// Canonical ordered names of all 44 VM opcodes, matching `op_index` / `ALL_OPS` 1-to-1.
 pub const OP_NAMES: [&str; N_OPS] = [
 	"Jmp", "Jf", "Jt", "LoadNil", "LoadK", "Move", "Add", "Sub", "Mul", "Div",
 	"Mod", "Pow", "Concat", "Unm", "Not", "Len", "Lt", "Le", "Gt", "Ge", "Eq",
 	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
 	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
-	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
+	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "Canary", "LoadStr",
 ];
 
-/// Canonical ordered table of all 43 VM opcodes, matching `op_index` / `OP_NAMES` 1-to-1.
+/// Canonical ordered table of all 44 VM opcodes, matching `op_index` / `OP_NAMES` 1-to-1.
 pub const ALL_OPS: [Op; N_OPS] = [
 	Op::Jmp, Op::Jf, Op::Jt, Op::LoadNil, Op::LoadK, Op::Move, Op::Add, Op::Sub,
 	Op::Mul, Op::Div, Op::Mod, Op::Pow, Op::Concat, Op::Unm, Op::Not, Op::Len,
@@ -893,7 +898,7 @@ pub const ALL_OPS: [Op; N_OPS] = [
 	Op::GetTab, Op::SetTab, Op::TabN, Op::CallT, Op::Closure, Op::Call,
 	Op::VarArgTab, Op::VarArgC, Op::VarArgTabN, Op::GetGlobal, Op::SetGlobal,
 	Op::GetUp, Op::SetUp, Op::Return, Op::Nop, Op::CallE, Op::CallM,
-	Op::MkStr, Op::LoadStr,
+	Op::MkStr, Op::Canary, Op::LoadStr,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1015,6 +1020,19 @@ impl Op {
 				multiret_sensitive: false,
 				fuse_head_ok: true,
 				fuse_tail_ok: true,
+			},
+			Op::Canary => OpMeta {
+				op: self,
+				name: "Canary",
+				role_a: ImmVal,
+				role_b: Unused,
+				role_c: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: true,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
 			},
 			Op::MkStr => OpMeta {
 				op: self,

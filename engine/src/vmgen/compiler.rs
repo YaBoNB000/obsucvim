@@ -89,6 +89,12 @@ struct Ctx<'a> {
 	labels: HashMap<u32, (Option<usize>, Vec<usize>)>,
 	loops: Vec<(Label, Label)>,
 	cell_loops: Vec<HashSet<SymId>>,
+	/// Phase 18 P1-2: ciphertexts whose references all live in one loop-free
+	/// function body, so their cache slot may be cleared after the last use.
+	str_clearable: &'a HashSet<Vec<u8>>,
+	/// Phase 18 P1-3: distributed runtime string-cache canaries are only emitted
+	/// for guard-enabled builds (the canary fail path is the guard abort path).
+	canary: bool,
 }
 
 fn derive_upvalue_permutation(seed: u64, fn_index: usize, count: usize, scatter: bool) -> Vec<usize> {
@@ -173,6 +179,8 @@ impl<'a> Ctx<'a> {
 		lua51: bool,
 		scatter: bool,
 		super_insn: bool,
+		str_clearable: &'a HashSet<Vec<u8>>,
+		canary: bool,
 	) -> Ctx<'a> {
 		Ctx {
 			program,
@@ -195,6 +203,8 @@ impl<'a> Ctx<'a> {
 			labels: HashMap::new(),
 			loops: Vec::new(),
 			cell_loops: Vec::new(),
+			str_clearable,
+			canary,
 		}
 	}
 
@@ -284,6 +294,7 @@ impl<'a> Ctx<'a> {
 	}
 
 	fn declare(&mut self, s: SymId, k: CellKind) {
+		// invariant: push_scope() installs the root scope at compiler construction and pop_scope never removes it
 		self.scopes.last_mut().unwrap().insert(s, k);
 	}
 
@@ -337,6 +348,7 @@ impl<'a> Ctx<'a> {
 			Op::Return => [Base, Val, Val, Val],
 			Op::Nop => [Val, Val, Val, Val],
 			Op::MkStr => [Reg, Val, Val, Val],
+			Op::Canary => [Val, Val, Val, Val],
 		}
 	}
 
@@ -436,6 +448,84 @@ impl<'a> Ctx<'a> {
 		(sigma, stats)
 	}
 
+	/// Phase 18 P1-1/P1-2: annotate every `LoadStr` operand with its cache
+	/// policy. Runs on the final instruction stream (after constant pruning and
+	/// operand scatter) so the flag bits can never be scrambled by a remap.
+	///
+	///   bit 15 (0x8000) = cached: the constant has >1 static reference, so the
+	///                    handler decodes once per frame and reuses the slot.
+	///   bit 14 (0x4000) = clear-after-use: this is the last static reference
+	///                    AND every reference lives in one loop-free function.
+	///
+	/// Single-reference constants keep a plain index: the handler decodes
+	/// inline and never touches the cache table.
+	/// Phase 18 P1-3: distribute the four runtime string-cache canaries over the
+	/// generated instruction stream.
+	///
+	/// The 4 split points are `floor(n / 5) * k` for `k = 1..4` (never the very
+	/// first or the very last instruction). Which canary id lands on which split
+	/// point is decided by `Rng::shuffle`, so the same source yields a different
+	/// distribution per seed. Programs shorter than 5 instructions get all four
+	/// canaries immediately before the final instruction instead of forcing a
+	/// five-way split of an already tiny stream.
+	///
+	/// Jump targets are absolute 1-based instruction indices at this point (the
+	/// label fixup pass already ran), so every insertion shifts the targets that
+	/// point at or after the insertion point.
+	fn insert_canaries(&mut self) {
+		if !self.canary {
+			return;
+		}
+		let n = self.code.len();
+		if n == 0 {
+			return;
+		}
+		let mut ids: Vec<u16> = vec![0, 1, 2, 3];
+		self.rng.shuffle(&mut ids);
+		// H3-6: never insert inside an open call-result window. The consumer
+		// instructions of a multi-result call address the window relative to
+		// the call, so a canary dropped between the call and its consumer
+		// shifts the window and corrupts the operands. Only window-free
+		// indices are used.
+		let window = call_window_mask(&self.code);
+		let allowed: Vec<usize> = (0..n).filter(|&i| !window[i]).collect();
+		if allowed.is_empty() {
+			return;
+		}
+		let mut placements: Vec<(usize, u16)> = Vec::with_capacity(4);
+		for k in 1..=4usize {
+			let ideal = if n >= 5 { (n / 5) * k } else { n - 1 };
+			// Nearest window-free index to the ideal split point (ties broken
+			// towards the lower index so placement stays seed-stable).
+			let mut best: Option<usize> = None;
+			let mut best_d = usize::MAX;
+			for &i in &allowed {
+				let d = i.abs_diff(ideal);
+				if d < best_d {
+					best_d = d;
+					best = Some(i);
+				}
+			}
+			if let Some(pos) = best {
+				if !placements.iter().any(|&(q, _)| q == pos) {
+					placements.push((pos, ids[k - 1]));
+				}
+			}
+		}
+		// Insert back to front so earlier split points stay valid. This runs
+		// before the H3 noise pass and the label fixup, so it must go through
+		// `insert_noise_instr` (which keeps `self.labels` in sync) instead of
+		// patching already-fixed absolute jump targets.
+		placements.sort_by(|a, b| b.0.cmp(&a.0));
+		for (pos, id) in placements {
+			self.insert_noise_instr(pos, Instr::abcd(Op::Canary, id, 0, 0, 0));
+		}
+	}
+
+	fn apply_loadstr_flags(&mut self) {
+		loadstr_flags(&mut self.code, &self.consts, self.str_clearable);
+	}
+
 	fn finish(
 		mut self,
 		mut nregs: u16,
@@ -450,6 +540,12 @@ impl<'a> Ctx<'a> {
 			self.emit(Instr::abcd(Op::Return, 0, 0, 0, 0));
 		}
 		let base_code_len = self.code.len();
+		// Phase 18 P1-3: distribute the runtime canaries before the H3 noise pass.
+		// `nop_sites` records absolute 1-based instruction positions that the VM
+		// neutralizes at load time, so every insertion has to happen before those
+		// positions are computed (the noise pass and the label fixup both run
+		// after this point).
+		self.insert_canaries();
 		let nop_count: usize;
 		let mut active_count = 0usize;
 		let mut dead_regs = 0usize;
@@ -460,7 +556,9 @@ impl<'a> Ctx<'a> {
 			let dead_base = nregs;
 			nregs = nregs
 				.checked_add(dead_regs as u16)
-				.expect("H3 dead register overflow");
+				.unwrap_or_else(|| {
+					crate::limits::fatal("input exceeds compiler limit: H3 dead register overflow")
+				});
 			let decoy_k_count = nr.int(2, 5) as usize;
 			let mut decoy_ks = Vec::with_capacity(decoy_k_count);
 			for _ in 0..decoy_k_count {
@@ -594,6 +692,7 @@ impl<'a> Ctx<'a> {
 				ins.d = ((ins.d as u32 + msk) % 65536) as u16;
 			}
 		}
+		self.apply_loadstr_flags();
 		let map = self.program.opmap.clone();
 		let perm: [u8; 4] = if self.scatter {
 			self.program.slot_perms[fn_index]
@@ -855,6 +954,7 @@ impl<'a> Ctx<'a> {
 			for (j, &pair) in fv_vocab.iter().enumerate() {
 				let m = super::fuse::fv_mask_nl(fvm, j as u32 + 1);
 				let e = super::fuse::pack_fv_entry(pair, s_idx, m)
+					// invariant: the vocabulary pair table is a static whitelist; the lookup key is a compile-time opcode name
 					.expect("vocab pairs are whitelist-only by construction");
 				isa::encode_u16var(&mut fv, e);
 			}
@@ -1406,6 +1506,62 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 }
 
 
+/// Phase 18 P1-1/P1-2: annotate every `LoadStr` operand with its cache policy.
+///
+///   bit 15 (0x8000) = cached: the constant has more than one static reference,
+///                    so the handler decodes once per frame and reuses the slot.
+///   bit 14 (0x4000) = clear-after-use: this is the last static reference AND
+///                    every reference lives in one loop-free function body.
+///
+/// Single-reference constants keep a plain index: the handler decodes inline
+/// and never touches the cache table. Returns `(cached, cleared)` counts.
+pub(crate) fn loadstr_flags(
+	code: &mut [Instr],
+	consts: &[Const],
+	clearable: &HashSet<Vec<u8>>,
+) -> (usize, usize) {
+	let mut counts: HashMap<u16, usize> = HashMap::new();
+	let mut last: HashMap<u16, usize> = HashMap::new();
+	for (i, ins) in code.iter().enumerate() {
+		if ins.op == Op::LoadStr {
+			*counts.entry(ins.b).or_insert(0) += 1;
+			last.insert(ins.b, i);
+		}
+	}
+	if counts.is_empty() {
+		return (0, 0);
+	}
+	let mut cached = 0usize;
+	let mut cleared = 0usize;
+	for (i, ins) in code.iter_mut().enumerate() {
+		if ins.op != Op::LoadStr {
+			continue;
+		}
+		let k = ins.b;
+		// no headroom for the policy bits: leave the index untouched
+		if k >= 0x4000 {
+			continue;
+		}
+		let is_cached = counts.get(&k).copied().unwrap_or(0) > 1;
+		let is_last = last.get(&k) == Some(&i);
+		let is_clearable = match consts.get(k as usize) {
+			Some(Const::Str(bytes)) => clearable.contains(bytes.as_slice()),
+			_ => false,
+		};
+		let clear = is_cached && is_last && is_clearable;
+		if is_cached {
+			cached += 1;
+		}
+		if clear {
+			cleared += 1;
+		}
+		ins.b = k
+			| if is_cached { 0x8000 } else { 0 }
+			| if clear { 0x4000 } else { 0 };
+	}
+	(cached, cleared)
+}
+
 fn prune_dead_short_string_constants(
 	code: &mut [Instr],
 	consts: &mut Vec<Const>,
@@ -1475,11 +1631,14 @@ fn compile_chunk(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
+	canary: bool,
 ) -> VmProgram {
+	let str_clearable = crate::vmgen::strseal::sealed_clearable(block);
 	let total = count_fns_count(block);
 	let has_loadstr = crate::vmgen::strseal::contains_sealed_literals(block);
 	let mut perm: Vec<u8> = vec![0, 1, 2, 3];
 	rng.shuffle(&mut perm);
+	// invariant: perm is built as a fixed 4-element permutation in compile()
 	let slot_perm: [u8; 4] = perm.try_into().unwrap();
 	let ck_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
 	let ck_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
@@ -1491,6 +1650,7 @@ fn compile_chunk(
 	let blob_step = rng.int(1_048_576, 268_435_455) as u32;
 	let mut tag_pool: Vec<u8> = (1..=250).collect();
 	rng.shuffle(&mut tag_pool);
+	// invariant: tag_pool is a fixed 8-element array of static section tags
 	let section_tags: [u8; 8] = tag_pool[..8].try_into().unwrap();
 	// V17 P1-b：fv 掩码常量——门控于 super_insn，off 态不消耗 rng（字节恒等前提）。
 	let (fv_m1, fv_mc) = if super_insn {
@@ -1566,7 +1726,16 @@ fn compile_chunk(
 	{
 		let main_index = program.fns.len();
         program.s_indices[main_index] = if scatter { rng.int(0, 3) as u8 } else { 0 };
-        let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter, super_insn);
+        let mut ctx = Ctx::new_main(
+        &mut program,
+        rng,
+        table,
+        lua51,
+        scatter,
+        super_insn,
+        &str_clearable,
+        canary,
+    );
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
 		let (bytes, nops, osum, osum2, chaff, blocks) = ctx.finish(nregs, main_index);
@@ -1844,6 +2013,7 @@ impl<'a> Ctx<'a> {
 		if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
 			let nres = n - npre;
 			if last_is_call {
+				// invariant: guarded by `if last_is_call` three lines above, which is derived from values[nv-1] being Some
 				let call = values[nv - 1].as_ref().unwrap();
 				let (nargs, has_vararg) = call_arg_info(call);
 				let freg = self.reserve(1 + nargs.max(1));
@@ -2191,27 +2361,32 @@ impl<'a> Ctx<'a> {
 				self.here(&l_end);
 			}
 			Stmt::Break => {
+				// invariant: the parser rejects `break` outside a loop (parser.rs stat()), so loops is non-empty here
 				let (l_end, _) = *self.loops.last().expect("break outside loop");
 				self.jmp(Op::Jmp, 0, &l_end);
 			}
 			Stmt::Continue => {
+				// invariant: the parser rejects `continue` outside a loop (parser.rs stat()), so loops is non-empty here
 				let (_, l_cont) = *self.loops.last().expect("continue outside loop");
 				self.jmp(Op::Jmp, 0, &l_cont);
 			}
 				Stmt::Return(es) => {
 					if es.is_empty() {
 						self.emit(Instr::ab(Op::Return, 0, 0));
+					// invariant: the `es.is_empty()` branch returns before this line, so the slice is non-empty
 					} else if is_call(es.last().unwrap()) {
 						let pre = es.len() - 1;
 						let base = self.reserve(pre as u16);
 						for (i, e) in es.iter().take(pre).enumerate() {
 							self.compile_expr(e, base + i as u16);
 						}
+						// invariant: the enclosing `else if is_call(es.last().unwrap())` branch proved the last element exists
 						let call = es.last().unwrap().clone();
 						let (nargs, has_vararg) = call_arg_info(&call);
 						let freg = self.reserve(1 + nargs.max(1));
 						self.compile_call_into(&call, freg, 255, has_vararg);
 						self.emit(Instr::abcd(Op::Return, base, 255, 0, pre as u16));
+					// invariant: the `es.is_empty()` branch returns before this line, so the slice is non-empty
 					} else if matches!(es.last().unwrap(), Expr::Vararg) {
 						let pre = es.len() - 1;
 						let base = self.reserve(pre as u16);
@@ -2261,7 +2436,10 @@ impl<'a> Ctx<'a> {
 			}
 			Expr::SealedStr { bytes, seed, step } => {
 				let cipher = crate::vmgen::strseal::encode(bytes, *seed, *step);
-				let k = self.kidx_unique(Const::Str(cipher));
+				// Phase 18 P1-1: dedup the sealed constant so repeated
+				// references to the same plaintext share one pool slot (that is
+				// what makes the runtime cache and its reference count real).
+				let k = self.kidx(Const::Str(cipher));
 				self.program.has_loadstr = true;
 				self.emit(Instr::abcd(Op::LoadStr, dst, k, *seed, *step));
 			}
@@ -2375,6 +2553,7 @@ impl<'a> Ctx<'a> {
 						BinOp::Gt => Op::Gt,
 						BinOp::Le => Op::Le,
 						BinOp::Ge => Op::Ge,
+						// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 						_ => unreachable!(),
 					};
 					self.emit(Instr::abc(iop, dst, tl, tr));
@@ -2516,6 +2695,7 @@ let _ = has_vararg;
 		let (args, is_m) = match e {
 			Expr::Call { args, .. } => (args, false),
 			Expr::Method { args, .. } => (args, true),
+			// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 			_ => unreachable!(),
 		};
 		let has_tail = args.last().map(is_call).unwrap_or(false);
@@ -2560,6 +2740,7 @@ let _ = has_vararg;
 					self.compile_expr(a, freg + 2 + i as u16);
 				}
 			}
+			// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 			_ => unreachable!(),
 		}
 	}
@@ -2569,6 +2750,7 @@ let _ = has_vararg;
 		self.compile_call_prefix(e, freg, nfixed);
 		let mut d: u16 = 0;
 		if has_tail {
+			// invariant: the call is guarded by `is_call(e)` at the call site
 			let tail = Self::call_tail(e).unwrap().clone();
 			let (inargs, _) = call_arg_info(&tail);
 			let ifreg = freg + nfixed + 1;
@@ -2593,6 +2775,7 @@ let _ = has_vararg;
 		let (nfixed, has_tail) = Self::call_nfixed(e);
 		self.compile_call_prefix(e, freg, nfixed);
 		if has_tail {
+			// invariant: the call is guarded by `is_call(e)` at the call site
 			let tail = Self::call_tail(e).unwrap().clone();
 			let (inargs, _) = call_arg_info(&tail);
 			let ifreg = freg + nfixed + 1;
@@ -2611,6 +2794,7 @@ let _ = has_vararg;
 		self.compile_call_prefix(e, freg, nfixed);
 		let mut d = nfixed * 2;
 		if has_tail {
+			// invariant: the call is guarded by `is_call(e)` at the call site
 			let tail = Self::call_tail(e).unwrap().clone();
 			let (inargs, _) = call_arg_info(&tail);
 			let ifreg = freg + nfixed + 1;
@@ -2694,13 +2878,14 @@ let _ = has_vararg;
 				Some(CellKind::Slot(sr)) => descriptors.push(sr + 1 | 0x8000),
 				Some(CellKind::Up(u)) => {
 					let parent_idx = *self.up_perm.get(u as usize)
+						// invariant: up_perm is built with one entry per upvalue slot by derive_upvalue_permutation
 						.expect("parent upvalue permutation missing");
 					descriptors.push(parent_idx as u16 + 1 | 0xC000);
 				}
-				None => panic!(
-					"upvalue descriptor miss: sym {} not in any enclosing scope (ups mis-analyzed?)",
+				None => crate::limits::fatal(&format!(
+					"input exceeds compiler limit: upvalue descriptor miss: sym {} not in any enclosing scope",
 					s
-				),
+				)),
 			}
 		}
 
@@ -2726,7 +2911,9 @@ let _ = has_vararg;
 			labels: HashMap::new(),
 			loops: Vec::new(),
 			cell_loops: Vec::new(),
+			str_clearable: self.str_clearable,
 			super_insn: self.super_insn,
+			canary: self.canary,
 		};
 		for (i, s) in ups.iter().enumerate() {
 			child.upvals.insert(*s, i as u16);
@@ -2777,7 +2964,10 @@ let _ = has_vararg;
 				self.compile_expr(idx, kreg);
 				Target::Index2 { t: treg, k: kreg }
 			}
-			_ => panic!("invalid assignment target"),
+			// Not a resource-budget rejection: the AST accepted a target the
+			// compiler cannot store into (e.g. `f() = 1`). Report it as what it
+			// is, on the same single-line fail-closed channel.
+			_ => crate::limits::fatal("invalid assignment target"),
 		}
 	}
 
@@ -2805,7 +2995,7 @@ let _ = has_vararg;
 				} else if let Some(u) = self.upvals.get(s).copied() {
 					self.emit(Instr::ab(Op::SetUp, u, vreg));
 				} else {
-					panic!("store to unknown local");
+					crate::limits::fatal("input exceeds compiler limit: store to unknown local");
 				}
 			}
 			Target::Global(k) => {
@@ -2872,8 +3062,9 @@ pub fn compile(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
+	canary: bool,
 ) -> VmProgram {
-	compile_chunk(block, table, rng, lua51, scatter, super_insn)
+	compile_chunk(block, table, rng, lua51, scatter, super_insn, canary)
 }
 
 #[cfg(test)]
@@ -2974,6 +3165,7 @@ mod dbg {
 						varint(&blob, &mut p);
 					}
 				}
+				// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 				_ => unreachable!(),
 			}
 		}
@@ -2990,7 +3182,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(4242);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, true);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, false);
 		assert!(prog.fv_sets.iter().any(|v| !v.is_empty()), "super on: vocab must be non-empty here");
 		for (fi, _) in prog.fns.iter().enumerate() {
 			let walk = section_walk(&prog, fi.min(prog.fns.len() - 1));
@@ -3061,6 +3253,7 @@ mod dbg {
 						varint(&blob, &mut p);
 					}
 				}
+				// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 				_ => unreachable!(),
 			}
 		}
@@ -3131,7 +3324,7 @@ mod dbg {
 		};
 		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
 		let mut rng = crate::rng::Rng::new(77);
-		let program = compile_chunk(&block, &table, &mut rng, false, true, false);
+		let program = compile_chunk(&block, &table, &mut rng, false, true, false, false);
 		assert!(program.has_loadstr);
 		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
 		assert!(strings.iter().any(|s| s == &expected_cipher));
@@ -3194,7 +3387,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true, false, false);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -3304,7 +3497,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(7);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, false);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, false);
 		let mut saw_scattered_operand = false;
 		let tags = &prog.section_tags;
 		for (fi, b) in prog.fns.iter().enumerate() {
@@ -3438,5 +3631,132 @@ p += ncode;
 			assert_eq!(p, derive_upvalue_permutation(0x1234_5678_9abc_def0, 17, count, true));
 			assert_eq!(derive_upvalue_permutation(0, 2, count, false), (0..count).collect::<Vec<_>>());
 		}
+	}
+}
+
+#[cfg(test)]
+mod p1_cache {
+	use super::*;
+	use crate::parser;
+	use crate::vmgen::strseal;
+
+	fn seal(src: &str) -> Block {
+		let mut block = parser::parse(src, true).expect("test chunk parses");
+		strseal::seal_literals(&mut block, &mut Rng::new(4242));
+		block
+	}
+
+	/// P1-1 验收 1：10 个字符串常量，7 个单次引用、3 个多次引用。
+	/// 单次引用常量必须保持裸索引（不写缓存表）；多次引用常量必须带 cached 位。
+	#[test]
+	fn single_reference_constants_never_enter_the_cache() {
+		let mut src = String::new();
+		for i in 0..7 {
+			src.push_str(&format!("local s{i} = \"SINGLE_USE_MARKER_{i:02}\"\n"));
+		}
+		for i in 0..3 {
+			src.push_str(&format!(
+				"print(\"MULTI_USE_MARKER_{i:02}\", \"MULTI_USE_MARKER_{i:02}\", \"MULTI_USE_MARKER_{i:02}\")\n"
+			));
+		}
+		let mut block = seal(&src);
+		// Materialise the sealed literals the way the compiler does.
+		let mut code: Vec<Instr> = Vec::new();
+		let mut consts: Vec<Const> = Vec::new();
+		let mut idx: HashMap<Vec<u8>, u16> = HashMap::new();
+		let mut push = |bytes: &[u8], seed: u16, step: u16, code: &mut Vec<Instr>, consts: &mut Vec<Const>| {
+			let cipher = strseal::encode(bytes, seed, step);
+			let k = *idx.entry(cipher.clone()).or_insert_with(|| {
+				let k = consts.len() as u16;
+				consts.push(Const::Str(cipher.clone()));
+				k
+			});
+			code.push(Instr::abcd(Op::LoadStr, 0, k, seed, step));
+		};
+		for stmt in &block.stmts {
+			if let Stmt::Local { values, .. } = stmt {
+				for v in values.iter().flatten() {
+					if let Expr::SealedStr { bytes, seed, step } = v {
+						push(bytes, *seed, *step, &mut code, &mut consts);
+					}
+				}
+			}
+			if let Stmt::ExprStmt(Expr::Call { args, .. }) = stmt {
+				for a in args {
+					if let Expr::SealedStr { bytes, seed, step } = a {
+						push(bytes, *seed, *step, &mut code, &mut consts);
+					}
+				}
+			}
+		}
+		let clearable = strseal::sealed_clearable(&block);
+		let (cached, cleared) = loadstr_flags(&mut code, &consts, &clearable);
+		assert_eq!(cached, 9, "3 multi-use constants x 3 references");
+		assert_eq!(cleared, 3, "each multi-use constant clears after its last use");
+		let flagged_single = code
+			.iter()
+			.filter(|ins| ins.op == Op::LoadStr && ins.b & 0x8000 != 0)
+			.count();
+		assert_eq!(flagged_single, 9, "every reference of a multi-use constant is flagged");
+		let unflagged = code
+			.iter()
+			.filter(|ins| ins.op == Op::LoadStr && ins.b < 0x4000)
+			.count();
+		assert_eq!(unflagged, 7, "the 7 single-use constants stay out of the cache");
+		let cleared_flags = code
+			.iter()
+			.filter(|ins| ins.op == Op::LoadStr && ins.b & 0x4000 != 0)
+			.count();
+		assert_eq!(cleared_flags, 3);
+	}
+
+	/// P1-2 范围声明：循环体内的引用不允许清空（可能再次被执行）。
+	#[test]
+	fn constants_referenced_inside_a_loop_are_never_cleared() {
+		let block = seal("local s = \"LOOP_MARKER\"\nfor i = 1, 3 do print(s, s) end");
+		let clearable = strseal::sealed_clearable(&block);
+		assert!(clearable.is_empty(), "loop back-edge must veto clearing");
+	}
+
+	/// P1-2 范围声明：被内层闭包引用（跨函数）的常量不允许清空。
+	#[test]
+	fn constants_referenced_from_a_nested_closure_are_never_cleared() {
+		let block = seal(
+			"local function outer() return \"CAPTURE_MARKER\" end\nlocal function inner() return \"CAPTURE_MARKER\" end\nprint(outer(), inner())",
+		);
+		let total = strseal::sealed_total_counts(&block);
+		assert_eq!(total.len(), 1, "identical plaintext dedups to one constant");
+		assert_eq!(total.values().next().copied(), Some(2));
+		let clearable = strseal::sealed_clearable(&block);
+		assert!(
+			clearable.is_empty(),
+			"a constant referenced from two different frames must veto clearing"
+		);
+	}
+
+	/// P1-2 正向用例：同一函数、两次引用、无循环、无闭包 → 可清空。
+	#[test]
+	fn constants_used_twice_in_a_loop_free_function_are_clearable() {
+		let block = seal("local s = \"CLEAR_ME\"\nprint(s, s)");
+		let clearable = strseal::sealed_clearable(&block);
+		assert_eq!(clearable.len(), 1, "exactly the loop-free multi-use constant");
+	}
+
+	/// P1-1 前置：相同明文必须共享同一个密封常量，否则多次引用无从谈起。
+	#[test]
+fn identical_plaintexts_share_one_sealed_constant() {
+		let block = seal("local a = \"SAME\"\nlocal b = \"SAME\"\nprint(a, b)");
+		let mut seeds = Vec::new();
+		for stmt in &block.stmts {
+			if let Stmt::Local { values, .. } = stmt {
+				for v in values.iter().flatten() {
+					if let Expr::SealedStr { seed, step, .. } = v {
+						seeds.push((*seed, *step));
+					}
+				}
+			}
+		}
+		assert_eq!(seeds.len(), 2);
+		assert_eq!(seeds[0], seeds[1], "identical plaintext must dedup");
 	}
 }

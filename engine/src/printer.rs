@@ -348,7 +348,9 @@ impl<'a> Printer<'a> {
 				));
 			}
 			Expr::SealedStr { .. } => {
-				panic!("refusing to print an unlowered VM-sealed string literal")
+				crate::limits::fatal(
+					"input exceeds compiler limit: unlowered VM-sealed string literal reached the printer",
+				)
 			}
 			Expr::Bool { value } => {
 				self.out.push_str(if *value { "true" } else { "false" });
@@ -574,7 +576,12 @@ pub fn print_string_bytes(bytes: &[u8], is_binary: bool) -> String {
 				_ => 1,
 			};
 			if i + len <= bytes.len() && std::str::from_utf8(&bytes[i..i + len]).is_ok() {
-				let ch = std::str::from_utf8(&bytes[i..i + len]).unwrap().chars().next().unwrap();
+				let ch = match std::str::from_utf8(&bytes[i..i + len]).ok().and_then(|s| s.chars().next()) {
+					Some(c) => c,
+					None => crate::limits::fatal(
+						"input exceeds compiler limit: invalid UTF-8 sequence in a string literal",
+					),
+				};
 				if ch.is_control() || ch == '"' || ch == '\\' {
 					for k in i..i + len {
 						out.push_str(&format!("\\{}", bytes[k]));

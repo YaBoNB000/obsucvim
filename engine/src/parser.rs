@@ -12,10 +12,12 @@ struct Parser {
 	loops: u32,
 	expr_depth: usize,
 	closure_depth: usize,
+	block_depth: usize,
 }
 
 impl Parser {
 	fn peek(&self, ahead: usize) -> &Token {
+		// invariant: Lexer::tokens always appends a trailing Eof token, so the vector is never empty
 		self.toks.get(self.i + ahead).unwrap_or_else(|| self.toks.last().unwrap())
 	}
 
@@ -103,6 +105,22 @@ impl Parser {
 
 
 	fn block(&mut self) -> Result<Block, ParseError> {
+		self.block_depth += 1;
+		if self.block_depth > limits::MAX_BLOCK_NEST_DEPTH {
+			let d = self.block_depth;
+			self.block_depth -= 1;
+			return Err(self.err(&format!(
+				"input exceeds compiler limit: block nesting depth = {}, max allowed = {}",
+				d,
+				limits::MAX_BLOCK_NEST_DEPTH
+			)));
+		}
+		let res = self.block_inner();
+		self.block_depth -= 1;
+		res
+	}
+
+	fn block_inner(&mut self) -> Result<Block, ParseError> {
 		let mut stmts = Vec::new();
 		loop {
 			let t = self.peek(0);
@@ -1195,7 +1213,7 @@ fn parse_expr_snippet(src: &str, luau: bool) -> Result<Expr, ParseError> {
 	let toks = lexer
 		.tokens()
 		.map_err(|e| ParseError { line: e.line, msg: e.msg })?;
-	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0 };
+	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0, block_depth: 0 };
 	let e = p.exp()?;
 	if p.peek(0).kind != TokKind::Eof {
 		return Err(ParseError {
@@ -1211,7 +1229,7 @@ pub fn parse(src: &str, luau: bool) -> Result<Block, ParseError> {
 	let toks = lexer
 		.tokens()
 		.map_err(|e| ParseError { line: e.line, msg: e.msg })?;
-	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0 };
+	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0, block_depth: 0 };
 	let block = p.block()?;
 	if p.peek(0).kind != TokKind::Eof {
 		let t = p.peek(0);

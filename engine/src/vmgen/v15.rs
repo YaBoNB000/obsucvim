@@ -6,6 +6,7 @@ use crate::vmgen::caps::ScaffoldPrim;
 use crate::vmgen::isa::CARRIER_SPECIALS;
 
 fn dot_value(path: &str) -> Expr {
+	// invariant: path comes from the static v15 template table and always contains a dot
 	let (lib, name) = path.split_once('.').unwrap();
 	if lib == "string" && matches!(name, "byte" | "sub" | "char") {
 		return Expr::Index {
@@ -31,11 +32,15 @@ fn parse_expr(src: &str) -> Expr {
 		Ok(b) => b,
 		Err(e) => {
 			eprintln!("v15 emitter bug: {:?}\nsource:\n{}", e, chunk);
+			// invariant: the v15 template sources are static strings that parse by construction
 			panic!("v15 static source")
 		}
 	};
+	// invariant: the v15 template source always contains at least one statement
 	match block.stmts.pop().unwrap() {
+		// invariant: the v15 template source ends with a single local declaration carrying one value
 		ast::Stmt::Local { mut values, .. } => values.pop().unwrap().unwrap(),
+		// invariant: the v15 template source ends with a local declaration by construction
 		_ => unreachable!(),
 	}
 }
@@ -129,6 +134,7 @@ pub fn module_fields(
 		}
 	}
 	for states in [2usize, 3usize] {
+		// invariant: the slot-name iterator is sized to the number of static slots consumed here
 		let n = it.next().unwrap();
 		fields.push(TableField::Key {
 			key: Expr::Num {
@@ -139,6 +145,7 @@ pub fn module_fields(
 		});
 	}
 	{
+		// invariant: the slot-name iterator is sized to the number of static slots consumed here
 		let n = it.next().unwrap();
 		fields.push(TableField::Key {
 			key: Expr::Num {
@@ -580,6 +587,7 @@ fn draw_state_names(nm: &mut Names) -> [String; 6] {
 		forbid.push(n.clone());
 		out.push(n);
 	}
+	// invariant: the loop above pushes exactly six names
 	out.try_into().unwrap()
 }
 
@@ -1361,6 +1369,7 @@ let (st, _ret) = step(&mut state_i);
 			})
 			.collect();
 		let tree = dispatch_tree(&sv, &wrapped, 0, wrapped.len());
+		// invariant: dispatch_tree always emits at least one leaf
 		let max_leaf = leaves.last().unwrap().0;
 		let src = format!(
 			"function(b,C,{lhs6}) while true do if {sv}<={} then {} \

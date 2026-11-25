@@ -406,7 +406,9 @@ pub fn apply_antidbg(
 						r: Box::new(c.clone()),
 					}),
 				})
-				.expect("at least one ciphertext chunk");
+				.unwrap_or_else(|| {
+					crate::limits::fatal("input exceeds compiler limit: antidbg container produced no ciphertext chunk")
+				});
 			let wrap = wrapper(&cipher, concat, dec_call, table, rng, &mut rsv);
 			for s in block.stmts.iter().take(block.stmts.len() - 1) {
 				new_stmts.push(s.clone());

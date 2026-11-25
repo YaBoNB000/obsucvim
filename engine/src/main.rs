@@ -447,7 +447,15 @@ s if s.starts_with('-') => {
 			let vm_raw = audit_gate::audit_enabled("OBSUCVIM_VM_RAW");
 			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program =
-				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn);
+				vmgen::compile(
+					&block,
+					&table,
+					&mut rng,
+					!luau,
+					opts.do_v15,
+					opts.super_insn,
+					opts.do_guard,
+				);
 			let caps = vmgen::caps::CapabilityManifest::from_program(
 				&program,
 				opts.do_guard,
@@ -500,6 +508,7 @@ s if s.starts_with('-') => {
 				(program.fv_m1, program.fv_mc),
 				env_slots.as_ref(),
 				opts.env_check,
+				opts.do_guard,
 				opts.do_guard,
 				&caps,
 			);
@@ -756,7 +765,7 @@ let kg = slot_pool[3];
 			None => print!("{}", out),
 		},
 		Err(e) => {
-			eprintln!("obsucvim: {}", e);
+			eprintln!("error: {}", e);
 			return ExitCode::FAILURE;
 		}
 	}

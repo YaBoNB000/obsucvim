@@ -722,7 +722,7 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 
 ### 自查：Task P0-1（编译前资源预算检查）
 - 实施位置：`engine/src/limits.rs`、`engine/src/main.rs`、`engine/src/parser.rs`
-- 实施方式：按 §0.4 二分校准算法实测并设置 `MAX_TOPLEVEL_FUNC_DECLS = 32`（`low=41, high=42`）、`MAX_TOPLEVEL_STMTS = 2385`（`low=2982, high=2983`）、`MAX_CLOSURE_NEST_DEPTH = 15`（`low=19, high=20`）、`MAX_EXPR_PARSE_DEPTH = 2906`（`low=3633, high=3634`），在 `Parser::subexpr`、`Parser::funcbody`、`Parser::parse` 入口/出口计数并干净返回 `ParseError`。
+- 实施方式：按 §0.4 二分校准算法实测并设置 `MAX_TOPLEVEL_FUNC_DECLS = 32`（`low=41, high=42`）、`MAX_TOPLEVEL_STMTS = 2385`（`low=2982, high=2983`）、`MAX_CLOSURE_NEST_DEPTH = 15`（`low=19, high=20`）、`MAX_EXPR_PARSE_DEPTH = 2736`（`low=3421, high=3422`）、`MAX_BLOCK_NEST_DEPTH = 5656`（`low=7070, high=7071`），在 `Parser::subexpr`、`Parser::funcbody`、`Parser::block`、`Parser::parse` 入口/出口计数并干净返回 `ParseError`。
 - 验收命令 1：`cd engine && cargo test --release` → 退出码 0（`77 passed; 0 failed; 1 ignored` + `4 passed`）→ 通过
 - 验收命令 2：`bash engine/tests/print_size_gate.sh` → 退出码 0（`min=106193B, max=111351B <= 250000B`，余量 `138649B`）→ 通过
 - 验收命令 3：`bash engine/tests/defense_audit.sh` → 退出码 0（`PASS 20 FAIL 0`）→ 通过
@@ -738,20 +738,171 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 - 本 Task 总结论：通过
 
 ### 自查：Task P0-3（建立鲁棒性回归套件）
-- 实施位置：`engine/tests/robustness_gate_test.py`
-- 实施方式：覆盖 C1（100 顶层函数）、C2（3000 顶层语句）、C3（20 层嵌套闭包）、C4（20000 层嵌套括号），校验非零退出且无 `panicked at`/`SIGABRT`/`SIGSEGV`。
-- 验收命令 1：`python3 engine/tests/robustness_gate_test.py` → 退出码 0（`ROBUSTNESS GATE PASS: 4/4`）→ 通过
+- 实施位置：`engine/tests/robustness_gate_test.py`、`engine/tests/robustness_test.sh`
+- 实施方式：每个已校准维度各跑两个样本——`threshold` 必须干净编译、`threshold+1` 必须单行 `error:` 干净拒绝，并校验无 `panicked at`/`SIGABRT`/`SIGSEGV`/`RUST_BACKTRACE`。阈值一律从 `engine/src/limits.rs` 解析，不在测试里复制魔法数字。覆盖 C1（顶层函数 32/33）、C2（顶层语句 2385/2386）、C3（闭包嵌套 15/16）、C4（表达式深度 2736/2737）、C6（块嵌套 5656/5657）、C5（非法赋值目标）。`robustness_test.sh` 额外要求产物能通过 `luau-compile` 语法检查，并以 `source` 方式并入 `run_tests.sh`。
+- 验收命令 1：`python3 engine/tests/robustness_gate_test.py` → 退出码 0（`ROBUSTNESS GATE PASS: 11/11`）→ 通过
+  ```
+  thresholds: funcs=32 stmts=2385 closure=15 expr=2736 block=5656
+    [PASS] C1_funcs_threshold: compiled cleanly at threshold 32
+    [PASS] C1_funcs_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: top-level function declarations = 33, max allowed = 32
+    [PASS] C2_stmts_threshold: compiled cleanly at threshold 2385
+    [PASS] C2_stmts_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: top-level statements = 2386, max allowed = 2385
+    [PASS] C3_closure_threshold: compiled cleanly at threshold 15
+    [PASS] C3_closure_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: closure nesting depth = 16, max allowed = 15
+    [PASS] C4_expr_depth_threshold: compiled cleanly at threshold 2736
+    [PASS] C4_expr_depth_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: expression parse depth = 2737, max allowed = 2736
+    [PASS] C6_block_depth_threshold: compiled cleanly at threshold 5656
+    [PASS] C6_block_depth_threshold_plus_1: rejected cleanly :: error: input exceeds compiler limit: block nesting depth = 5657, max allowed = 5656
+    [PASS] C5_invalid_assignment_target: rejected cleanly :: error: invalid assignment target
+  ROBUSTNESS GATE PASS: 11/11
+  ```
+- 验收命令 2：`bash engine/tests/robustness_test.sh` → 退出码 0（`ROBUSTNESS PASS: 12   FAIL: 0`，`ALL ROBUSTNESS GREEN`）→ 通过
+- 验收命令 3：`bash engine/tests/run_tests.sh` → 退出码 0（`PASS checks: 181   FAIL: 0`，`ALL GREEN`；含 `ROBUSTNESS PASS: 12`）→ 通过
 - 本 Task 总结论：通过
 
-### 18.x 威胁模型分级（P1-4）与性能使用边界（P2-2）
+### 自查：Task P1-1（单次引用常量不进缓存）
 
-- **威胁模型分级**：
-  - **L1（静态源码/AST 恢复）**：由 `v15` 外层壳、VM 字节码、`strseal` 字符串密封与 `obf_num` 数值混淆防护；静态产物中不出现明文常量。
-  - **L2（受控篡改/环境劫持）**：由 `Guard`（7-core `[C]` 检查、双 `checkUnpack`、有界 65,536 步 `abort()`/`PD()`）与 `v2h` 完整性门（`verifyslot ~= sumslot` 时清零 `C[entryslot]`/`C[vmslot]`）防护。
-  - **L3（运行期动态插桩/内存转储/录制重放）**：**明确不承诺防护**；字符串首次求值解码后在函数生命周期内可被动态观测，不得声称“不可逆”。
-- **性能使用边界**：
-  - 唯一体积硬门槛：`print(6)\n` 默认 v15 六种子最大值 `111,351 B <= 250,000 B`（内部缓冲 `<= 245,000 B`，余量 `133,649 B`）。
-  - 编译前资源上限（§0.4 校准）：顶层函数声明 `<= 32`、顶层语句 `<= 2385`、闭包嵌套深度 `<= 15`、表达式解析深度 `<= 2906`；超限统一返回单行 `error:` 并非零退出。
+- 实施位置：`engine/src/vmgen/strseal.rs`（明文去重 + `sealed_total_counts`/`sealed_clearable`）、`engine/src/vmgen/compiler.rs`（`loadstr_flags()`、`Ctx::apply_loadstr_flags()`）、`engine/src/vmgen/template.rs`（`M_READ_C` 掩码 + `M_LOAD_STR` 惰性缓存）、`engine/src/vmgen/handlers/loadstr.rs`
+- 实施方式：`LoadStr` 常量索引的高两位改为策略位——bit15 `0x8000` = cached（静态引用 > 1，按帧解码一次后复用 `E.sc[k+1]`），bit14 `0x4000` = clear-after-use；单次引用常量保持裸索引，解码内联、**完全不写缓存表**。`M_READ_C` 取操作数时统一 `% 32768` 掩掉策略位；索引 `>= 0x4000` 不加策略位（无余量时保持原样）。
+- 验收命令 1：`cd engine && cargo test --release` → 退出码 0（`82 passed; 0 failed; 1 ignored` + `4 passed`）→ 通过（新增 `p1_cache::single_reference_constants_never_enter_the_cache` 等 5 个单元测试）
+- 验收命令 2：`python3 engine/tests/string_cache_dump_test.py` → 退出码 0（`STRING CACHE DUMP PASS: 7 FAIL: 0`）→ 通过
+  ```
+  [PASS] artifact runs under the harvester
+  [PASS] negative control: all 4 multi-use markers reach the cache
+  [PASS] 10 single-use markers never reach the cache
+  [PASS] multi-use markers are cleared after their last use
+  [PASS] loop-body marker is never cleared
+  [PASS] closure-captured marker is never cleared
+  [INFO] global string.char hook sees decoded constants :: single-use 10/10, multi-use 4/4 -> P1-1 removes the persistent copy, not the transient decode
+  [PASS] production artifact carries no audit channel
+  ```
+- 验收命令 3：`python3 engine/tests/v15_fingerprint.py engine/examples/basics.v15.luau.lua` → `通过 32/32`；`python3 engine/tests/security_fingerprint.py engine/examples/basics.v15.luau.lua engine/tests/cases/basics.lua` → `安全指纹: 5/5 通过, 0 红` → 通过
+- 验收命令 4：`bash engine/tests/run_tests.sh` → 退出码 0（`PASS checks: 181   FAIL: 0`，`ALL GREEN`）→ 通过
+- 体积影响：改动前 `111,351 B` → 改动后 `111,359 B`（`print(6)` 六种子最大值），差值 `+8 B`，远低于 `<= 245,000 B` 内部标准
+- 本 Task 总结论：通过
+
+### 自查：Task P1-2（可证明单次静态作用域内用后清空缓存槽）
+
+- 实施位置：`engine/src/vmgen/strseal.rs`（`sealed_clearable` / `collect_clearable` / `block_has_loop` / `nested_bodies`）、`engine/src/vmgen/compiler.rs`（`loadstr_flags()` 的 `is_last` + `is_clearable` 判定）
+- 实施方式：对引用次数 > 1 的常量，仅当①全部静态引用点在同一函数体、②该函数体内无循环回边、③未被内层闭包捕获，三个条件同时成立时，在其**线性顺序最后一次**引用的指令上置 `0x4000`；运行时该次引用执行后把 `E.sc[k+1]` 写回 `nil`。嵌套函数体在 `stmt_has_loop`/`expr_has_loop` 中按“不同帧”处理——内层函数里的循环不能否决外层函数体的清空（否则 `local function f() for ... end end` 会让整个顶层都失去清空资格）。
+- 验收命令 1：`cd engine && cargo test --release` → 退出码 0（`82 passed; 0 failed; 1 ignored`）→ 通过（`constants_used_twice_in_a_loop_free_function_are_clearable` 正向、`constants_referenced_inside_a_loop_are_never_cleared` / `constants_referenced_from_a_nested_closure_are_never_cleared` 反向）
+- 验收命令 2：`python3 engine/tests/string_cache_dump_test.py` → 退出码 0（`STRING CACHE DUMP PASS: 7 FAIL: 0`，其中 clear 三项：multi-use 全清、loop-body 不清、closure 不清）→ 通过
+- 验收命令 3：`bash engine/tests/run_tests.sh` → 退出码 0（`PASS checks: 181   FAIL: 0`）→ 通过
+- 验收命令 4：`bash engine/tests/print_size_gate.sh` → 退出码 0（`min=106201B, max=111359B <= 250000B`）→ 通过
+- 体积影响：`+0 B`（相对 P1-1 完成后的 `111,359 B`；清空逻辑与缓存写入在同一条 `M_LOAD_STR` 微码内，未新增指令）
+- 本 Task 总结论：通过
+
+### 自查：Task P1-3（扩展运行时 canary，提高"通用收割脚本"失效概率）
+
+- 实施位置：`engine/src/vmgen/isa.rs`（`Op::Canary = 42`、`N_OPS = 44`、`OP_NAMES` 插入 `"Canary"`）、`engine/src/vmgen/template.rs`（`M_CANARY = 59` 微码、`MicroLits.canary_a/abc/z/char`、`canary_locals` 绑定 `STBL`/`RAWEQ`、`"Canary"` recipe）、`engine/src/vmgen/compiler.rs`（`Ctx.canary`、`insert_canaries()`、`call_window_mask`）、`engine/src/vmgen/caps.rs`（`Canary → [StrChar, StrByte, Type]`）、`engine/src/anti/mod.rs`（新守卫阶段 `strcanary` + `STAGE_MANIFEST` 条目）、`engine/src/vmgen/handlers/canary.rs`（legacy `--vm` 内联有界 abort）、`engine/tests/guard_matrix_test.py`（8 个新场景）、`engine/tests/canary_runtime_test.py`（新增）
+- 实施方式：
+  - 4 个 canary 按 `floor(n/5)*k`（`k = 1..4`）插入指令流；`n < 5` 时 4 个全部落在末尾执行前。插入点先按 `call_window_mask` 允许集吸附、去重、倒序（大地址先插），并通过 `insert_noise_instr` 走 H3 噪声之前的通道，避免污染 `nop_sites`（seed 7 就是这么修好的）。
+  - 顺序由编译期 `Rng::shuffle` 决定，同一份源码不同 seed 分布不同。
+  - 失败复用既有 fail-closed：v15 调守卫的 `PD()`；legacy `--vm` 没有 `PD` 绑定，按 Phase 17 同款 65,536 步 LCG + 布尔下标故障内联实现。
+  - 守卫阶段 `strcanary` 在 payload 之前做类型层 + 值层自洽性探测（`char(65)`/`char(65,66)`/`char(97,98,99)`/`byte("Z")`），全部走**字符串元表**解析出的真实库，**不经过环境里的 `string` 表**——这是 `string_primitive_hook_test.sh` 要求 `0/0/0` 的硬约束。
+- 验收命令 1：`python3 engine/tests/guard_matrix_test.py` → 退出码 0（`80 PASS / 0 FAIL`，新增 8 个场景全绿）→ 通过
+  ```
+    [PASS] canary1_char_value_clean: guard=OK | noguard_ctrl=OK
+    [PASS] canary2_len_operator_clean: guard=OK
+    [PASS] canary3_char_type_clean: guard=OK
+    [PASS] canary4_char_byte_roundtrip_clean: guard=OK | noguard_ctrl=OK
+    [PASS] canary1_char_value_tamper: guard=GuardRejected(payload_entered=False) | noguard_ctrl=RuntimeError(payload_entered=False)
+    [PASS] canary2_len_operator_tamper: guard=GuardRejected(payload_entered=False) | noguard_ctrl=OK
+    [PASS] canary3_char_type_tamper: guard=GuardRejected(payload_entered=False) | noguard_ctrl=OK
+    [PASS] canary4_char_byte_roundtrip_tamper: guard=GuardRejected(payload_entered=False) | noguard_ctrl=OK
+  guard_matrix_test outcome histogram: {'OK': 30, 'GuardRejected': 43}
+  guard_matrix_test: 80 PASS, 0 FAIL
+  ```
+  四个负向场景的伪造形状都是"通用收割脚本"形态：只破坏一个被校验的值，同时保留产物自身多参数字面量解码（否则拒绝无法归因于 canary）。`canary2/3/4` 的 `--no-guard` 对照仍为 `OK`，证明这是 guard-only 向量；`canary1` 的对照为 `RuntimeError`，因为单参数 `char(65)` 同时被产物自举使用，属于"篡改者自伤"而非 guard 拒绝——已在用例注释里写明。
+- 验收命令 2：`cd engine && cargo test --release` → 退出码 0（`82 passed; 0 failed; 1 ignored` + `4 passed`）→ 通过。`stage_manifest_matches_stages_and_enforces_complete_metadata` 与 Python 侧 `stage_manifest_bidirectional_sync` 双向精确对齐，`canary1..4_*` 八个 `test_id` 两侧同名同极性，无孤儿 id。
+- 验收命令 3（0.5 节全量回归）：全部通过
+  - `bash engine/tests/run_tests.sh` → `PASS checks: 181   FAIL: 0`
+  - `bash engine/tests/multiseed.sh` → `multiseed done: FAIL=0`（含 `R064 nested-upvalue seed stability PASS (24 seeds)`）
+  - `bash engine/tests/defense_audit.sh` → `防御审计: PASS 20   FAIL 0`
+  - `bash engine/tests/print_size_gate.sh` → `6/6 seeds verified (min=109267B, max=112607B <= 250000B cap; headroom=137393B)`
+  - `python3 engine/tests/v15_fingerprint.py example.txt` → `通过 32/32`
+  - `python3 engine/tests/security_fingerprint.py example.txt <src>` → `安全指纹: 5/5 通过, 0 红`
+  - 附加：`python3 engine/tests/vm_tamper_matrix_test.py` → `60 PASS / 0 FAIL`；`python3 engine/tests/capability_manifest_test.py` → `11 PASS / 0 FAIL`；`python3 engine/tests/canary_runtime_test.py` → `CANARY RUNTIME PASS: 4   FAIL: 0`；`python3 engine/tests/string_cache_dump_test.py` → `7 PASS / 0 FAIL`；`python3 engine/tests/robustness_gate_test.py` → `11/11`；`bash engine/tests/charhook_test.sh` → `4 PASS / 0 FAIL`；`bash engine/tests/string_primitive_hook_test.sh` → `[minimal] 0/0/0`、`[R064] 0/0/0`；`bash engine/tests/wtf_port_test.sh` → `23 PASS / 0 FAIL`
+- 验收命令 4：`bash engine/tests/print_size_gate.sh` → 退出码 0。体积增量 = `112,607 B - 111,359 B`（P1-2 完成后的六种子最大值）`= +1,248 B < 2,048 B` 子预算 → 通过
+- 体积影响：`+1,248 B`（六种子最大值 `111,359 B → 112,607 B`；最小值 `106,201 B → 109,267 B`）。增量几乎全部来自守卫阶段 `strcanary` 的文本（实测：把该阶段替换成空函数后最大值降到 `111,157 B`，4 条 `M_CANARY` 指令本身只占约 `259 B`）
+- **诚实边界（必须随本 Task 一起读）**：
+  - canary-1/canary-4 比较的是**分片入口捕获的 `CHAR`** 与**同一捕获 `CHAR` 解出的微字面量**，因此它们抓的是"返回值被丢弃/变短/变类型"的粗劣 hook（`string.char = function(...) end` 这类），抓不到"透明转发包装器"。
+  - canary-3 是四个里唯一对"运行中途把 `string.char` 换成另一个函数"有效的（`TYP(STBL["char"])` 走活表），实测 `string.char = 123` 中途替换 → fail-closed，`CANARY_RAN` 未打印。
+  - canary-2 的 `#"abc"` 只能发现"本分片微字面量解码时 `char` 已经坏了"，对解码完成后的替换无效。
+  - 实测（seed 42，payload 内篡改后 `print("CANARY_RAN")`）：`string.char = 123` → 拦截；`string.char = function(...) end` / `return ""` / `string = { char = string.char, byte = string.byte }` → **未拦截**，载荷正常跑完。原因：VM 在分片入口一次性绑定 `CHAR`/`BYTE`/`STBL`（R021），而 `string_primitive_hook_test.sh` 的 `0/0/0` 硬约束禁止 canary 经环境 `string` 表做活调用，所以无法在"不误伤透明包装器"的前提下识别这类替换。这一条不得被写成"canary 可挡住运行期 hook"。
+- 本 Task 总结论：通过
+
+### 自查：Task P1-4（把威胁模型写进 HANDOFF.md）
+
+- 实施位置：`HANDOFF.md` §18.1（威胁模型分级）、§18.2（性能使用边界）
+- 实施方式：按任务书给定结构逐条替换占位符——`<实测比例>` 用 Task P1-1 验收步骤 2 的夹具实测值 `10/14 ≈ 71.4%` 填写；Tier 1 的三条子项分别对应 P1-1（单次引用不进缓存）、P1-2（用后清空 + 实时 hook 仍可见的边界）、P1-3（canary 的实测拦截/未拦截清单）。
+- 验收命令：人工核对。`grep -c "实测比例" HANDOFF.md` → `0`；§18.1/§18.2 内无 `<...>` 占位符残留 → 通过
+- 诚实边界：Tier 1 的 P1-3 子项写入了实测未拦截的四种 hook 形状（丢弃返回值 / 改短返回值 / 换成同内容副本 / 换成非函数以外的函数替换），没有把 canary 写成"可挡住运行期 hook"。
+- 本 Task 总结论：通过
+
+### 18.1 威胁模型分级（P1-4）
+
+本引擎的保护强度按攻击者能力分三级，各级别的实际防御效果如下，不做超出以下范围的安全宣称：
+
+- **Tier 0（直接阅读产物文本）**：挡住。字符串密封、标识符改名、控制流打散对这一级攻击者完全有效——产物里不出现明文业务常量，`v15_fingerprint.py` 的 32 条形态指标与 `security_fingerprint.py` 的 S1–S5 均以此为目标。
+- **Tier 1（使用网上流传的通用收割/反混淆脚本，脚本编写时未针对本引擎定制）**：部分挡住。Phase 18 P1 阶段实现后：
+  - 单次引用的字符串常量（占 **10/14 ≈ 71.4%**，取自 `string_cache_dump_test.py` 收割模拟夹具里"单次引用常量数 / 总字符串常量数"的实测统计，`SINGLE_USE_MARKER_01..10` / 全部 14 个标记）不会出现在"全局替换 `string.char` + dump 缓存表"这类通用收割脚本的结果里。
+  - 多次引用但满足 Task P1-2 范围条件的常量，暴露窗口缩短到"最后一次使用之前"，收割脚本如果在程序执行完毕后才读取缓存表，拿不到这部分常量；如果收割脚本在执行过程中实时 hook 并记录每次调用参数，仍然能拿到（`string_cache_dump_test.py` 的 INFO 行实测：全局 `string.char` hook 能看到全部 10 个单次引用 + 4 个多次引用标记，说明"用后清空"只挡住"执行完再 dump"这一种收割方式，挡不住实时 hook）。
+  - Task P1-3 的运行时 canary 会让相当一部分"一次性全局 hook 后不再验证自身伪造是否完整"的现成脚本在执行中途触发 fail-closed，但对"精心伪造全部相关行为"的收割脚本无效。实测边界（seed 42）：`string.char = 123`（换成非函数）→ 拦截；`string.char = function(...) end`（丢弃返回值）、`string.char = function(...) return "" end`（改短返回值）、`string = { char = string.char, byte = string.byte }`（换成同内容副本）→ **均未拦截**，载荷正常跑完。原因是 VM 在分片入口一次性绑定 `CHAR`/`BYTE`/`STBL`，而 `string_primitive_hook_test.sh` 的 `0/0/0` 硬约束禁止 canary 经环境 `string` 表做活调用。
+- **Tier 2（针对本引擎专门编写 hook/调试脚本的攻击者）**：挡不住。多次引用且不满足 Task P1-2 范围条件的常量（跨函数/跨循环/被闭包捕获的情况）在运行时仍然明文可见；精心编写的 hook 脚本可以完整模拟所有被校验的行为，绕过 canary 检查。`HANDOFF §8` 的"不得声称不可逆"口径在此继续有效。
+
+### 18.2 性能使用边界（P2-2）
+
+默认 `v15` 预设对循环密集代码有数量级的运行时开销（历史实测约 1000×–2800×；Phase 18 P2-1 完成后的 `bench_presets.sh` 复测，8 语料 × 3 轮中位数区间为 **9.4×（`basics`）–1229.5×（`stress_bigtable`）**，`functions` 为 110.9×）。这是"逐条指令走 Lua 闭包调用"的解释器架构决定的，不是局部优化能消除的数量级问题。P2-1 未加入任何新的融合 opcode（统计上没有"可融合但尚未融合"的候选），因此**没有**"融合后开销"这一项数字可填，上一段的区间就是当前实测值。
+
+使用建议：
+- 建议只对初始化逻辑、低频事件处理逻辑使用 `v15`/`vm` 档位。
+- **不建议**对逐帧回调（`RenderStepped`、`Heartbeat`、`Stepped` 等）内部的代码使用 `v15`/`vm` 档位，会导致目标帧率下掉到不可用的程度。
+- 对性能敏感但仍需要基础保护的场景，建议改用 `low`/`medium`/`high` 档位（不含 VM 虚拟化，开销约 10× 量级，见 HANDOFF §16.3 表 C 的实测数据）。
+
+当前实测档位开销（`bench_presets.sh`，`basics` / `stress_bigtable` 两端）：`low` 1.1×/1.0×、`medium` 1.2×/8.1×、`high` 2.4×/9.5×、`v15` 9.4×/1229.5×、`vm` 17.1×/216.3×、`max` 16.3×/223.4×。
+
+### 自查：Task P2-1（扩大高频 opcode 的融合范围）
+
+- 实施位置：无代码改动（结论是 0 个 opcode 加入，理由见下）；统计口径落在 `engine/src/vmgen/fuse.rs` 的 `FUSE_WHITELIST` 与 `isa.rs` 的 `OpMeta::fuse_head_ok`/`fuse_tail_ok` 边界上。
+- 第一步（机械统计，非评估）：生产二进制没有 `--vm-tsrc` 选项（只有受 `audit-hooks` gate 的 `OBSUCVIM_VM_TSRC` 环境变量），按任务书改用 audit 二进制 + `OBSUCVIM_PROFILE_AUDIT` 导出 `op_hist`，对 `tests/cases/*.lua` 全部 **37 个语料**跑 `--seed 42 --preset vm` 后汇总（总指令数 11,818）：
+  ```
+  Move 2924 | LoadK 1748 | Nop 1059 | LoadStr 669 | GetGlobal 650 | Call 642 | Canary 512 | GetTab 442
+  Jf 255 | Return 247 | MkStr 236 | Add 230 | Jmp 212 | Closure 181 | SetTab 172 | NewTab 170 | Jt 167
+  Lt 150 | CallE 148 | CallM 139 | TabN 118 | GetUp 113 | Eq 106 | Gt 88 | Ge 76 | Len 61 | Mul 57
+  Sub 38 | Mod 37 | Unm 30 | Concat 22 | SetUp 20 | Idiv 18 | Div 17 | Le 16 | Pow 13 | Not 11
+  LoadNil 9 | VarArgTabN 7 | Ne 6 | CallT 1 | VarArgTab 1
+  ```
+  按任务书"严格取前 8 名"：`Move`、`LoadK`、`Nop`、`LoadStr`、`GetGlobal`、`Call`、`Canary`、`GetTab`。
+- 第二步（逐个尝试加入默认融合集）：**0 个加入**。判定依据是 `isa.rs` 里 `fuse_head_ok`/`fuse_tail_ok` 的语义边界——全 ISA 只有 `LoadNil`/`LoadK`/`Move`/`GetUp` 四个 opcode 被标为可融合，前 8 名里只有 `Move` 与 `LoadK` 在内，而它们所有安全的相邻对（`(LoadK,Move)`、`(Move,Move)`、`(Move,LoadK)`）**早已在 `FUSE_WHITELIST` 里**。其余 6 个不可融合的原因分别是：
+  - `Nop`：噪声指令，融合它没有语义意义（它本身就是 H3 噪声通道的产物）；
+  - `Canary`：守卫检查，`fuse_head_ok = false`（P1-3 有意保持它不可被融合吞掉）；
+  - `LoadStr` / `GetGlobal` / `GetTab`：`touches_env_or_upv = true`（可能触发 `__index` 元方法）；
+  - `Call`：`may_call_host = true` + `multiret_sensitive`。
+  把其中任何一个塞进白名单都违反 `fuse.rs` 文件头写死的安全约束（"白名单只收纯数据搬运相邻对，无 metamethod / 无调用 / 无 pc 写"），属于"为了性能削弱语义安全"，不做。
+- 第三步（性能验证）：因为第二步加入 0 个 opcode，**没有代码改动**，改动前后是同一个二进制，`bench_presets.sh` 前后数据按定义完全相同。基线（rounds=3 中位数，Luau 0.735）：
+  ```
+  | basics   | v15 | 713 B -> 147247 B | build 75.1 ms | 23.21 ms |  9.4x |
+  | strings  | v15 | 1737 B -> 154942 B | build 78.7 ms | 27.36 ms | 10.3x |
+  | functions| v15 | 1953 B -> 247696 B | build 116.8 ms | 368.80 ms | 110.9x |
+  | control  | v15 | 1511 B -> 164431 B | build 83.5 ms | 31.75 ms | 11.7x |
+  | tables   | v15 | 1242 B -> 161174 B | build 72.2 ms | 27.55 ms | 10.4x |
+  | coroutine| v15 | 1448 B -> 163660 B | build 78.1 ms | 26.55 ms |  9.5x |
+  | real_algo| v15 | 787 B -> 164132 B | build 73.4 ms | 30.51 ms | 11.8x |
+  | stress_bigtable | v15 | 1479 B -> 165748 B | build 80.9 ms | 5692.38 ms | 1229.5x |
+  ```
+- 验收命令 1：`bash engine/tests/print_size_gate.sh` → `6/6 seeds verified (min=109267B, max=112607B <= 250000B cap; headroom=137393B)`；本 Task 体积增量 **`+0 B`**（相对 P1-3 完成后的 `112,607 B`），剩余余量 `132,393 B`（按内部标准 245,000 B 计）→ 通过
+- 验收命令 2：`bash engine/tests/bench_presets.sh` → 改动前后为同一二进制，数据逐行相同（见上表）→ 通过（无可归因的耗时变化）
+- 验收命令 3：语义等价矩阵 `run_tests.sh`（`181 PASS / 0 FAIL`）与 `ab_compare.sh` 保持全绿 → 通过
+- **未做及原因（记为"不通过，原因"而不是硬做）**：任务书要求的"新增一个不受 `--super-insn` 控制、默认恒定生效的融合子集"没有实施。要让任何融合默认开启，必须在 `compiler.rs:723/947/1656`（fused 流、词汇表、fv 掩码）与 `template.rs:1439/1649/1741/1754`（`TFV`、`tags[7]`、`e1_e2`、fused trampoline）之外再穿一条 `fuse_default` 门，并推翻 `fuse.rs` 文件头第 1 条写死的"off 态产物字节恒等"不变量，同时让 37 个已提交 `examples/*.v15.luau.lua`、`example.txt`、`v15_fingerprint.py` 的 32 条形态基线全部失效重钉。由于前 8 名里不存在"可融合但尚未融合"的 opcode，预期收益为 0，而回归面覆盖整个 v15 发射器，风险收益不成立，按 0.6 节第 3/4 条的精神如实记为未实施。
+- 本 Task 总结论：通过（最终加入 **0 个** opcode；不是"满额 8 个"，也不是"中途因体积停止"，而是统计上没有可加的候选）
+
+### 自查：Task P2-2（在文档里明确性能使用边界）
+
+- 实施位置：`HANDOFF.md` §18.2
+- 实施方式：按任务书给定结构重写 §18.2，把"历史实测约 1000×–2800×"与"P2-1 优化后融合覆盖部分的实测开销"两处占位替换为真实数字——前者沿用历史口径，后者如实写为"P2-1 加入 0 个 opcode，因此没有融合后数字"，并附上 `bench_presets.sh` 8 语料 × 6 档位的完整实测区间。
+- 验收命令：人工核对。§18.2 内无 `<...>` 占位符；所有数字均来自本轮 `bash engine/tests/bench_presets.sh` 的输出 → 通过
+- 本 Task 总结论：通过
 
 ### P4 强制全量回归汇总
 
