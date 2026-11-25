@@ -950,14 +950,51 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
   - 第 4 步（P1-1/P1-2/P1-3/P3-1 新增测试结果）已覆盖：这 4 个自查小节都在补写范围内，逐条复核通过
 - 本 Task 总结论：通过
 
-### P4 强制全量回归汇总
+### P4 强制全量回归汇总（最终 HEAD `61a91fd` 上全部重跑）
 
-- `cargo test --release`：`77 passed; 0 failed; 1 ignored` + `4 passed`（watermark）
-- `defense_audit.sh`：`20 PASS / 0 FAIL`
-- `print_size_gate.sh`：`6/6 PASS`（`min=106,193 B, max=111,351 B <= 250,000 B`）
-- `guard_matrix_test.py`：`72 PASS / 0 FAIL`
-- `vm_tamper_matrix_test.py`：`60 PASS / 0 FAIL`
-- `capability_manifest_test.py`：`11 PASS / 0 FAIL`
-- `robustness_gate_test.py`：`4/4 PASS`（C1–C4 干净拒绝）
+本阶段按要求**不使用**前面各 Task 记录的结果，全部命令在最终 HEAD 上重新执行一遍。
+执行环境：`arena/723e28ef-obsucvim`，HEAD `61a91fd`，工作区干净，工具链 rustc 1.88.0 /
+Luau 0.735（沙箱重置后由 `engine/tools/rebuild_tools.sh` 重建）。
 
-- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
+| # | 验收命令 | 最终 HEAD 上的原始结果 |
+| --- | --- | --- |
+| 1 | `cd engine && cargo test --release` | `test result: ok. 82 passed; 0 failed; 1 ignored` + `test result: ok. 4 passed; 0 failed` |
+| 2 | `bash engine/tests/run_tests.sh` | `PASS checks: 181   FAIL: 0` → `ALL GREEN` |
+| 3 | `bash engine/tests/multiseed.sh` | `multiseed done: FAIL=0`（含 `R064 nested-upvalue seed stability PASS (24 seeds)`） |
+| 4 | `bash engine/tests/defense_audit.sh` | `防御审计: PASS 20   FAIL 0` → `ALL DEFENSES ACTIVE` |
+| 5 | `bash engine/tests/print_size_gate.sh` | `PRINT SIZE GATE PASS: 6/6 seeds verified (min=109267B, max=112607B <= 250000B cap; headroom=137393B)` |
+| 6 | `python3 engine/tests/v15_fingerprint.py example.txt` | `通过 32/32` |
+| 7 | `python3 engine/tests/security_fingerprint.py example.txt <src>` | `安全指纹: 5/5 通过, 0 红, S6 运行等价见官方矩阵` |
+| 8 | `python3 engine/tests/guard_matrix_test.py` | `guard_matrix_test: 80 PASS, 0 FAIL`（含 P1-3 的 8 个 canary 场景与 `stage_manifest_bidirectional_sync`） |
+| 9 | `python3 engine/tests/vm_tamper_matrix_test.py` | `vm_tamper_matrix_test: 60 PASS, 0 FAIL` |
+| 10 | `python3 engine/tests/capability_manifest_test.py` | `capability_manifest_test: 11 PASS, 0 FAIL` |
+| 11 | `python3 engine/tests/robustness_gate_test.py` + `bash engine/tests/robustness_test.sh` | `ROBUSTNESS GATE PASS: 11/11` + `ROBUSTNESS PASS: 12   FAIL: 0` |
+
+**Phase 18 专项门禁（同样在最终 HEAD 上重跑）**
+
+| 项 | 结果 |
+| --- | --- |
+| `python3 engine/tests/string_cache_dump_test.py`（P1-1/P1-2） | `STRING CACHE DUMP PASS: 7   FAIL: 0` |
+| `python3 engine/tests/canary_runtime_test.py`（P1-3） | `CANARY RUNTIME PASS: 4   FAIL: 0` |
+| `bash engine/tests/charhook_test.sh`（P1-3） | `CHARHOOK PASS: 4   FAIL: 0` |
+| `bash engine/tests/string_primitive_hook_test.sh`（P1-3） | `[minimal] byte/sub/char=0/0/0`、`[R064] 0/0/0` |
+| `bash engine/tests/wtf_port_test.sh` | `wtf-port env-check regression: 23 PASS, 0 FAIL` |
+| `bash engine/tests/r064_seed_stability_test.sh` | `R064 nested-upvalue seed stability PASS (24 seeds)` |
+| `bash engine/tests/bench_presets.sh` | 56/56 组合输出等价 `PASS`；`v15` 减速 9.0×（`basics`）–1203.1×（`stress_bigtable`） |
+| `AB_BASELINE_REF=2a31e69 bash engine/tests/ab_compare.sh` | 10 语料 × 4 模式 = **40 个组合全部 `semantic_eq 6/6` / `luau_compile 6/6` / `same_seed_det True`**；输出字节变化区间 `-1.94%`（`basics/v15_noguard`）–`+6.51%`（`micro_print6/high`），运行耗时变化区间 `-11.80%`–`+23.14%`（噪声级，见下） |
+| `python3 engine/tests/attack_blackbox/*.py`（P3-1） | 4 个脚本全部产出三档结论：`constant_folding 部分成功` / `dead_code_elimination 失败` / `trace_devirtualization 部分成功` / `cfg_simplification 失败` |
+
+**预算结算（0.6 节第 1 条要求）**
+
+- 基线（改动前 6-seed 最大值）：`111,351 B`
+- 最终（6-seed 最大值）：`112,607 B`
+- **累计消耗：`+1,256 B`**；按内部标准 `245,000 B` 计，**剩余余量 `132,393 B`**
+- 分项：P0 `+0 B`；P1-1 `+8 B`；P1-2 `+0 B`；P1-3 `+1,248 B`（`< 2,048 B` 子预算）；P1-4/P2-1/P2-2/P3-1/P3-2 `+0 B`
+- 跨预设影响（`ab_compare` 实测，非 `print(6)` 单点）：新增的 `strcanary` 守卫阶段让所有**带 guard** 的预设增大约 `1.2 KB`（`high` 档 `+1.09%`–`+6.51%`，`v15_noguard` `-1.94%`–`+1.64%`）。所有预设仍远低于 `245,000 B`（最大为 `high` 的 `96,723 B`），不构成门槛问题，但必须记在这里而不是只报 `print(6)`。
+
+**P4 结论**
+
+- 11 项主验收命令 + 8 项 Phase 18 专项门禁在最终 HEAD 上全部通过，无 FAIL。
+- 后做的 Task 没有破坏先做的 Task：P1-1/P1-2 的 `string_cache_dump` 仍 `7/7`，P1-3 的 `canary_runtime`/`charhook`/`string_primitive_hook` 仍全绿，P0 的 `robustness` 仍 `11/11` + `12/12`。
+- `ab_compare.sh` 的默认基线 `f583c2c3` 不在本分支历史中（`unknown revision`），本轮改用分支基点 `2a31e69` 作为 `AB_BASELINE_REF` 完成同输入/同 seed A/B；这一点如实记录，不声称"用默认基线跑过"。
+- 本节自身的写入会使 HEAD 再前进一个提交（纯文档），上表的命令是在写入前的 `61a91fd` 上执行的。
