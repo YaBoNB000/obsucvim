@@ -144,7 +144,7 @@ struct ScatterNoiseStats {
 	decoy_holes: usize,
 }
 
-fn operand_perm_from_code(code: u8) -> [u8; 4] {
+pub(crate) fn operand_perm_from_code(code: u8) -> [u8; 4] {
 	let mut rem = code as usize % 24;
 	let mut pool = vec![0u8, 1, 2, 3];
 	let mut out = [0u8; 4];

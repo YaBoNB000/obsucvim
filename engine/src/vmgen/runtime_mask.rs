@@ -38,11 +38,22 @@ pub struct DecodeContext {
 	/// CCPD entry domain; 0 = explicit default (no edge specialization).
 	pub entry_domain: u16,
 	pub page_epoch: u32,
+	/// CCPD block variant selected for this decode (0 unless CCPD picked
+	/// one). Part of the cache identity, never of the mask inputs beyond
+	/// what the caller folds into `lane_id`/`page_epoch`.
+	pub variant_id: u8,
 }
 
 impl DecodeContext {
 	pub fn new(prototype_id: u32, block_id: u32, lane_id: u8) -> DecodeContext {
-		DecodeContext { prototype_id, block_id, lane_id, entry_domain: 0, page_epoch: 0 }
+		DecodeContext {
+			prototype_id,
+			block_id,
+			lane_id,
+			entry_domain: 0,
+			page_epoch: 0,
+			variant_id: 0,
+		}
 	}
 
 	pub fn with_entry_domain(mut self, entry_domain: u16) -> DecodeContext {
@@ -55,13 +66,22 @@ impl DecodeContext {
 		self
 	}
 
-	/// The cache identity for a decoded page (spec F4).
+	pub fn with_variant_id(mut self, variant_id: u8) -> DecodeContext {
+		self.variant_id = variant_id;
+		self
+	}
+
+	/// The cache identity for a decoded page (spec F4 + CCPD plan
+	/// section 9.2): two pages may share a cache entry only under an
+	/// equal key, and the CCPD variant is part of that identity so
+	/// different encodings of one block can never alias.
 	pub fn cache_key(&self) -> DecodeCacheKey {
 		DecodeCacheKey {
 			prototype_id: self.prototype_id,
 			block_id: self.block_id,
 			entry_domain: self.entry_domain,
 			page_epoch: self.page_epoch,
+			variant_id: self.variant_id,
 		}
 	}
 }
@@ -72,23 +92,114 @@ pub struct DecodeCacheKey {
 	pub block_id: u32,
 	pub entry_domain: u16,
 	pub page_epoch: u32,
+	pub variant_id: u8,
+}
+
+/// `(s * m) % 2^28` with an exact intermediate: `s < 2^28` and
+/// `m < 2^32` keep the product below 2^60 in u64. The Luau mirror splits
+/// `s` into 14-bit halves so every intermediate stays below 2^46 and is
+/// exact in f64; both sides therefore agree bit-for-bit.
+pub fn mul_mod_28(s: u32, m: u32) -> u32 {
+	((s as u64 * m as u64) % MASK_MOD as u64) as u32
+}
+
+fn mix28(s: u32, v: u32) -> u32 {
+	(s.wrapping_mul(31).wrapping_add(v % MASK_MOD)) % MASK_MOD
+}
+
+/// Float-exact avalanche: multiply/add/mod only, no xor-shift, so a Luau
+/// mirror using plain number arithmetic reproduces it exactly.
+fn avalanche28(mut s: u32) -> u32 {
+	// Domain separator keeps the all-zero context from collapsing to a
+	// zero mask (it is a diversity derivation, not a key, but a constant
+	// zero output would silently erase per-context separation).
+	s = (s + 0x9e37_79b9 % MASK_MOD) % MASK_MOD;
+	s = mul_mod_28(s, 0x5bd1_e995);
+	s = (s + (s >> 13).wrapping_mul(40_503)) % MASK_MOD;
+	s = mul_mod_28(s, 0x85eb_ca6b);
+	s
 }
 
 /// Derive the per-page mask state from the build nonce and context.
 /// Wrapping, fixed-width, float-safe steps only (see module docs).
 pub fn derive_mask(build_nonce: u32, ctx: &DecodeContext) -> u32 {
 	let mut s = build_nonce % MASK_MOD;
-	s = (s.wrapping_mul(31).wrapping_add(ctx.prototype_id % MASK_MOD)) % MASK_MOD;
-	s = (s.wrapping_mul(31).wrapping_add(ctx.block_id % MASK_MOD)) % MASK_MOD;
+	s = mix28(s, ctx.prototype_id);
+	s = mix28(s, ctx.block_id);
 	s = (s.wrapping_mul(31).wrapping_add(ctx.lane_id as u32)) % MASK_MOD;
 	s = (s.wrapping_mul(31).wrapping_add(ctx.entry_domain as u32)) % MASK_MOD;
-	s = (s.wrapping_mul(31).wrapping_add(ctx.page_epoch % MASK_MOD)) % MASK_MOD;
-	// Final avalanche inside the 28-bit state (xor-shift is exact in both
-	// Rust and Luau bit32/number semantics at this width).
-	s ^= s >> 13;
-	s = s.wrapping_mul(0x5bd1_e995) % MASK_MOD;
-	s ^= s >> 15;
-	s
+	s = mix28(s, ctx.page_epoch);
+	avalanche28(s)
+}
+
+/// CCPD variant selector (spec: rebased CCPD plan sections 2.3 / 9.1).
+/// Picks one of `CCPD_VARIANTS` encodings of a block from the frame
+/// context, the incoming edge, the block id and the per-frame block
+/// visit ordinal. This is a stable diversity function, not a PRF; the
+/// Luau mirror in `template.rs` must stay bit-exact with this body.
+pub fn derive_variant_id(
+	frame_context: u32,
+	incoming_edge: u32,
+	block_id: u32,
+	visit_ordinal: u32,
+	build_salt: u32,
+) -> u8 {
+	let mut s = build_salt % MASK_MOD;
+	s = mix28(s, frame_context);
+	s = mix28(s, incoming_edge);
+	s = mix28(s, block_id);
+	s = mix28(s, visit_ordinal);
+	(avalanche28(s) % super::ccpd::CCPD_VARIANTS as u32) as u8
+}
+
+/// Root frame context for the main chunk (CCPD plan section 5.6).
+pub fn derive_root_context(build_salt: u32, prototype_id: u32) -> u32 {
+	let mut s = build_salt % MASK_MOD;
+	s = mix28(s, prototype_id);
+	s = mix28(s, EntryTransition::Fallthrough.id() as u32);
+	avalanche28(s)
+}
+
+/// Immutable closure-origin token (CCPD plan section 5.3). Pure function
+/// of the creation-site context; the returned Lua closure captures only
+/// this scalar, never the parent frame table.
+#[allow(clippy::too_many_arguments)]
+pub fn derive_closure_origin(
+	parent_frame_ctx: u32,
+	parent_edge_id: u32,
+	parent_block_id: u32,
+	parent_proto_id: u32,
+	site_pc: u32,
+	creation_ordinal: u32,
+	child_proto_id: u32,
+	build_salt: u32,
+) -> u32 {
+	let mut s = build_salt % MASK_MOD;
+	s = mix28(s, parent_frame_ctx);
+	s = mix28(s, parent_edge_id);
+	s = mix28(s, parent_block_id);
+	s = mix28(s, parent_proto_id);
+	s = mix28(s, site_pc);
+	s = mix28(s, creation_ordinal);
+	s = mix28(s, child_proto_id);
+	s = mix28(s, EntryTransition::ClosureInvocation.id() as u32);
+	avalanche28(s)
+}
+
+/// Per-invocation frame context for one closure instance (CCPD plan
+/// section 5.5): the same closure instance derives a fresh context on
+/// every call from its own call ordinal.
+pub fn derive_invocation_context(
+	origin_token: u32,
+	call_ordinal: u32,
+	child_proto_id: u32,
+	build_salt: u32,
+) -> u32 {
+	let mut s = build_salt % MASK_MOD;
+	s = mix28(s, origin_token);
+	s = mix28(s, call_ordinal);
+	s = mix28(s, child_proto_id);
+	avalanche28(s)
 }
 
 /// CCPD (spec section 7) interface — types and contracts only.
@@ -243,6 +354,57 @@ mod tests {
 	}
 
 	#[test]
+	fn cache_key_distinguishes_variant() {
+		let a = DecodeContext::new(1, 2, 0).cache_key();
+		assert_ne!(a, DecodeContext::new(1, 2, 0).with_variant_id(1).cache_key());
+		assert_eq!(
+			a,
+			DecodeContext::new(1, 2, 0).with_variant_id(0).cache_key(),
+			"variant 0 is the explicit default identity"
+		);
+	}
+
+	#[test]
+	fn variant_selector_is_bounded_deterministic_and_sensitive() {
+		for salt in [0u32, 1, 42, 268_435_455] {
+			for visit in 0..16u32 {
+				let v = derive_variant_id(0x1234, 5, 3, visit, salt);
+				assert!(v < super::super::ccpd::CCPD_VARIANTS, "variant in [0,4)");
+				assert_eq!(v, derive_variant_id(0x1234, 5, 3, visit, salt), "deterministic");
+			}
+		}
+		// Every input must be able to move the selection somewhere in
+		// the swept neighbourhood (no input is silently ignored).
+		let base = derive_variant_id(100, 2, 3, 4, 777);
+		let mut seen = std::collections::HashSet::new();
+		for dv in 0..64u32 {
+			seen.insert(derive_variant_id(100 + dv, 2, 3, 4, 777));
+			seen.insert(derive_variant_id(100, 2 + dv, 3, 4, 777));
+			seen.insert(derive_variant_id(100, 2, 3 + dv, 4, 777));
+			seen.insert(derive_variant_id(100, 2, 3, 4 + dv, 777));
+			seen.insert(derive_variant_id(100, 2, 3, 4, 777 + dv));
+		}
+		assert!(seen.len() > 1, "selector must not be constant over input sweeps");
+		let _ = base;
+	}
+
+	#[test]
+	fn context_derivations_are_stable_and_distinct() {
+		let root = derive_root_context(42, 3);
+		assert_eq!(root, derive_root_context(42, 3));
+		assert_ne!(root, derive_root_context(42, 4));
+		assert_ne!(root, derive_root_context(43, 3));
+		assert!(root < MASK_MOD);
+		let o1 = derive_closure_origin(11, 2, 1, 3, 9, 1, 4, 42);
+		let o2 = derive_closure_origin(11, 2, 1, 3, 9, 2, 4, 42);
+		assert_ne!(o1, o2, "creation ordinal separates instances from one site");
+		let i1 = derive_invocation_context(o1, 1, 4, 42);
+		let i2 = derive_invocation_context(o1, 2, 4, 42);
+		assert_ne!(i1, i2, "call ordinal rotates the invocation context");
+		assert!(i1 < MASK_MOD && i2 < MASK_MOD);
+	}
+
+	#[test]
 	fn page_state_machine_is_fail_closed() {
 		assert!(PageState::Encoded.can_transition_to(PageState::Decoding));
 		assert!(PageState::Decoding.can_transition_to(PageState::Verified));
@@ -253,5 +415,37 @@ mod tests {
 		assert!(PageState::Verified.is_executable());
 		assert!(!PageState::Failed.is_executable());
 		assert!(!PageState::Encoded.is_executable());
+	}
+}
+
+#[cfg(test)]
+mod pinned_vectors {
+	use super::*;
+
+	/// Pinned mirror vectors: the Luau mirrors of `derive_mask` /
+	/// `derive_variant_id` in `template.rs` (and their reimplementation
+	/// in `tests/ccpd_mirror_test.py`) must reproduce these exact
+	/// numbers; if an algorithm here ever changes on purpose, update
+	/// all three places together.
+	#[test]
+	fn derive_mask_pinned_vectors() {
+		let cases = [
+			(42u32, 3u32, 7u32, 2u8, 5u16, 9u32, 129_762_251u32),
+			(0, 0, 0, 0, 0, 0, 250_714_540),
+			(268_435_455, 65_535, 65_535, 255, 65_535, 4_294_967_295, 148_471_878),
+			(777, 12, 34, 4, 513, 99_991, 68_024_606),
+		];
+		for (nonce, p, b, l, d, e, want) in cases {
+			let ctx = DecodeContext::new(p, b, l).with_entry_domain(d).with_page_epoch(e);
+			assert_eq!(derive_mask(nonce, &ctx), want, "mask vector {nonce},{p},{b},{l},{d},{e}");
+		}
+		assert_eq!(
+			derive_variant_id(123_456, 5, 3, 7, 42),
+			2,
+			"variant selector vector"
+		);
+		assert_eq!(derive_root_context(42, 3), 62_904_812);
+		assert_eq!(derive_closure_origin(11, 2, 1, 3, 9, 1, 4, 42), 194_110_675);
+		assert_eq!(derive_invocation_context(12_345, 7, 4, 42), 142_615_952);
 	}
 }
