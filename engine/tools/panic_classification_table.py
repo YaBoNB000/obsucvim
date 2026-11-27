@@ -17,6 +17,7 @@ PLAN = re.compile(r"\.unwrap\(\)|\.expect\(|panic!")
 # (file regex, line-content regex, basis) -- content is matched against the
 # site line plus the two following lines so multi-line assert!(...) matches.
 B = [
+    (r"template\.rs", r"enabled primitives must hold unique in-range API slots", "内部不变量：api_slots::assign_slots 从 1..=80 池无放回抽取（shuffle 后取前 COUNT 个），enabled 原语槽位必然唯一且在界内；validate_layout 的 expect 仅钉住契约，防未来编辑破坏抽取方式"),
     (r"lazy_fields\.rs", r"resolved field carries a value", "内部不变量：status==Resolved 时 value 必为 Some（resolve() 在置 Resolved 的同一代码路径写入，含 nil sentinel 的 Some(Nil) 情形）"),
     (r"lazy_fields\.rs", r"entry registered above", "内部不变量：resolve() 先 get 检查注册状态，get_mut 前 key 必存在（register 插入、状态机不删除）"),
     (r"state_machine\.rs", r"SCC stack non-empty by construction", "内部不变量：Tarjan 算法只弹自己压入的节点，low==index 时栈必非空"),

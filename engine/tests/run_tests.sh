@@ -212,6 +212,16 @@ if ! python3 "$ROOT/tests/canary_runtime_test.py"; then
 	fail=$((fail + 1)); failed+=("p1/canary-runtime")
 fi
 
+# Phase G (spec section 6/G4): API capability slots + staged closures.
+# Entry closures survive being stored and called after their parent
+# returned, coroutine resume continues execution, slot remapping across
+# builds changes bytes but not behavior, and a host missing a required
+# API fails deterministically.
+if ! python3 "$ROOT/tests/phase_g_api_test.py"; then
+	echo "FAIL [phase-g-api] API slots / staged closure runtime"
+	fail=$((fail + 1)); failed+=("phase-g/api")
+fi
+
 # R064 nested upvalues crossed parent/child scatter permutations used to map
 # a child capture to the wrong parent upvalue. Recheck the full handoff canary
 # on historical failure seeds (plus passing neighbors).

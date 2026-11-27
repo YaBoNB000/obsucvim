@@ -1,4 +1,5 @@
 
+pub mod api_slots;
 pub mod caps;
 pub mod compiler;
 pub mod dispatch_tree;

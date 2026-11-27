@@ -22,14 +22,6 @@ fn lua_dstr(bytes: &[u8]) -> String {
 	s
 }
 
-fn prim_slots(rng: &mut Rng) -> [u8; VmPrim::COUNT] {
-	let mut pool: Vec<u8> = (1..=80).collect();
-	rng.shuffle(&mut pool);
-	let mut out = [0u8; VmPrim::COUNT];
-	out.copy_from_slice(&pool[..VmPrim::COUNT]);
-	out
-}
-
 fn obf_num(n: u64, rng: &mut Rng) -> String {
 let x = rng.int(0, 1_099_511_627_775) as i64;
 	let y = rng.int(0, 1_099_511_627_775) as i64;
@@ -1842,10 +1834,16 @@ __FVARM__        else
 		pos_of[op_idx as usize] = sl as u8 + 1;
 	}
 
-	let slots = prim_slots(rng);
+	let slots = super::api_slots::assign_slots(rng);
 	let prim_enabled = |prim: VmPrim| -> bool {
 		caps.prim_enabled_in_template(prim, v15, luau_target)
 	};
+	// Phase G1: an enabled primitive without a unique slot would surface
+	// as a stray nil call inside the artifact; fail at generation time.
+	// (Unreachable by construction - assign_slots draws without
+	// replacement - this pins the contract against future edits.)
+	super::api_slots::validate_layout(&slots, &prim_enabled)
+		.expect("enabled primitives must hold unique in-range API slots");
 	let mut bind_idx: Vec<usize> = (0..VmPrim::COUNT).collect();
 	rng.shuffle(&mut bind_idx);
 	let mut p_fill = String::from("local P = {}\n");

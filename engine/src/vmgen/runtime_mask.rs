@@ -91,6 +91,66 @@ pub fn derive_mask(build_nonce: u32, ctx: &DecodeContext) -> u32 {
 	s
 }
 
+/// CCPD (spec section 7) interface — types and contracts only.
+///
+/// Call-Chain Coupled Path-State Decoding would give every CFG
+/// incoming edge a stable `EdgeId`, allocate a `ClosureEntryDomain`
+/// per closure creation site, and let `DecodeContext::entry_domain`
+/// select per-entry encodings of a block. **None of that variant
+/// emission is implemented**: no block is currently encoded more than
+/// once, no branch handler writes an edge id, and every emitted
+/// context carries `DEFAULT_ENTRY_DOMAIN`. What exists is the seam a
+/// future implementation must plug into without breaking caches:
+///
+/// - `DecodeContext.entry_domain` is already part of `derive_mask`
+///   and of `DecodeCacheKey`, so per-domain variants can never alias
+///   the domain-0 cache entries used today (spec section 7 item 6).
+/// - Missing/legacy data maps to `DEFAULT_ENTRY_DOMAIN` explicitly,
+///   never to a guessed value (spec section 7 item 10).
+/// - `EntryTransition` enumerates the control-flow events whose
+///   handlers would have to publish the incoming edge (spec item 8);
+///   the ids are stable so a serialized form can rely on them.
+///
+/// An `EdgeId` is a context label, not key material (spec section 7):
+/// treat domain separation as analysis-cost diversity only.
+pub const DEFAULT_ENTRY_DOMAIN: u16 = 0;
+
+/// Stable identity of one CFG incoming edge within a prototype.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct EdgeId(pub u32);
+
+/// Control-flow events that transfer execution into a block and would
+/// carry the incoming `EdgeId` under a CCPD implementation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryTransition {
+	Fallthrough,
+	ConditionalJump,
+	LoopBackedge,
+	Exception,
+	Return,
+	CoroutineResume,
+	HostCallback,
+	ClosureInvocation,
+}
+
+impl EntryTransition {
+	pub const ALL: [EntryTransition; 8] = [
+		EntryTransition::Fallthrough,
+		EntryTransition::ConditionalJump,
+		EntryTransition::LoopBackedge,
+		EntryTransition::Exception,
+		EntryTransition::Return,
+		EntryTransition::CoroutineResume,
+		EntryTransition::HostCallback,
+		EntryTransition::ClosureInvocation,
+	];
+
+	/// Stable serialized id (declaration order); never renumber.
+	pub const fn id(self) -> u16 {
+		self as u16
+	}
+}
+
 /// Page integrity state (spec F5/F6): a page is executed only from
 /// `Verified`; any other state fails closed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -159,6 +219,27 @@ mod tests {
 		assert_ne!(a, DecodeContext::new(1, 2, 0).with_page_epoch(7).cache_key());
 		// Lane is a mask input, not page identity.
 		assert_eq!(a, DecodeContext::new(1, 2, 3).cache_key());
+	}
+
+	#[test]
+	fn ccpd_interface_defaults_and_domain_scoped_keys() {
+		// No edge specialization anywhere yet: the only domain in use
+		// is the explicit default, never a guessed value.
+		let ctx = DecodeContext::new(9, 4, 1);
+		assert_eq!(ctx.entry_domain, DEFAULT_ENTRY_DOMAIN);
+		assert_eq!(ctx.cache_key().entry_domain, DEFAULT_ENTRY_DOMAIN);
+		// All eight spec transitions own a stable, unique id.
+		let mut ids: Vec<u16> = EntryTransition::ALL.iter().map(|t| t.id()).collect();
+		ids.sort_unstable();
+		ids.dedup();
+		assert_eq!(ids.len(), EntryTransition::ALL.len());
+		assert_eq!(EntryTransition::Fallthrough.id(), 0);
+		// A future variant-emitting decoder can key caches per domain
+		// without aliasing today's domain-0 pages.
+		assert_ne!(
+			ctx.cache_key(),
+			ctx.with_entry_domain(DEFAULT_ENTRY_DOMAIN + 1).cache_key()
+		);
 	}
 
 	#[test]

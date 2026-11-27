@@ -129,8 +129,14 @@
    `entry_domain` 显式默认 0（无 CCPD 来源，不伪造 edge id）；不改 `bdec`
    的既有掩码公式（其 fi/bi/er 已提供同类上下文，改动收益/风险不成比例，
    记入审查报告）。
-6. **Phase G**：API slot 与分阶段装载已 EXISTS（见上），本轮不重复实现；
-   在审查报告中如实标注。
+6. **Phase G（复用 + 补缺口）**：API slot 与分阶段装载已 EXISTS（见上），
+   不重复实现。补的缺口：`prim_slots` 抽成 `api_slots.rs` 显式模块
+   （allowlist 契约、每构建洗牌、唯一性校验 + 单测；调用点/ rng 顺序
+   不变，产物字节中立）；G4 运行时矩阵落为
+   `engine/tests/phase_g_api_test.py` 并挂入 `run_tests.sh`（entry
+   closure 多次调用/父返回后延迟调用/coroutine resume/槽位重映射
+   字节变而行为一致/缺失 API 确定性失败）；CCPD 只落
+   `runtime_mask.rs` 的显式接口（见上表），不产出变体。
 
 退出条件核对：差异矩阵完成；新增能力均为上表 PARTIAL/MISSING 项；
 未重复实现 block-lazy、SoA、string sealing。
