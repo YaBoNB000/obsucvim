@@ -45,6 +45,7 @@ dialect: &'static str,
 	bind_env: Option<String>,
 	env_check: bool,
 	super_insn: bool,
+	proto_layout: bool,
 	polymorphic_vm: bool,
 	encrypt_consts: bool,
 	integrity_checks: bool,
@@ -185,6 +186,9 @@ Options:
                          仅 --preset v15）：按每个函数的指令流数据统计/选择
                          top-4 白名单相邻对，塌缩为 fused 记录（trampoline
                          经 pf.fv 现解本函数词汇，tail-less 双段连跑）。
+  --proto-layout         每-prototype 字段布局随机化（默认开）：每个函数的
+                         section tag 映射独立洗牌；--no-proto-layout 关闭
+                         （全函数共享同一布局，旧行为）。
   -h, --help             show this help
   --version              show version
 ",
@@ -215,6 +219,7 @@ fn main() -> ExitCode {
 		bind_env: None,
 		env_check: false,
 		super_insn: false,
+		proto_layout: true,
 		polymorphic_vm: false,
 		encrypt_consts: false,
 		integrity_checks: true,
@@ -319,6 +324,8 @@ fn main() -> ExitCode {
 			}
 			"--env-check" => opts.env_check = true,
 			"--super-insn" => opts.super_insn = true,
+			"--proto-layout" => opts.proto_layout = true,
+			"--no-proto-layout" => opts.proto_layout = false,
 			"--polymorphic-vm" => {
 				opts.polymorphic_vm = true;
 				opts.super_insn = true;
@@ -455,6 +462,7 @@ s if s.starts_with('-') => {
 					opts.do_v15,
 					opts.super_insn,
 					opts.do_guard,
+					opts.proto_layout,
 				);
 			let caps = vmgen::caps::CapabilityManifest::from_program(
 				&program,
@@ -499,7 +507,7 @@ s if s.starts_with('-') => {
 					program.blob_seed,
 					program.blob_step,
 				),
-				program.section_tags,
+				&program.proto_layouts.iter().map(|l| l.as_tags()).collect::<Vec<_>>(),
 				program.consts_mask_safe,
 				&program.block_starts,
 				&program.s_indices,
@@ -611,6 +619,7 @@ let kg = slot_pool[3];
 					&kfrag,
 					&st_slots,
 					&ttable.globals,
+					opts.do_guard,
 				);
 				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);

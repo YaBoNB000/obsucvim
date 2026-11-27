@@ -153,7 +153,7 @@ def swap_two_words_in_longstr(full_txt: str, body_start: int, body_end: int, wor
     return mutated, p1, w1, w2
 
 
-def build_mutations_for_artifact(art_txt: str, seed: int) -> list[dict]:
+def build_mutations_for_artifact(art_txt: str, seed: int, expected_out: str = "") -> list[dict]:
     cases: list[dict] = []
 
     def add(case_id: str, surface: str, expected_group: str, pos: int, orig: str, repl: str, mutated: str, note: str = ""):
@@ -363,11 +363,43 @@ def build_mutations_for_artifact(art_txt: str, seed: int) -> list[dict]:
     )
 
     # 4c. Outer v15 staging chunk-loader state transition `C[idx]=...;return <state>,C,...`
-    m_stg = re.search(r"((\w+)\[\d+\]=[^;]+;return )(\d+)(,\2(?:,\w+){4,8} end)", art_txt)
-    if not m_stg:
+    # The scaffold also emits inert decoy staging fields with the same textual
+    # shape; field order is shuffled per build, so "first regex match" is not
+    # necessarily on the execution path. Select the first match whose
+    # perturbation is actually rejected (trial-run), keeping the assertion
+    # itself unchanged: a *live* staging state perturbation must not execute
+    # cleanly. If every match were inert, raise instead of weakening the case.
+    staging_matches = list(
+        re.finditer(r"((\w+)\[\d+\]=[^;]+;return )(\d+)(,\2(?:,\w+){4,8} end)", art_txt)
+    )
+    if not staging_matches:
         raise RuntimeError(f"seed={seed}: cannot locate outer v15 chunk-staging return")
-    old_st = int(m_stg.group(3))
-    new_st = old_st + 1 if old_st < 230 else old_st - 1
+    chosen = None
+    for m_stg in staging_matches:
+        old_st = int(m_stg.group(3))
+        new_st = old_st + 1 if old_st < 230 else old_st - 1
+        mutated = art_txt[: m_stg.start(3)] + str(new_st) + art_txt[m_stg.end(3) :]
+        if not expected_out:
+            chosen = (m_stg, new_st, mutated)
+            break
+        with tempfile.TemporaryDirectory(prefix="vm_tamper_probe_") as ptd:
+            probe = Path(ptd) / "probe.lua"
+            probe.write_text(mutated)
+            try:
+                run = subprocess.run(
+                    [str(LUAU), str(probe)],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    timeout=3.5,
+                )
+                inert = run.returncode == 0 and run.stdout.strip() == expected_out
+            except subprocess.TimeoutExpired:
+                inert = False
+        if not inert:
+            chosen = (m_stg, new_st, mutated)
+            break
+    if chosen is None:
+        raise RuntimeError(f"seed={seed}: all staging-state matches are inert decoys")
+    m_stg, new_st, mutated_stg = chosen
     add(
         "outer_staging_dispatch_state_perturb",
         "dispatch_and_micro_wrapper",
@@ -375,7 +407,7 @@ def build_mutations_for_artifact(art_txt: str, seed: int) -> list[dict]:
         m_stg.start(3),
         m_stg.group(0)[-48:],
         f"{new_st}{m_stg.group(4)}",
-        art_txt[: m_stg.start(3)] + str(new_st) + art_txt[m_stg.end(3) :],
+        mutated_stg,
         "perturb live outer v15 staging state transition ID",
     )
 
@@ -619,7 +651,7 @@ def main() -> int:
                 ],
                 check=True,
             )
-            all_items.extend(build_mutations_for_artifact(art_path.read_text(), s))
+            all_items.extend(build_mutations_for_artifact(art_path.read_text(), s, expected_out))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda it: evaluate_case(tmp, expected_out, it), all_items))

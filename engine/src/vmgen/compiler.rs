@@ -39,7 +39,8 @@ pub struct VmProgram {
 	pub blob_kc: u32,
 	pub blob_seed: u32,
 	pub blob_step: u32,
-	pub section_tags: [u8; 8],
+	/// Phase B: per-prototype field layouts (index = fn slot, incl. main at fns.len()).
+	pub proto_layouts: Vec<super::proto_layout::ProtoFieldLayout>,
 	pub operand_sums: Vec<u64>,
 	pub operand_sums2: Vec<u64>,
 	pub chaff_folds: Vec<u16>,
@@ -980,7 +981,7 @@ impl<'a> Ctx<'a> {
 			self.program.fv_sets[fn_index] = fv_vocab.clone();
 		}
 		self.rng.shuffle(&mut secs);
-		let tags = &self.program.section_tags;
+		let tags = self.program.proto_layouts[fn_index].as_tags();
 		let mut blob: Vec<u8> = Vec::with_capacity(self.code.len() * 6 + 96);
 		for (id, body) in &secs {
 			assert_ne!(*id, 6, "unread padding sections must not be emitted");
@@ -1644,6 +1645,7 @@ fn compile_chunk(
 	scatter: bool,
 	super_insn: bool,
 	canary: bool,
+	proto_layout: bool,
 ) -> VmProgram {
 	let str_clearable = crate::vmgen::strseal::sealed_clearable(block);
 	let total = count_fns_count(block);
@@ -1660,10 +1662,19 @@ fn compile_chunk(
 	let blob_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 	let blob_seed = rng.int(1_048_576, 268_435_455) as u32;
 	let blob_step = rng.int(1_048_576, 268_435_455) as u32;
-	let mut tag_pool: Vec<u8> = (1..=250).collect();
-	rng.shuffle(&mut tag_pool);
-	// invariant: tag_pool is a fixed 8-element array of static section tags
-	let section_tags: [u8; 8] = tag_pool[..8].try_into().unwrap();
+	// Phase B: per-prototype field layouts (`total` child functions plus the
+	// main chunk at index `total`). Disabled => one shared layout (legacy).
+	// Layout randomness comes from a domain-separated stream derived from
+	// the blob parameters (same pattern as chaff_rng below): toggling or
+	// resizing layouts must not perturb the main rng stream, so every other
+	// subsystem keeps its baseline draw sequence for a given seed.
+	let layout_seed = (blob_seed as u64)
+		^ (blob_step as u64).rotate_left(29)
+		^ (ck_kc as u64).rotate_left(11)
+		^ 0x4C41_5954_4F55_5431; // "LAYOUT1" domain separator
+	let mut layout_rng = Rng::new(layout_seed);
+	let proto_layouts =
+		super::proto_layout::program_layouts(&mut layout_rng, total + 1, proto_layout);
 	// V17 P1-b：fv 掩码常量——门控于 super_insn，off 态不消耗 rng（字节恒等前提）。
 	let (fv_m1, fv_mc) = if super_insn {
 		((rng.int(1, 65535) | 1) as u16, rng.int(1, 65535) as u16)
@@ -1721,7 +1732,7 @@ fn compile_chunk(
 		blob_kc,
 		blob_seed,
 		blob_step,
-		section_tags,
+		proto_layouts,
 		consts_mask_safe: true,
 		used_ops: [false; isa::N_OPS],
 		op_hist: [0; isa::N_OPS],
@@ -3085,8 +3096,9 @@ pub fn compile(
 	scatter: bool,
 	super_insn: bool,
 	canary: bool,
+	proto_layout: bool,
 ) -> VmProgram {
-	compile_chunk(block, table, rng, lua51, scatter, super_insn, canary)
+	compile_chunk(block, table, rng, lua51, scatter, super_insn, canary, proto_layout)
 }
 
 #[cfg(test)]
@@ -3138,10 +3150,9 @@ mod dbg {
 		while p < blob.len() {
 			let tag = blob[p];
 			p += 1;
-			let id = program
-				.section_tags
-				.iter()
-				.position(|&candidate| candidate == tag)
+			let id = program.proto_layouts[fi]
+				.field_of(tag)
+				.map(|f| f.id() as usize)
 				.expect("known section tag");
 			assert_ne!(id, 6, "unread padding sections must not be emitted");
 			seen.push(id);
@@ -3204,7 +3215,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(4242);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, false);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, false, true);
 		assert!(prog.fv_sets.iter().any(|v| !v.is_empty()), "super on: vocab must be non-empty here");
 		for (fi, _) in prog.fns.iter().enumerate() {
 			let walk = section_walk(&prog, fi.min(prog.fns.len() - 1));
@@ -3228,10 +3239,9 @@ mod dbg {
 		while p < blob.len() {
 			let tag = blob[p];
 			p += 1;
-			let id = program
-				.section_tags
-				.iter()
-				.position(|&candidate| candidate == tag)
+			let id = program.proto_layouts[fi]
+				.field_of(tag)
+				.map(|f| f.id() as usize)
 				.expect("known section tag");
 			match id {
 				0 => {
@@ -3346,7 +3356,7 @@ mod dbg {
 		};
 		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
 		let mut rng = crate::rng::Rng::new(77);
-		let program = compile_chunk(&block, &table, &mut rng, false, true, false, false);
+		let program = compile_chunk(&block, &table, &mut rng, false, true, false, false, true);
 		assert!(program.has_loadstr);
 		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
 		assert!(strings.iter().any(|s| s == &expected_cipher));
@@ -3409,7 +3419,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, false);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, false, true);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -3519,9 +3529,9 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(7);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, false);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, false, true);
 		let mut saw_scattered_operand = false;
-		let tags = &prog.section_tags;
+		let tags = &prog.proto_layouts;
 		for (fi, b) in prog.fns.iter().enumerate() {
 			let base = (prog.blob_seed as u64 + fi as u64 * prog.blob_step as u64) % 268_435_456;
 			let ksplit = b.len().min(64);
@@ -3551,6 +3561,7 @@ mod dbg {
 			let mut ncode = 0usize;
 			let mut streams = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 			let mut got = 0;
+			let tags = tags[fi].as_tags();
 			while got < 6 {
 				let tag = buf[p];
 				p += 1;
@@ -3837,7 +3848,7 @@ print(lf(), a(), obj.f(), obj:m(7)(), r, i, z, acc, e, m, q(), o()()(), s)
 		let table = symtab::resolve(&mut block);
 		strseal::seal_literals(&mut block, &mut Rng::new(4242));
 		let counted = count_fns_count(&block);
-		let program = compile(&block, &table, &mut Rng::new(42), false, true, false, true);
+		let program = compile(&block, &table, &mut Rng::new(42), false, true, false, true, true);
 		(counted, program.fns.len() - 1)
 	}
 
@@ -3875,3 +3886,4 @@ print(lf(), a(), obj.f(), obj:m(7)(), r, i, z, acc, e, m, q(), o()()(), s)
 		assert!(parser::parse("while true do local f = function() return 1 end f() break end", true).is_ok());
 	}
 }
+

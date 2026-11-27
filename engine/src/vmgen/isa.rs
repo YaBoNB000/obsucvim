@@ -196,16 +196,19 @@ impl OpMap {
 		self.to_wire[s_idx][op_index(op)]
 	}
 
-	/// V17 P1-b：fused trampoline 码位 = 方言 base + 44 + k。
-	/// （per-dialect 区间 64 码位：基础 43 + nop_alias 1 → 空闲 [base+44, base+64) 共 20。）
+	/// V17 P1-b：fused trampoline 码位 = 方言 base + 48 + k。
+	/// （per-dialect 区间 64 码位：基础 op 至多 44（base+0..43）+ nop_alias
+	/// 至多 base+44（active_count=44 时）→ tramp 占 [base+48, base+52)，
+	/// 与 alias 恒不相交；旧布局 base+44+k 在 active_count=44 时与
+	/// nop_alias 同槽，tramp(0) 被 hw_expand 的 alias 拷贝静默覆盖。）
 	pub fn fused_tramp_code(s_idx: usize, k: usize) -> u8 {
-		(s_idx * 64 + 44 + k) as u8
+		(s_idx * 64 + 48 + k) as u8
 	}
 
-	/// V17 P1-b：tail-less 融合件 handler 码位 = 方言 base + 48 + j，
+	/// V17 P1-b：tail-less 融合件 handler 码位 = 方言 base + 52 + j，
 	/// j 为 FUSE_TAIL_OPS 内序号（不带 chain_epilogue 的版本，专供 trampoline 内嵌调用）。
 	pub fn fused_tail_code(s_idx: usize, j: usize) -> u8 {
-		(s_idx * 64 + 48 + j) as u8
+		(s_idx * 64 + 52 + j) as u8
 	}
 
 	pub fn codes_text(&self) -> String {

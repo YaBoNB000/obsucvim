@@ -17,6 +17,9 @@ PLAN = re.compile(r"\.unwrap\(\)|\.expect\(|panic!")
 # (file regex, line-content regex, basis) -- content is matched against the
 # site line plus the two following lines so multi-line assert!(...) matches.
 B = [
+    (r"lazy_fields\.rs", r"resolved field carries a value", "内部不变量：status==Resolved 时 value 必为 Some（resolve() 在置 Resolved 的同一代码路径写入，含 nil sentinel 的 Some(Nil) 情形）"),
+    (r"lazy_fields\.rs", r"entry registered above", "内部不变量：resolve() 先 get 检查注册状态，get_mut 前 key 必存在（register 插入、状态机不删除）"),
+    (r"state_machine\.rs", r"SCC stack non-empty by construction", "内部不变量：Tarjan 算法只弹自己压入的节点，low==index 时栈必非空"),
     (r"flatten\.rs", r"assert!\(ctx\.inner, \"break", "内部不变量：parser.rs stat() 在 loops==0 时拒绝，funcbody 把 loops 清零后再解析函数体（P4 审查修复），Break 只会出现在循环上下文"),
     (r"flatten\.rs", r"assert!\(ctx\.inner, \"continue", "内部不变量：同上（continue）"),
     (r"flatten\.rs", r"make_loop called on a non-loop", "内部不变量：make_loop 只由 Stmt::While/Repeat/ForNum/ForGen 分支调用"),

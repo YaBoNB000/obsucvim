@@ -585,14 +585,14 @@ mod tests {
 		let mut block = parser::parse(src, true).expect("parse luau");
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(seed);
-		super::super::compiler::compile(&block, &table, &mut rng, false, scatter, false, false)
+		super::super::compiler::compile(&block, &table, &mut rng, false, scatter, false, false, true)
 	}
 
 	fn emit_template_for(src: &str, seed: u64, v15: bool, luau: bool, guard: bool) -> String {
 		let mut block = parser::parse(src, luau).expect("parse");
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(seed);
-		let prog = super::super::compiler::compile(&block, &table, &mut rng, !luau, v15, false, guard);
+		let prog = super::super::compiler::compile(&block, &table, &mut rng, !luau, v15, false, guard, true);
 		let caps = CapabilityManifest::from_program(&prog, guard, false, None);
 		let carrier_lengths: Vec<usize> = prog
 			.fns
@@ -619,7 +619,7 @@ mod tests {
 			(prog.ck_km, prog.ck_kc),
 			(prog.mk1, prog.mk2),
 			(prog.blob_km, prog.blob_kc, prog.blob_seed, prog.blob_step),
-			prog.section_tags,
+			&prog.proto_layouts.iter().map(|l| l.as_tags()).collect::<Vec<_>>(),
 			prog.consts_mask_safe,
 			&prog.block_starts,
 			&prog.s_indices,
@@ -725,3 +725,4 @@ mod tests {
 		let _ = parser::parse(&t_lua51, false).expect("t_lua51 parses as valid Lua 5.1");
 	}
 }
+

@@ -629,6 +629,7 @@ pub fn scaffold(
 	kfrag: &[i64],
 	st_slots: &[i64],
 	interp_globals: &[String],
+	guard: bool,
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -1392,13 +1393,24 @@ let (st, _ret) = step(&mut state_i);
 	}
 
 	{
+		// Guard builds fail closed when the staged entry resolves to a
+		// non-function (e.g. a tampered primitive silently corrupted the
+		// bootstrap): without this, the chunk tail calls nil and the
+		// corruption masquerades as an ordinary runtime error instead of
+		// the guard's bounded boolean-index abort.
+		let entry_check = if guard {
+			"if type(B)~=\"function\" then local _gf=false _gf=_gf[_gf] end "
+		} else {
+			""
+		};
 		let src = format!(
 			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
-			 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
+		 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
 		 do local u=1; local w=u+1-1; local o=w-u; if o~=0 then C[{ss}]=o end end; \
-			 local J={{[4]='{xl}',[7]='{xl}'}}; \
-			 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
-			if h2==2 then return B end end end",
+		 local J={{[4]='{xl}',[7]='{xl}'}}; \
+		 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
+		if h2==2 then {entry_check}return B end end end",
+			entry_check = entry_check,
 			init = init,
 			ss = sumslot,
 			ax = auxslot,

@@ -13,75 +13,6 @@ const OP_NAMES: [&str; N_OPS] = [
 	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "Canary", "LoadStr",
 ];
 
-fn gen_dispatch_tree(
-	items: &[(String, u8)],
-	body_of: &mut dyn FnMut(&str) -> String,
-	rng: &mut Rng,
-	depth: u32,
-) -> String {
-	let n = items.len();
-	if n == 1 {
-		let name = items[0].0.as_str();
-		return format!("if oc == OC.{} then\n{}\nend", name, body_of(name));
-	}
-	if depth >= 3 {
-		let mut v: Vec<(String, u8)> = items.to_vec();
-		rng.shuffle(&mut v);
-		let mut s = String::new();
-		for (i, (idx, _)) in v.iter().enumerate() {
-			let name = idx.as_str();
-			if i == 0 {
-				s.push_str(&format!("if oc == OC.{} then\n{}\n", name, body_of(name)));
-			} else {
-				s.push_str(&format!(
-					"elseif oc == OC.{} then\n{}\n",
-					name,
-					body_of(name)
-				));
-			}
-		}
-		s.push_str("end");
-		return s;
-	}
-	let mut sc: Vec<u8> = items.iter().map(|&(_, c)| c).collect();
-	sc.sort_unstable();
-	let mut gaps: Vec<(u8, u8)> = Vec::new();
-	for w in 1..sc.len() {
-		if sc[w] > sc[w - 1] + 1 {
-			gaps.push((sc[w - 1], sc[w]));
-		}
-	}
-	if !gaps.is_empty() {
-		let (lo, hi) = gaps[rng.int(0, (gaps.len() - 1) as i64) as usize];
-		let p: u8 = if hi as i64 - lo as i64 == 2 {
-			lo + 1
-		} else {
-			rng.int(lo as i64 + 1, hi as i64 - 1) as u8
-		};
-		let (left, right): (Vec<(String, u8)>, Vec<(String, u8)>) =
-			items.iter().cloned().partition(|&(_, c)| c < p);
-		let left_s = gen_dispatch_tree(&left, body_of, rng, depth + 1);
-		let right_s = gen_dispatch_tree(&right, body_of, rng, depth + 1);
-		if rng.int(0, 1) == 0 {
-			format!("if oc < {} then\n{}\nelse\n{}\nend", p, left_s, right_s)
-		} else {
-			format!("if oc > {} then\n{}\nelse\n{}\nend", p - 1, right_s, left_s)
-		}
-	} else {
-		let k = rng.int(1, (sc.len() - 1) as i64) as usize;
-		let p = sc[k - 1];
-		let (left, right): (Vec<(String, u8)>, Vec<(String, u8)>) =
-			items.iter().cloned().partition(|&(_, c)| c <= p);
-		let left_s = gen_dispatch_tree(&left, body_of, rng, depth + 1);
-		let right_s = gen_dispatch_tree(&right, body_of, rng, depth + 1);
-		if rng.int(0, 1) == 0 {
-			format!("if oc <= {} then\n{}\nelse\n{}\nend", p, left_s, right_s)
-		} else {
-			format!("if oc < {} then\n{}\nelse\n{}\nend", p + 1, left_s, right_s)
-		}
-	}
-}
-
 fn lua_dstr(bytes: &[u8]) -> String {
 	let mut s = String::from("\"");
 	for &b in bytes {
@@ -764,7 +695,15 @@ fn frame_slot(logical: usize) -> String {
 /// Empty in production builds so the artifact carries no audit channel.
 #[cfg(feature = "audit-hooks")]
 fn sc_dump_hook() -> &'static str {
-	" if OBSUCVIM_SC_DUMP then OBSUCVIM_SC_DUMP[#OBSUCVIM_SC_DUMP+1]=out end"
+	// Opt-in at generation time (OBSUCVIM_STR_CACHE_DUMP, set by
+	// string_cache_dump_test.py) so an audit-hooks build still emits
+	// byte-identical artifacts to production unless the channel is
+	// explicitly requested (prod_audit_gate invariant).
+	if crate::audit_gate::audit_enabled("OBSUCVIM_STR_CACHE_DUMP") {
+		" if OBSUCVIM_SC_DUMP then OBSUCVIM_SC_DUMP[#OBSUCVIM_SC_DUMP+1]=out end"
+	} else {
+		""
+	}
 }
 #[cfg(not(feature = "audit-hooks"))]
 fn sc_dump_hook() -> &'static str {
@@ -772,7 +711,11 @@ fn sc_dump_hook() -> &'static str {
 }
 #[cfg(feature = "audit-hooks")]
 fn sc_clr_hook() -> &'static str {
-	" if OBSUCVIM_SC_CLR then OBSUCVIM_SC_CLR[#OBSUCVIM_SC_CLR+1]=out end"
+	if crate::audit_gate::audit_enabled("OBSUCVIM_STR_CACHE_DUMP") {
+		" if OBSUCVIM_SC_CLR then OBSUCVIM_SC_CLR[#OBSUCVIM_SC_CLR+1]=out end"
+	} else {
+		""
+	}
 }
 #[cfg(not(feature = "audit-hooks"))]
 fn sc_clr_hook() -> &'static str {
@@ -1440,7 +1383,7 @@ pub fn generate(
 	ck: (u32, u32),
 	mk: (u16, u16),
 	blobk: (u32, u32, u32, u32),
-	tags: [u8; 8],
+	tags: &[[u8; 8]],
 	consts_safe: bool,
 	block_starts: &[Vec<u16>],
 	s_indices: &[u8],
@@ -1549,7 +1492,7 @@ pub fn generate(
 	}
 	rng.shuffle(&mut items);
 	let branches = if !v15 {
-		gen_dispatch_tree(&items, &mut body_of, rng, 0)
+		super::dispatch_tree::gen_dispatch_tree(&items, &mut body_of, rng, 0)
 	} else {
 		String::new()
 	};
@@ -1647,15 +1590,27 @@ pub fn generate(
 	manifest_key("BSEED", blobk.2 as u64);
 	manifest_key("BSTEP", blobk.3 as u64);
 	manifest_key("CKJ", ckj as u64);
+	// Phase B: per-prototype field layout selection. PTG[fi] is the layout
+	// of the prototype being parsed (fi is 1-based; row k = fn_index k-1,
+	// including the main chunk as the last row). Emitted as scalar
+	// assignments per prototype instead of a nested table literal: the
+	// v15 fragment staging is sensitive to the table-literal form here
+	// (see OBF_LUA_TECH_REVIEW.md); the scalar form is the stable one.
+	let mut layout_arms = String::new();
+	for (i, row) in tags.iter().enumerate() {
+		let kw = if i == 0 { "if" } else { "elseif" };
+		layout_arms.push_str(&format!(
+			"{kw} fi == {} then TH = {} TCK = {} TU = {} TC = {} TS = {}\n    ",
+			i + 1, row[0], row[1], row[2], row[3], row[4]
+		));
+		if super_insn {
+			layout_arms.push_str(&format!("TFV = {} ", row[7]));
+		}
+	}
 	let tag_defs = format!(
-		"local TH = {}\n    local TCK = {}\n    local TU = {}\n    local TC = {}\n    local TS = {}\n    local NSECT = {}\n    {}",
-		tags[0],
-		tags[1],
-		tags[2],
-		tags[3],
-		tags[4],
+		"local TH, TCK, TU, TC, TS{}\n    {layout_arms}end\n    local NSECT = {}",
+		if super_insn { ", TFV" } else { "" },
 		if v15 { if super_insn { 7 } else { 6 } } else { 5 },
-		if super_insn { format!("local TFV = {}", tags[7]) } else { String::new() }
 	);
 	// V19 R5-a：非线性折叠（交叉半积 (x%16384)*(x/16384) + 高位回混）+
 	// 明文级联 _pv（前一明文字节并入 LCG 推进，跨 ksplit 连续携带）。
@@ -2088,7 +2043,7 @@ __FVARM__        else
 		let budget_e = obf_num(CHAIN_BUDGET as u64, rng);
 		let frame_cleanup = "local ws={E.ww,E.w0,E.w1,E.w2,E.w3} for wl=1,5 do local wt=ws[wl] if wt then for wx=1,#wt do wt[wx]=nil end end end if E.bq then for qi=1,#E.bq do local bc=E.bch[E.bq[qi]] if bc then for wl=1,5 do local wt=bc[wl] if wt then for wx=1,#wt do wt[wx]=nil end bc[wl]=nil end end end end end E.bch={} E.bq={} E.ww,E.w0,E.w1,E.w2,E.w3=nil,nil,nil,nil,nil E.br=nil E.er=nil ";
 		Some(format!(
-			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx ~= nil then\n        local ck = (E.callx - E.vd) % 17\n        local cx = ck == 1 and XE1 or ck == 2 and XE2 or ck == 3 and XE3 or XE4\n        E.callx = nil\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      E.pn = E.pn + 1\n      if E.pn == E.pd then E.md = (E.md + FLOOR((E.pg + 268435455) / 268435456) * (1 + E.pg % (E.mx - 1))) % E.mx end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then E.pg=(E.pg+((E.vd%65521)*WM+WB+E.pn*RQ)%268435456)%268435456 E.pd=E.pn+2+(E.vd%7) _tslow=0 end end end\n      if E.done ~= nil then local _fo={out_slot} local _fn={total_slot} {cleanup}for _wi=0,3 do E[E.rb+_wi*E.cs]=nil end return U(_fo, 1, _fn) end\n    end",
+			"local ti = 0\n    local _tw = CLK and CLK() or 0\n    local _wcount = 0\n    local _minbase = nil\n    local _tslow = 0\n    while true do\n      E.b = {}\n      if E.callx ~= nil then\n        local ck = (E.callx - E.vd) % 17\n        local cx = ck == 1 and XE1 or ck == 2 and XE2 or ck == 3 and XE3 or XE4\n        E.callx = nil\n        cx(E)\n      else\n        local cs = ti % 4\n        local cf = cs == 0 and XC1 or cs == 1 and XC2 or cs == 2 and XC3 or XC4\n        cf(E)\n        ti = ti + 1\n      end\n      E.pn = E.pn + 1\n      if E.pn == E.pd then E.md = (E.md + FLOOR((E.pg + 268435455) / 268435456) * (1 + E.pg % (E.mx - 1))) % E.mx end\n      if CLK and ti % 128 == 0 then local _tn = CLK() local _dt = _tn - _tw _tw = _tn _wcount = _wcount + 1 if _wcount <= 4 then if not _minbase or _dt < _minbase then _minbase = _dt end else if _minbase and _minbase > 0 and _dt > _minbase * 100 and _dt > 0.25 then _tslow = _tslow + 1 else _tslow = 0 end if _tslow >= 2 then E.pg=(E.pg+((E.vd%65521)*WM+WB+E.pn*RQ)%268435456)%268435456 E.pd=E.pn+2+(E.vd%7) _tslow=0 end end end\n      if E.done ~= nil then local _fo={out_slot} local _fn={total_slot} {cleanup}for _wi=0,3 do E[E.rb+_wi*E.cs]=nil end return U(_fo, 1, _fn) end\n    end",
 			budget_e,
 			out_slot = frame_slot(2),
 			total_slot = frame_slot(3),

@@ -1,9 +1,14 @@
 
 pub mod caps;
 pub mod compiler;
+pub mod dispatch_tree;
 pub mod envcheck;
 pub mod fuse;
 pub mod handlers;
+pub mod lazy_fields;
+pub mod proto_layout;
+pub mod runtime_mask;
+pub mod state_machine;
 pub mod isa;
 pub mod strpool;
 pub mod strseal;
