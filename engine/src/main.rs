@@ -46,6 +46,7 @@ dialect: &'static str,
 	env_check: bool,
 	super_insn: bool,
 	proto_layout: bool,
+	do_ccpd: bool,
 	polymorphic_vm: bool,
 	encrypt_consts: bool,
 	integrity_checks: bool,
@@ -220,6 +221,7 @@ fn main() -> ExitCode {
 		env_check: false,
 		super_insn: false,
 		proto_layout: true,
+		do_ccpd: false,
 		polymorphic_vm: false,
 		encrypt_consts: false,
 		integrity_checks: true,
@@ -326,6 +328,8 @@ fn main() -> ExitCode {
 			"--super-insn" => opts.super_insn = true,
 			"--proto-layout" => opts.proto_layout = true,
 			"--no-proto-layout" => opts.proto_layout = false,
+			"--ccpd" => opts.do_ccpd = true,
+			"--no-ccpd" => opts.do_ccpd = false,
 			"--polymorphic-vm" => {
 				opts.polymorphic_vm = true;
 				opts.super_insn = true;
@@ -427,6 +431,16 @@ s if s.starts_with('-') => {
 		return ExitCode::FAILURE;
 	}
 
+	if opts.do_ccpd && !(opts.do_vm && opts.do_v15) {
+		eprintln!(
+			"error: --ccpd requires --preset v15 (Luau VM)\n  \
+			 CCPD block variants ride the v15 block decoder and closure \
+			 factory; legacy VM and non-VM modes have no bdec/makefn \
+			 surface to attach edge context to."
+		);
+		return ExitCode::FAILURE;
+	}
+
 	let result = (|| -> Result<String, String> {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
@@ -463,6 +477,7 @@ s if s.starts_with('-') => {
 					opts.super_insn,
 					opts.do_guard,
 					opts.proto_layout,
+					opts.do_ccpd,
 				);
 			let caps = vmgen::caps::CapabilityManifest::from_program(
 				&program,
@@ -519,6 +534,7 @@ s if s.starts_with('-') => {
 				opts.do_guard,
 				opts.do_guard,
 				&caps,
+				opts.do_ccpd,
 			);
 			if audit_gate::audit_enabled("OBSUCVIM_VM_TSRC") {
 				let path = audit_gate::audit_var("OBSUCVIM_VM_TSRC_PATH")

@@ -585,14 +585,14 @@ mod tests {
 		let mut block = parser::parse(src, true).expect("parse luau");
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(seed);
-		super::super::compiler::compile(&block, &table, &mut rng, false, scatter, false, false, true)
+		super::super::compiler::compile(&block, &table, &mut rng, false, scatter, false, false, true, false)
 	}
 
 	fn emit_template_for(src: &str, seed: u64, v15: bool, luau: bool, guard: bool) -> String {
 		let mut block = parser::parse(src, luau).expect("parse");
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(seed);
-		let prog = super::super::compiler::compile(&block, &table, &mut rng, !luau, v15, false, guard, true);
+		let prog = super::super::compiler::compile(&block, &table, &mut rng, !luau, v15, false, guard, true, false);
 		let caps = CapabilityManifest::from_program(&prog, guard, false, None);
 		let carrier_lengths: Vec<usize> = prog
 			.fns
@@ -631,6 +631,7 @@ mod tests {
 			guard,
 			guard,
 			&caps,
+			false,
 		)
 	}
 

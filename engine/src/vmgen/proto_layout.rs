@@ -10,6 +10,10 @@
 //! `compiler::Ctx::finish` (spec B1: do not invent fields the schema does
 //! not have). Section id 6 is reserved and must never be emitted; it is not
 //! a field. Slot values are tag bytes in `1..=250` (0 is never a valid tag).
+//! Section id 8 (`Ccpd`) joined the schema with the CCPD directory; its
+//! tag is assigned in every layout (so `random` draws are unchanged for
+//! the seven legacy fields) but the section itself is emitted only for
+//! `--ccpd` prototypes.
 //!
 //! Compatibility note: obsucvim artifacts embed their own runtime, so the
 //! layout directory travels inside the generated artifact (the per-function
@@ -32,10 +36,14 @@ pub enum ProtoFieldId {
 	Slots = 4,
 	Code = 5,
 	FusedVocab = 7,
+	/// CCPD directory section (rebased CCPD plan section 8). Emitted
+	/// only under `--ccpd`; the tag is always *assigned* so layouts keep
+	/// their shape, but no section carries it on legacy builds.
+	Ccpd = 8,
 }
 
 impl ProtoFieldId {
-	pub const ALL: [ProtoFieldId; 7] = [
+	pub const ALL: [ProtoFieldId; 8] = [
 		ProtoFieldId::Head,
 		ProtoFieldId::CkSeed,
 		ProtoFieldId::Upvalues,
@@ -43,6 +51,7 @@ impl ProtoFieldId {
 		ProtoFieldId::Slots,
 		ProtoFieldId::Code,
 		ProtoFieldId::FusedVocab,
+		ProtoFieldId::Ccpd,
 	];
 
 	/// Fields that every prototype directory must contain. `Slots` and
@@ -64,6 +73,7 @@ impl ProtoFieldId {
 			4 => Some(ProtoFieldId::Slots),
 			5 => Some(ProtoFieldId::Code),
 			7 => Some(ProtoFieldId::FusedVocab),
+			8 => Some(ProtoFieldId::Ccpd),
 			_ => None,
 		}
 	}
@@ -73,14 +83,15 @@ impl ProtoFieldId {
 	}
 }
 
-/// Number of addressable slots in the layout (section ids 0..=7).
-pub const LAYOUT_SLOTS: usize = 8;
+/// Number of addressable slots in the layout (section ids 0..=8;
+/// index 6 is the reserved, never-assigned section).
+pub const LAYOUT_SLOTS: usize = 9;
 /// Tag bytes are drawn from `1..=250`; 0 and 251..=255 never identify a field.
 pub const MAX_TAG: u8 = 250;
 
-/// One prototype's field layout: a bijection between the seven semantic
-/// fields and seven distinct tag bytes. Index 6 of `semantic_to_slot` is
-/// always 0 (reserved, unused).
+/// One prototype's field layout: a bijection between the eight semantic
+/// fields and eight distinct tag bytes. Index 6 of `semantic_to_slot` is
+/// always 0 (reserved, unused); index 8 is the CCPD directory field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProtoFieldLayout {
 	semantic_to_slot: [u8; LAYOUT_SLOTS],
@@ -139,7 +150,7 @@ impl ProtoFieldLayout {
 		self.layout_nonce
 	}
 
-	/// The raw 8-entry table indexed by section id (entry 6 is 0), in the
+	/// The raw 9-entry table indexed by section id (entry 6 is 0), in the
 	/// shape the template's per-function tag table consumes.
 	pub fn as_tags(&self) -> [u8; LAYOUT_SLOTS] {
 		self.semantic_to_slot
@@ -212,7 +223,7 @@ impl ProtoFieldLayout {
 		}
 		// Conditional fields default to distinct fresh slots only if the
 		// directory omitted them *and* the caller marks them unused; the
-		// canonical encoding always carries all seven, so treat a missing
+		// canonical encoding always carries all eight, so treat a missing
 		// conditional field as an incomplete directory instead of guessing.
 		for field in ProtoFieldId::ALL {
 			if !present[field.id() as usize] {

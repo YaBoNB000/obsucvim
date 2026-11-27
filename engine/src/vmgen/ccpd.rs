@@ -54,6 +54,13 @@
 //!   var branch_taken_edge_id_plus_1     (0 = none)
 //!   var branch_fallthrough_edge_id_plus_1
 //!   var fallthrough_edge_id_plus_1
+//! var closure_site_count
+//! repeat closure_site_count:
+//!   var site_pc                   (1-based PC of the Closure record)
+//!   var child_fn_index            (0-based prototype index)
+//! var exit_edge_count
+//! repeat exit_edge_count:
+//!   var edge_id                   (edge whose target is the exit)
 //! ```
 //!
 //! A variant payload is block-local SoA: `record_count` masked opcode
@@ -76,6 +83,13 @@ pub const CCPD_VARIANTS: u8 = 4;
 pub const CCPD_FORMAT_VERSION: u8 = 1;
 
 const MOD28: u32 = 268_435_456;
+
+/// Sentinel `target_block` for edges whose target PC is `n + 1` (one
+/// past the last record): the compiler emits such jumps for branch
+/// merges at the function tail. They are exit edges - no block owns
+/// them as incoming, and well-formed code never dereferences them at
+/// runtime (the legacy VM has no block there either).
+pub const EXIT_BLOCK: u16 = u16::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CcpdEdgeKind {
@@ -212,7 +226,26 @@ pub fn build_cfg(recs: &[FRec], leaders: &[u16]) -> Result<CcpdFunctionCfg, Stri
 		match last.kind {
 			FKind::Base(Op::Jmp) => {
 				let target = last.b;
-				if target == 0 || target as usize > n || !is_leader(target) {
+				if target == 0 || target as usize > n + 1 {
+					return Err(format!(
+						"ccpd: jump at pc {} targets out-of-range pc {}",
+						b.end_pc, target
+					));
+				}
+				if target as usize == n + 1 {
+					// Exit edge (branch merge at the function tail).
+					let id = push_edge(
+						&mut edges,
+						Some(b.id),
+						EXIT_BLOCK,
+						Some(b.end_pc),
+						CcpdEdgeKind::Jump,
+						false,
+					);
+					jump_edge_by_pc[(b.end_pc - 1) as usize] = Some(id);
+					continue;
+				}
+				if !is_leader(target) {
 					return Err(format!(
 						"ccpd: jump at pc {} targets non-leader pc {}",
 						b.end_pc, target
@@ -232,14 +265,25 @@ pub fn build_cfg(recs: &[FRec], leaders: &[u16]) -> Result<CcpdFunctionCfg, Stri
 			}
 			FKind::Base(Op::Jf) | FKind::Base(Op::Jt) => {
 				let target = last.b;
-				if target == 0 || target as usize > n || !is_leader(target) {
+				if target == 0 || target as usize > n + 1 {
+					return Err(format!(
+						"ccpd: branch at pc {} targets out-of-range pc {}",
+						b.end_pc, target
+					));
+				}
+				let taken_exit = target as usize == n + 1;
+				if !taken_exit && !is_leader(target) {
 					return Err(format!(
 						"ccpd: branch at pc {} targets non-leader pc {}",
 						b.end_pc, target
 					));
 				}
-				let tb = block_of(&pc_to_block, target).expect("leader has a block");
-				let backedge = tb <= b.id;
+				let tb = if taken_exit {
+					EXIT_BLOCK
+				} else {
+					block_of(&pc_to_block, target).expect("leader has a block")
+				};
+				let backedge = !taken_exit && tb <= b.id;
 				let taken = push_edge(
 					&mut edges,
 					Some(b.id),
@@ -250,16 +294,21 @@ pub fn build_cfg(recs: &[FRec], leaders: &[u16]) -> Result<CcpdFunctionCfg, Stri
 				);
 				branch_taken_edge_by_pc[(b.end_pc - 1) as usize] = Some(taken);
 				let next = b.id as usize + 1;
-				if next >= blocks.len() {
+				let fall_target = if next < blocks.len() {
+					blocks[next].id
+				} else if b.end_pc as usize == n {
+					// Last record of the stream: fallthrough exits.
+					EXIT_BLOCK
+				} else {
 					return Err(format!(
 						"ccpd: conditional branch at pc {} has no fallthrough block",
 						b.end_pc
 					));
-				}
+				};
 				let fall = push_edge(
 					&mut edges,
 					Some(b.id),
-					blocks[next].id,
+					fall_target,
 					Some(b.end_pc),
 					CcpdEdgeKind::BranchFallthrough,
 					false,
@@ -345,7 +394,9 @@ impl CcpdFunctionCfg {
 				return Err("ccpd validate: duplicate or out-of-range edge id".to_string());
 			}
 			seen[idx] = true;
-			if (e.target_block as usize) >= self.blocks.len() {
+			if e.target_block != EXIT_BLOCK
+				&& (e.target_block as usize) >= self.blocks.len()
+			{
 				return Err("ccpd validate: edge target block invalid".to_string());
 			}
 			if let Some(sb) = e.source_block {
@@ -376,9 +427,12 @@ impl CcpdFunctionCfg {
 					let id = self.jump_edge_by_pc[i]
 						.ok_or("ccpd validate: jump record has no edge")?;
 					let e = &self.edges[id as usize];
-					if e.kind != CcpdEdgeKind::Jump
-						|| self.blocks[e.target_block as usize].start_pc != r.b
-					{
+					let target_ok = if e.target_block == EXIT_BLOCK {
+						r.b as usize == recs.len() + 1
+					} else {
+						self.blocks[e.target_block as usize].start_pc == r.b
+					};
+					if e.kind != CcpdEdgeKind::Jump || !target_ok {
 						return Err("ccpd validate: jump edge target mismatch".to_string());
 					}
 				}
@@ -396,15 +450,19 @@ impl CcpdFunctionCfg {
 						);
 					}
 					let te = &self.edges[tid as usize];
-					if te.kind != CcpdEdgeKind::BranchTaken
-						|| self.blocks[te.target_block as usize].start_pc != r.b
-					{
+					let taken_ok = if te.target_block == EXIT_BLOCK {
+						r.b as usize == recs.len() + 1
+					} else {
+						self.blocks[te.target_block as usize].start_pc == r.b
+					};
+					if te.kind != CcpdEdgeKind::BranchTaken || !taken_ok {
 						return Err("ccpd validate: taken edge target mismatch".to_string());
 					}
 					let fe = &self.edges[fid as usize];
-					if fe.kind != CcpdEdgeKind::BranchFallthrough
-						|| fe.target_block as usize != block.id as usize + 1
-					{
+					let fall_ok = fe.target_block as usize == block.id as usize + 1
+						|| (fe.target_block == EXIT_BLOCK
+							&& block.id as usize + 1 == self.blocks.len());
+					if fe.kind != CcpdEdgeKind::BranchFallthrough || !fall_ok {
 						return Err(
 							"ccpd validate: fallthrough edge target mismatch".to_string()
 						);
@@ -490,6 +548,10 @@ pub struct CcpdFunctionData {
 	pub nop_code: u8,
 	pub nop_alias: u8,
 	pub clos_code: u8,
+	/// `(site_pc, child_fn_index)` for every Closure record, in PC
+	/// order. The runtime links parent EP tables to child EPs through
+	/// these (the legacy km stream rewrite has no CCPD counterpart).
+	pub closure_sites: Vec<(u16, u16)>,
 }
 
 impl CcpdFunctionData {
@@ -748,6 +810,12 @@ pub fn build_function_ccpd(
 				.expect("exactly CCPD_VARIANTS variants are built"),
 		});
 	}
+	let closure_sites = recs
+		.iter()
+		.enumerate()
+		.filter(|(_, r)| r.kind == FKind::Base(Op::Closure))
+		.map(|(i, r)| (i as u16 + 1, r.b))
+		.collect();
 	Ok(CcpdFunctionData {
 		cfg,
 		blocks,
@@ -757,7 +825,29 @@ pub fn build_function_ccpd(
 		nop_code: map.code_for(Op::Nop, s_idx),
 		nop_alias: map.nop_alias[s_idx],
 		clos_code: map.code_for(Op::Closure, s_idx),
+		closure_sites,
 	})
+}
+
+/// Integrity checksums over the payload bank, mirroring the shape of
+/// the legacy SA..SD lane sums (`ck` plain, `ck2` position-weighted).
+/// The compiler stores these in `operand_sums[fi]` under `--ccpd`; the
+/// Luau parser recomputes them over the bank bytes it read, so an
+/// untampered artifact reproduces them exactly.
+pub fn bank_checksums(bank: &[u8]) -> (u64, u64) {
+	let mut ck: u64 = 0;
+	let mut ck2: u64 = 0;
+	for (i, &b) in bank.iter().enumerate() {
+		ck = (ck + b as u64) % 4_294_967_296;
+		ck2 = (ck2 + (i as u64 + 1) * b as u64) % 4_294_967_296;
+	}
+	(ck, ck2)
+}
+
+/// Inverse of `compiler::operand_perm_from_code`: the Lehmer code
+/// (0..23) of a lane permutation, or `None` if it is not a bijection.
+pub fn perm_code_of(perm: &[u8; 4]) -> Option<u8> {
+	(0..24).find(|&code| super::compiler::operand_perm_from_code(code) == *perm)
 }
 
 fn wvar(out: &mut Vec<u8>, v: u32) {
@@ -819,6 +909,22 @@ impl CcpdFunctionData {
 				self.cfg.fallthrough_edge_by_pc[i].map(|e| e + 1).unwrap_or(0),
 			);
 		}
+		wvar(&mut out, self.closure_sites.len() as u32);
+		for &(site_pc, child) in &self.closure_sites {
+			wvar(&mut out, site_pc as u32);
+			wvar(&mut out, child as u32);
+		}
+		let exit_ids: Vec<u32> = self
+			.cfg
+			.edges
+			.iter()
+			.filter(|e| e.target_block == EXIT_BLOCK)
+			.map(|e| e.id.0)
+			.collect();
+		wvar(&mut out, exit_ids.len() as u32);
+		for id in exit_ids {
+			wvar(&mut out, id);
+		}
 		out
 	}
 }
@@ -839,6 +945,7 @@ pub struct CcpdSection {
 	pub branch_taken_edge_by_pc: Vec<Option<u32>>,
 	pub branch_fallthrough_edge_by_pc: Vec<Option<u32>>,
 	pub fallthrough_edge_by_pc: Vec<Option<u32>>,
+	pub closure_sites: Vec<(u32, u32)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -968,9 +1075,6 @@ pub fn decode_section(bytes: &[u8], bank_len: usize) -> Result<CcpdSection, Stri
 	if expected_start != total_records + 1 {
 		return Err("ccpd section: blocks do not cover total_records".to_string());
 	}
-	if edge_ids.len() != edge_count {
-		return Err("ccpd section: edge_count does not match incoming lists".to_string());
-	}
 	if !edge_ids.contains(&entry_edge_id) {
 		return Err("ccpd section: entry edge not declared".to_string());
 	}
@@ -991,7 +1095,7 @@ pub fn decode_section(bytes: &[u8], bank_len: usize) -> Result<CcpdSection, Stri
 				Ok(None)
 			} else {
 				let id = v - 1;
-				if !edge_ids.contains(&id) {
+				if id as usize >= edge_count {
 					Err("ccpd section: transition map references unknown edge".to_string())
 				} else {
 					Ok(Some(id))
@@ -1002,6 +1106,38 @@ pub fn decode_section(bytes: &[u8], bank_len: usize) -> Result<CcpdSection, Stri
 		taken.push(one(&mut r)?);
 		bfall.push(one(&mut r)?);
 		fall.push(one(&mut r)?);
+	}
+	let site_count = r.var()?;
+	let mut closure_sites = Vec::with_capacity(site_count as usize);
+	for _ in 0..site_count {
+		let site_pc = r.var()?;
+		let child = r.var()?;
+		if site_pc < 1 || site_pc > total_records {
+			return Err("ccpd section: closure site pc out of range".to_string());
+		}
+		closure_sites.push((site_pc, child));
+	}
+	let exit_count = r.var()?;
+	for _ in 0..exit_count {
+		let id = r.var()?;
+		if edge_ids.contains(&id) {
+			return Err("ccpd section: duplicate exit edge id".to_string());
+		}
+		edge_ids.push(id);
+	}
+	// Every declared edge is either incoming to some block or an exit
+	// edge, and every map reference must resolve to one of them.
+	if edge_ids.len() != edge_count {
+		return Err("ccpd section: edge_count does not match declared edges".to_string());
+	}
+	for map in [&jump, &taken, &bfall, &fall] {
+		for id in map.iter().flatten() {
+			if !edge_ids.contains(id) {
+				return Err(
+					"ccpd section: transition map references undeclared edge".to_string()
+				);
+			}
+		}
 	}
 	if r.pos != bytes.len() {
 		return Err("ccpd section: trailing bytes".to_string());
@@ -1019,6 +1155,7 @@ pub fn decode_section(bytes: &[u8], bank_len: usize) -> Result<CcpdSection, Stri
 		branch_taken_edge_by_pc: taken,
 		branch_fallthrough_edge_by_pc: bfall,
 		fallthrough_edge_by_pc: fall,
+		closure_sites,
 	})
 }
 
@@ -1207,6 +1344,83 @@ mod tests {
 					&& payloads[2] == payloads[3]),
 				"variants of a block must not all be byte-identical"
 			);
+		}
+	}
+
+	#[test]
+	fn cfg_jt_both_outcomes() {
+		// 1: Jt -> 3 ; 2: LoadK ; 3: Return
+		let recs = vec![
+			rec(Op::Jt, 0, 3, 0, 0),
+			rec(Op::LoadK, 1, 2, 0, 0),
+			rec(Op::Return, 0, 0, 0, 0),
+		];
+		let cfg = build_cfg(&recs, &[1, 2, 3]).expect("cfg");
+		let taken = cfg.branch_taken_edge_by_pc[0].expect("taken");
+		let fall = cfg.branch_fallthrough_edge_by_pc[0].expect("fallthrough");
+		assert_ne!(taken, fall);
+		assert_eq!(cfg.edges[taken as usize].kind, CcpdEdgeKind::BranchTaken);
+		assert_eq!(cfg.edges[taken as usize].target_block, 2);
+		assert_eq!(cfg.edges[fall as usize].kind, CcpdEdgeKind::BranchFallthrough);
+		assert_eq!(cfg.edges[fall as usize].target_block, 1);
+	}
+
+	#[test]
+	fn cfg_return_only_function() {
+		let recs = vec![rec(Op::Return, 0, 0, 0, 0)];
+		let cfg = build_cfg(&recs, &[1]).expect("cfg");
+		assert_eq!(cfg.blocks.len(), 1);
+		assert_eq!(cfg.edges.len(), 1, "entry edge only, return has no successor");
+		assert_eq!(cfg.incoming(0).len(), 1);
+	}
+
+	#[test]
+	fn cfg_noise_records_create_no_branch_edges() {
+		// Nop / Canary / dead-register noise records are ordinary
+		// fallthrough content in the final stream.
+		let recs = vec![
+			rec(Op::Nop, 0, 0, 0, 0),
+			rec(Op::Canary, 1, 0, 0, 0),
+			rec(Op::LoadK, 1, 2, 0, 0),
+			rec(Op::Return, 0, 0, 0, 0),
+		];
+		let cfg = build_cfg(&recs, &[1]).expect("cfg");
+		assert_eq!(cfg.blocks.len(), 1);
+		assert!(cfg.jump_edge_by_pc.iter().all(|e| e.is_none()));
+		assert!(cfg.branch_taken_edge_by_pc.iter().all(|e| e.is_none()));
+	}
+
+	#[test]
+	fn cfg_tail_jump_is_exit_edge() {
+		// 1: LoadK ; 2: Jmp -> 3 (= n + 1, the tail merge exit)
+		let recs = vec![rec(Op::LoadK, 1, 2, 0, 0), rec(Op::Jmp, 0, 3, 0, 0)];
+		let cfg = build_cfg(&recs, &[1]).expect("cfg");
+		let id = cfg.jump_edge_by_pc[1].expect("jump edge");
+		let e = cfg.edges[id as usize];
+		assert_eq!(e.target_block, EXIT_BLOCK);
+		assert_eq!(e.kind, CcpdEdgeKind::Jump);
+		assert!(cfg.blocks.iter().all(|b| cfg.incoming(b.id).iter().all(|x| x.id != e.id)),
+			"exit edge is incoming to no block");
+	}
+
+	#[test]
+	fn closure_sites_and_variant_diversity() {
+		let mut rng = Rng::new(5);
+		let map = OpMap::new(&mut rng);
+		let recs = vec![
+			rec(Op::Closure, 1, 2, 0, 0),
+			rec(Op::LoadK, 3, 700, 0, 0),
+			rec(Op::Return, 1, 0, 0, 0),
+		];
+		let data = build_function_ccpd(&recs, &[1], &map, 2, 3, 77, 7).expect("build");
+		assert_eq!(data.closure_sites, vec![(1, 2)], "site pc + child index from the Closure record");
+		for bv in &data.blocks {
+			let codes: std::collections::HashSet<u8> =
+				bv.variants.iter().map(|v| v.operand_perm_code).collect();
+			assert_eq!(codes.len(), 4, "four distinct lane permutations per block");
+			let epochs: std::collections::HashSet<u32> =
+				bv.variants.iter().map(|v| v.page_epoch).collect();
+			assert_eq!(epochs.len(), 4, "four distinct page epochs per block");
 		}
 	}
 

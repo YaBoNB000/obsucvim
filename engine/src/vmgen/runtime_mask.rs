@@ -20,12 +20,13 @@
 //!   cache entry only under an equal key; lane is part of the mask
 //!   derivation, not the page identity.
 //!
-//! Integration status: `bdec`'s current remask already keys its cache per
-//! prototype frame (`E.bch` lives on the per-activation frame table), so
-//! swapping its formula for `derive_mask` is a representation change, not
-//! a correctness fix. This module lands the typed context + derivation
-//! with tests; the `bdec` swap is left as a separate reviewable step and
-//! recorded as PARTIAL in the review report.
+//! Integration status: wired. The compiler (`vmgen::ccpd`) encodes
+//! every block variant through `derive_mask` via `DecodeContext`, and
+//! the Luau mirror inside the generated `bdec` re-derives the same
+//! masks; `derive_variant_id` / `derive_root_context` /
+//! `derive_closure_origin` / `derive_invocation_context` have exact
+//! Luau mirrors in `template.rs` (`CCPDV/CCPDR/CCPDO/CCPDI`), pinned
+//! by the vector tests below and `tests/ccpd_mirror_test.py`.
 
 /// Modulus keeping every intermediate below 2^44 in Luau number arithmetic.
 const MASK_MOD: u32 = 268_435_456; // 2^28
@@ -202,25 +203,26 @@ pub fn derive_invocation_context(
 	avalanche28(s)
 }
 
-/// CCPD (spec section 7) interface — types and contracts only.
+/// CCPD edge identity (rebased CCPD plan sections 2.4 / 4 / 9).
 ///
-/// Call-Chain Coupled Path-State Decoding would give every CFG
-/// incoming edge a stable `EdgeId`, allocate a `ClosureEntryDomain`
-/// per closure creation site, and let `DecodeContext::entry_domain`
-/// select per-entry encodings of a block. **None of that variant
-/// emission is implemented**: no block is currently encoded more than
-/// once, no branch handler writes an edge id, and every emitted
-/// context carries `DEFAULT_ENTRY_DOMAIN`. What exists is the seam a
-/// future implementation must plug into without breaking caches:
+/// Every CFG incoming edge owns a stable `EdgeId` (`vmgen::ccpd`
+/// builds the CFG from the final record stream); branch, jump and
+/// fallthrough micro-ops publish the incoming edge at runtime, and
+/// `bdec` selects one of four block encodings from
+/// (frame context, incoming edge, block, visit ordinal). The payload
+/// masks themselves are derived with `entry_domain =
+/// DEFAULT_ENTRY_DOMAIN`: edge identity enters through variant
+/// selection and through the composite decode-cache key, not through
+/// the mask inputs, so the compiler and the Luau mirror only ever
+/// evaluate `derive_mask` at domain 0. `DecodeCacheKey` nevertheless
+/// carries the domain explicitly, so a future per-domain mask split
+/// can never alias the domain-0 entries (spec section 7 item 6).
 ///
-/// - `DecodeContext.entry_domain` is already part of `derive_mask`
-///   and of `DecodeCacheKey`, so per-domain variants can never alias
-///   the domain-0 cache entries used today (spec section 7 item 6).
 /// - Missing/legacy data maps to `DEFAULT_ENTRY_DOMAIN` explicitly,
 ///   never to a guessed value (spec section 7 item 10).
 /// - `EntryTransition` enumerates the control-flow events whose
-///   handlers would have to publish the incoming edge (spec item 8);
-///   the ids are stable so a serialized form can rely on them.
+///   handlers publish the incoming edge (spec item 8); the ids are
+///   stable so a serialized form can rely on them.
 ///
 /// An `EdgeId` is a context label, not key material (spec section 7):
 /// treat domain separation as analysis-cost diversity only.
@@ -334,8 +336,9 @@ mod tests {
 
 	#[test]
 	fn ccpd_interface_defaults_and_domain_scoped_keys() {
-		// No edge specialization anywhere yet: the only domain in use
-		// is the explicit default, never a guessed value.
+		// The payload masks run at the explicit default domain (edge
+		// identity enters via variant selection and the cache key);
+		// the default is a real value, never a guessed one.
 		let ctx = DecodeContext::new(9, 4, 1);
 		assert_eq!(ctx.entry_domain, DEFAULT_ENTRY_DOMAIN);
 		assert_eq!(ctx.cache_key().entry_domain, DEFAULT_ENTRY_DOMAIN);

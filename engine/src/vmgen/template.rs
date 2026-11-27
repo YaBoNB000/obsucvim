@@ -714,9 +714,22 @@ fn sc_clr_hook() -> &'static str {
 	""
 }
 
-fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
+/// CCPD runtime audit channel (rebased plan 15.2): only audit-hooks
+/// builds may inject the `OBSUCVIM_CCPD_AUDIT` reporters, and only
+/// when the variable is set at generation time. Production builds
+/// compile this to `false`, so artifacts stay byte-identical.
+#[cfg(feature = "audit-hooks")]
+fn ccpd_audit_on() -> bool {
+	crate::audit_gate::audit_enabled("OBSUCVIM_CCPD_AUDIT")
+}
+#[cfg(not(feature = "audit-hooks"))]
+fn ccpd_audit_on() -> bool {
+	false
+}
+
+fn micro_op_body(index: usize, lit: &MicroLits, nop: &str, ccpd: bool) -> String {
 	if index >= M_SUPER_BASE {
-		return micro_super_body(index, lit, nop);
+		return micro_super_body(index, lit, nop, ccpd);
 	}
 	match index {
 		M_FUSE_LOAD_K => {
@@ -735,9 +748,19 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		}
 		M_FUSE_VARGC => "V[O[1] + 1] = vargc".to_string(),
 		M_FUSE_BRANCH_FALSE => {
-			"if not V[O[1] + 1] then E.pc = O[2] end".to_string()
+			if ccpd {
+				"local _sp=E.pc-1 if not V[O[1] + 1] then E.pc = O[2] E.edge=E.bt.tk[_sp] else E.edge=E.bt.bf[_sp] end E.echg=1".to_string()
+			} else {
+				"if not V[O[1] + 1] then E.pc = O[2] end".to_string()
+			}
 		}
-		M_FUSE_BRANCH_TRUE => "if V[O[1] + 1] then E.pc = O[2] end".to_string(),
+		M_FUSE_BRANCH_TRUE => {
+			if ccpd {
+				"local _sp=E.pc-1 if V[O[1] + 1] then E.pc = O[2] E.edge=E.bt.tk[_sp] else E.edge=E.bt.bf[_sp] end E.echg=1".to_string()
+			} else {
+				"if V[O[1] + 1] then E.pc = O[2] end".to_string()
+			}
+		}
 		M_FUSE_VARARG_TABLE => {
 			"local q = {} for j = 1, vargc do q[j] = vargs[1 + ((j + E.vd - 1) % vargc)] end V[O[1] + 1] = q".to_string()
 		}
@@ -760,9 +783,27 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_CELL_GET => "local q = T[y]; T[x] = q.v[q.i]".to_string(),
 		M_CELL_SET => "local q = T[x]; q.v[q.i] = T[y]".to_string(),
 		M_VARGC => "T[x] = vargc".to_string(),
-		M_SET_PC => "E.pc = O[x]".to_string(),
-		M_BRANCH_FALSE => "if not T[x] then E.pc = O[y] end".to_string(),
-		M_BRANCH_TRUE => "if T[x] then E.pc = O[y] end".to_string(),
+		M_SET_PC => {
+			if ccpd {
+				"local _sp=E.pc-1 E.pc = O[x] E.edge=E.bt.jm[_sp] E.echg=1".to_string()
+			} else {
+				"E.pc = O[x]".to_string()
+			}
+		}
+		M_BRANCH_FALSE => {
+			if ccpd {
+				"local _sp=E.pc-1 if not T[x] then E.pc = O[y] E.edge=E.bt.tk[_sp] else E.edge=E.bt.bf[_sp] end E.echg=1".to_string()
+			} else {
+				"if not T[x] then E.pc = O[y] end".to_string()
+			}
+		}
+		M_BRANCH_TRUE => {
+			if ccpd {
+				"local _sp=E.pc-1 if T[x] then E.pc = O[y] E.edge=E.bt.tk[_sp] else E.edge=E.bt.bf[_sp] end E.echg=1".to_string()
+			} else {
+				"if T[x] then E.pc = O[y] end".to_string()
+			}
+		}
 		M_ADD => micro_binary_body("u+w", "ou+ow", &lit.add_op, &lit.add, lit),
 		M_SUB => micro_binary_body("u-w", "ou-ow", &lit.sub_op, &lit.sub, lit),
 		M_MUL => micro_binary_body("u*w", "ou*ow", &lit.mul_op, &lit.mul, lit),
@@ -806,7 +847,18 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 		M_TABN => "T[2]=T[2]+1 T[1][T[2]]=T[3]".to_string(),
 		M_VARG_TABLE => "local q={} for j=1,vargc do q[j]=vargs[1+((j+E.vd-1)%vargc)] end T[x]=q".to_string(),
 		M_VARG_TABN => "for j=1,vargc do T[1][T[2]+j]=vargs[1+((j+E.vd-1)%vargc)] end T[2]=T[2]+vargc".to_string(),
-		M_CLOSURE => "V[O[x]+1]=makefn(E.bt[O[y]],V,ups,S)".to_string(),
+		M_CLOSURE => {
+			if ccpd {
+				let audit = if ccpd_audit_on() {
+					" if OBSUCVIM_CCPD_AUDIT then OBSUCVIM_CCPD_AUDIT[#OBSUCVIM_CCPD_AUDIT + 1] = \"C \" .. _sp .. \" \" .. _co .. \" \" .. O[y] end"
+				} else {
+					""
+				};
+				format!("local _sp=E.pc-1 local _co=(E.cc[_sp] or 0)+1 E.cc[_sp]=_co{audit} V[O[x]+1]=makefn(E.bt[O[y]],V,ups,S,E.corg(E,_sp,_co,O[y]))")
+			} else {
+				"V[O[x]+1]=makefn(E.bt[O[y]],V,ups,S)".to_string()
+			}
+		}
 		M_GET_TABLE => format!(
 			"local o,j=T[1],T[2] local r if TYP(o)=={string} then r=o[j] elseif TYP(o)=={table_} then r=RGET(o,j) if r==nil then local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] end end else local f,hidden=mget(o,{index}) if TYP(f)=={function} then r=f(o,j) elseif f~=nil then r=f[j] elseif hidden then r=o[j] else ERR({msg}..TYP(o)..{index_with}..TSTR(j)..{index_quote},0) end end T[x]=r",
 			table_ = lit.table_, string = lit.string, index = lit.index, function = lit.function,
@@ -872,7 +924,7 @@ fn micro_op_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	}
 }
 
-fn micro_super_body(index: usize, lit: &MicroLits, nop: &str) -> String {
+fn micro_super_body(index: usize, lit: &MicroLits, nop: &str, ccpd: bool) -> String {
 	// invariant: the only caller (micro_op_body) enters here with index >= M_SUPER_BASE
 	let slot = index
 		.checked_sub(M_SUPER_BASE)
@@ -885,7 +937,7 @@ fn micro_super_body(index: usize, lit: &MicroLits, nop: &str) -> String {
 	let primitive = micro_primitive_recipe(name).expect("superoperator recipe missing");
 	let mut body = String::new();
 	for (kind, x, y) in primitive {
-		let step = micro_op_body(kind, lit, nop);
+		let step = micro_op_body(kind, lit, nop, ccpd);
 		body.push_str(&format!("do local x={x} local y={y} {step} end "));
 	}
 	body
@@ -945,10 +997,10 @@ mod micro_fusion_tests {
 			assert!(is_fused(recipe[0].0));
 			let primitive = micro_primitive_recipe(name).unwrap();
 			assert!(primitive.len() > 1, "{name} should represent a multi-step recipe");
-			let body = micro_op_body(recipe[0].0, &lit, "");
+			let body = micro_op_body(recipe[0].0, &lit, "", false);
 			let mut after = 0;
 			for (kind, x, y) in primitive {
-				let inner = micro_op_body(kind, &lit, "");
+				let inner = micro_op_body(kind, &lit, "", false);
 				let needle = format!("do local x={x} local y={y} {inner} end ");
 				let offset = body[after..]
 					.find(&needle)
@@ -1002,7 +1054,7 @@ mod micro_fusion_tests {
 			M_FUSE_BRANCH_TRUE,
 			M_FUSE_VARARG_TABLE,
 		] {
-			let body = micro_op_body(kind, &lit, "");
+			let body = micro_op_body(kind, &lit, "", false);
 			assert!(body.contains("V["), "fused body {kind} lost its destination");
 			assert!(!body.contains("T["), "fused body {kind} uses shard scratch state");
 		}
@@ -1083,10 +1135,11 @@ fn micro_factory_source(
 	rng: &mut Rng,
 	fname: &str,
 	dead_params: &[&str],
+	ccpd: bool,
 ) -> (String, Vec<usize>) {
 	let mut items: Vec<(usize, String)> = kinds
 		.iter()
-		.map(|&i| (i, micro_op_body(i, lit, nop)))
+		.map(|&i| (i, micro_op_body(i, lit, nop, ccpd)))
 		.collect();
 	rng.shuffle(&mut items);
 	let order: Vec<usize> = items.iter().map(|x| x.0).collect();
@@ -1304,7 +1357,7 @@ fn remap_fragment_fields(
 	out
 }
 
-fn chain_epilogue(rng: &mut Rng, wk: &[String; 4]) -> String {
+fn chain_epilogue(rng: &mut Rng, wk: &[String; 4], ccpd: bool) -> String {
 	const NP_POOL: [&str; 6] = ["np", "gz", "hz", "kz", "pz", "wz"];
 	const OC_POOL: [&str; 6] = ["oc", "jz", "qz", "xz", "yz", "nz"];
 	const H_POOL: [&str; 6] = ["hx", "fx", "zx", "vx", "mx", "jx"];
@@ -1318,11 +1371,25 @@ fn chain_epilogue(rng: &mut Rng, wk: &[String; 4]) -> String {
 	} else {
 		"E.b = E.b - 1; if E.b <= 0 then return end; "
 	};
-	let trans = format!(
-		"if {np} < E.bp or {np} > E.be then E.bdec(E, E.bm[{np}]) end; local {bi} = {np} - E.bp + 1",
-		np = np,
-		bi = bi
-	);
+	let trans = if ccpd {
+		// CCPD (plan Phase C): a control micro-op has published the
+		// incoming edge (E.edge + E.echg); even when the target stays
+		// inside the current block the block must be re-entered so
+		// bdec re-selects the variant for the new edge. Plain
+		// fallthrough takes the per-PC fallthrough edge. The edge is
+		// single-use: bdec consumes it and the epilogue clears it.
+		format!(
+			"if E.echg or {np} < E.bp or {np} > E.be then if E.edge == nil then E.edge = E.bt.ft[{np} - 1] end E.bdec(E, E.bm[{np}]) end E.edge = nil E.echg = nil; local {bi} = {np} - E.bp + 1",
+			np = np,
+			bi = bi
+		)
+	} else {
+		format!(
+			"if {np} < E.bp or {np} > E.be then E.bdec(E, E.bm[{np}]) end; local {bi} = {np} - E.bp + 1",
+			np = np,
+			bi = bi
+		)
+	};
 	let args = format!(
 		"({wa}[{bi}]-E.br)%65536, ({wb}[{bi}]-E.br)%65536, ({wc}[{bi}]-E.br)%65536, ({wd}[{bi}]-E.br)%65536",
 		wa = wk[0],
@@ -1355,6 +1422,15 @@ fn chain_epilogue(rng: &mut Rng, wk: &[String; 4]) -> String {
 	}
 }
 
+/// CCPD Luau mirrors of `runtime_mask` (plan sections 5/9), bit-exact
+/// and float-safe; kept in one place so the pinned-vector test can
+/// extract and execute them verbatim.
+const CCPD_HELPERS_LUA: &str = "local function CCPDMUL(s, m) local s1 = s % 16384 local s2 = (s - s1) / 16384 return (s1 * m + ((s2 * m) % 16384) * 16384) % 268435456 end local function CCPDAV(s) s = (s + 238516665) % 268435456 s = CCPDMUL(s, 1540483477) s = (s + FLOOR(s / 8192) * 40503) % 268435456 s = CCPDMUL(s, 2246822507) return s end local function CCPDM(nonce, proto, block, lane, epoch) local s = nonce % 268435456 s = (s * 31 + proto % 268435456) % 268435456 s = (s * 31 + block % 268435456) % 268435456 s = (s * 31 + lane) % 268435456 s = (s * 31) % 268435456 s = (s * 31 + epoch % 268435456) % 268435456 return CCPDAV(s) end local function CCPDV(fctx, edge, block, visit, salt) local s = salt % 268435456 s = (s * 31 + fctx % 268435456) % 268435456 s = (s * 31 + edge % 268435456) % 268435456 s = (s * 31 + block % 268435456) % 268435456 s = (s * 31 + visit % 268435456) % 268435456 return CCPDAV(s) % 4 end local function CCPDR(salt, proto) local s = salt % 268435456 s = (s * 31 + proto % 268435456) % 268435456 s = (s * 31) % 268435456 return CCPDAV(s) end local function CCPDO(fctx, edge, block, proto, site, ord, child, salt) local s = salt % 268435456 s = (s * 31 + fctx % 268435456) % 268435456 s = (s * 31 + edge % 268435456) % 268435456 s = (s * 31 + block % 268435456) % 268435456 s = (s * 31 + proto % 268435456) % 268435456 s = (s * 31 + site % 268435456) % 268435456 s = (s * 31 + ord % 268435456) % 268435456 s = (s * 31 + child % 268435456) % 268435456 s = (s * 31 + 7) % 268435456 return CCPDAV(s) end local function CCPDI(org, ord, child, salt) local s = salt % 268435456 s = (s * 31 + org % 268435456) % 268435456 s = (s * 31 + ord % 268435456) % 268435456 s = (s * 31 + child % 268435456) % 268435456 return CCPDAV(s) end local function CCPDPM(code) local pl = {0, 1, 2, 3} local pm = {} local ds = {6, 2, 1, 1} local dp = code % 24 for ps = 1, 4 do local pk = ps == 4 and 0 or FLOOR(dp / ds[ps]) if ps < 4 then dp = dp % ds[ps] end pm[ps] = pl[pk + 1] for z = pk + 1, #pl - 1 do pl[z] = pl[z + 1] end pl[#pl] = nil end return pm end local function CCPDCORG(E, site, ord, child) return CCPDO(E.fctx, E.cedge, E.bid, E.pfi, site, ord, child, E.bt.csa) end ";
+
+/// CCPD block decoder (plan Phase F), textually parallel to the legacy
+/// bdec contract: masked window tables, bp/be/br, cache remask.
+const CCPD_BDEC_LUA: &str = "local function bdec(E, bi) local pf = E.bt local fi = ((pf.sx - PM - 1) % 65521) + 1 E.er = E.er + 1 local wm = (E.er * WM + bi * WB + fi) % 65536 local visit = (E.bv[bi] or 0) + 1 E.bv[bi] = visit local edge = E.edge E.cedge = edge E.bid = bi local var = CCPDV(E.fctx, edge, bi - 1, visit, pf.csa) local ck = (bi * pf.cd.ne + edge) * 4 + var local c = E.bch[ck] if c then local om = c[8] for wx = 1, #c[1] do c[1][wx] = (c[1][wx] - om + wm) % 256 c[2][wx] = (c[2][wx] - om + wm) % 65536 c[3][wx] = (c[3][wx] - om + wm) % 65536 c[4][wx] = (c[4][wx] - om + wm) % 65536 c[5][wx] = (c[5][wx] - om + wm) % 65536 end c[8] = wm E.ww, E.w0, E.w1, E.w2, E.w3 = c[1], c[2], c[3], c[4], c[5] E.bp, E.be = c[6], c[7] E.br = wm return end if BC == 0 and E.ww then local old = {E.ww, E.w0, E.w1, E.w2, E.w3} for wl = 1, 5 do local wt = old[wl] if wt then for wx = 1, #wt do wt[wx] = nil end end end E.ww, E.w0, E.w1, E.w2, E.w3 = nil, nil, nil, nil, nil end local blk = pf.cd.blocks[bi] if blk.inc[edge] == nil then while true do end end local vd2 = blk.vs[var + 1] local bk = pf.bk local l = blk.ep - blk.sp + 1 local base = vd2.po local pm = CCPDPM(vd2.pc) local proto = fi - 1 local bidx = bi - 1 local u0, u1, u2, u3, u4 = {}, {}, {}, {} for i = 1, l do local k = CCPDM(vd2.ms, proto, bidx, 0, (vd2.pe + (i - 1) * vd2.mt) % 268435456) u0[i] = (bk[base + i] - k % 256) % 256 end local cols = {} local pos = base + l for j = 1, 4 do local col = {} for i = 1, l do local b1 = bk[pos + 1] local v if b1 < 128 then v = b1 pos = pos + 1 elseif bk[pos + 2] < 128 then v = (b1 - 128) + bk[pos + 2] * 128 pos = pos + 2 elseif bk[pos + 3] < 128 then v = (b1 - 128) + (bk[pos + 2] - 128) * 128 + bk[pos + 3] * 16384 pos = pos + 3 else v = (b1 - 128) + (bk[pos + 2] - 128) * 128 + (bk[pos + 3] - 128) * 16384 + bk[pos + 4] * 2097152 pos = pos + 4 end local k = CCPDM(vd2.ms, proto, bidx, j, (vd2.pe + (i - 1) * vd2.mt) % 268435456) col[i] = (v - k % 65536) % 65536 end cols[j] = col end local lanes = {u1, u2, u3, u4} for j = 1, 4 do lanes[pm[j] + 1] = cols[j] end u1, u2, u3, u4 = lanes[1], lanes[2], lanes[3], lanes[4] local clos = pf.cd.clos for i = 1, l do if u0[i] == clos then u2[i] = u2[i] + 1 end end for wx = 1, l do u0[wx] = (u0[wx] + wm) % 256 u1[wx] = (u1[wx] + wm) % 65536 u2[wx] = (u2[wx] + wm) % 65536 u3[wx] = (u3[wx] + wm) % 65536 u4[wx] = (u4[wx] + wm) % 65536 end local nc = {u0, u1, u2, u3, u4, blk.sp, blk.ep, wm} if BC > 0 then E.bch[ck] = nc E.bq[#E.bq + 1] = ck if #E.bq > BC then local oid = E.bq[1] for qx = 1, #E.bq - 1 do E.bq[qx] = E.bq[qx + 1] end E.bq[#E.bq] = nil local oc = E.bch[oid] E.bch[oid] = nil if oc then for wl = 1, 5 do local wt = oc[wl] if wt then for wx = 1, #wt do wt[wx] = nil end oc[wl] = nil end end end end end E.ww, E.w0, E.w1, E.w2, E.w3 = u0, u1, u2, u3, u4 E.bp, E.be = blk.sp, blk.ep E.br = wm end";
+
 pub fn generate(
 	map: &OpMap,
 	slot_perm: &[u8; 4],
@@ -1375,7 +1451,7 @@ pub fn generate(
 	ck: (u32, u32),
 	mk: (u16, u16),
 	blobk: (u32, u32, u32, u32),
-	tags: &[[u8; 8]],
+	tags: &[[u8; 9]],
 	consts_safe: bool,
 	block_starts: &[Vec<u16>],
 	s_indices: &[u8],
@@ -1387,7 +1463,13 @@ pub fn generate(
 	guard: bool,
 	canary: bool,
 	caps: &super::caps::CapabilityManifest,
+	ccpd: bool,
 ) -> String {
+	// CCPD exists only on the v15 runtime (CLI enforces the pairing;
+	// this gate keeps direct callers honest). When off, every CCPD
+	// fragment below is empty and the emitted text is byte-identical
+	// to the legacy template.
+	let ccpd = ccpd && v15;
 	let active_op_count = if include_loadstr { N_OPS } else { N_OPS - 1 };
 	let mut oc_items = Vec::new();
 	for (i, name) in OP_NAMES.iter().take(active_op_count).enumerate() {
@@ -1598,11 +1680,15 @@ pub fn generate(
 		if super_insn {
 			layout_arms.push_str(&format!("TFV = {} ", row[7]));
 		}
+		if ccpd {
+			layout_arms.push_str(&format!("TCD = {} ", row[8]));
+		}
 	}
 	let tag_defs = format!(
-		"local TH, TCK, TU, TC, TS{}\n    {layout_arms}end\n    local NSECT = {}",
+		"local TH, TCK, TU, TC, TS{}{}\n    {layout_arms}end\n    local NSECT = {}",
 		if super_insn { ", TFV" } else { "" },
-		if v15 { if super_insn { 7 } else { 6 } } else { 5 },
+		if ccpd { ", TCD" } else { "" },
+		(if v15 { if super_insn { 7 } else { 6 } } else { 5 }) + if ccpd { 1 } else { 0 },
 	);
 	// V19 R5-a：非线性折叠（交叉半积 (x%16384)*(x/16384) + 高位回混）+
 	// 明文级联 _pv（前一明文字节并入 LCG 推进，跨 ksplit 连续携带）。
@@ -1726,19 +1812,56 @@ __FVARM__        else
 	} else {
 		&walk_head_super
 	};
+	// CCPD (plan Phase E): the directory section (id 8) and the variant
+	// bank (code section content) are collected independently - section
+	// order is shuffled, so neither arm may depend on the other; the
+	// payload bounds are validated after the walk (see __CDVAL__).
+	// Malformed directories fail closed with the same hang idiom the
+	// legacy parser uses for bad constant streams. Off: unused.
+	let ccpd_walk: String = if ccpd {
+		walk_head_emit.replace(
+			"        else\n          ncode = rv()\n          W = {}\n          for i = 1, ncode do W[i] = rb() end\n          __CODE_EXTRA__\n          got = got + 1\n        end",
+			"        elseif tag == TCD then\n          local ver = rb() local vc = rb()\n          if ver ~= 1 or vc ~= 4 then while true do end end\n          local nb = rv() local ne = rv() local salt = rv()\n          local fpc = rb() local nopc = rb() local nopa = rb() local clc = rb()\n          local ee = rv() local tn2 = rv()\n          if ee >= ne then while true do end end\n          local blks = {} local jm, tk, bf, ft = {}, {}, {}, {}\n          for bidx = 1, nb do\n            local bid = rv() local sp = rv() local ep = rv()\n            if bid ~= bidx - 1 or sp < 1 or ep < sp then while true do end end\n            local nin = rv() local inc = {}\n            for k = 1, nin do local eid = rv() local kb = rb() local spc = rv() if eid >= ne then while true do end end inc[eid] = kb end\n            local vs = {}\n            for v = 1, 4 do local vid = rb() local pc2 = rb() local pe = rv() local po = rv() local pl = rv() local ms = rv() local mt = rv() if vid ~= v - 1 or pc2 >= 24 then while true do end end vs[v] = { pc = pc2, pe = pe, po = po, pl = pl, ms = ms, mt = mt } end\n            blks[bidx] = { sp = sp, ep = ep, inc = inc, vs = vs }\n          end\n          local nm = rv()\n          if nm ~= tn2 then while true do end end\n          for pc = 1, nm do local j = rv() local t = rv() local f = rv() local l = rv() if j > ne or t > ne or f > ne or l > ne then while true do end end if j > 0 then jm[pc] = j - 1 end if t > 0 then tk[pc] = t - 1 end if f > 0 then bf[pc] = f - 1 end if l > 0 then ft[pc] = l - 1 end end\n          local ncs = rv() local cs = {} for sj = 1, ncs do local spc2 = rv() local ch2 = rv() cs[sj] = { spc2, ch2 } end local nex = rv() for sj = 1, nex do rv() end CD = { salt = salt, ee = ee, tn = tn2, blocks = blks, jm = jm, tk = tk, bf = bf, ft = ft, clos = clc, cs = cs, ne = ne }\n          got = got + 1\n        else\n          ncode = rv()\n          local bl2 = rv()\n          BK = {}\n          for i = 1, bl2 do BK[i] = rb() end\n          __CODE_EXTRA__\n          got = got + 1\n        end",
+		)
+	} else {
+		String::new()
+	};
+	if ccpd {
+		// Fail closed at generation time: a missed anchor would
+		// silently emit a legacy-walk artifact that misreads the
+		// CCPD code section.
+		assert!(
+			ccpd_walk.contains("tag == TCD"),
+			"ccpd: section-walk anchor missing; refusing to emit a degraded artifact"
+		);
+	}
+	let walk_head_final: &str = if ccpd { &ccpd_walk } else { walk_head_emit };
+	let ccpd_locals = if ccpd { ", BK, CD" } else { "" };
+	let ccpd_ret = if ccpd { ", bk = BK, cd = CD, tn = ncode" } else { "" };
+	let ccpd_validate = if ccpd {
+		"if CD then for bidx = 1, #CD.blocks do local vs = CD.blocks[bidx].vs for v = 1, 4 do if vs[v].po + vs[v].pl > #BK then while true do end end end end end\n    "
+	} else {
+		""
+	};
 	let parse_fn = if v15 {
 		let mut code_extra = String::from("local ck = 0\nlocal ck2 = 0\n");
-		for (stream_idx, name) in ["SA", "SB", "SC", "SD"].iter().enumerate() {
-			code_extra.push_str(&format!(
-				"{name} = {{}}\nfor i = 1, ncode do\n  local v = rv()\n  {name}[i] = v\n  ck = (ck + v) % 4294967296\n  ck2 = (ck2 + (({stream_idx} * ncode + i) * v) % 4294967296) % 4294967296\nend\n"
-			));
+		if ccpd {
+			// CCPD integrity anchor: checksums over the payload bank
+			// bytes (compiler::ccpd::bank_checksums mirror).
+			code_extra.push_str("for i = 1, #BK do local v = BK[i] ck = (ck + v) % 4294967296 ck2 = (ck2 + i * v) % 4294967296 end\n");
+		} else {
+			for (stream_idx, name) in ["SA", "SB", "SC", "SD"].iter().enumerate() {
+				code_extra.push_str(&format!(
+					"{name} = {{}}\nfor i = 1, ncode do\n  local v = rv()\n  {name}[i] = v\n  ck = (ck + v) % 4294967296\n  ck2 = (ck2 + (({stream_idx} * ncode + i) * v) % 4294967296) % 4294967296\nend\n"
+				));
+			}
 		}
 		code_extra.push_str("CK = ck\nCK2 = ck2");
 		String::from(
 			r#"local function parse(s, fi)
     __UNMASK__
     local st = 1
-    local nregs, nparams, vararg, cks, csl, cstart, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK, CK2__FVLOC__
+    local nregs, nparams, vararg, cks, csl, cstart, upsrc, nconst, C, S, ncode, W, SA, SB, SC, SD, CK, CK2__FVLOC____CDLOC__
     while st <= 2 do
       if st == 1 then
         __WALK__
@@ -1753,13 +1876,16 @@ __FVARM__        else
         st = 3
       end
     end
-    return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, nc = nconst, C = C, S = S, ck = CK, ck2 = CK2, W = W, SA = SA, SB = SB, SC = SC, SD = SD__FVRET__ }
+    __CDVAL__return { nregs = nregs, nparams = nparams, vararg = vararg, upsrc = upsrc, nc = nconst, C = C, S = S, ck = CK, ck2 = CK2, W = W, SA = SA, SB = SB, SC = SC, SD = SD__FVRET____CDRET__ }
   end"#
             .replace("__UNMASK__", &unmask_pre)
             .replace("__TAGS__", &tag_defs)
-            .replace("__WALK__", walk_head_emit)
+            .replace("__WALK__", walk_head_final)
             .replace("__CODE_EXTRA__", &code_extra)
             .replace("__CONSTS__", const_loop)
+            .replace("__CDLOC__", ccpd_locals)
+            .replace("__CDRET__", ccpd_ret)
+            .replace("__CDVAL__", ccpd_validate)
             .replace("__FVLOC__", fv_locals)
             .replace("__FVARM__", &fv_walk_arm)
             .replace("__FVRET__", &fv_ret_fields)
@@ -2297,7 +2423,7 @@ __FVARM__        else
 				let micro_tail = if name == "Return" {
 					"return".to_string()
 				} else {
-					chain_epilogue(rng, &wk)
+					chain_epilogue(rng, &wk, ccpd)
 				};
 				let route = micro_variant_dispatch(&variants, "E,a,b,c,d", "", rng, &wrapper_names);
 				let hsig = hw_extra_sig(rng);
@@ -2338,7 +2464,7 @@ __FVARM__        else
 				rng,
 				&wrapper_names,
 			);
-			let post_tail = chain_epilogue(rng, &wk);
+			let post_tail = chain_epilogue(rng, &wk, ccpd);
 			micro_fill.push_str(&format!(
 				"CX{executor}=function(E) local _r=E.tp({func}(E[21]({args},1,{nargs}))) {route}; for _ci=0,8 do E[E.cb+{page}+_ci*E.cs]=nil end {tail} end ",
 				executor = family,
@@ -2424,7 +2550,7 @@ __FVARM__        else
 				}
 				for k in 0..*max_k {
 					let w = super::isa::OpMap::fused_tramp_code(t, k) as u16;
-					let tail = chain_epilogue(rng, &wk);
+					let tail = chain_epilogue(rng, &wk, ccpd);
 					let hsig = hw_extra_sig(rng);
 					micro_fill.push_str(&format!(
 					"HW2[({w}+AV)%256]=function(E,a,b,c,d{hsig}) local fv=E.bt.fv local _m=(E.bt.fvm+{k1}*(E.bt.fvm%251+1))%65536 _m=(_m+(_m%256)*((_m-(_m%256))/256))%65536 _m=(_m*257+((_m-(_m%64))/64))%65536 local fe=(fv[{k1}]-_m)%65536 local wa=fe%256 HW2[(wa+AV)%256](E,a,b,c,d) fe=((fe-wa)/256)%256 HW2[(fe+AV)%256](E,c,d,c,d); {tail} end ",
@@ -2522,6 +2648,7 @@ __FVARM__        else
 					rng,
 					&mxf_name,
 					&mxf_dead,
+					ccpd,
 				);
 				micro_fill.push_str(&fsrc);
 				for (i, shard) in micro_shards.iter().enumerate() {
@@ -2576,7 +2703,7 @@ __FVARM__        else
 			micro_fill.push_str(&format!(
 				"CT{}=function(E) local AV,HW2=E[23],E[24] {} end ",
 				i + 1,
-				chain_epilogue(rng, &wk)
+				chain_epilogue(rng, &wk, ccpd)
 			));
 		}
 		let pseed = rng.int(1_048_576, 268_435_455) as i64;
@@ -2871,7 +2998,9 @@ __FVARM__        else
 			.collect::<Vec<_>>()
 			.join(", ");
 		let mut zw_inner = String::new();
-		for (fi, sites) in nop_sites.iter().enumerate() {
+		// CCPD: no W/SA streams exist to rewrite; the phase degrades to
+		// the same no-op arm an empty site list produces on legacy.
+		for (fi, sites) in nop_sites.iter().enumerate().take(if ccpd { 0 } else { usize::MAX }) {
 			for &p in sites {
 				zw_inner.push_str(&format!(
 					"do local _nf = PF_[{fi}] local _np = {pos} if (_nf.SA[_np] + _nf.SC[_np] + _np) % 2 == 0 then _nf.W[_np] = NOPA end end; ",
@@ -2909,6 +3038,12 @@ let chaff_lane = rng.int(1, 4) as usize;
 		let qpos_lists: Vec<String> = nop_sites
 			.iter()
 			.map(|sites| {
+				// CCPD: runtime qf fold is empty by definition (the
+				// compiler skips the Nop-lane fold in lockstep), so QP
+				// carries no positions. Legacy lists are unchanged.
+				if ccpd {
+					return "{}".to_string();
+				}
 				format!(
 					"{{{}}}",
 					sites
@@ -3009,6 +3144,40 @@ let chaff_lane = rng.int(1, 4) as usize;
 			cfields = c_fields_enc,
 			enc_lanes = enc_lanes,
 		);
+		// CCPD (plan Phase E/F): the EP pass keeps its legacy shape but
+		// the SoA-specific work is neutralized - no W/SA..SD streams
+		// exist, the km closure-link loop runs zero iterations (the
+		// CCPD bdec rewrites Closure lanes to the child EP index
+		// directly), the bx lane loop is empty, the last block length
+		// comes from the directory total, and the EP table gains the
+		// CCPD fields the runtime consumes. Every replacement is a
+		// no-op when CCPD is off (the whole block is skipped), so the
+		// legacy enc_body text is byte-identical.
+		let enc_body = if ccpd {
+			enc_body
+				.replace(
+					"EP[i].km = nil end return",
+					"EP[i].km = nil local cs2 = EP[i].cd.cs for sj = 1, #cs2 do EP[i][cs2[sj][2] + 1] = EP[cs2[sj][2] + 1] end end return",
+				)
+				.replace("#pf.W", "pf.tn")
+				.replace("for j = 1, #Wt do", "for j = 1, 0 do")
+				.replace(
+					"for p = s0, s0 + bl[bi] - 1 do",
+					"for p = s0, s0 - 1 do",
+				)
+				.replace(
+					"bm = bm, bx = bx,",
+					"bm = bm, bx = bx, cd = pf.cd, bk = pf.bk, csa = pf.cd.salt, ee = pf.cd.ee, jm = pf.cd.jm, tk = pf.cd.tk, bf = pf.cd.bf, ft = pf.cd.ft,",
+				)
+		} else {
+			enc_body
+		};
+		if ccpd {
+			assert!(
+				enc_body.contains("cd = pf.cd") && enc_body.contains("EP[i][cs2[sj][2] + 1]"),
+				"ccpd: enc_body EP anchor missing; refusing to emit a degraded artifact"
+			);
+		}
 		let ck_poison = rng.int(1, 268_435_455);
 		let ck_poison_e = ke.key_expr(ck_poison, None, rng);
 		manifest_key("BSS_CKPOISON", ck_poison as u64);
@@ -3165,6 +3334,25 @@ let chaff_lane = rng.int(1, 4) as usize;
 			normalize = lane_normalize,
 			store = cache_store,
 		);
+		// CCPD (plan Phase F): variant-selecting block decoder. The
+		// legacy bx window is replaced by a decode of the selected
+		// variant payload; the downstream contract (masked window
+		// tables, bp/be/br, cache remask) is preserved exactly. The
+		// cache key is the composite (block, incoming edge, variant) identity.
+		let bdec_src = if ccpd {
+			let mut s = String::from(CCPD_BDEC_LUA);
+			if ccpd_audit_on() {
+				let anchor = "local ck = (bi * pf.cd.ne + edge) * 4 + var";
+				assert!(s.contains(anchor), "ccpd: bdec audit anchor missing");
+				s = s.replace(
+					anchor,
+					&format!("if OBSUCVIM_CCPD_AUDIT then OBSUCVIM_CCPD_AUDIT[#OBSUCVIM_CCPD_AUDIT + 1] = \"B \" .. fi .. \" \" .. bi .. \" \" .. edge .. \" \" .. var .. \" \" .. visit .. \" \" .. E.fctx end {anchor}"),
+				);
+			}
+			s
+		} else {
+			bdec_src
+		};
 		let rt_newe = format!(
 			"newE = function(pf, V, ups, vargs, vargc)\n    local fi=((pf.sx-PM-1)%65521)+1\n    local vd=(QF[fi]*NQ+fi*NI+MM)%65521\n    local pg=((PZ1%65521)*((fi+FQ)%65521)+(PZ2%65521)*((QF[fi]+KQ)%65521)+(PZ3%65521)*((fi+NI)%65521)+(PZ4%65521)*((QF[fi]+RI)%65521)+(MZD%65521)*((fi+MM)%65521))%268435456\n    {}\n    local C = CDEC(pf, CHAR, UNP, TONUM, TCAT, SMT)\n    local S = pf.S\n    local O = {{}}\n    local E = {}\n    E.bt = pf\n    E.bm = pf.bm\n    E.bch = {{}}\n    E.bq = {{}}\n    E.er = 0\n    E.br = 0\n    E.bdec = bdec\n    bdec(E, 1)\n    return E\n  end\n  ",
 			run_unpack, e_table
@@ -3183,7 +3371,67 @@ let chaff_lane = rng.int(1, 4) as usize;
 		} else {
 			(String::new(), String::new(), 0)
 		};
+		let rt_newe = if ccpd {
+			let mut s = rt_newe
+				.replace(
+					"newE = function(pf, V, ups, vargs, vargc)",
+					"newE = function(pf, V, ups, vargs, vargc, fctx)",
+				)
+				.replace(
+					"E.bdec = bdec\n    bdec(E, 1)",
+					"E.bdec = bdec\n    E.pfi = fi\n    E.fctx = fctx or CCPDR(pf.csa, fi)\n    E.edge = pf.ee\n    E.cedge = pf.ee\n    E.bid = 1\n    E.bv = {}\n    E.cc = {}\n    E.corg = CCPDCORG\n    bdec(E, 1)",
+				);
+			assert!(
+				s.contains("E.fctx = fctx or CCPDR"),
+				"ccpd: newE frame-context anchor missing; refusing to emit a degraded artifact"
+			);
+			if ccpd_audit_on() {
+				let anchor = "E.corg = CCPDCORG\n    bdec(E, 1)";
+				assert!(s.contains(anchor), "ccpd: newE audit anchor missing");
+				s = s.replace(
+					anchor,
+					"E.corg = CCPDCORG\n    if OBSUCVIM_CCPD_AUDIT then OBSUCVIM_CCPD_AUDIT[#OBSUCVIM_CCPD_AUDIT + 1] = \"E \" .. fi .. \" \" .. E.fctx .. \" \" .. E.edge end\n    bdec(E, 1)",
+				);
+			}
+			s
+		} else {
+			rt_newe
+		};
 		let bdec_assign = bdec_src.replacen("local function bdec", "bdec = function", 1);
+		// CCPD (plan Phase B): the closure captures an immutable scalar
+		// origin token plus its own call ordinal; every invocation
+		// derives a fresh frame context. The parent frame table is
+		// never captured.
+		let makefn_decl = if ccpd {
+			let mut s = makefn_decl
+				.replace(
+					"local function makefn(pf, V, upsf, S)",
+					"local function makefn(pf, V, upsf, S, org)",
+				)
+				.replace(
+					"    return function(...)",
+					"    local calls = 0\n    return function(...)",
+				)
+				.replace(
+					"local E = newE(pf, V2, c, vargs, vargc)",
+					"calls = calls + 1\n      local E = newE(pf, V2, c, vargs, vargc, CCPDI(org or 0, calls, fi, pf.csa))",
+				);
+			assert!(
+				s.contains("CCPDI(org or 0, calls") && s.contains("local calls = 0"),
+				"ccpd: makefn invocation anchor missing; refusing to emit a degraded artifact"
+			);
+			if ccpd_audit_on() {
+				let anchor = "local calls = 0";
+				assert!(s.contains(anchor), "ccpd: makefn audit anchor missing");
+				s = s.replace(
+					anchor,
+					"local calls = 0\n    if OBSUCVIM_CCPD_AUDIT then OBSUCVIM_CCPD_AUDIT[#OBSUCVIM_CCPD_AUDIT + 1] = \"M \" .. fi .. \" \" .. (org or 0) end",
+				);
+			}
+			s
+		} else {
+			makefn_decl.clone()
+		};
 		let makefn_assign =
 			makefn_decl.replacen("local function makefn", "makefn = function", 1);
 		let run_assign = format!(
@@ -3322,6 +3570,12 @@ let chaff_lane = rng.int(1, 4) as usize;
 		] {
 			frag_reserved.insert(g.to_string());
 		}
+		if ccpd_audit_on() {
+			// Keep the audit channel name a true global in every
+			// fragment (plan 15.2); without this the sanitizer would
+			// rename it to an unbound local and silence the reporters.
+			frag_reserved.insert("OBSUCVIM_CCPD_AUDIT".to_string());
+		}
 		let mut frag_map: std::collections::HashMap<String, String> =
 			std::collections::HashMap::new();
 		let mut frag_used: std::collections::HashSet<String> =
@@ -3345,6 +3599,18 @@ let chaff_lane = rng.int(1, 4) as usize;
 			"local _BSSPKX_=({}) local _BSSPCX_=({}) BSS={} ",
 			ck_poison_e, phase_checksum_e, bss_static_src
 		);
+		// CCPD (plan sections 5/9): Luau mirrors of the runtime_mask
+		// derivations (bit-exact, float-safe). Injected pre-sanitize so
+		// identifier renaming stays consistent with the rest of the
+		// fragment; unused and absent when CCPD is off.
+		let mut rt_static_src = if ccpd {
+			rt_static_src.replace(
+				"local CDEC,bdec,newE,makefn,run",
+				&format!("local CDEC,bdec,newE,makefn,run {CCPD_HELPERS_LUA}"),
+			)
+		} else {
+			rt_static_src
+		};
 		rt_static_src = sanitize_frag(
 			&rt_static_src,
 			rng,

@@ -96,6 +96,10 @@ struct Ctx<'a> {
 	/// Phase 18 P1-3: distributed runtime string-cache canaries are only emitted
 	/// for guard-enabled builds (the canary fail path is the guard abort path).
 	canary: bool,
+	/// CCPD (rebased plan): when on, `finish` builds the per-function
+	/// CFG + block variants and emits the id8 directory plus the variant
+	/// bank as the code section. Off: no extra work, no rng draws.
+	ccpd: bool,
 }
 
 fn derive_upvalue_permutation(seed: u64, fn_index: usize, count: usize, scatter: bool) -> Vec<usize> {
@@ -124,6 +128,21 @@ fn const_key(c: &Const) -> (u8, u64) {
 				h = h.wrapping_mul(0x1_0000_0001_b3);
 			}
 			(3, h)
+		}
+	}
+}
+
+/// CCPD runtime-audit ground truth (rebased plan 15.2): with
+/// `OBSUCVIM_CCPD_AUDIT=<path>` set in an audit-enabled build, the
+/// per-function CFG (incoming edge sets, edge table, closure sites)
+/// is appended to that file; `tests/ccpd_runtime_audit_test.py`
+/// cross-checks the runtime edge log against it. Production builds
+/// compile the gate away (see `audit_gate`).
+fn ccpd_audit_dump(line: &str) {
+	if let Some(path) = crate::audit_gate::audit_var("OBSUCVIM_CCPD_AUDIT") {
+		use std::io::Write;
+		if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+			let _ = writeln!(f, "{line}");
 		}
 	}
 }
@@ -182,6 +201,7 @@ impl<'a> Ctx<'a> {
 		super_insn: bool,
 		str_clearable: &'a HashSet<Vec<u8>>,
 		canary: bool,
+		ccpd: bool,
 	) -> Ctx<'a> {
 		Ctx {
 			program,
@@ -206,6 +226,7 @@ impl<'a> Ctx<'a> {
 			cell_loops: Vec::new(),
 			str_clearable,
 			canary,
+			ccpd,
 		}
 	}
 
@@ -827,8 +848,13 @@ impl<'a> Ctx<'a> {
 		let chaff_mod = 65_521u64;
 		let mut chaff = (((fn_index as u64 + 1) * self.program.chaff_fn as u64)
 			% chaff_mod) as u64;
+		// CCPD: the artifact carries no SA..SD streams for the runtime
+		// qf fold to read, so the fold is defined as empty and the
+		// template emits an empty QP list; `chaff_fold` then reduces to
+		// the base value the runtime reproduces exactly. Legacy path
+		// (ccpd off) folds Nop lanes as before, byte-for-byte.
 		for (p, r) in recs.iter().enumerate() {
-			if r.kind == super::fuse::FKind::Base(Op::Nop) {
+			if !self.ccpd && r.kind == super::fuse::FKind::Base(Op::Nop) {
 				let logical = [r.a as u64, r.b as u64, r.c as u64, r.d as u64];
 				let physical = [
 					logical[perm[0] as usize],
@@ -906,6 +932,83 @@ impl<'a> Ctx<'a> {
 				osum2 = (osum2 + (pos % 4294967296) * vals[k]) % 4294967296;
 			}
 		}
+		// CCPD (rebased plan, Phase 1/4): with the final record stream and
+		// remapped leaders fixed, build the CFG + block variants and the
+		// id8 directory. The salt is domain-separated from the blob keys,
+		// exactly like the layout/chaff derivations above: toggling CCPD
+		// never perturbs the shared rng stream, and with CCPD off this
+		// block does not run at all.
+		let ccpd_data: Option<super::ccpd::CcpdFunctionData> = if self.ccpd {
+			let ccpd_salt = (self.program.blob_seed
+				^ self.program.blob_step.rotate_left(7)
+				^ 0x4343_5044)
+				% 268_435_456;
+			let fn_perm_code =
+				super::ccpd::perm_code_of(&perm).expect("slot permutation is a bijection");
+			Some(
+				super::ccpd::build_function_ccpd(
+					&recs,
+					&leaders,
+					&map,
+					self.program.s_indices[fn_index] as usize,
+					fn_index,
+					ccpd_salt,
+					fn_perm_code,
+				)
+				.unwrap_or_else(|e| {
+					crate::limits::fatal(&format!("input cannot be CCPD-encoded: {e}"))
+				}),
+			)
+		} else {
+			None
+		};
+		if let Some(data) = &ccpd_data {
+			// CCPD integrity anchor (replaces the legacy SA..SD lane
+			// sums, which do not exist in this representation): the
+			// runtime recomputes these over the payload bank bytes in
+			// parse_fn, and any bank tamper perturbs iz1/iz2/bz exactly
+			// like a legacy stream tamper does.
+			let (ck, ck2) = super::ccpd::bank_checksums(&data.bank);
+			osum = ck;
+			osum2 = ck2;
+			if crate::audit_gate::audit_var("OBSUCVIM_CCPD_AUDIT").is_some() {
+				ccpd_audit_dump(&format!(
+					"FN {} BLOCKS {} EDGES {} ENTRY {} SALT {}",
+					fn_index,
+					data.cfg.blocks.len(),
+					data.cfg.edges.len(),
+					data.entry_edge_id(),
+					data.build_salt
+				));
+				for b in &data.cfg.blocks {
+					let inc: Vec<String> = data
+						.cfg
+						.incoming(b.id)
+						.iter()
+						.map(|e| e.id.0.to_string())
+						.collect();
+					ccpd_audit_dump(&format!("FN {} INC {} {}", fn_index, b.id, inc.join(",")));
+				}
+				for e in &data.cfg.edges {
+					let tgt = if e.target_block == super::ccpd::EXIT_BLOCK {
+						"EXIT".to_string()
+					} else {
+						e.target_block.to_string()
+					};
+					ccpd_audit_dump(&format!(
+						"FN {} EDGE {} {:?} {} {}",
+						fn_index,
+						e.id.0,
+						e.kind,
+						e.source_pc.map(|pc| pc as u32).unwrap_or(0),
+						tgt
+					));
+				}
+				for (site, child) in &data.closure_sites {
+					ccpd_audit_dump(&format!("FN {fn_index} CSITE {site} {child}"));
+				}
+			}
+		}
 		let mut secs: Vec<(usize, Vec<u8>)> = Vec::new();
 		let mut head = Vec::new();
 		isa::encode_u16var(&mut head, nregs);
@@ -953,8 +1056,19 @@ impl<'a> Ctx<'a> {
 		let mut code = Vec::new();
 		isa::encode_u16var(&mut code, recs.len() as u16);
 		let s_idx = self.program.s_indices[fn_index] as usize;
-		super::fuse::encode_soa_fused(&recs, &map, &perm, s_idx, &mut code);
+		if let Some(data) = &ccpd_data {
+			// CCPD code representation (plan 8.3): the section carries
+			// the variant payload bank and nothing else; no canonical
+			// SoA stream of this function remains in the artifact.
+			isa::encode_varint(&mut code, data.bank.len() as u32);
+			code.extend_from_slice(&data.bank);
+		} else {
+			super::fuse::encode_soa_fused(&recs, &map, &perm, s_idx, &mut code);
+		}
 		secs.push((5, code));
+		if let Some(data) = &ccpd_data {
+			secs.push((8, data.encode_section()));
+		}
 		// V17 P1-b：fv 段（每函数融合词汇→tail-less handler 码位对，+fvm 掩码后的 u16 流）。
 		// super 开时恒发（含空词汇 len=0），与模板 NSECT 口径一致。
 		if self.super_insn {
@@ -1646,6 +1760,7 @@ fn compile_chunk(
 	super_insn: bool,
 	canary: bool,
 	proto_layout: bool,
+	ccpd: bool,
 ) -> VmProgram {
 	let str_clearable = crate::vmgen::strseal::sealed_clearable(block);
 	let total = count_fns_count(block);
@@ -1758,6 +1873,7 @@ fn compile_chunk(
         super_insn,
         &str_clearable,
         canary,
+        ccpd,
     );
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
@@ -2948,6 +3064,7 @@ let _ = has_vararg;
 			str_clearable: self.str_clearable,
 			super_insn: self.super_insn,
 			canary: self.canary,
+			ccpd: self.ccpd,
 		};
 		for (i, s) in ups.iter().enumerate() {
 			child.upvals.insert(*s, i as u16);
@@ -3097,8 +3214,9 @@ pub fn compile(
 	super_insn: bool,
 	canary: bool,
 	proto_layout: bool,
+	ccpd: bool,
 ) -> VmProgram {
-	compile_chunk(block, table, rng, lua51, scatter, super_insn, canary, proto_layout)
+	compile_chunk(block, table, rng, lua51, scatter, super_insn, canary, proto_layout, ccpd)
 }
 
 #[cfg(test)]
@@ -3215,7 +3333,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(4242);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, false, true);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, false, true, false);
 		assert!(prog.fv_sets.iter().any(|v| !v.is_empty()), "super on: vocab must be non-empty here");
 		for (fi, _) in prog.fns.iter().enumerate() {
 			let walk = section_walk(&prog, fi.min(prog.fns.len() - 1));
@@ -3356,7 +3474,7 @@ mod dbg {
 		};
 		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
 		let mut rng = crate::rng::Rng::new(77);
-		let program = compile_chunk(&block, &table, &mut rng, false, true, false, false, true);
+		let program = compile_chunk(&block, &table, &mut rng, false, true, false, false, true, false);
 		assert!(program.has_loadstr);
 		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
 		assert!(strings.iter().any(|s| s == &expected_cipher));
@@ -3419,7 +3537,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, false, true);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, false, true, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -3529,7 +3647,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(7);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, false, true);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, false, true, false);
 		let mut saw_scattered_operand = false;
 		let tags = &prog.proto_layouts;
 		for (fi, b) in prog.fns.iter().enumerate() {
@@ -3848,7 +3966,7 @@ print(lf(), a(), obj.f(), obj:m(7)(), r, i, z, acc, e, m, q(), o()()(), s)
 		let table = symtab::resolve(&mut block);
 		strseal::seal_literals(&mut block, &mut Rng::new(4242));
 		let counted = count_fns_count(&block);
-		let program = compile(&block, &table, &mut Rng::new(42), false, true, false, true, true);
+		let program = compile(&block, &table, &mut Rng::new(42), false, true, false, true, true, false);
 		(counted, program.fns.len() - 1)
 	}
 

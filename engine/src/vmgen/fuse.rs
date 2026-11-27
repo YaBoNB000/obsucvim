@@ -148,7 +148,13 @@ pub fn collapse(
 			|| rec.kind == FKind::Base(Op::Jt)
 		{
 			let tgt = rec.b as usize;
-			if tgt >= 1 && tgt <= n {
+			if tgt == n + 1 {
+				// 出口目标（旧流末尾后一格，尾部合并跳转）：塌缩后流
+				// 长度已变，必须重锚到新流末尾后一格，否则目标悬空。
+				// 遗留运行时从未真正执行这些死跳转，所以旧值长期
+				// 未被察觉；CCPD 的 CFG 覆盖全部记录，不能容忍。
+				rec.b = (out.len() + 1) as u16;
+			} else if tgt >= 1 && tgt <= n {
 				let nt = old_to_new[tgt - 1];
 				debug_assert!(nt != 0, "branch target fell onto a swallowed record");
 				rec.b = nt;
@@ -303,6 +309,22 @@ mod fuse_tests {
 		// 旧流: LK,M LK,M LK,M LoadK(7) Jmp(8) → 新流: F F F LoadK(4) Jmp(5)
 		let jmp = out.last().unwrap();
 		assert_eq!(jmp.b, 4, "branch to collapsed-adjacent target must remap");
+	}
+
+	#[test]
+	fn collapse_reanchors_exit_target() {
+		let mut code = tri_pairs();
+		code.push(Instr::ab(Op::Jmp, 0, 8)); // 旧 n=7，出口目标 = n+1 = 8
+		let st = stats(&code);
+		let vocab = select_vocab(&st, 4);
+		let leaders: BTreeSet<u16> = [1u16].into_iter().collect();
+		let (out, _map) = collapse(&code, &vocab, &leaders);
+		// 新流: F F F Jmp(4 条)，出口目标必须重锚为 new_n + 1 = 5，
+		// 而不是塌缩前的旧值 8（悬空目标）。
+		assert_eq!(out.len(), 4);
+		let jmp = out.last().unwrap();
+		assert!(matches!(jmp.kind, FKind::Base(Op::Jmp)));
+		assert_eq!(jmp.b, 5, "exit target must re-anchor to one past the fused stream");
 	}
 
 	#[test]
