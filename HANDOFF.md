@@ -1109,3 +1109,18 @@ stock Luau 输出 `6`。未运行 trace；现可提交并推送 guard 修正及�
 Phase 18 审查阶段（P4）于 2026-11-25 完成，共 11 个 Task，全部实施并验证生效（含 3 项按设计明确声明为 best-effort 范围之外：P1-2 循环回边/闭包捕获的常量不清空、P1-3 透明转发包装器类 hook 不拦截、P2-1 「默认恒定生效的融合子集」未实施（0 个可加候选））。
 
 - 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
+
+## 19. obf_lua 技术提取规范 Phase A–G（2026-11-24/26）
+
+- 已按 `obf_lua_tech_extraction_agent_spec.md` §6 完成 Phase A–G：审计见
+  `BASELINE_SOURCE_AUDIT.md`，最终审查见 `OBF_LUA_TECH_REVIEW.md`（含
+  ACTIVE/PARTIAL/NOT_WIRED 状态矩阵、验证证据与不诚实项声明）。
+- 三处潜伏缺陷已修复：super-instruction 码位碰撞（`isa.rs` tramp
+  44→48/tail 48→52）、计时守卫绝对下限（`template.rs`）、charhook
+  篡改 fail-closed（`v15.rs` scaffold，需 guard 构建）；prod_audit_gate
+  与 string_cache SC 钩子的既有矛盾已调和（生成时 env opt-in）。
+- 已知未修（诚实记录）：`strings.lua` seed 1234 单常量错位
+  （`table.concat` 输出 `xyA` 应为 `xyz`），与本轮改动面隔离
+  （`--no-super`/`--no-proto-layout`/light/lua51 均复现），须按常量
+  重物化链路单独立项。
+- 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
