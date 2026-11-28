@@ -353,26 +353,6 @@ pub fn encode_soa_for(code: &[Instr], map: &OpMap, slot_perm: &[u8; 4], s_idx: u
 	}
 }
 
-#[rustfmt::skip]
-pub fn unused_operands(op: Op) -> [bool; 4] {
-	match op {
-		Op::Jmp => [true, false, true, true],
-		Op::Jf | Op::Jt | Op::LoadNil | Op::LoadK | Op::Move
-		| Op::Unm | Op::Not | Op::Len | Op::Closure
-		| Op::VarArgTabN | Op::GetGlobal | Op::SetGlobal
-		| Op::GetUp | Op::SetUp => [false, false, true, true],
-		Op::Add | Op::Sub | Op::Mul | Op::Div | Op::Mod | Op::Pow
-		| Op::Concat | Op::Lt | Op::Le | Op::Gt | Op::Ge | Op::Eq
-		| Op::Ne | Op::Idiv | Op::GetTab | Op::SetTab | Op::TabN => [false, false, false, true],
-		Op::NewTab | Op::VarArgTab | Op::VarArgC => [false, true, true, true],
-		Op::CallT | Op::Call | Op::CallM | Op::Return | Op::MkStr | Op::LoadStr => [false, false, false, false],
-		// a = canary id, b/c/d unused
-		Op::Canary => [false, true, true, true],
-		Op::CallE => [false, false, true, false],
-		Op::Nop => [true, true, true, true],
-	}
-}
-
 
 #[derive(Debug, Clone)]
 pub enum Const {
@@ -749,6 +729,86 @@ mod tests {
 	}
 
 	#[test]
+	fn unused_lanes_are_derived_from_roles_for_every_op() {
+		for &op in ALL_OPS.iter() {
+			let m = op.meta();
+			let roles = m.roles();
+			let unused = m.unused_lanes();
+			for lane in 0..4 {
+				// The derivation itself: unused iff role is Unused.
+				assert_eq!(
+					unused[lane],
+					roles[lane] == OperandRole::Unused,
+					"{op:?} lane {lane}"
+				);
+				// Scatter consistency: unused lanes are never remapped;
+				// register lanes always go through the register sigma.
+				match roles[lane] {
+					OperandRole::Unused => {
+						assert_eq!(
+							roles[lane].scatter(),
+							ScatterMap::Identity,
+							"{op:?} lane {lane}"
+						)
+					}
+					OperandRole::RegRead | OperandRole::RegWrite | OperandRole::RegRange => {
+						assert_eq!(
+							roles[lane].scatter(),
+							ScatterMap::RegisterZeroBased,
+							"{op:?} lane {lane}"
+						)
+					}
+					OperandRole::ConstIdx => {
+						assert_eq!(
+							roles[lane].scatter(),
+							ScatterMap::ConstantPermutation,
+							"{op:?} lane {lane}"
+						)
+					}
+					OperandRole::UpvalIdx => {
+						assert_eq!(
+							roles[lane].scatter(),
+							ScatterMap::UpvaluePermutation,
+							"{op:?} lane {lane}"
+						)
+					}
+					_ => assert_eq!(
+						roles[lane].scatter(),
+						ScatterMap::Identity,
+						"{op:?} lane {lane}"
+					),
+				}
+			}
+		}
+	}
+
+	#[test]
+	fn unused_lane_semantics_match_emitters_and_handlers() {
+		// Jmp: only the jump target in b is semantic.
+		assert_eq!(Op::Jmp.meta().unused_lanes(), [true, false, true, true]);
+		// Nop: pure noise, every lane is fill.
+		assert_eq!(Op::Nop.meta().unused_lanes(), [true, true, true, true]);
+		// MkStr packs bytes+length into b/c/d: no lane may be noise-filled.
+		assert_eq!(Op::MkStr.meta().unused_lanes(), [false, false, false, false]);
+		// Regression pins for the three lanes the legacy table and the
+		// metadata once disagreed on: the emitters write constant 0 and
+		// the handlers never read these lanes, so they are unused.
+		assert_eq!(Op::VarArgTab.meta().unused_lanes(), [false, true, true, true]);
+		assert_eq!(Op::VarArgC.meta().unused_lanes(), [false, true, true, true]);
+		assert_eq!(Op::CallE.meta().unused_lanes(), [false, false, true, false]);
+		// ...while CallM lane c is the result count and stays semantic.
+		assert_eq!(Op::CallM.meta().unused_lanes(), [false, false, false, false]);
+		// Call/CallT/Return/LoadStr use all four lanes.
+		assert_eq!(Op::Call.meta().unused_lanes(), [false; 4]);
+		assert_eq!(Op::CallT.meta().unused_lanes(), [false; 4]);
+		assert_eq!(Op::Return.meta().unused_lanes(), [false; 4]);
+		assert_eq!(Op::LoadStr.meta().unused_lanes(), [false; 4]);
+		// Jumps carry their target in b only.
+		assert_eq!(Op::Jf.meta().unused_lanes(), [false, false, true, true]);
+		assert_eq!(Op::Jt.meta().unused_lanes(), [false, false, true, true]);
+	}
+
+	#[test]
 	fn const_encode_roundtrips_ieee754_signed_zero_nan_inf_and_binary_strings() {
 		let samples = vec![
 			Const::Nil,
@@ -961,6 +1021,24 @@ impl OperandRole {
 impl OpMeta {
 	pub const fn roles(self) -> [OperandRole; 4] {
 		[self.role_a, self.role_b, self.role_c, self.role_d]
+	}
+
+	/// Lanes that carry no semantic value for this op, mechanically
+	/// derived from the canonical roles: a lane is unused iff its role is
+	/// `OperandRole::Unused`.  This is the ONLY unused-lane definition in
+	/// the tree — the noise/NOP fill in the compiler and the pre-scatter
+	/// zero-lane check in the verifier both consume it.  (It replaces a
+	/// legacy hand-maintained per-op table that had drifted from
+	/// `Op::meta()` on VarArgTab/VarArgC lane b and CallE lane c; those
+	/// metas now state the truth: the emitter always writes 0 there and
+	/// no handler reads the lane.)
+	pub const fn unused_lanes(self) -> [bool; 4] {
+		[
+			matches!(self.role_a, OperandRole::Unused),
+			matches!(self.role_b, OperandRole::Unused),
+			matches!(self.role_c, OperandRole::Unused),
+			matches!(self.role_d, OperandRole::Unused),
+		]
 	}
 }
 
@@ -1331,8 +1409,12 @@ impl Op {
 				role_b: ProtoIdx,
 				role_c: Unused,
 				role_d: Unused,
-				// Consumes `nups` inline capture pseudo-instructions by advancing E.ip!
-				pc_effect: ConditionalJmp,
+				// Consumes `nups` inline capture pseudo-instructions by
+				// advancing E.ip — control still falls through to the
+				// next record, so this is Fallthrough, not a jump (no
+				// consumer ever read the old ConditionalJmp value; the
+				// only pc_effect consumer matches FrameReturn).
+				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: true,
 				multiret_sensitive: false,
@@ -1353,13 +1435,27 @@ impl Op {
 				fuse_head_ok: false,
 				fuse_tail_ok: false,
 			},
-			Op::CallE | Op::CallM => OpMeta {
+			// CallE and CallM share (base, nfixed, ?, flags) shape but NOT
+			// lane c semantics, so they cannot share one metadata literal:
+			// CallM c is the result count (255 = multiret), while CallE c
+			// is emitted as a constant 0 and never read by the handler.
+			Op::CallE => OpMeta {
 				op: self,
-				name: match self {
-					Op::CallE => "CallE",
-					Op::CallM => "CallM",
-					_ => "",
-				},
+				name: "CallE",
+				role_a: CallBase,
+				role_b: ImmVal,
+				role_c: Unused,
+				role_d: ImmVal,
+				pc_effect: FrameTransfer,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: true,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::CallM => OpMeta {
+				op: self,
+				name: "CallM",
 				role_a: CallBase,
 				role_b: ImmVal,
 				role_c: ImmVal,
@@ -1389,7 +1485,9 @@ impl Op {
 				op: self,
 				name: "VarArgTab",
 				role_a: RegWrite,
-				role_b: ImmVal,
+				// b is emitted as a constant 0 and never read by the
+				// handler (the vararg count arrives via frame state).
+				role_b: Unused,
 				role_c: Unused,
 				role_d: Unused,
 				pc_effect: Fallthrough,
@@ -1403,7 +1501,9 @@ impl Op {
 				op: self,
 				name: "VarArgC",
 				role_a: RegWrite,
-				role_b: ImmVal,
+				// b is emitted as a constant 0 and never read by the
+				// handler (the vararg count arrives via frame state).
+				role_b: Unused,
 				role_c: Unused,
 				role_d: Unused,
 				pc_effect: Fallthrough,

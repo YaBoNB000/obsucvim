@@ -277,11 +277,13 @@ pub fn verify_pre_scatter(
 			return err(function, pc, "Jmp reserved lane a must be zero before noise fill");
 		}
 		verify_record_roles(function, pc, ins.op, ins.operands(), code.len(), &limits)?;
-		let unused = super::isa::unused_operands(ins.op);
+		// Unused lanes are derived from the canonical OpMeta roles (a
+		// lane is unused iff its role is Unused).  MkStr needs no special
+		// case here: all four of its lanes carry packed data, so none of
+		// them is marked Unused in the metadata.
+		let unused = ins.op.meta().unused_lanes();
 		for lane in 0..4 {
-			if unused[lane] && ins.operands()[lane] != 0 && ins.op != Op::MkStr {
-				// MkStr uses all four lanes as packed bytes/length after
-				// conversion, despite the legacy unused-lane table entry.
+			if unused[lane] && ins.operands()[lane] != 0 {
 				return err(function, pc, format!("unused lane {} is non-zero before noise fill", lane + 1));
 			}
 		}
@@ -373,19 +375,101 @@ pub fn verify_single(function: usize, ins: &Instr, limits: &VerifierLimits) -> V
 	verify_record_roles(function, 1, ins.op, ins.operands(), 1, limits)
 }
 
+/// Structural validation of one op's canonical metadata.  This is the
+/// single validation path behind `ensure_metadata_complete`, which the
+/// compiler runs on the real compilation path (see `vmgen::compile`);
+/// it is also directly unit-testable with deliberately corrupted
+/// metadata.  Every rule is an invariant the emitter, handlers, scatter
+/// pass, and this verifier already rely on — a violation means the
+/// metadata table itself is lying about the instruction encoding, so
+/// compilation must fail closed instead of silently continuing.
+pub fn validate_op_meta(op: Op, meta: &super::isa::OpMeta) -> VerifyResult<()> {
+	let bad = |msg: &str| {
+		Err(VerificationError::global(format!(
+			"incomplete ISA metadata for {op:?}: {msg}"
+		)))
+	};
+	if meta.op != op {
+		return bad("meta.op does not match the opcode it describes");
+	}
+	let idx = super::isa::op_index(op);
+	if meta.name.is_empty() || meta.name != super::isa::OP_NAMES[idx] {
+		return bad("meta.name does not match OP_NAMES[op_index]");
+	}
+	let roles = meta.roles();
+	let unused = meta.unused_lanes();
+	for lane in 0..4 {
+		if unused[lane] != (roles[lane] == OperandRole::Unused) {
+			return bad("unused-lane derivation disagrees with lane role");
+		}
+		if unused[lane] && roles[lane].scatter() != ScatterMap::Identity {
+			return bad("an unused lane must never be scatter-remapped");
+		}
+	}
+	let jump_targets = roles.iter().filter(|&&r| r == OperandRole::JumpTarget).count();
+	match meta.pc_effect {
+		PcEffect::UnconditionalJmp | PcEffect::ConditionalJmp => {
+			if jump_targets != 1 {
+				return bad("a jump op must have exactly one JumpTarget lane");
+			}
+		}
+		PcEffect::Fallthrough | PcEffect::FrameTransfer | PcEffect::FrameReturn => {
+			if jump_targets != 0 {
+				return bad("a non-jump op must not have a JumpTarget lane");
+			}
+		}
+	}
+	if (meta.pc_effect == PcEffect::UnconditionalJmp) != (op == Op::Jmp) {
+		return bad("only Jmp may be an unconditional jump");
+	}
+	if (meta.pc_effect == PcEffect::FrameReturn) != (op == Op::Return) {
+		return bad("only Return may transfer out of the frame");
+	}
+	if (op == Op::Nop) != unused.iter().all(|&u| u) {
+		return bad("Nop must have all lanes unused; every other op uses at least one lane");
+	}
+	for (lane, &role) in roles.iter().enumerate() {
+		match role {
+			OperandRole::CallBase => {
+				if lane != 0 || meta.pc_effect != PcEffect::FrameTransfer {
+					return bad("CallBase is only legal as lane a of a frame-transfer call op");
+				}
+			}
+			OperandRole::RegBase => {
+				if lane != 0 {
+					return bad("RegBase is only legal as lane a (base of a base+count range)");
+				}
+			}
+			OperandRole::ProtoIdx => {
+				if op != Op::Closure || lane != 1 {
+					return bad("ProtoIdx is only legal as Closure lane b");
+				}
+			}
+			_ => {}
+		}
+	}
+	if meta.pc_effect == PcEffect::FrameTransfer && roles[0] != OperandRole::CallBase {
+		return bad("a frame-transfer op must take its call base in lane a");
+	}
+	Ok(())
+}
+
+/// Validate the metadata of every opcode in the ISA.  Called once from
+/// `vmgen::compile` so a broken metadata table fails the build on the
+/// real compilation path, not just in unit tests.
 pub fn ensure_metadata_complete() -> VerifyResult<()> {
-	for op in super::isa::ALL_OPS {
-		let meta = op.meta();
-		if meta.op != op || meta.name.is_empty() {
-			return Err(VerificationError::global(format!("incomplete ISA metadata for {op:?}")));
+	if super::isa::ALL_OPS.len() != super::isa::N_OPS {
+		return Err(VerificationError::global(
+			"ISA opcode table length does not match N_OPS".to_string(),
+		));
+	}
+	for (idx, &op) in super::isa::ALL_OPS.iter().enumerate() {
+		if super::isa::op_index(op) != idx || Op::from_index(idx) != Some(op) {
+			return Err(VerificationError::global(format!(
+				"ISA opcode table is not index-consistent at {op:?}"
+			)));
 		}
-		for role in meta.roles() {
-			let _ = role.scatter();
-		}
-		// Every semantic lane must agree on whether it is unused.  The
-		// fourth lane is new in the unified table; legacy unused_operands
-		// covers the compiler's noise-fill contract.
-		let _ = ScatterMap::Identity;
+		validate_op_meta(op, &op.meta())?;
 	}
 	Ok(())
 }
@@ -403,6 +487,93 @@ mod tests {
 	fn metadata_is_complete_for_all_ops() {
 		ensure_metadata_complete().unwrap();
 		assert_eq!(super::super::isa::ALL_OPS.len(), 44);
+	}
+
+	#[test]
+	fn invalid_metadata_is_rejected_by_the_validation_path() {
+		// Every real opcode's metadata must validate.
+		for &op in super::super::isa::ALL_OPS.iter() {
+			assert!(validate_op_meta(op, &op.meta()).is_ok(), "{op:?}");
+		}
+		// (a) name/op identity corruption
+		let mut m = Op::LoadK.meta();
+		m.name = "Nope";
+		assert!(validate_op_meta(Op::LoadK, &m).is_err());
+		let mut m = Op::LoadK.meta();
+		m.op = Op::Move;
+		assert!(validate_op_meta(Op::LoadK, &m).is_err());
+		// (b) a JumpTarget lane on a fallthrough op
+		let mut m = Op::LoadK.meta();
+		m.role_c = OperandRole::JumpTarget;
+		assert!(validate_op_meta(Op::LoadK, &m).is_err());
+		// (c) a jump pc_effect with no JumpTarget lane (the historical
+		// Closure mislabel)
+		let mut m = Op::Closure.meta();
+		m.pc_effect = PcEffect::ConditionalJmp;
+		assert!(validate_op_meta(Op::Closure, &m).is_err());
+		// (d) all-unused lanes on a non-Nop op, and a used lane on Nop
+		let mut m = Op::Move.meta();
+		m.role_a = OperandRole::Unused;
+		m.role_b = OperandRole::Unused;
+		assert!(validate_op_meta(Op::Move, &m).is_err());
+		let mut m = Op::Nop.meta();
+		m.role_a = OperandRole::RegWrite;
+		assert!(validate_op_meta(Op::Nop, &m).is_err());
+		// (e) FrameReturn on a non-Return op
+		let mut m = Op::LoadK.meta();
+		m.pc_effect = PcEffect::FrameReturn;
+		assert!(validate_op_meta(Op::LoadK, &m).is_err());
+		// (f) a frame-transfer op without CallBase in lane a
+		let mut m = Op::Call.meta();
+		m.role_a = OperandRole::RegWrite;
+		assert!(validate_op_meta(Op::Call, &m).is_err());
+		// (g) CallBase away from lane a
+		let mut m = Op::Call.meta();
+		m.role_c = OperandRole::CallBase;
+		assert!(validate_op_meta(Op::Call, &m).is_err());
+		// (h) ProtoIdx outside Closure lane b
+		let mut m = Op::LoadK.meta();
+		m.role_b = OperandRole::ProtoIdx;
+		assert!(validate_op_meta(Op::LoadK, &m).is_err());
+	}
+
+	#[test]
+	fn pre_scatter_unused_lane_check_uses_metadata() {
+		let consts = vec![Const::Num(1.0)];
+		let run = |code: Vec<Instr>| {
+			verify_pre_scatter(0, &code, &consts, 0, 0, 16, false)
+		};
+		// Move lane c is Unused in the metadata: a non-zero value before
+		// noise fill is a compiler bug and must be rejected.
+		assert!(run(vec![
+			Instr::abcd(Op::Move, 0, 0, 7, 0),
+			Instr::abcd(Op::Return, 0, 0, 0, 0),
+		])
+		.is_err());
+		// VarArgTab lane b is unused (constant 0 from the emitter).
+		assert!(run(vec![
+			Instr::abcd(Op::VarArgTab, 0, 3, 0, 0),
+			Instr::abcd(Op::Return, 0, 0, 0, 0),
+		])
+		.is_err());
+		assert!(run(vec![
+			Instr::abcd(Op::VarArgTab, 0, 0, 0, 0),
+			Instr::abcd(Op::Return, 0, 0, 0, 0),
+		])
+		.is_ok());
+		// CallE lane c is unused; CallM lane c (result count) is not.
+		assert!(run(vec![
+			Instr::abcd(Op::CallE, 0, 0, 9, 0),
+			Instr::abcd(Op::Return, 0, 0, 0, 0),
+		])
+		.is_err());
+		// MkStr carries packed bytes/length in b/c/d — no special case
+		// is needed because the metadata marks every lane used.
+		assert!(run(vec![
+			Instr::abcd(Op::MkStr, 0, 500, 600, 700),
+			Instr::abcd(Op::Return, 0, 0, 0, 0),
+		])
+		.is_ok());
 	}
 
 	#[test]

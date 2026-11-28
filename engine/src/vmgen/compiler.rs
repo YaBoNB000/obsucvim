@@ -762,10 +762,7 @@ impl<'a> Ctx<'a> {
 				.collect(),
 		};
 		fn rec_unused(k: super::fuse::FKind) -> [bool; 4] {
-			match k {
-				super::fuse::FKind::Base(op) => isa::unused_operands(op),
-				super::fuse::FKind::Fused(_) => [false, false, false, false],
-			}
+			record_unused_lanes(&k)
 		}
 		let nops: Vec<u16> = recs
 			.iter()
@@ -3207,6 +3204,19 @@ fn call_arg_info(e: &Expr) -> (u16, bool) {
 }
 
 
+/// Which lanes of a final record carry no semantic value and may be
+/// filled with noise.  Fused records pack [X.a, X.b, Y.a, Y.b] with no
+/// unused lanes by construction; plain records derive the mask from
+/// the canonical `OpMeta` roles (a lane is unused iff its role is
+/// `OperandRole::Unused`).  This is the same definition the bytecode
+/// verifier uses — there is no second unused-lane table.
+fn record_unused_lanes(kind: &super::fuse::FKind) -> [bool; 4] {
+	match kind {
+		super::fuse::FKind::Base(op) => op.meta().unused_lanes(),
+		super::fuse::FKind::Fused(_) => [false, false, false, false],
+	}
+}
+
 pub fn compile(
 	block: &Block,
 	table: &SymTable,
@@ -3218,6 +3228,15 @@ pub fn compile(
 	proto_layout: bool,
 	ccpd: bool,
 ) -> VmProgram {
+	// Stage 1: OpMeta is the single source of operand-role truth for
+	// the scatter pass, the noise fill, and the bytecode verifier.
+	// Validate the whole table once per compilation, on the real
+	// compilation path, so a broken metadata entry fails closed here
+	// instead of corrupting artifacts downstream.  (44 ops; the cost
+	// is negligible next to compilation itself.)
+	if let Err(e) = super::verify::ensure_metadata_complete() {
+		crate::limits::fatal(&e.to_string());
+	}
 	compile_chunk(block, table, rng, lua51, scatter, super_insn, canary, proto_layout, ccpd)
 }
 
@@ -3599,6 +3618,33 @@ mod dbg {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn record_unused_lanes_come_from_opmeta() {
+		// Noise fill mask for plain records is exactly the metadata
+		// derivation — the same definition the verifier checks against.
+		for &op in isa::ALL_OPS.iter() {
+			assert_eq!(
+				record_unused_lanes(&fuse::FKind::Base(op)),
+				op.meta().unused_lanes(),
+				"{op:?}"
+			);
+		}
+		// A Nop record is pure noise: all four lanes may be filled.
+		assert_eq!(
+			record_unused_lanes(&fuse::FKind::Base(Op::Nop)),
+			[true, true, true, true]
+		);
+		// Fused records pack [X.a, X.b, Y.a, Y.b] with no unused lanes.
+		assert_eq!(
+			record_unused_lanes(&fuse::FKind::Fused(0)),
+			[false, false, false, false]
+		);
+		assert_eq!(
+			record_unused_lanes(&fuse::FKind::Fused(3)),
+			[false, false, false, false]
+		);
 	}
 
 	#[test]

@@ -1316,3 +1316,28 @@ Stage 2（有界 trap）推进到全量门禁验收，并修复验收过程中�
   二进制需以 `cargo build --release --features audit-hooks
   --target-dir engine/target/audit` 构建后，run_tests.sh 的 audit
   依赖段才有 TSRC 转储可用（缺失时回退 release 二进制会假失败）。
+
+### 20.8 Stage 1 收口：OpMeta 成为唯一操作数角色真源（2026-11-28）
+
+- 删除 `isa::unused_operands()` 硬编码表（44 op × 4 车道）。未用车道
+  现由 `OpMeta::unused_lanes()` 机械推导（`role == Unused`），编译器
+  噪声填充（`record_unused_lanes`）与 verifier 的 pre-scatter 零车道
+  检查共用同一定义；verifier 中 MkStr 的硬编码特例随之删除（其四道
+  在元数据中本就全部在用）。
+- 对账发现并修正四处元数据失真（均以发射点+handler 为真值，行为
+  不变）：VarArgTab/VarArgC 的 b 道（恒 0、从不被读）ImmVal→Unused；
+  CallE 的 c 道同样改为 Unused，为此拆分了 CallE|CallM 共用字面量
+  （CallM 的 c 是结果数，必须保留 ImmVal）；Closure 的 pc_effect
+  ConditionalJmp→Fallthrough（其唯一消费者只读 FrameReturn）。
+- `verify::validate_op_meta()` 落地结构不变量（name/index 一致、
+  JumpTarget 与 pc_effect 对应、CallBase/RegBase/ProtoIdx 位置、
+  Nop 全未用、未用道不被 scatter 重映射）；`ensure_metadata_complete`
+  在 `vmgen::compile()` 入口真实执行，失败走 `limits::fatal`。
+- 新增 5 个穷尽式测试：isa 推导×scatter 一致性、发射/handler 语义
+  钉板、verifier 损坏元数据拒绝（8 类变异）、pre-scatter 未用车道
+  检查、compiler 噪声掩码同源。Rust 161+4；run_tests.sh 192/0；
+  工件与提交示例逐字节一致（example.txt 未重生，无行为变化）。
+- 备注：全仓无 rustfmt.toml 且基线 `cargo fmt --check` 有 672 处
+  既有差异（手维护 tab 风格），不作为门禁；新增代码按 rustfmt
+  结构书写、缩进沿用 tab。rustfmt 1.88 已补进 `.tools/bin`
+  （`@rustbin/rustfmt` + `cargo-fmt`）。
