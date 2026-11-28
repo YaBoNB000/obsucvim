@@ -1186,3 +1186,18 @@ payload 边界）、本节所在提交（P3 audit 回归）。全部为内部自
   关，仍未修。
 - 结论性质与既往一致：以上均为内部自测指标，不代表抵御外部
   独立逆向分析的能力。
+
+### 20.4 example 重生成（2026-11-28，用户指令）
+
+根目录 `example.txt` 已用修复后引擎重新生成，取代 §16.1 中修复前
+（`1036b91`）的 CCPD 口径——输入仍为 `print(777)\n`（11 B），命令为
+`engine/target/release/obsucvim --preset v15 --dialect luau --seed 42 --ccpd print777.lua example.txt`
+（引擎版本 `f5c056d`）。新产物 **121,800 B**，SHA-256
+`a0fb76fac8e953626e93c9e70ac273701ca42ebb0a35325c71b6a2962acf7bb6`；
+与修复前口径（116,503 B）字节相异，反映 CCPD 运行时文本已更新
+（EXIT 分流、payload 有界解码、parse 目录校验）。验证：同 seed
+重复生成逐字节相同；stock Luau 运行输出 `777`（exit 0）；
+`luau-compile` 通过（exit 0）；`v15_fingerprint.py example.txt`
+**32/32 PASS**、`security_fingerprint.py example.txt <print777 源>`
+**5/5 PASS**。关闭态参考不变，仍以
+`engine/examples/basics.v15.luau.lua`（seed 42）为准。
