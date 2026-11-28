@@ -1428,3 +1428,28 @@ Stage 2（有界 trap）推进到全量门禁验收，并修复验收过程中�
   exit_edge 64/64、runtime_audit 34/34、guard 80/0、plaintext
   88/88；新旧二进制 60 次语料编译逐字节一致；`cargo fmt --check`
   与基线同为 rc=1（§20.8 既有状况）。
+
+### 20.11 复合赋值按读+写建模（2026-11-28）
+
+- 起点 `a988dff`，改动仍只 `engine/src/vmgen/verify.rs`（+ 本节）。
+- 赋值分类由布尔 `is_assignment_at` 细化为三态
+  `assignment_kind_at`（None / Plain / Compound）：普通 `=` 只记
+  写；Luau 复合赋值（`+= -= *= /= %= ^= ..=`）是 read-modify-
+  write，提取器同时记寄存器读与写。死局部检测中的「赋值目标」
+  判定保持不变（`is_assignment_at` 改为三态的薄包装）：复合赋值
+  左侧仍算赋值目标而非既有值的消费。
+- 测试三分：`stage11_extract_access_distinguishes_assignment_
+  kinds` 分别断言普通赋值（写且不读，含 `V[a] = V[b]` 的源道纯
+  读）、复合赋值七式（读且写）、普通读易混式（`==`/`>=`/`- 1`/
+  `.. y` 只读）。混合访问规则测试增加端到端一项：
+  `extract_access("V[a + 1] += 1")` 的结果被 RegWrite 拒绝、被
+  RegRead（计数器语义）接受——即 RegWrite 不接受复合赋值产生的
+  混合访问，与 §20.10 的严格化一致。
+- 当前 44 个 handler 均无复合赋值，真实证据表不变（全部 stage11
+  测试与 176 道验证照常通过）；本轮为提取器语义精确化，未改
+  handler、runtime 与任何编码，example.txt 未重生，新旧二进制
+  60 次语料编译逐字节一致。
+- 本轮实测：`cargo test --release` 169+4 通过 0 失败；
+  `bash engine/tests/run_tests.sh` 192/0 rc=0；vm_tamper 60/0、
+  ccpd_diff 274/274、payload_bounds 12/12、exit_edge 64/64、
+  runtime_audit 34/34、guard 80/0、plaintext 88/88。

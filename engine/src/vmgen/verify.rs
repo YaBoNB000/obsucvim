@@ -400,10 +400,10 @@ pub fn verify_single(function: usize, ins: &Instr, limits: &VerifierLimits) -> V
 // Lane aliases (`local base = a + 1`, `local kf = b`, `local s = S[..]`)
 // are resolved: an alias counts for its lane when it heads a bracket
 // index expression.  String literals and `--` / `--[[ ]]` comments are
-// stripped in one lexical pass, assignments include the Luau compound
-// forms (`+=`, `..=`, ...), and lanes that occur only inside a
-// never-read dead local (the Nop noise shapes) do not count as
-// accesses.
+// stripped in one lexical pass; a plain `=` counts as a write while a
+// Luau compound assignment (`+=`, `..=`, ...) counts as a read *and* a
+// write of the slot; and lanes that occur only inside a never-read
+// dead local (the Nop noise shapes) do not count as accesses.
 // ---------------------------------------------------------------------
 
 /// How one operand lane is actually accessed by an op's handler bodies,
@@ -618,20 +618,59 @@ fn strip_strings_and_comments(text: &str) -> Vec<char> {
 	out
 }
 
-/// Is the token at `i` an assignment operator?  Plain `=` (but not the
-/// `==` comparison) plus the Luau compound forms `+= -= *= /= %= ^=`
-/// and `..=`.  A `-`/`..` that is merely an operator (`V[a] - 1`,
-/// `V[a] .. x`) is not an assignment.
-fn is_assignment_at(chars: &[char], i: usize) -> bool {
+/// Which assignment operator, if any, starts at `i`?  A plain `=` (but
+/// not the `==` comparison) overwrites its target.  The Luau compound
+/// forms `+= -= *= /= %= ^=` and `..=` *read* the target's old value
+/// and then write the updated one — semantically a read-modify-write,
+/// so the extractor reports both accesses for them.  A `-`/`..` that
+/// is merely an operator (`V[a] - 1`, `V[a] .. x`) is no assignment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AssignKind {
+	/// No assignment operator here (plain read context).
+	None,
+	/// `=` — write only.
+	Plain,
+	/// `+=`, `..=`, ... — read and write.
+	Compound,
+}
+
+fn assignment_kind_at(chars: &[char], i: usize) -> AssignKind {
 	if i >= chars.len() {
-		return false;
+		return AssignKind::None;
 	}
 	match chars[i] {
-		'=' => chars.get(i + 1) != Some(&'='),
-		'+' | '-' | '*' | '/' | '%' | '^' => chars.get(i + 1) == Some(&'='),
-		'.' => chars.get(i + 1) == Some(&'.') && chars.get(i + 2) == Some(&'='),
-		_ => false,
+		'=' => {
+			if chars.get(i + 1) == Some(&'=') {
+				AssignKind::None
+			} else {
+				AssignKind::Plain
+			}
+		}
+		'+' | '-' | '*' | '/' | '%' | '^' => {
+			if chars.get(i + 1) == Some(&'=') {
+				AssignKind::Compound
+			} else {
+				AssignKind::None
+			}
+		}
+		'.' => {
+			if chars.get(i + 1) == Some(&'.') && chars.get(i + 2) == Some(&'=') {
+				AssignKind::Compound
+			} else {
+				AssignKind::None
+			}
+		}
+		_ => AssignKind::None,
 	}
+}
+
+/// Is the token at `i` any assignment operator (plain or compound)?
+/// Used where only the target-vs-read distinction matters, e.g. when
+/// classifying occurrences of a local for deadness: an occurrence on
+/// the left of `+=` is an assignment target, not a consumption of a
+/// previously computed value.
+fn is_assignment_at(chars: &[char], i: usize) -> bool {
+	assignment_kind_at(chars, i) != AssignKind::None
 }
 
 /// Index of the `]` matching the `[` at `open`, honoring nesting.
@@ -851,11 +890,23 @@ fn extract_access(text: &str) -> [LaneAccess; 4] {
 				BracketKind::Upval => acc[lane].upval = true,
 				BracketKind::Reg => {
 					let after = skip_ws(&chars, close + 1);
-					let write = !is_slot_map && is_assignment_at(&chars, after);
-					if write {
-						acc[lane].reg_write = true;
+					let assign = if is_slot_map {
+						AssignKind::None
 					} else {
-						acc[lane].reg_read = true;
+						assignment_kind_at(&chars, after)
+					};
+					match assign {
+						// Plain `=` overwrites the slot without
+						// consuming its old value.
+						AssignKind::Plain => acc[lane].reg_write = true,
+						// Compound assignment is a read-modify-
+						// write: the old slot value feeds the
+						// update, so both accesses are real.
+						AssignKind::Compound => {
+							acc[lane].reg_read = true;
+							acc[lane].reg_write = true;
+						}
+						AssignKind::None => acc[lane].reg_read = true,
 					}
 					if range {
 						acc[lane].reg_range = true;
@@ -1691,8 +1742,21 @@ mod tests {
 	}
 
 	#[test]
-	fn stage11_extract_access_compound_assignment_is_a_write() {
-		// Luau compound assignments write the slot just like `=`.
+	fn stage11_extract_access_distinguishes_assignment_kinds() {
+		// (a) Plain assignment overwrites the slot: write, no read.
+		let acc = extract_access("V[a + 1] = 1");
+		assert!(
+			acc[0].reg_write && !acc[0].reg_read,
+			"plain assignment must be write-only: {acc:?}"
+		);
+		// Cross-lane: the source of a plain assignment is a pure
+		// read, the destination stays write-only.
+		let acc = extract_access("V[a + 1] = V[b + 1]");
+		assert!(acc[0].reg_write && !acc[0].reg_read, "{acc:?}");
+		assert!(acc[1].reg_read && !acc[1].reg_write, "{acc:?}");
+
+		// (b) Luau compound assignment is a read-modify-write: the
+		// old slot value feeds the update, so both accesses count.
 		for text in [
 			"V[a + 1] += 1",
 			"V[a + 1] -= 1",
@@ -1704,11 +1768,12 @@ mod tests {
 		] {
 			let acc = extract_access(text);
 			assert!(
-				acc[0].reg_write && !acc[0].reg_read,
-				"{text}: compound assignment must count as a register write"
+				acc[0].reg_write && acc[0].reg_read,
+				"{text}: compound assignment must count as read AND write"
 			);
 		}
-		// Look-alikes that are plain reads must stay reads.
+
+		// (c) Look-alikes that are plain reads must stay reads.
 		for text in [
 			"if V[a + 1] == 2 then pc = b end",
 			"if V[a + 1] >= 2 then pc = b end",
@@ -1796,6 +1861,19 @@ mod tests {
 			a.reg_read = true;
 		}))
 		.is_err(), "RegWrite must not also consume its slot");
+		// End to end: a compound assignment in a real handler-body
+		// shape produces exactly that read+write mixture — a pure
+		// output (RegWrite) lane must refuse it, while a counter
+		// (RegRead) lane is precisely the role that accepts it.
+		let extracted = extract_access("V[a + 1] += 1");
+		assert!(
+			check_lane_role(Op::LoadK, 0, OperandRole::RegWrite, &extracted[0]).is_err(),
+			"RegWrite must not accept the mixed access of a compound assignment"
+		);
+		assert!(
+			check_lane_role(Op::TabN, 1, OperandRole::RegRead, &extracted[0]).is_ok(),
+			"RegRead is the role that sanctions read-modify-write"
+		);
 		assert!(check_lane_role(Op::LoadK, 0, OperandRole::RegWrite, &acc(|a| {
 			a.reg_write = true;
 			a.reg_range = true;
