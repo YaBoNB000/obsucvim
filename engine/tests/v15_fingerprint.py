@@ -355,9 +355,11 @@ def analyze(path):
     F.append(check("F9", "数字槽 / 其中原语槽", (len(numslots), prim_slots),
                    (57, 39), len(numslots) >= 3 and prim_slots >= 1))
 
-    # ---- F10 blob 外字符串字面量数; observed 109..122 over seven fixed seeds.
+    # ---- F10 blob 外字符串字面量数; observed 109..122 over seven fixed seeds
+    # under the pre-CCPD default shape; 158..178 after CCPD+super-insn became
+    # the v15 product default (2026-11-28 recalibration, same seven seeds).
     nstr = len(strings)
-    F.append(check("F10", "短字符串字面量数", nstr, 112, 80 <= nstr <= 150))
+    F.append(check("F10", "短字符串字面量数", nstr, 168, 135 <= nstr <= 205))
 
     # ---- F11 fetch 循环 local X=T[Y];if X
     fetch = len(re.findall(r"local (\w{1,2})=(\w{1,2})\[(\w{1,2})\];if \1", code))
@@ -453,8 +455,12 @@ def analyze(path):
     # so the acceptance gate tracks numeric-slot mutations only.
     slotw = len(re.findall(r"\w\[\d+\]=\w", code)) - len(numslots)
     named_w = len(re.findall(r"\b\w\.[A-Za-z_]\w*=[^=]", code))
+    # CCPD shape note (2026-11-28 recalibration): with the code stream in
+    # the variant bank, visible numeric-slot writes drop to 6..21 over the
+    # seven fixed seeds (was >= 10 gate against a 28 reference); the floor
+    # now only rejects a collapse toward zero.
     F.append(check("F26", "槽自变异 / 命名字段写", (max(slotw, 0), named_w),
-                   (28, 1), max(slotw, 0) >= 10))
+                   (6, 1), max(slotw, 0) >= 3))
 
     # ---- F27 自修改命中的数组多样性
     # ㊶ 偏差记录: 同 F14——拼串码表数组已入掩码层。

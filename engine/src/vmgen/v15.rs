@@ -1117,7 +1117,12 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				let slot_end_global = (si + 1) * BW_SLOT_WORDS;
 				let seg_hi = ew.min(slot_end_global);
 				let local_hi = local_lo + (seg_hi - g);
-				seg_code.push_str(&format!("local {ws}=b[{slot}]; ", ws = nws, slot = bw_slots[si]));
+				// Each segment's slot/cursor locals live in their own
+				// `do` block: segments per chunk grow with payload size
+				// (fixed CHUNKS per carrier), and unscoped `local`s
+				// would accumulate past Luau's 200-register limit in
+				// the chunk leaf function.
+				seg_code.push_str(&format!("do local {ws}=b[{slot}]; ", ws = nws, slot = bw_slots[si]));
 				if while_words {
 					seg_code.push_str(&format!(
 						"local {wi}={lo};while {wi}<={hi} do {body}{wi}={wi}+1 end; ",
@@ -1129,6 +1134,7 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 						wi = nwi, lo = local_lo, hi = local_hi, body = word_src
 					));
 				}
+				seg_code.push_str("end; ");
 				g = seg_hi + 1;
 			}
 			let decoy_a = states[rng.int(0, (states.len() / 2) as i64) as usize];

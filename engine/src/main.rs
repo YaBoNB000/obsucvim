@@ -177,11 +177,16 @@ Options:
                          bit32/string/元表/协程/freeze/loadstring 语义常量
                          挑战 + 首尾身份全等；差值折入 SLT/MZD 静默投毒。
                          防错误语义 mock 环境，不防真环境录制重放。
-  --super-insn           V17 函数级超指令融合（Phase-1b 已接发射端，默认关，
+  --super-insn           V17 函数级超指令融合（Phase-1b 已接发射端，默认开，
                          仅 --preset v15）：按每个函数的指令流数据统计/选择
                          top-4 白名单相邻对，塌缩为 fused 记录（trampoline
                          经 pf.fv 现解本函数词汇，tail-less 双段连跑）。
                          --polymorphic-vm 是它的历史别名（同一效果）。
+  --no-super-insn        关闭超指令融合（默认开，见上）。
+  --ccpd                 CCPD 记录编码层（默认开，仅 --preset v15 的 VM
+                         路径）：记录级编码/边上下文；legacy 与非 VM
+                         路径显式开启仍报错。--no-ccpd 关闭。
+  --no-ccpd              关闭 CCPD 记录编码层（默认开，见上）。
   --proto-layout         每-prototype 字段布局随机化（默认开）：每个函数的
                          section tag 映射独立洗牌；--no-proto-layout 关闭
                          （全函数共享同一布局，旧行为）。
@@ -222,6 +227,8 @@ fn main() -> ExitCode {
 	let mut positional: Vec<String> = Vec::new();
 	let mut preset_given = false;
 	let mut vm_given = false;
+	let mut ccpd_given = false;
+	let mut super_insn_given = false;
 	let mut guard_override = None;
 	while i < args.len() {
 		match args[i].as_str() {
@@ -315,14 +322,30 @@ fn main() -> ExitCode {
 				opts.bind_env = Some(args[i].clone());
 			}
 			"--env-check" => opts.env_check = true,
-			"--super-insn" => opts.super_insn = true,
+			"--super-insn" => {
+				opts.super_insn = true;
+				super_insn_given = true;
+			}
+			"--no-super-insn" => {
+				opts.super_insn = false;
+				super_insn_given = true;
+			}
 			"--proto-layout" => opts.proto_layout = true,
 			"--no-proto-layout" => opts.proto_layout = false,
-			"--ccpd" => opts.do_ccpd = true,
-			"--no-ccpd" => opts.do_ccpd = false,
+			"--ccpd" => {
+				opts.do_ccpd = true;
+				ccpd_given = true;
+			}
+			"--no-ccpd" => {
+				opts.do_ccpd = false;
+				ccpd_given = true;
+			}
 			// Historical alias with exactly one real effect (enabling
 			// super-insn fusion); kept under its true name in --help.
-			"--polymorphic-vm" => opts.super_insn = true,
+			"--polymorphic-vm" => {
+				opts.super_insn = true;
+				super_insn_given = true;
+			}
 			// Removed no-op flags: these were parsed for years but never
 			// consumed anywhere in the pipeline, so accepting them would
 			// silently pretend a feature exists.  Fail loudly instead.
@@ -363,6 +386,18 @@ s if s.starts_with('-') => {
 		if let Some(enabled) = guard_override {
 			opts.do_guard = enabled;
 		}
+	}
+	// CCPD and super-instruction fusion are product defaults on the
+	// v15 VM path.  When the user picked the path without mentioning
+	// either flag, follow the path: on with v15 VM, off (and simply
+	// inapplicable) on legacy/non-VM paths.  An explicit --ccpd or
+	// --super-insn on an inapplicable path still reaches the hard
+	// gates below and fails loudly, exactly as before.
+	if !ccpd_given {
+		opts.do_ccpd = opts.do_vm && opts.do_v15;
+	}
+	if !super_insn_given {
+		opts.super_insn = opts.do_v15;
 	}
 	let vm_seal_strings = opts.vm_seal_strings.unwrap_or(opts.do_vm);
 	if vm_seal_strings && !opts.do_vm {

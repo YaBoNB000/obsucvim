@@ -651,7 +651,38 @@ def main() -> int:
                 ],
                 check=True,
             )
-            all_items.extend(build_mutations_for_artifact(art_path.read_text(), s, expected_out))
+            default_items = build_mutations_for_artifact(art_path.read_text(), s, expected_out)
+            # CCPD (now default-on for v15) replaces the canonical BSS
+            # block stream with the variant bank, so in a default
+            # artifact the BSS lane packer text is dead code and a lane
+            # swap there is legitimately inert.  Keep that case aimed
+            # at the stream it was calibrated for: derive it from the
+            # --no-ccpd artifact instead of blessing a dead target.
+            all_items.extend(
+                it for it in default_items
+                if not it["case_id"].endswith("bss_block_stream_lane_swap")
+            )
+            bss_path = tmp / f"art_s{s}_bss.lua"
+            subprocess.run(
+                [
+                    str(OBSUCVIM),
+                    "--preset",
+                    "v15",
+                    "--dialect",
+                    "luau",
+                    "--seed",
+                    str(s),
+                    "--no-ccpd",
+                    "--no-super-insn",
+                    str(src_path),
+                    str(bss_path),
+                ],
+                check=True,
+            )
+            all_items.extend(
+                it for it in build_mutations_for_artifact(bss_path.read_text(), s, expected_out)
+                if it["case_id"].endswith("bss_block_stream_lane_swap")
+            )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda it: evaluate_case(tmp, expected_out, it), all_items))

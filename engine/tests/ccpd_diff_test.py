@@ -282,7 +282,8 @@ def section_a():
         for seed in (1, 42, 777):
             ok, detail = diff_case(name, src, seed, ["--ccpd"], ref)
             check(f"A {name} seed={seed} ccpd-on", ok, detail)
-        ok, detail = diff_case(name, src, 42, [], ref)
+        # CCPD is default-on for v15; the off arm must opt out explicitly.
+        ok, detail = diff_case(name, src, 42, ["--no-ccpd"], ref)
         check(f"A {name} seed=42 ccpd-off", ok, detail)
 
 
@@ -338,7 +339,10 @@ def section_c():
         check("C --ccpd alone equals --preset v15 --ccpd",
               on is not None and on == default)
         check("C argument order independent", on is not None and on == swapped)
-        off, _ = gen_bytes(["--preset", "v15", "--seed", "42"], "off.lua")
+        off, _ = gen_bytes(["--preset", "v15", "--seed", "42", "--no-ccpd"], "off.lua")
+        plain, _ = gen_bytes(["--seed", "42"], "plain.lua")
+        check("C no-flag default byte-identical to explicit --ccpd",
+              plain is not None and plain == on)
         noccpd, _ = gen_bytes(["--preset", "v15", "--seed", "42", "--ccpd", "--no-ccpd"],
                               "noccpd.lua")
         check("C --ccpd --no-ccpd byte-identical to off",

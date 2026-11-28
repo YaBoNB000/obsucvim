@@ -3637,6 +3637,36 @@ let chaff_lane = rng.int(1, 4) as usize;
 			std::collections::HashMap::new();
 		let mut frag_used: std::collections::HashSet<String> =
 			std::collections::HashSet::new();
+		// micro_fill is spliced into the shell after sanitization with
+		// only its already-mapped fields rewritten
+		// (remap_fragment_fields); a field name that occurs nowhere in
+		// the sanitized fragments stays literal there.  Reserve every
+		// such literal up front so a drawn rename can never alias it:
+		// a drawn `sc` for the call-slot base once collided with the
+		// LoadStr string-cache field `E.sc`, which exists only in
+		// micro text, corrupting every cached string load.
+		{
+			let bytes = micro_fill.as_bytes();
+			let mut i = 0usize;
+			while i < bytes.len() {
+				if bytes[i] == b'.'
+					&& (i == 0 || bytes[i - 1] != b'.')
+					&& i + 1 < bytes.len()
+					&& (bytes[i + 1].is_ascii_alphabetic() || bytes[i + 1] == b'_')
+				{
+					i += 1;
+					let start = i;
+					while i < bytes.len()
+						&& (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_')
+					{
+						i += 1;
+					}
+					frag_used.insert(micro_fill[start..i].to_string());
+				} else {
+					i += 1;
+				}
+			}
+		}
 		for field in ["cf", "ca", "cn", "oa", "ob", "oc2", "od", "ctt", "cnt"] {
 			let mapped = sanitize_name(rng, &frag_reserved, &frag_used);
 			frag_used.insert(mapped.clone());

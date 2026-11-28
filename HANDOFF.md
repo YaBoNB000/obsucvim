@@ -1453,3 +1453,53 @@ Stage 2（有界 trap）推进到全量门禁验收，并修复验收过程中�
   `bash engine/tests/run_tests.sh` 192/0 rc=0；vm_tamper 60/0、
   ccpd_diff 274/274、payload_bounds 12/12、exit_edge 64/64、
   runtime_audit 34/34、guard 80/0、plaintext 88/88。
+
+### 20.12 CCPD 与超指令融合默认开（2026-11-28）
+
+- 起点 `a9d13f7`。`--ccpd` 与 `--super-insn` 改为 v15 产品默认：
+  `main.rs` 新增显式给出追踪（`ccpd_given`/`super_insn_given`，
+  `--polymorphic-vm` 一并计入）与解析后决议——未提及时按路径跟随
+  （v15 VM 路径开、legacy/非 VM 路径关且不报错），新增
+  `--no-super-insn` 与既有 `--no-ccpd` 可关回；显式在非 v15 路径
+  开启仍走原硬错误门控。help 文本同步。等价性实测：无 flag 产物
+  与显式 `--ccpd --super-insn` 逐字节一致，`--no-ccpd
+  --no-super-insn` 复现旧关闭形态。
+- 默认开启暴露并修复两个既存生成器缺陷（均可在基线二进制上以
+  显式 flag 复现，非本轮引入）：
+  1. `vmgen/v15.rs` chunk 叶函数的段局部量（每 BW 段一对
+     `local ws/wi`）在函数作用域累积，载荷大到段数过百时溢出
+     Luau 200 寄存器上限，产物过不了 `luau-compile`（robustness
+     B_threshold 在 CCPD 的 4× 载荷下先触发）。每段包入
+     `do ... end` 后释放。
+  2. `vmgen/template.rs` 字段抽名可抽到仅存在于 micro 文本的
+     字面字段：call-slot 基址抽到 `sc` 时与 LoadStr 硬编码的
+     字符串缓存字段 `E.sc` 别名，缓存字符串物化把数字当表索引
+     崩溃（capability seed 1、CCPD+super 组合下复现）。修复：
+     sanitize 抽名前把 `micro_fill` 中全部 `.field` 字面量预置
+     入 `frag_used` 保留集。
+- 测试按新默认校准：`ccpd_diff_test.py` 的 off 臂改显式
+  `--no-ccpd` 并新增「无 flag 默认 == 显式 --ccpd」字节断言
+  （275/275）；`vm_tamper_matrix_test.py` 的 BSS lane-swap 用例
+  改由 `--no-ccpd` 产物派生（默认产物中 BSS 打包器已被 CCPD
+  变体库取代、属死代码，原地断言 TamperRejected 不再成立）；
+  `v15_fingerprint.py` F10/F26 按七固定 seed 在新默认形态下
+  重标定（F10 实测 158..178 → 区间 135..205；F26 实测 6..21 →
+  下限 3），七 seed 均 32/32；`engine/examples/` 38 个示例以
+  `gen_examples.sh` 全量重生。
+- `example.txt` 按既定配方重生（`print(777)`、v15、seed 42）：
+  128,483 B，SHA-256
+  `18b7bb1d254b7ef1fb625817451909b9a537c4859454f107bac2a4dee4cc883a`；
+  同 seed 重复生成逐字节相同、stock Luau 输出 `777`、
+  `luau-compile` 通过、结构指纹 32/32、安全指纹 5/5。
+- 既存问题记录（未修，超出本轮范围）：capability 的
+  P0_FALLBACK_WORKLOAD 在 seed 34/38 于基线 HEAD `a9d13f7`
+  全配置确定性失败（`select(i, ...)` 结果错位形态），纯 HEAD
+  构建可复现，与默认开关及本轮两个生成器修复均无关；最小
+  select 源扫 60 seed 不触发，疑与全量布局相关，待后续专案。
+- 本轮实测：`cargo test --release` 169+4；`run_tests.sh`
+  192/0；vm_tamper 60/0、ccpd_diff 275/275、payload_bounds
+  12/12、exit_edge 64/64、runtime_audit 34/34、guard 80/0、
+  plaintext 88/88；`run_presets.sh` 全绿、multiseed FAIL=0、
+  capability_manifest 11/11、prod_audit_gate PASS、
+  defense_audit ALL DEFENSES ACTIVE、vm_semantics 与
+  micro_fusion 通过。Stage 3/4 未开始。
