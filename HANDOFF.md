@@ -1389,3 +1389,42 @@ Stage 2（有界 trap）推进到全量门禁验收，并修复验收过程中�
   证据（其形状按构造写入永不回读的死局部）；RegRange 的验证律
   已定义但当前无 op 使用；TabN b / VarArgTabN b / CallT c 为
   「读+原地更新」计数器道，建模为 RegRead 允许伴随写。
+
+### 20.10 Stage 1.1 收尾：证据缓存、提取器硬化与混合访问审计（2026-11-28）
+
+- 起点 `07839e1`，改动仍只 `engine/src/vmgen/verify.rs`（+ 本节）。
+- **缓存**：`handler_lane_access()` 改为 `OnceLock` 进程级缓存
+  （handler 文本是静态表的纯函数，证据进程内不变），未缓存派生
+  保留为 `derive_handler_lane_access()`。实测
+  `ensure_metadata_complete()` 由 27.0 ms/次降至 1.31 µs/次
+  （200 次进程内重复调用）；单次 CLI 编译两版相当（basics /
+  stress_bigtable × 30 次：旧 3502/3461 ms、新 3399/3446 ms），
+  无性能回退。
+- **提取器硬化**：字符串与注释改为单遍词法剥离
+  （`strip_strings_and_comments`，含 `--` 行注释与 `--[==[ ]]`
+  分级长注释，注释内引号不再吞噬后续代码）；写检测识别 Luau
+  复合赋值（`+= -= *= /= %= ^= ..=`，`is_assignment_at`，普通
+  `-`/`..` 运算与 `==`/`>=` 比较不误判）；死局部**检测**提前到
+  方括号掩码之前（掩码只推迟应用），修复了别名仅在括号内被使用
+  时被误判死局部的问题——真实证据因此有 1 位修正：CallT a 的
+  bare 0→1（v15 handler `local x = a + i + 2` 确实把 a 当数值读，
+  CallBase 本就允许 bare，验证结论不变），其余 175 道与 §20.9
+  转储逐行一致。
+- **混合访问审计**（以 44×4 真实访问表为据，收紧三处）：
+  RegWrite 禁止伴随寄存器读与窗口写（真实 RegWrite 道均为纯写，
+  MkStr 的掩码 bare 用法为例外保留）；RegRead 禁止窗口访问
+  （计数器式读+原地写仍允许）；CallBase 必须同时具备读函数槽
+  与窗口寻址（CallT 含在内，真实四道均满足）。新增合成访问
+  规则测试 `stage11_role_rules_reject_unacceptable_mixed_access`
+  逐项钉住允许/禁止的混合；ImmVal/JumpTarget/ProtoIdx/UpvalIdx
+  在真实表中本就是纯访问，未动。
+- **提取器新测试**：注释（行/长/分级/词间/引号陷阱）、复合赋值
+  与易混读法、复杂 alias（别名链、slot 别名链、常量别名链、
+  offset 值别名不得泄漏寄存器访问）、多行表达式（赋值、索引、
+  `pc =` 与别名定义跨行），均直接对 `extract_access()` 断言。
+- 本轮实测：`cargo test --release` 169+4 通过 0 失败（1 ignored
+  为既有 `dbg_header`）；`bash engine/tests/run_tests.sh` 192/0
+  rc=0；vm_tamper 60/0、ccpd_diff 274/274、payload_bounds 12/12、
+  exit_edge 64/64、runtime_audit 34/34、guard 80/0、plaintext
+  88/88；新旧二进制 60 次语料编译逐字节一致；`cargo fmt --check`
+  与基线同为 rc=1（§20.8 既有状况）。

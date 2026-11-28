@@ -399,9 +399,11 @@ pub fn verify_single(function: usize, ins: &Instr, limits: &VerifierLimits) -> V
 //   immediate (bare)      any other whole-word use of the lane variable
 // Lane aliases (`local base = a + 1`, `local kf = b`, `local s = S[..]`)
 // are resolved: an alias counts for its lane when it heads a bracket
-// index expression.  String literals are stripped first, and lanes that
-// occur only inside a never-read dead local (the Nop noise shapes) do
-// not count as accesses.
+// index expression.  String literals and `--` / `--[[ ]]` comments are
+// stripped in one lexical pass, assignments include the Luau compound
+// forms (`+=`, `..=`, ...), and lanes that occur only inside a
+// never-read dead local (the Nop noise shapes) do not count as
+// accesses.
 // ---------------------------------------------------------------------
 
 /// How one operand lane is actually accessed by an op's handler bodies,
@@ -525,15 +527,22 @@ fn skip_ws(chars: &[char], mut i: usize) -> usize {
 	i
 }
 
-/// Replace every double-quoted string literal with a single space so
+/// Blank out string literals and comments in one lexical pass, so
 /// words inside error messages (e.g. the standalone "a" in "on a ...
-/// value") are never mistaken for lane operands.
-fn strip_string_literals(text: &str) -> Vec<char> {
+/// value") or inside `--` / `--[[ ]]` commentary are never mistaken
+/// for lane operands.  String literals collapse to a single space;
+/// comment text is replaced by spaces but newlines are preserved so
+/// statement boundaries stay where the author put them.  Handling the
+/// two in a single pass matters: a `"` inside a comment must not open
+/// a phantom string, and a `--` inside a string must not open a
+/// phantom comment.
+fn strip_strings_and_comments(text: &str) -> Vec<char> {
 	let src: Vec<char> = text.chars().collect();
 	let mut out: Vec<char> = Vec::with_capacity(src.len());
 	let mut i = 0;
 	while i < src.len() {
 		if src[i] == '"' {
+			// String literal: collapse to one space.
 			out.push(' ');
 			i += 1;
 			while i < src.len() {
@@ -546,12 +555,83 @@ fn strip_string_literals(text: &str) -> Vec<char> {
 					i += 1;
 				}
 			}
-		} else {
-			out.push(src[i]);
-			i += 1;
+			continue;
 		}
+		if src[i] == '-' && src.get(i + 1) == Some(&'-') {
+			// Comment.  `--[=*[` opens a long comment closed by the
+			// matching `]=*]`; anything else runs to end of line.
+			let mut j = i + 2;
+			let mut level: Option<usize> = None;
+			if src.get(j) == Some(&'[') {
+				let mut eq = 0usize;
+				let mut k = j + 1;
+				while src.get(k) == Some(&'=') {
+					eq += 1;
+					k += 1;
+				}
+				if src.get(k) == Some(&'[') {
+					level = Some(eq);
+					j = k + 1;
+				}
+			}
+			match level {
+				Some(eq) => {
+					let start = i;
+					let mut end = src.len();
+					let mut k = j;
+					while k < src.len() {
+						if src[k] == ']' {
+							let mut eq2 = 0usize;
+							let mut m = k + 1;
+							while src.get(m) == Some(&'=') {
+								eq2 += 1;
+								m += 1;
+							}
+							if eq2 == eq && src.get(m) == Some(&']') {
+								end = m + 1;
+								break;
+							}
+						}
+						k += 1;
+					}
+					out.extend(src[start..end].iter().map(|&c| {
+						if c == '\n' {
+							'\n'
+						} else {
+							' '
+						}
+					}));
+					i = end;
+				}
+				None => {
+					while i < src.len() && src[i] != '\n' {
+						out.push(' ');
+						i += 1;
+					}
+				}
+			}
+			continue;
+		}
+		out.push(src[i]);
+		i += 1;
 	}
 	out
+}
+
+/// Is the token at `i` an assignment operator?  Plain `=` (but not the
+/// `==` comparison) plus the Luau compound forms `+= -= *= /= %= ^=`
+/// and `..=`.  A `-`/`..` that is merely an operator (`V[a] - 1`,
+/// `V[a] .. x`) is not an assignment.
+fn is_assignment_at(chars: &[char], i: usize) -> bool {
+	if i >= chars.len() {
+		return false;
+	}
+	match chars[i] {
+		'=' => chars.get(i + 1) != Some(&'='),
+		'+' | '-' | '*' | '/' | '%' | '^' => chars.get(i + 1) == Some(&'='),
+		'.' => chars.get(i + 1) == Some(&'.') && chars.get(i + 2) == Some(&'='),
+		_ => false,
+	}
 }
 
 /// Index of the `]` matching the `[` at `open`, honoring nesting.
@@ -646,10 +726,15 @@ fn statement_end(chars: &[char], from: usize) -> usize {
 	chars.len()
 }
 
-/// Mask (blank out) lanes that occur only inside never-read dead
-/// locals — the Nop noise shapes compute into `_n`, which no handler
-/// ever reads back, so those lane mentions carry no semantics.
-fn mask_dead_locals(chars: &mut [char]) {
+/// Spans of never-read dead locals — the Nop noise shapes compute
+/// into `_n`, which no handler ever reads back, so those lane
+/// mentions carry no semantics.  Detection runs on the *unmasked*
+/// text: an alias whose only uses sit inside brackets (`local kf = b`
+/// feeding `C[kf + 1]`) is very much alive, and blanking the brackets
+/// first would hide those uses and misjudge it as dead.  The spans
+/// are only applied as masks at the end of `extract_access`, once the
+/// bracket/jump accesses have been recorded.
+fn dead_local_spans(chars: &[char]) -> Vec<(usize, usize)> {
 	let toks = ident_tokens(chars);
 	let mut dead_spans: Vec<(usize, usize)> = Vec::new();
 	let mut ti = 0;
@@ -669,7 +754,7 @@ fn mask_dead_locals(chars: &mut [char]) {
 						continue;
 					}
 					let j = skip_ws(chars, *e);
-					if j < chars.len() && chars[j] == '=' && chars.get(j + 1) != Some(&'=') {
+					if is_assignment_at(chars, j) {
 						spans.push((*s, statement_end(chars, *s)));
 					} else {
 						reads += 1;
@@ -682,12 +767,7 @@ fn mask_dead_locals(chars: &mut [char]) {
 		}
 		ti += 1;
 	}
-	for (s, e) in dead_spans {
-		let end = e.min(chars.len());
-		for c in &mut chars[s..end] {
-			*c = ' ';
-		}
-	}
+	dead_spans
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -700,8 +780,11 @@ enum BracketKind {
 
 /// Extract the lane accesses of one generated handler body.
 fn extract_access(text: &str) -> [LaneAccess; 4] {
-	let mut chars = strip_string_literals(text);
+	let mut chars = strip_strings_and_comments(text);
 	let aliases = collect_aliases(&chars);
+	// Detect dead locals now, while bracket contents are still
+	// visible; apply the spans only after bracket/jump extraction.
+	let dead_spans = dead_local_spans(&chars);
 	let mut acc = [LaneAccess::default(); 4];
 
 	// Bracketed accesses: V[..], C[..], O[..], S[..], ups[..], E.k[..].
@@ -768,10 +851,7 @@ fn extract_access(text: &str) -> [LaneAccess; 4] {
 				BracketKind::Upval => acc[lane].upval = true,
 				BracketKind::Reg => {
 					let after = skip_ws(&chars, close + 1);
-					let write = !is_slot_map
-						&& after < chars.len()
-						&& chars[after] == '='
-						&& chars.get(after + 1) != Some(&'=');
+					let write = !is_slot_map && is_assignment_at(&chars, after);
 					if write {
 						acc[lane].reg_write = true;
 					} else {
@@ -837,7 +917,12 @@ fn extract_access(text: &str) -> [LaneAccess; 4] {
 	}
 
 	// Dead noise locals (Nop) must not count as lane use.
-	mask_dead_locals(&mut chars);
+	for (s, e) in &dead_spans {
+		let end = (*e).min(chars.len());
+		for c in &mut chars[*s..end] {
+			*c = ' ';
+		}
+	}
 
 	// Whatever lane variables remain are bare immediate uses.
 	for (_, _, tok) in ident_tokens(&chars) {
@@ -848,12 +933,35 @@ fn extract_access(text: &str) -> [LaneAccess; 4] {
 	acc
 }
 
-/// Derive how `op`'s handlers actually access each operand lane, from
-/// the generated handler bodies themselves.  This is evidence about the
-/// handlers, mechanically extracted — it is not a second role table,
-/// and it is only ever compared against `OpMeta`, never consulted by
-/// the compiler, scatter pass, or verifier record checks.
+/// How `op`'s handlers actually access each operand lane, derived
+/// from the generated handler bodies themselves.  This is evidence
+/// about the handlers, mechanically extracted — it is not a second
+/// role table, and it is only ever compared against `OpMeta`, never
+/// consulted by the compiler, scatter pass, or verifier record checks.
+///
+/// The handler bodies are pure functions of static tables (format
+/// index, v15 flag, mask pair), so the derived facts cannot change
+/// during a process run; they are computed once and cached.  Before
+/// this cache existed, every `ensure_metadata_complete()` call
+/// re-generated and re-scanned every handler text (~27 ms), which the
+/// test suite and any repeated-validation tooling paid per call.
 pub fn handler_lane_access(op: Op) -> [LaneAccess; 4] {
+	static CACHE: std::sync::OnceLock<[[LaneAccess; 4]; super::isa::N_OPS]> =
+		std::sync::OnceLock::new();
+	let table = CACHE.get_or_init(|| {
+		let mut table = [[LaneAccess::default(); 4]; super::isa::N_OPS];
+		for (idx, &op) in super::isa::ALL_OPS.iter().enumerate() {
+			table[idx] = derive_handler_lane_access(op);
+		}
+		table
+	});
+	table[super::isa::op_index(op)]
+}
+
+/// The uncached derivation behind `handler_lane_access`: generate
+/// every handler body variant for `op` and union the extracted lane
+/// accesses.
+fn derive_handler_lane_access(op: Op) -> [LaneAccess; 4] {
 	let name = super::isa::OP_NAMES[super::isa::op_index(op)];
 	let mut acc = [LaneAccess::default(); 4];
 	for v15 in [false, true] {
@@ -909,7 +1017,11 @@ fn check_lane_role(
 					acc.describe()
 				));
 			}
-			if acc.const_read || acc.proto_read || acc.upval || acc.jump || acc.bare {
+			// A register *window* read through this lane would make
+			// it a base (RegBase/RegRange), not a direct slot read.
+			// In-place counter updates (TabN/VarArgTabN/CallT) are
+			// the one sanctioned write beside the read.
+			if acc.reg_range || acc.const_read || acc.proto_read || acc.upval || acc.jump || acc.bare {
 				return bad(format!(
 					"role is RegRead but the handler also uses this lane as a non-register operand ({})",
 					acc.describe()
@@ -923,7 +1035,14 @@ fn check_lane_role(
 					acc.describe()
 				));
 			}
-			if acc.const_read || acc.proto_read || acc.upval || acc.jump {
+			// RegWrite promises a pure output slot: the handler
+			// produces the register, it does not consume it.  A lane
+			// the handler also reads is an input or counter (RegRead
+			// territory), and a lane written as a whole window is a
+			// range/base, not a direct slot.  Bare use stays legal:
+			// MkStr derives its byte mask from the target index
+			// itself, which is part of writing that slot.
+			if acc.reg_read || acc.reg_range || acc.const_read || acc.proto_read || acc.upval || acc.jump {
 				return bad(format!(
 					"role is RegWrite but the handler also uses this lane as a non-register operand ({})",
 					acc.describe()
@@ -959,9 +1078,14 @@ fn check_lane_role(
 			}
 		}
 		OperandRole::CallBase => {
-			if !reg {
+			// A call base is defined by two accesses every call
+			// handler performs: it reads the function sitting at the
+			// base slot, and it addresses the argument/result window
+			// relative to the base.  Either one missing means the
+			// lane is not a call base at all.
+			if !(acc.reg_read && acc.reg_range) {
 				return bad(format!(
-					"role is CallBase but the handler never addresses the call window through this lane ({})",
+					"role is CallBase but the handler does not read a call window base through this lane ({})",
 					acc.describe()
 				));
 			}
@@ -1533,6 +1657,182 @@ mod tests {
 			}
 		}
 		assert_eq!(covered, 44 * 4);
+	}
+
+	#[test]
+	fn stage11_extract_access_ignores_comments() {
+		// A line comment full of fake accesses contributes nothing;
+		// only the real statement after it counts.
+		let acc = extract_access("-- V[b + 1] = C[c + 1] and pc = d\nV[a + 1] = C[b + 1]");
+		assert!(acc[0].reg_write);
+		assert!(acc[1].const_read);
+		assert!(!acc[2].any(), "lane c only appeared in a comment");
+		assert!(!acc[3].any(), "lane d only appeared in a comment");
+		// Trailing comment on a code line.
+		let acc = extract_access("V[a + 1] = 1 -- pc = b");
+		assert!(acc[0].reg_write);
+		assert!(!acc[1].any());
+		// Long comments, plain and leveled, spanning lines.
+		let acc = extract_access("--[[\npc = b\nV[c + 1] = 1\n]]\nV[a + 1] = 1");
+		assert!(acc[0].reg_write);
+		assert!(!acc[1].any());
+		assert!(!acc[2].any());
+		let acc = extract_access("--[==[ V[b + 1] ]==] V[a + 1] = 1");
+		assert!(acc[0].reg_write);
+		assert!(!acc[1].any());
+		// A comment wedged between an index and its assignment does
+		// not break write detection.
+		let acc = extract_access("V[a + 1] --[[x]] = C[b + 1]");
+		assert!(acc[0].reg_write && acc[1].const_read);
+		// A quote character inside a comment must not swallow the
+		// code that follows the comment.
+		let acc = extract_access("-- an \"unterminated quote\nV[a + 1] = C[b + 1]");
+		assert!(acc[0].reg_write && acc[1].const_read);
+	}
+
+	#[test]
+	fn stage11_extract_access_compound_assignment_is_a_write() {
+		// Luau compound assignments write the slot just like `=`.
+		for text in [
+			"V[a + 1] += 1",
+			"V[a + 1] -= 1",
+			"V[a + 1] *= 2",
+			"V[a + 1] /= 2",
+			"V[a + 1] %= 2",
+			"V[a + 1] ^= 2",
+			"V[a + 1] ..= y",
+		] {
+			let acc = extract_access(text);
+			assert!(
+				acc[0].reg_write && !acc[0].reg_read,
+				"{text}: compound assignment must count as a register write"
+			);
+		}
+		// Look-alikes that are plain reads must stay reads.
+		for text in [
+			"if V[a + 1] == 2 then pc = b end",
+			"if V[a + 1] >= 2 then pc = b end",
+			"local q = V[a + 1] - 1 if q then pc = b end",
+			"local q = V[a + 1] .. y if q then pc = b end",
+		] {
+			let acc = extract_access(text);
+			assert!(
+				acc[0].reg_read && !acc[0].reg_write,
+				"{text}: plain read misclassified as a write"
+			);
+			assert!(acc[1].jump, "{text}: jump lost");
+		}
+	}
+
+	#[test]
+	fn stage11_extract_access_complex_aliases() {
+		// Chained aliases: an index alias pointing at another alias,
+		// and a slot alias used through a second name.
+		let acc = extract_access(
+			"local base = a + 1 local slot = S[base] local dst = slot V[dst] = V[base]",
+		);
+		assert!(acc[0].reg_write, "write through the slot alias chain");
+		assert!(acc[0].reg_read, "read through the index alias");
+		// Chained constant alias (the LoadStr `kf = b` shape, one
+		// link longer): the constant index still belongs to lane b.
+		let acc = extract_access(
+			"local kf = b local k2 = kf local v = C[k2 + 1] V[a + 1] = v",
+		);
+		assert!(acc[1].const_read && !acc[1].reg_read && !acc[1].reg_write);
+		assert!(acc[0].reg_write);
+		// A value alias derived from a lane is an *offset*, never the
+		// index head: lane b is consumed as a bare count, and only
+		// lane a is register-addressed (as a window).
+		let acc = extract_access("local n = b local t = V[a + n + 1]");
+		assert!(acc[0].reg_read && acc[0].reg_range);
+		assert!(
+			!acc[1].reg_read && !acc[1].reg_range && acc[1].bare,
+			"offset alias leaked a register access onto lane b"
+		);
+		// Alias-to-alias constant-one offset (`local y = x + 1` with
+		// `x` itself a lane alias) still resolves to the lane.
+		let acc = extract_access("local x = a local y = x + 1 V[y] = 1");
+		assert!(acc[0].reg_write);
+	}
+
+	#[test]
+	fn stage11_extract_access_multiline_expressions() {
+		// Assignment, index arithmetic, and the `pc` assignment all
+		// split across lines.
+		let acc = extract_access("V[a + 1] =\n\tC[b +\n\t1]\npc =\nc");
+		assert!(acc[0].reg_write);
+		assert!(acc[1].const_read);
+		assert!(acc[2].jump);
+		// Alias definition and window index split across lines.
+		let acc = extract_access("local base =\n\ta + 1\nV[base +\n\ti] = 1");
+		assert!(acc[0].reg_write && acc[0].reg_range);
+		// The LoadStr alias shape with newlines between statements.
+		let acc = extract_access("local kf =\n\tb\nlocal q = C[kf + 1]\nV[a + 1] = q");
+		assert!(acc[1].const_read);
+		assert!(acc[0].reg_write);
+	}
+
+	#[test]
+	fn stage11_role_rules_reject_unacceptable_mixed_access() {
+		// Synthetic access facts against `check_lane_role` directly:
+		// these pin which mixtures each role tolerates, based on the
+		// audit of the real 44x4 access table (see HANDOFF 20.10).
+		let acc = |f: fn(&mut LaneAccess)| {
+			let mut a = LaneAccess::default();
+			f(&mut a);
+			a
+		};
+		// RegWrite is a pure output slot (MkStr's mask-on-index bare
+		// use is the one sanctioned extra).
+		let pure_write = acc(|a| a.reg_write = true);
+		assert!(check_lane_role(Op::LoadK, 0, OperandRole::RegWrite, &pure_write).is_ok());
+		assert!(check_lane_role(Op::MkStr, 0, OperandRole::RegWrite, &acc(|a| {
+			a.reg_write = true;
+			a.bare = true;
+		}))
+		.is_ok());
+		assert!(check_lane_role(Op::LoadK, 0, OperandRole::RegWrite, &acc(|a| {
+			a.reg_write = true;
+			a.reg_read = true;
+		}))
+		.is_err(), "RegWrite must not also consume its slot");
+		assert!(check_lane_role(Op::LoadK, 0, OperandRole::RegWrite, &acc(|a| {
+			a.reg_write = true;
+			a.reg_range = true;
+		}))
+		.is_err(), "RegWrite must not write a whole window");
+		// RegRead tolerates the in-place counter update but not a
+		// window base (that is RegBase) and not a pure write.
+		assert!(check_lane_role(Op::TabN, 1, OperandRole::RegRead, &acc(|a| {
+			a.reg_read = true;
+			a.reg_write = true;
+		}))
+		.is_ok(), "counter read+update is the sanctioned RegRead mixture");
+		assert!(check_lane_role(Op::TabN, 1, OperandRole::RegRead, &acc(|a| {
+			a.reg_read = true;
+			a.reg_range = true;
+		}))
+		.is_err(), "RegRead must not be a window base");
+		assert!(check_lane_role(Op::TabN, 1, OperandRole::RegRead, &acc(|a| {
+			a.reg_write = true;
+		}))
+		.is_err(), "RegRead without a read is not a read");
+		// CallBase requires both halves of being a call base: read
+		// the function at the base slot, address the window.
+		assert!(check_lane_role(Op::Call, 0, OperandRole::CallBase, &acc(|a| {
+			a.reg_read = true;
+			a.reg_range = true;
+		}))
+		.is_ok());
+		assert!(check_lane_role(Op::Call, 0, OperandRole::CallBase, &acc(|a| {
+			a.reg_read = true;
+		}))
+		.is_err(), "CallBase without the window is a plain register");
+		assert!(check_lane_role(Op::Call, 0, OperandRole::CallBase, &acc(|a| {
+			a.reg_write = true;
+			a.reg_range = true;
+		}))
+		.is_err(), "CallBase that never reads the function slot is not a call base");
 	}
 
 	/// The scatter family a lane *should* get, derived from the
