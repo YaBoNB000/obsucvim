@@ -1391,12 +1391,24 @@ fn chain_epilogue(rng: &mut Rng, wk: &[String; 4], ccpd: bool) -> String {
 		// transfer and fails closed with a real error, never a hang.
 		let out_slot = frame_slot(2);
 		let total_slot = frame_slot(3);
+		// Audit channel (plan 15.2/3.2): an X event reports the exit
+		// edge an instant before the frame's edge state is consumed;
+		// edge -1 marks the plain tail fallthrough, which the CFG
+		// carries no declared edge for. Only audit builds weave it in
+		// (same gate as the B/E/M/C reporters), so production output
+		// and the audit-without-env byte anchor are untouched.
+		let xrep = if ccpd_audit_on() {
+			"if OBSUCVIM_CCPD_AUDIT then OBSUCVIM_CCPD_AUDIT[#OBSUCVIM_CCPD_AUDIT + 1] = \"X \" .. (E.pfi or 0) .. \" \" .. (E.edge or -1) .. \" \" .. (E.fctx or 0) end "
+		} else {
+			""
+		};
 		format!(
-			"if E.echg or {np} < E.bp or {np} > E.be then if E.edge == nil then E.edge = E.bt.ft[{np} - 1] end if {np} == E.bt.cd.tn + 1 then {out_slot} = {{}} {total_slot} = 0 E.done = (E.vd + E.cs) % 65521 E.edge = nil E.echg = nil return end if {np} > E.bt.cd.tn + 1 then error(\"ccpd: control transfer past end of function\") end E.bdec(E, E.bm[{np}]) end E.edge = nil E.echg = nil; local {bi} = {np} - E.bp + 1",
+			"if E.echg or {np} < E.bp or {np} > E.be then if E.edge == nil then E.edge = E.bt.ft[{np} - 1] end if {np} == E.bt.cd.tn + 1 then {out_slot} = {{}} {total_slot} = 0 E.done = (E.vd + E.cs) % 65521 {xrep}E.edge = nil E.echg = nil return end if {np} > E.bt.cd.tn + 1 then error(\"ccpd: control transfer past end of function\") end E.bdec(E, E.bm[{np}]) end E.edge = nil E.echg = nil; local {bi} = {np} - E.bp + 1",
 			np = np,
 			bi = bi,
 			out_slot = out_slot,
-			total_slot = total_slot
+			total_slot = total_slot,
+			xrep = xrep
 		)
 	} else {
 		format!(

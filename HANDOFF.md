@@ -1125,3 +1125,64 @@ Phase 18 审查阶段（P4）于 2026-11-25 完成，共 11 个 Task，全部实
   （`--no-super`/`--no-proto-layout`/light/lua51 均复现），须按常量
   重物化链路单独立项。
 - 该结果为内部自测指标，不代表抵御外部独立逆向分析的能力。
+
+## 20. CCPD 运行时边界修复（2026-11-28，依 `obsucvim_CCPD_repair_plan.md`）
+
+三个独立提交（本分支顺序）：`9b33764`（P1 EXIT）、`de9f5bc`（P2
+payload 边界）、本节所在提交（P3 audit 回归）。全部为内部自测指标。
+
+### 20.1 修复结论
+
+- **P1 EXIT 语义已核实并实现。** 尾指针 `pc == n + 1` 是编译器
+  在函数尾的分支合流点（if/else 合流 label 落在流末、末行已是
+  `Return` 时不再追加指令所致）。动态复现证明：当一条不返回的
+  分支 fallthrough 到该合流点时，旧实现（含 `--no-ccpd` 的
+  legacy 路径）在同一记录流上同样崩溃——这条线在 legacy 里也
+  从未实现过合法处理；修复仅作用于 CCPD epilogue：目标
+  `pc == cd.tn + 1` 时走与 `Return` 微操作一致的帧 teardown
+  （空 out 表、total=0、`E.done`、直接返回出 handler 链），不
+  调用 `bdec`、不进 block cache/variant 选择、edge 单次消费；
+  越过该点的转移用 `error(...)` fail closed。关态产物未触及
+  （37 个 examples 重生逐字节相同）。
+- **P2 Variant payload 以 `[po, po+pl)` 为硬边界。** bdec 的
+  opcode 列与四个 lane 的每个 varint byte 都走有界读取，结束
+  时要求 `pos == limit`；超出 bank 的 span 在读前拒绝。运行时
+  parse 与 Rust `decode_section` 现在执行同一套目录规则（span
+  在 bank 内、`pl >= 5 * records`、spans 无缝覆盖 bank）。
+- **P3 audit 锁定三条新不变量**（`ccpd_runtime_audit_test.py`
+  16→32 条）：EXIT 只以 `X <fi> <edge> <fctx>` 事件出现且不伪装
+  成 B 事件、退出后同帧无后续 block entry；同一
+  `(function, block, edge)` 多次回访的 visit 严格递增且 variant
+  轮换；双 coroutine 交替 yield/resume 时 frame context 互不重
+  叠、B 事件均归属已开启的帧。X 事件的 edge 可为 `-1`：普通记
+  录落到流末的「尾部平落」不携带声明边（CFG 层由
+  `cfg_tail_plain_fallthrough_has_no_exit_edge` 锁定）。
+
+### 20.2 验证账册（全部通过）
+
+- 引擎：`engine/target/release/obsucvim`（本次重建）；
+  Luau：`.tools/bin/luau` 0.735。
+- `cargo test --release`：147+4 全绿。
+- `ccpd_mirror_test.py` 13/13、`ccpd_diff_test.py` 265/265、
+  `ccpd_runtime_audit_test.py` 32/32、
+  `ccpd_exit_edge_test.py` 64/64（新增）、
+  `ccpd_payload_bounds_test.py` 12/12（新增）。
+- 既有门禁：`run_tests.sh` ALL GREEN、`multiseed.sh` FAIL=0、
+  guard 80/0、capability 11/0、phase_g ALL PASS、prod_audit PASS、
+  vm_semantics PASS、micro_fusion PASS、robustness ALL GREEN、
+  tamper 60/0、bench PASS。
+
+### 20.3 诚实记录
+
+- P2 首版尝试把 spans 校验写成多局部变量的 parse 片段，在
+  seed 7 的 metamethods 差分用例上让产物崩溃（`attempt to
+  index number with number`，位于 LoadStr 的字符串缓存读）。
+  bisect 已定位到那次 parse 片段扩增本身——片段标识符经一份
+  共享的 sanitize 映射重命名，parse 代码段不容忍任意新局部名；
+  具体是哪个新标识符与既有作用域冲突，未隔离到名字级。出货
+  版本改用单个累积局部（`expect`）在既有 parse 惯用法内完成
+  同一校验，全套门禁恢复全绿。
+- 早前已记录的 `strings.lua` seed 1234 既有缺陷与本次改动面无
+  关，仍未修。
+- 结论性质与既往一致：以上均为内部自测指标，不代表抵御外部
+  独立逆向分析的能力。

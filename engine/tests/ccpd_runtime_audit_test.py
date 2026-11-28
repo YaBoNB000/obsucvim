@@ -79,6 +79,37 @@ end
 print(s, fib(10), acc, hs[1]() + hs[2]() + hs[3]())
 """
 
+EXIT_PROGRAM = r"""
+local function f(a) if a then print("in") else return 99 end end
+local function g() local s = 0 for i = 1, 4 do s = s + i end if s > 5 then s = s * 10 else return -1 end return s end
+local function h(a) while a do return 7 end end
+print(f(true))
+print(f(false))
+print(g())
+print(h(false), h(true))
+"""
+
+REVISIT_PROGRAM = r"""
+local function f(n) local s = 0 for i = 1, n do s = s + i end return s end
+print(f(20))
+"""
+
+CORO_PROGRAM = r"""
+local function worker(tag, base)
+  for i = 1, 3 do coroutine.yield(tag .. i) end
+  return base * 100
+end
+local a = coroutine.create(worker)
+local b = coroutine.create(worker)
+print(coroutine.resume(a, "a", 1))
+print(coroutine.resume(b, "b", 2))
+print(coroutine.resume(a))
+print(coroutine.resume(b))
+print(coroutine.resume(a))
+print(coroutine.resume(a))
+print(coroutine.resume(b))
+"""
+
 checks = []
 
 
@@ -253,6 +284,125 @@ def main():
               any(v == list(range(1, len(v) + 1)) and len(v) >= 3
                   for v in ords_by_site_child.values()),
               str(ords_by_site_child))
+
+        # EXIT events (repair plan 3.2): a tail-merge function whose
+        # non-returning branch falls through to pc == tn + 1 must be
+        # observed leaving through an X event on a CFG-declared exit
+        # edge, never through a B event dressed up as a block entry,
+        # and the frame must end there (no later B with that fctx).
+        exit_src = os.path.join(td, "exitprog.lua")
+        with open(exit_src, "w", encoding="utf-8") as fh:
+            fh.write(EXIT_PROGRAM)
+        ref2 = subprocess.run([LUAU, exit_src], capture_output=True, text=True, timeout=60)
+        dump2 = os.path.join(td, "exit_dump.txt")
+        art2 = os.path.join(td, "exit_art.lua")
+        ok, err = gen(AUDIT_BIN, exit_src, art2, audit_path=dump2)
+        check("EXIT program audit artifact generates", ok, err)
+        if ok:
+            out2, audit2 = run_artifact(art2)
+            check("EXIT program output matches plain reference",
+                  out2 == ref2.stdout.splitlines(),
+                  f"got {out2} want {ref2.stdout.splitlines()}")
+            fns2 = parse_dump(dump2)
+            x_lines = [a.split() for a in audit2 if a.startswith("X ")]
+            b2_lines = [a.split() for a in audit2 if a.startswith("B ")]
+            bad_edges = []
+            for (_t, fi, edge, _fctx) in x_lines:
+                fn = fns2.get(int(fi) - 1)
+                ent = fn["edges"].get(int(edge)) if fn else None
+                if ent is None or ent[2] != "EXIT":
+                    bad_edges.append(f"X fn{fi} edge {edge} not a CFG exit edge")
+            check("EXIT observed through X events", bool(x_lines),
+                  f"X events={len(x_lines)}")
+            check("every X event names a CFG-declared exit edge", not bad_edges,
+                  "; ".join(bad_edges[:3]))
+            bad_b = [a for a in b2_lines
+                     if not (1 <= int(a[2]) <= fns2[int(a[1]) - 1]["blocks"])]
+            check("no B event presents EXIT as a block entry", not bad_b,
+                  "; ".join(" ".join(a) for a in bad_b[:3]))
+            ended = set()
+            leak = []
+            for a in audit2:
+                parts = a.split()
+                if not parts:
+                    continue
+                if parts[0] == "X":
+                    ended.add(parts[3])
+                elif parts[0] == "B" and parts[6] in ended:
+                    leak.append(a)
+            check("no block entry follows an exit in the same frame", not leak,
+                  "; ".join(leak[:3]))
+
+        # Revisit audit (repair plan 3.2): one (function, block, edge)
+        # entered repeatedly inside one frame keeps monotone visits
+        # and rotates through >= 2 variants; the composite cache
+        # identity (block, edge, variant) stays distinguishable.
+        rev_src = os.path.join(td, "revisit.lua")
+        with open(rev_src, "w", encoding="utf-8") as fh:
+            fh.write(REVISIT_PROGRAM)
+        dump3 = os.path.join(td, "revisit_dump.txt")
+        art3 = os.path.join(td, "revisit_art.lua")
+        ok, err = gen(AUDIT_BIN, rev_src, art3, audit_path=dump3)
+        check("revisit audit artifact generates", ok, err)
+        if ok:
+            out3, audit3 = run_artifact(art3)
+            ref3 = subprocess.run([LUAU, rev_src], capture_output=True, text=True, timeout=60)
+            check("revisit program output matches plain reference",
+                  out3 == ref3.stdout.splitlines())
+            visits_by_key = {}
+            for a in audit3:
+                parts = a.split()
+                if parts and parts[0] == "B":
+                    (_t, fi, bi, edge, var, visit, _fctx) = parts
+                    visits_by_key.setdefault((fi, bi, edge), []).append((int(visit), int(var)))
+            repeated = {k: v for k, v in visits_by_key.items() if len(v) >= 3}
+            mono = all(seq == sorted(seq) and all(
+                x[0] < y[0] for x, y in zip(seq, seq[1:]))
+                for seq in repeated.values())
+            check("one (function, block, edge) is re-entered repeatedly",
+                  bool(repeated), f"keys={ {k: len(v) for k, v in visits_by_key.items()} }")
+            check("revisit counts strictly increase on the repeated key", mono)
+            check("repeated key rotates through >= 2 variants",
+                  any(len({var for (_v, var) in seq}) >= 2 for seq in repeated.values()),
+                  str({k: sorted({var for (_v, var) in seq}) for k, seq in repeated.items()}))
+
+        # Coroutine audit (repair plan 3.2): two coroutine instances
+        # yielded and resumed in alternation keep disjoint frame
+        # contexts, and every block entry belongs to a frame that an
+        # E event actually opened (no cross-frame edge/context leak).
+        coro_src = os.path.join(td, "coro.lua")
+        with open(coro_src, "w", encoding="utf-8") as fh:
+            fh.write(CORO_PROGRAM)
+        dump4 = os.path.join(td, "coro_dump.txt")
+        art4 = os.path.join(td, "coro_art.lua")
+        ok, err = gen(AUDIT_BIN, coro_src, art4, audit_path=dump4)
+        check("coroutine audit artifact generates", ok, err)
+        if ok:
+            out4, audit4 = run_artifact(art4)
+            ref4 = subprocess.run([LUAU, coro_src], capture_output=True, text=True, timeout=60)
+            check("coroutine program output matches plain reference",
+                  out4 == ref4.stdout.splitlines(),
+                  f"got {out4} want {ref4.stdout.splitlines()}")
+            opened = set()
+            frame_blocks = {}
+            orphans = []
+            for a in audit4:
+                parts = a.split()
+                if not parts:
+                    continue
+                if parts[0] == "E":
+                    opened.add(parts[2])
+                elif parts[0] == "B":
+                    if parts[6] not in opened:
+                        orphans.append(a)
+                    frame_blocks.setdefault(parts[6], []).append(parts[2])
+            check("coroutine frames open distinct frame contexts",
+                  len(opened) >= 3, f"frames={len(opened)}")
+            check("every coroutine block entry belongs to an opened frame",
+                  not orphans, "; ".join(orphans[:3]))
+            check("each coroutine resumes in its own frame blocks",
+                  sum(1 for v in frame_blocks.values() if len(v) >= 2) >= 2,
+                  str({k: len(v) for k, v in frame_blocks.items()}))
 
         # Production isolation.
         prod_art = os.path.join(td, "prod.lua")
