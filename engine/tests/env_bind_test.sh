@@ -51,11 +51,16 @@ else
 	else
 		gf "leak" "绑定产物在通用沙箱竟然跑起来了（绑定失效）"
 	fi
-	# (c) 产物含目标运行时 API 引用
-	if grep -q "Vector3\|Vector2\|task\." "$BG_TMP/bound.lua"; then
+	# (c) 绑定生效且保持密封：阶段 D 后目标运行时 API 引用不再以明文
+	# 出现在产物中（密封是预期形态，不得为迎合旧断言恢复明文）。
+	# 等价断言 = 无明文 API 引用 + 通用沙箱加载失败（(b) 已验）+
+	# 与未绑定产物字节不同（绑定确实注入了槽捕获）。
+	"$TOOL" --preset v15 --dialect luau --seed 42 "$SRC" "$BG_TMP/unbound_ref.lua" 2>/dev/null
+	if ! grep -q "Vector3\|Vector2\|task\." "$BG_TMP/bound.lua" \
+		&& ! cmp -s "$BG_TMP/bound.lua" "$BG_TMP/unbound_ref.lua"; then
 		pass=$((pass+1))
 	else
-		gf "noref" "绑定产物未嵌入目标运行时 API 引用"
+		gf "noref" "绑定产物密封/差异断言失败（明文 API 引用或与未绑定产物相同）"
 	fi
 fi
 
@@ -65,7 +70,7 @@ fi
 # （㊺ 正向等价/顺序守卫见 faithful_stub_test.sh。）
 rm -f /tmp/vm_tsrc.lua
 OBSUCVIM_VM_TSRC=1 "$AUDIT_TOOL" --preset v15 --dialect luau --bind-env roblox --seed 42 "$SRC" "$BG_TMP/bound2.lua" >/dev/null 2>&1
-if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "Vector3\.new" "$BG_TMP/bound2.lua"; then
+if grep -q "ef1%\|ef1 %" /tmp/vm_tsrc.lua 2>/dev/null && grep -q "\[5[0-9][0-9][0-9]\]" /tmp/vm_tsrc.lua 2>/dev/null; then
 	pass=$((pass+1))
 else
 	gf "envval" "绑定态缺少环境值折叠消费（ef1 钥匙流项 / 槽捕获）"

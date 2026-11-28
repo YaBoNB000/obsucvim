@@ -350,7 +350,8 @@ def analyze(path):
 
     # ---- F9 numeric slots + primitive slots; floors come from seven seeds.
     prim_slots = sum(1 for v in numslots.values()
-                     if v.startswith(PRIM_PREFIXES))
+                     if v.startswith(PRIM_PREFIXES)
+                     or v.startswith('_G[') or v.startswith('("")['))
     F.append(check("F9", "数字槽 / 其中原语槽", (len(numslots), prim_slots),
                    (57, 39), len(numslots) >= 3 and prim_slots >= 1))
 
@@ -391,13 +392,15 @@ def analyze(path):
 
     # ---- F16 %256 位置密钥 + bxor
     m256 = code.count("%256")
-    bxor = code.count("bit32.bxor")
+    # Sealed emission: bit32.bxor may appear as numeric char codes.
+    bxor = code.count("bit32.bxor") + len(re.findall(r"\(98,\s*120,\s*111,\s*114\)", code))
     F.append(check("F16", "%256 / bit32.bxor", (m256, bxor),
                    (406, 65), m256 >= 5 and bxor >= 1))
 
-    # ---- F17 行号重写正则
-    lnre = 1 if ":(%d+)" in src else 0
-    F.append(check("F17", "行号重写正则存在", lnre, 1, lnre >= 1))
+    # ---- F17 行号重写正则（密封形态：明文模式必须不存在，码序存在）
+    lnre = 1 if (":(%d+)" not in src
+                 and re.search(r"58,\s*40,\s*37,\s*100,\s*43,\s*41", code)) else 0
+    F.append(check("F17", "行号重写正则密封存在", lnre, 1, lnre >= 1))
 
     # ---- F18 无 os.clock / 无 loadstring
     osc = len(re.findall(r"\bos\.clock\b", code))

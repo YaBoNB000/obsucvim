@@ -29,6 +29,44 @@ print("expr:", g)
 local h = 100
 h %= 7 + 1
 print("expr mod:", h)
+local s = "a"
+s ..= "b"
+print("concat:", s)
+local z = 17
+z //= 5
+print("idiv:", z)
+-- dynamic lvalue parts must be evaluated exactly once, in native order:
+-- object, key, current-value read, RHS, write.
+local calls = 0
+local dyn = { value = 1 }
+local function nextKey()
+	calls += 1
+	return "value"
+end
+dyn[nextKey()] += 5
+print("dynamic key:", dyn.value, calls)
+local order = {}
+local backing = { value = 3 }
+local proxy = setmetatable({}, {
+	__index = function(_, k)
+		order[#order + 1] = "get"
+		return backing[k]
+	end,
+	__newindex = function(_, k, v)
+		order[#order + 1] = "set"
+		backing[k] = v
+	end,
+})
+local function factory()
+	order[#order + 1] = "factory"
+	return proxy
+end
+local function rhs()
+	order[#order + 1] = "rhs"
+	return 4
+end
+factory().value += rhs()
+print("dynamic order:", backing.value, table.concat(order, ","))
 -- multiple statements
 local i = 1
 while i <= 4 do

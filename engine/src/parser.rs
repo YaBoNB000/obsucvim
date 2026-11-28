@@ -2,6 +2,7 @@
 use crate::ast::*;
 use crate::lexer::{InterpPart, Lexer, TokKind, Token};
 use crate::limits;
+use std::collections::HashSet;
 
 const UNARY_PRIO: u8 = 8;
 
@@ -12,10 +13,14 @@ struct Parser {
 	loops: u32,
 	expr_depth: usize,
 	closure_depth: usize,
+	block_depth: usize,
+	used_names: HashSet<String>,
+	compound_seq: usize,
 }
 
 impl Parser {
 	fn peek(&self, ahead: usize) -> &Token {
+		// invariant: Lexer::tokens always appends a trailing Eof token, so the vector is never empty
 		self.toks.get(self.i + ahead).unwrap_or_else(|| self.toks.last().unwrap())
 	}
 
@@ -36,6 +41,88 @@ impl Parser {
 
 	fn errf(&self, fmt: String) -> ParseError {
 		self.err(&fmt)
+	}
+
+	fn compound_temp(&mut self, base: &str) -> String {
+		loop {
+			self.compound_seq += 1;
+			let name = format!("__obsucvim_{}_{}", base, self.compound_seq);
+			if self.used_names.insert(name.clone()) {
+				return name;
+			}
+		}
+	}
+
+	/// Lower a Luau compound assignment without evaluating a dynamic lvalue
+	/// more than once. The native evaluation order for an indexed target is
+	/// object, key, current-value read, RHS, binary operation, write. Plain
+	/// identifiers have no lvalue evaluation side effects and keep the
+	/// ordinary assignment form (the Luau printer can fold it back to the
+	/// compound operator).
+	fn lower_compound(&mut self, target: Expr, op: BinOp, value: Expr) -> Result<Stmt, ParseError> {
+		match target {
+			Expr::Ident { .. } => Ok(Stmt::Assign {
+				targets: vec![target.clone()],
+				values: vec![Expr::Bin {
+					op,
+					l: Box::new(target),
+					r: Box::new(value),
+				}],
+			}),
+			Expr::Paren { e } => self.lower_compound(*e, op, value),
+			Expr::Dot { obj, name } => {
+				let key = Expr::Str {
+					bytes: name.into_bytes(),
+					is_binary: false,
+				};
+				Ok(self.lower_index_compound(*obj, key, op, value))
+			}
+			Expr::Index { obj, idx } => Ok(self.lower_index_compound(*obj, *idx, op, value)),
+			_ => Err(self.errf(
+				"compound assignment target must be a variable or index expression".to_string(),
+			)),
+		}
+	}
+
+	fn lower_index_compound(&mut self, obj: Expr, key: Expr, op: BinOp, value: Expr) -> Stmt {
+		let obj_name = self.compound_temp("compound_obj");
+		let key_name = self.compound_temp("compound_key");
+		let cur_name = self.compound_temp("compound_cur");
+		let ident = |name: &str| Expr::Ident {
+			name: name.to_string(),
+			sym: None,
+		};
+		let target = Expr::Index {
+			obj: Box::new(ident(&obj_name)),
+			idx: Box::new(ident(&key_name)),
+		};
+		Stmt::Do(Block {
+			stmts: vec![
+				Stmt::Local {
+					names: vec![obj_name.clone()],
+					syms: vec![0],
+					values: vec![Some(obj)],
+				},
+				Stmt::Local {
+					names: vec![key_name.clone()],
+					syms: vec![0],
+					values: vec![Some(key)],
+				},
+				Stmt::Local {
+					names: vec![cur_name.clone()],
+					syms: vec![0],
+					values: vec![Some(target.clone())],
+				},
+				Stmt::Assign {
+					targets: vec![target],
+					values: vec![Expr::Bin {
+						op,
+						l: Box::new(ident(&cur_name)),
+						r: Box::new(value),
+					}],
+				},
+			],
+		})
 	}
 
 	fn is(&self, kind: TokKind, text: Option<&str>) -> bool {
@@ -103,6 +190,22 @@ impl Parser {
 
 
 	fn block(&mut self) -> Result<Block, ParseError> {
+		self.block_depth += 1;
+		if self.block_depth > limits::MAX_BLOCK_NEST_DEPTH {
+			let d = self.block_depth;
+			self.block_depth -= 1;
+			return Err(self.err(&format!(
+				"input exceeds compiler limit: block nesting depth = {}, max allowed = {}",
+				d,
+				limits::MAX_BLOCK_NEST_DEPTH
+			)));
+		}
+		let res = self.block_inner();
+		self.block_depth -= 1;
+		res
+	}
+
+	fn block_inner(&mut self) -> Result<Block, ParseError> {
 		let mut stmts = Vec::new();
 		loop {
 			let t = self.peek(0);
@@ -326,7 +429,16 @@ self.eat(TokKind::Punct, Some("?"));
 				limits::MAX_CLOSURE_NEST_DEPTH
 			)));
 		}
+		// `break` / `continue` never cross a function boundary (Lua 5.1 and
+		// Luau both reject `while true do local function f() break end end`
+		// with "break statement must be inside a loop"), so the body is parsed
+		// with a zeroed loop counter. Before Phase 18 P0-2 the counter leaked
+		// through, the statement reached vmgen with an empty loop stack and
+		// hit the bare `expect("break outside loop")` panic (P4 audit).
+		let outer_loops = self.loops;
+		self.loops = 0;
 		let res = self.funcbody_inner(has_self);
+		self.loops = outer_loops;
 		self.closure_depth -= 1;
 		res
 	}
@@ -462,13 +574,13 @@ var_sym: 0,
 			&& iters.len() == 1
 			&& !matches!(iters[0], Expr::Call { .. } | Expr::Method { .. })
 		{
-			iters = vec![
-				Expr::Ident {
-					name: "next".to_string(),
-					sym: None,
-				},
-				iters[0].clone(),
-			];
+			// Luau generalized iteration: a single non-call iterable is NOT
+			// unconditionally `(next, value)` — an `__iter` metamethod wins,
+			// a function value iterates itself, and only then does the
+			// `next` table fallback apply.  Resolve the triple at runtime
+			// through a synthesized resolver call; the iterable expression
+			// stays a single call argument, so it is evaluated once.
+			iters = vec![generalized_iter_call(iters.into_iter().next().unwrap())];
 		}
 		self.expect_kw("do")?;
 		self.loops += 1;
@@ -668,15 +780,7 @@ self.next();
 						"compound assignment takes a single target".to_string(),
 					));
 				}
-				let rhs = Expr::Bin {
-					op: op,
-					l: Box::new(clone_expr(&e)),
-					r: Box::new(value),
-				};
-				return Ok(Stmt::Assign {
-					targets: vec![e],
-					values: vec![rhs],
-				});
+				return self.lower_compound(e, op, value);
 			}
 		}
 		match e {
@@ -1029,7 +1133,88 @@ fn compound_op(s: &str) -> Option<BinOp> {
 		"//=" => Some(BinOp::Idiv),
 		"%=" => Some(BinOp::Mod),
 		"^=" => Some(BinOp::Pow),
+		"..=" => Some(BinOp::Concat),
 		_ => None,
+	}
+}
+
+/// Runtime resolver for Luau generalized iteration over a single non-call
+/// iterable.  Builds `(function(__it) ... end)(<iterable>)`, which yields the
+/// (iterator, state, control) triple:
+///   * an `__iter` metamethod on the value wins and is called with the value,
+///   * a function value iterates itself (state/control default to nil),
+///   * anything else falls back to `next` (plain tables; other types error
+///     inside `next`, mirroring Luau's non-iterable error path).
+/// The iterable expression appears exactly once, as the call argument, so it
+/// keeps its single evaluation.  The synthesized `__it`/`__mt` names live in
+/// the resolver's own function scope, so they cannot collide with user names.
+fn generalized_iter_call(iterable: Expr) -> Expr {
+	fn ident(name: &str) -> Expr {
+		Expr::Ident {
+			name: name.to_string(),
+			sym: None,
+		}
+	}
+	fn mt_iter() -> Expr {
+		Expr::Dot {
+			obj: Box::new(ident("__mt")),
+			name: "__iter".to_string(),
+		}
+	}
+	let resolver = Expr::Function {
+		params: vec!["__it".to_string()],
+		param_syms: vec![0],
+		vararg: false,
+		body: Block {
+			stmts: vec![
+				Stmt::Local {
+					names: vec!["__mt".to_string()],
+					syms: vec![0],
+					values: vec![Some(Expr::Call {
+						func: Box::new(ident("getmetatable")),
+						args: vec![ident("__it")],
+					})],
+				},
+				Stmt::If {
+					cond: Box::new(Expr::Bin {
+						op: BinOp::And,
+						l: Box::new(ident("__mt")),
+						r: Box::new(mt_iter()),
+					}),
+					thenb: Block {
+						stmts: vec![Stmt::Return(vec![Expr::Call {
+							func: Box::new(mt_iter()),
+							args: vec![ident("__it")],
+						}])],
+					},
+					elsifs: vec![],
+					elseb: None,
+				},
+				Stmt::If {
+					cond: Box::new(Expr::Bin {
+						op: BinOp::Eq,
+						l: Box::new(Expr::Call {
+							func: Box::new(ident("type")),
+							args: vec![ident("__it")],
+						}),
+						r: Box::new(Expr::Str {
+							bytes: b"function".to_vec(),
+							is_binary: false,
+						}),
+					}),
+					thenb: Block {
+						stmts: vec![Stmt::Return(vec![ident("__it")])],
+					},
+					elsifs: vec![],
+					elseb: None,
+				},
+				Stmt::Return(vec![ident("next"), ident("__it")]),
+			],
+		},
+	};
+	Expr::Call {
+		func: Box::new(resolver),
+		args: vec![iterable],
 	}
 }
 
@@ -1195,7 +1380,22 @@ fn parse_expr_snippet(src: &str, luau: bool) -> Result<Expr, ParseError> {
 	let toks = lexer
 		.tokens()
 		.map_err(|e| ParseError { line: e.line, msg: e.msg })?;
-	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0 };
+	let used_names = toks
+		.iter()
+		.filter(|t| t.kind == TokKind::Name)
+		.map(|t| t.text.clone())
+		.collect();
+	let mut p = Parser {
+		toks,
+		i: 0,
+		luau,
+		loops: 0,
+		expr_depth: 0,
+		closure_depth: 0,
+		block_depth: 0,
+		used_names,
+		compound_seq: 0,
+	};
 	let e = p.exp()?;
 	if p.peek(0).kind != TokKind::Eof {
 		return Err(ParseError {
@@ -1211,7 +1411,22 @@ pub fn parse(src: &str, luau: bool) -> Result<Block, ParseError> {
 	let toks = lexer
 		.tokens()
 		.map_err(|e| ParseError { line: e.line, msg: e.msg })?;
-	let mut p = Parser { toks, i: 0, luau, loops: 0, expr_depth: 0, closure_depth: 0 };
+	let used_names = toks
+		.iter()
+		.filter(|t| t.kind == TokKind::Name)
+		.map(|t| t.text.clone())
+		.collect();
+	let mut p = Parser {
+		toks,
+		i: 0,
+		luau,
+		loops: 0,
+		expr_depth: 0,
+		closure_depth: 0,
+		block_depth: 0,
+		used_names,
+		compound_seq: 0,
+	};
 	let block = p.block()?;
 	if p.peek(0).kind != TokKind::Eof {
 		let t = p.peek(0);
@@ -1262,5 +1477,29 @@ mod tests {
 	fn a_parenthesized_call_result_is_not_a_call_statement() {
 		assert!(parse("(f())", false).is_err());
 		assert!(parse("((f()))", false).is_err());
+	}
+
+	#[test]
+	fn dynamic_compound_target_is_lowered_without_duplicate_evaluation() {
+		let src = "local t = { 1 } local function nextKey() return 1 end t[nextKey()] += 5";
+		let mut block = parse(src, true).unwrap();
+		let table = crate::symtab::resolve(&mut block);
+		let out = crate::printer::print_chunk_luau(&table, &block);
+		// The key expression must be EVALUATED once (the definition site
+		// `local function nextKey()` also contains the text `nextKey()`,
+		// so count only the call in the lowered assignment).
+		assert_eq!(out.matches("= nextKey()").count(), 1, "{out}");
+		assert!(out.contains("compound_obj"), "{out}");
+		assert!(out.contains("compound_key"), "{out}");
+		assert!(out.contains("compound_cur"), "{out}");
+	}
+
+	#[test]
+	fn concat_compound_assignment_is_supported_end_to_end() {
+		let mut block = parse("local s = 'a' s ..= 'b'", true).unwrap();
+		let table = crate::symtab::resolve(&mut block);
+		let out = crate::printer::print_chunk_luau(&table, &block);
+		assert!(out.contains("s ..= \"b\""), "{out}");
+		assert!(parse("local s = 'a' s ..= 'b'", false).is_err());
 	}
 }

@@ -44,9 +44,10 @@ pub enum Op {
 	CallM,
 	MkStr,
 	LoadStr,
+	Canary,
 }
 
-pub const N_OPS: usize = 43;
+pub const N_OPS: usize = 44;
 
 pub fn op_base() -> [u8; N_OPS] {
 	#[allow(clippy::declare_interior_mutable_const)]
@@ -63,7 +64,7 @@ pub fn op_base() -> [u8; N_OPS] {
 		(Op::VarArgTabN, 32), (Op::GetGlobal, 33), (Op::SetGlobal, 34),
 		(Op::GetUp, 35), (Op::SetUp, 36), (Op::Return, 37), (Op::Nop, 38),
 		(Op::CallE, 39), (Op::CallM, 40),
-		(Op::MkStr, 41), (Op::LoadStr, 42),
+		(Op::MkStr, 41), (Op::Canary, 42), (Op::LoadStr, 43),
 	];
 	let mut out = [0u8; N_OPS];
 	for (op, code) in t {
@@ -117,7 +118,8 @@ pub fn op_index(op: Op) -> usize {
 		Op::CallE => 39,
 		Op::CallM => 40,
 		Op::MkStr => 41,
-		Op::LoadStr => 42,
+		Op::Canary => 42,
+		Op::LoadStr => 43,
 	}
 }
 
@@ -130,7 +132,7 @@ pub fn op_from_index(i: u8) -> Op {
 		Op::GetTab, Op::SetTab, Op::TabN, Op::CallT, Op::Closure, Op::Call,
 		Op::VarArgTab, Op::VarArgC, Op::VarArgTabN, Op::GetGlobal, Op::SetGlobal,
 		Op::GetUp, Op::SetUp, Op::Return, Op::Nop, Op::CallE, Op::CallM,
-		Op::MkStr, Op::LoadStr,
+		Op::MkStr, Op::Canary, Op::LoadStr,
 	];
 	REV[i as usize]
 }
@@ -148,6 +150,7 @@ impl OpMap {
 	}
 
 	pub fn new_with_count(rng: &mut crate::rng::Rng, active_count: usize) -> OpMap {
+		// invariant: the two callers pass isa::N_OPS or isa::N_OPS - 1 (compile-time constants)
 		assert!(active_count > 0 && active_count <= N_OPS);
 		let mut to_wire = [[0u8; N_OPS]; 4];
 		let mut nop_alias = [0u8; 4];
@@ -193,16 +196,19 @@ impl OpMap {
 		self.to_wire[s_idx][op_index(op)]
 	}
 
-	/// V17 P1-b：fused trampoline 码位 = 方言 base + 44 + k。
-	/// （per-dialect 区间 64 码位：基础 43 + nop_alias 1 → 空闲 [base+44, base+64) 共 20。）
+	/// V17 P1-b：fused trampoline 码位 = 方言 base + 48 + k。
+	/// （per-dialect 区间 64 码位：基础 op 至多 44（base+0..43）+ nop_alias
+	/// 至多 base+44（active_count=44 时）→ tramp 占 [base+48, base+52)，
+	/// 与 alias 恒不相交；旧布局 base+44+k 在 active_count=44 时与
+	/// nop_alias 同槽，tramp(0) 被 hw_expand 的 alias 拷贝静默覆盖。）
 	pub fn fused_tramp_code(s_idx: usize, k: usize) -> u8 {
-		(s_idx * 64 + 44 + k) as u8
+		(s_idx * 64 + 48 + k) as u8
 	}
 
-	/// V17 P1-b：tail-less 融合件 handler 码位 = 方言 base + 48 + j，
+	/// V17 P1-b：tail-less 融合件 handler 码位 = 方言 base + 52 + j，
 	/// j 为 FUSE_TAIL_OPS 内序号（不带 chain_epilogue 的版本，专供 trampoline 内嵌调用）。
 	pub fn fused_tail_code(s_idx: usize, j: usize) -> u8 {
-		(s_idx * 64 + 48 + j) as u8
+		(s_idx * 64 + 52 + j) as u8
 	}
 
 	pub fn codes_text(&self) -> String {
@@ -360,6 +366,8 @@ pub fn unused_operands(op: Op) -> [bool; 4] {
 		| Op::Ne | Op::Idiv | Op::GetTab | Op::SetTab | Op::TabN => [false, false, false, true],
 		Op::NewTab | Op::VarArgTab | Op::VarArgC => [false, true, true, true],
 		Op::CallT | Op::Call | Op::CallM | Op::Return | Op::MkStr | Op::LoadStr => [false, false, false, false],
+		// a = canary id, b/c/d unused
+		Op::Canary => [false, true, true, true],
 		Op::CallE => [false, false, true, false],
 		Op::Nop => [true, true, true, true],
 	}
@@ -505,6 +513,7 @@ impl Carrier {
 		let mut glyphs: Vec<u8> = (32u8..=126).collect();
 		rng.shuffle(&mut glyphs);
 		let reserved = glyphs[0];
+		// invariant: glyphs is a fixed 95-byte static table, so glyphs[1..] has exactly 94 bytes
 		let alphabet: [u8; 94] = glyphs[1..].try_into().unwrap();
 		let mut tokens = dummy_tokens();
 		for i in 0..10 {
@@ -717,7 +726,7 @@ mod tests {
 	}
 
 	#[test]
-	fn op_meta_covers_all_43_ops_consistently() {
+	fn op_meta_covers_all_44_ops_consistently() {
 		assert_eq!(ALL_OPS.len(), N_OPS);
 		for (i, &op) in ALL_OPS.iter().enumerate() {
 			assert_eq!(op_index(op), i);
@@ -844,7 +853,7 @@ mod tests {
 	}
 
 	#[test]
-	fn all_43_ops_have_parseable_handlers_in_luau_and_lua51() {
+	fn all_44_ops_have_parseable_handlers_in_luau_and_lua51() {
 		for (i, &_op) in ALL_OPS.iter().enumerate() {
 			let name = OP_NAMES[i];
 			for &v15 in &[false, true] {
@@ -876,16 +885,16 @@ mod tests {
 	}
 }
 
-/// Canonical ordered names of all 43 VM opcodes, matching `op_index` / `ALL_OPS` 1-to-1.
+/// Canonical ordered names of all 44 VM opcodes, matching `op_index` / `ALL_OPS` 1-to-1.
 pub const OP_NAMES: [&str; N_OPS] = [
 	"Jmp", "Jf", "Jt", "LoadNil", "LoadK", "Move", "Add", "Sub", "Mul", "Div",
 	"Mod", "Pow", "Concat", "Unm", "Not", "Len", "Lt", "Le", "Gt", "Ge", "Eq",
 	"Ne", "Idiv", "NewTab", "GetTab", "SetTab", "TabN", "CallT", "Closure",
 	"Call", "VarArgTab", "VarArgC", "VarArgTabN", "GetGlobal", "SetGlobal",
-	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "LoadStr",
+	"GetUp", "SetUp", "Return", "Nop", "CallE", "CallM", "MkStr", "Canary", "LoadStr",
 ];
 
-/// Canonical ordered table of all 43 VM opcodes, matching `op_index` / `OP_NAMES` 1-to-1.
+/// Canonical ordered table of all 44 VM opcodes, matching `op_index` / `OP_NAMES` 1-to-1.
 pub const ALL_OPS: [Op; N_OPS] = [
 	Op::Jmp, Op::Jf, Op::Jt, Op::LoadNil, Op::LoadK, Op::Move, Op::Add, Op::Sub,
 	Op::Mul, Op::Div, Op::Mod, Op::Pow, Op::Concat, Op::Unm, Op::Not, Op::Len,
@@ -893,7 +902,7 @@ pub const ALL_OPS: [Op; N_OPS] = [
 	Op::GetTab, Op::SetTab, Op::TabN, Op::CallT, Op::Closure, Op::Call,
 	Op::VarArgTab, Op::VarArgC, Op::VarArgTabN, Op::GetGlobal, Op::SetGlobal,
 	Op::GetUp, Op::SetUp, Op::Return, Op::Nop, Op::CallE, Op::CallM,
-	Op::MkStr, Op::LoadStr,
+	Op::MkStr, Op::Canary, Op::LoadStr,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -902,6 +911,8 @@ pub enum OperandRole {
 	RegRead,
 	RegWrite,
 	RegRange,
+	RegBase,
+	CallBase,
 	ConstIdx,
 	ProtoIdx,
 	UpvalIdx,
@@ -918,6 +929,41 @@ pub enum PcEffect {
 	FrameReturn,
 }
 
+/// How the scatter pass is allowed to transform one operand lane.  This is
+/// deliberately separate from the lane's semantic role: e.g. a JumpTarget is
+/// semantically a PC but must not be sigma-remapped as a register.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScatterMap {
+	Identity,
+	RegisterZeroBased,
+	ConstantPermutation,
+	UpvaluePermutation,
+}
+
+impl OperandRole {
+	pub const fn scatter(self) -> ScatterMap {
+		match self {
+			OperandRole::RegRead | OperandRole::RegWrite | OperandRole::RegRange => {
+				ScatterMap::RegisterZeroBased
+			}
+			OperandRole::ConstIdx => ScatterMap::ConstantPermutation,
+			OperandRole::UpvalIdx => ScatterMap::UpvaluePermutation,
+			OperandRole::CallBase
+			| OperandRole::RegBase
+			| OperandRole::JumpTarget
+			| OperandRole::ProtoIdx
+			| OperandRole::ImmVal
+			| OperandRole::Unused => ScatterMap::Identity,
+		}
+	}
+}
+
+impl OpMeta {
+	pub const fn roles(self) -> [OperandRole; 4] {
+		[self.role_a, self.role_b, self.role_c, self.role_d]
+	}
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OpMeta {
 	pub op: Op,
@@ -925,6 +971,7 @@ pub struct OpMeta {
 	pub role_a: OperandRole,
 	pub role_b: OperandRole,
 	pub role_c: OperandRole,
+	pub role_d: OperandRole,
 	pub pc_effect: PcEffect,
 	pub may_call_host: bool,
 	pub touches_env_or_upv: bool,
@@ -954,9 +1001,10 @@ impl Op {
 			Op::Jmp => OpMeta {
 				op: self,
 				name: "Jmp",
-				role_a: JumpTarget,
-				role_b: Unused,
+				role_a: Unused,
+				role_b: JumpTarget,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: UnconditionalJmp,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -970,6 +1018,7 @@ impl Op {
 				role_a: RegRead,
 				role_b: JumpTarget,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: ConditionalJmp,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -983,6 +1032,7 @@ impl Op {
 				role_a: RegRead,
 				role_b: JumpTarget,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: ConditionalJmp,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -993,9 +1043,10 @@ impl Op {
 			Op::LoadNil => OpMeta {
 				op: self,
 				name: "LoadNil",
-				role_a: RegRange,
+				role_a: RegBase,
 				role_b: ImmVal,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1009,6 +1060,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: ConstIdx,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1016,12 +1068,27 @@ impl Op {
 				fuse_head_ok: true,
 				fuse_tail_ok: true,
 			},
+			Op::Canary => OpMeta {
+				op: self,
+				name: "Canary",
+				role_a: ImmVal,
+				role_b: Unused,
+				role_c: Unused,
+				role_d: Unused,
+				pc_effect: Fallthrough,
+				may_call_host: false,
+				touches_env_or_upv: true,
+				multiret_sensitive: false,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
 			Op::MkStr => OpMeta {
 				op: self,
 				name: "MkStr",
 				role_a: RegWrite,
-				role_b: RegRange,
+				role_b: ImmVal,
 				role_c: ImmVal,
+				role_d: ImmVal,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1034,7 +1101,8 @@ impl Op {
 				name: "LoadStr",
 				role_a: RegWrite,
 				role_b: ConstIdx,
-				role_c: Unused,
+				role_c: ImmVal,
+				role_d: ImmVal,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1048,6 +1116,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: RegRead,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1070,6 +1139,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: RegRead,
 				role_c: RegRead,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1083,6 +1153,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: RegRead,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1096,6 +1167,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: RegRead,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1109,6 +1181,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: RegRead,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1131,6 +1204,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: RegRead,
 				role_c: RegRead,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1144,6 +1218,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: Unused,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1157,6 +1232,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: RegRead,
 				role_c: RegRead,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1170,6 +1246,7 @@ impl Op {
 				role_a: RegRead,
 				role_b: RegRead,
 				role_c: RegRead,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1181,8 +1258,9 @@ impl Op {
 				op: self,
 				name: "TabN",
 				role_a: RegRead,
-				role_b: RegRange,
-				role_c: ImmVal,
+				role_b: RegRead,
+				role_c: RegRead,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1196,6 +1274,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: UpvalIdx,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: true,
@@ -1209,6 +1288,7 @@ impl Op {
 				role_a: UpvalIdx,
 				role_b: RegRead,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: true,
@@ -1222,6 +1302,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: ConstIdx,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: true,
@@ -1232,9 +1313,10 @@ impl Op {
 			Op::SetGlobal => OpMeta {
 				op: self,
 				name: "SetGlobal",
-				role_a: ConstIdx,
-				role_b: RegRead,
+				role_a: RegRead,
+				role_b: ConstIdx,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: true,
 				touches_env_or_upv: true,
@@ -1248,6 +1330,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: ProtoIdx,
 				role_c: Unused,
+				role_d: Unused,
 				// Consumes `nups` inline capture pseudo-instructions by advancing E.ip!
 				pc_effect: ConditionalJmp,
 				may_call_host: false,
@@ -1259,9 +1342,10 @@ impl Op {
 			Op::Call => OpMeta {
 				op: self,
 				name: "Call",
-				role_a: RegRange,
+				role_a: CallBase,
 				role_b: ImmVal,
 				role_c: ImmVal,
+				role_d: ImmVal,
 				pc_effect: FrameTransfer,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1269,17 +1353,31 @@ impl Op {
 				fuse_head_ok: false,
 				fuse_tail_ok: false,
 			},
-			Op::CallE | Op::CallM | Op::CallT => OpMeta {
+			Op::CallE | Op::CallM => OpMeta {
 				op: self,
 				name: match self {
 					Op::CallE => "CallE",
 					Op::CallM => "CallM",
-					Op::CallT => "CallT",
 					_ => "",
 				},
-				role_a: RegRange,
+				role_a: CallBase,
 				role_b: ImmVal,
 				role_c: ImmVal,
+				role_d: ImmVal,
+				pc_effect: FrameTransfer,
+				may_call_host: true,
+				touches_env_or_upv: false,
+				multiret_sensitive: true,
+				fuse_head_ok: false,
+				fuse_tail_ok: false,
+			},
+			Op::CallT => OpMeta {
+				op: self,
+				name: "CallT",
+				role_a: CallBase,
+				role_b: RegRead,
+				role_c: RegRead,
+				role_d: ImmVal,
 				pc_effect: FrameTransfer,
 				may_call_host: true,
 				touches_env_or_upv: false,
@@ -1293,6 +1391,7 @@ impl Op {
 				role_a: RegWrite,
 				role_b: ImmVal,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1303,9 +1402,10 @@ impl Op {
 			Op::VarArgC => OpMeta {
 				op: self,
 				name: "VarArgC",
-				role_a: RegRange,
+				role_a: RegWrite,
 				role_b: ImmVal,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1316,9 +1416,10 @@ impl Op {
 			Op::Return => OpMeta {
 				op: self,
 				name: "Return",
-				role_a: RegRange,
+				role_a: RegBase,
 				role_b: ImmVal,
-				role_c: Unused,
+				role_c: ImmVal,
+				role_d: ImmVal,
 				pc_effect: FrameReturn,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1332,6 +1433,7 @@ impl Op {
 				role_a: Unused,
 				role_b: Unused,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,
@@ -1342,9 +1444,10 @@ impl Op {
 			Op::VarArgTabN => OpMeta {
 				op: self,
 				name: "VarArgTabN",
-				role_a: RegRange,
-				role_b: ImmVal,
+				role_a: RegRead,
+				role_b: RegRead,
 				role_c: Unused,
+				role_d: Unused,
 				pc_effect: Fallthrough,
 				may_call_host: false,
 				touches_env_or_upv: false,

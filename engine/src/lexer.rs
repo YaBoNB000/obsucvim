@@ -629,6 +629,14 @@ self.pos = q + 1;
 					self.advance(1);
 				}
 			} else {
+				if c == b'.' && self.src.len() >= self.pos + 3 && &self.src[self.pos..self.pos + 3] == b"..=" {
+					if !self.luau {
+						return Err(self.err("compound assignment requires --dialect luau"));
+					}
+					toks.push(self.punct_tok("..="));
+					self.advance(3);
+					continue;
+				}
 				let mut matched = false;
 				for t in ["...", "..", "==", "~=", "<=", ">="] {
 					if self.src.len() >= self.pos + t.len()

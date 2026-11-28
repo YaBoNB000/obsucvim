@@ -165,11 +165,13 @@ fn emit_stmt(
 			None
 		}
 		Stmt::Break => {
+			// invariant: the parser rejects `break` outside a loop, including inside a function nested in a loop (parser.rs funcbody zeroes the loop counter), so a Break statement only ever reaches a loop context
 			assert!(ctx.inner, "break outside loop (parser must reject)");
 			ctx.blocks[cur].succ.push(Succ::Brk);
 			None
 		}
 		Stmt::Continue => {
+			// invariant: same parser guarantee as Break above
 			assert!(ctx.inner, "continue outside loop (parser must reject)");
 			ctx.blocks[cur].succ.push(Succ::Cont);
 			None
@@ -299,6 +301,7 @@ fn make_loop(
 				Some(init),
 			)
 		}
+		// invariant: make_loop is only called on While/Repeat/ForNum/ForGen statements by build_graph
 		_ => unreachable!("make_loop called on a non-loop"),
 	};
 
@@ -323,6 +326,7 @@ fn make_loop(
 		| Stmt::Repeat { body, .. }
 		| Stmt::ForNum { body, .. }
 		| Stmt::ForGen { body, .. } => body,
+		// invariant: the loop body is re-matched over the same four loop statement kinds two lines above
 		_ => unreachable!(),
 	};
 	let cont = match &kind {
@@ -838,6 +842,7 @@ fn machine_block(
 			BlkBody::Loop(node) => {
 				let exit = match ctx.blocks[i].succ[0] {
 					Succ::B(x) => x,
+					// invariant: BlkBody::Loop nodes are constructed with exactly one Succ::B exit edge
 					_ => panic!("loop node must have a single successor"),
 				};
 				emit_loop(node, &st_ident(), ids[&i], ids[&exit], &mut used, table, rng, reserved)
@@ -895,6 +900,7 @@ fn dispatch_chain(
 	let first = chain_bodies
 		.first()
 		.cloned()
+		// invariant: build_graph always pushes at least the entry block before dispatch_chain runs
 		.expect("machine has at least one block");
 	let elsifs: Vec<(Expr, Block)> = chain_conds[1..]
 		.iter()
@@ -1040,6 +1046,7 @@ fn emit_loop(
 							});
 							v.push(Stmt::Break);
 						}
+						// invariant: continue edges are replaced by Succ::B edges during build_graph
 						Succ::Cont => unreachable!("continue must be rewired"),
 					}
 				}
@@ -1066,6 +1073,7 @@ fn emit_loop(
 							},
 							Stmt::Break,
 						],
+						// invariant: continue edges are replaced by Succ::B edges during build_graph
 						Succ::Cont => unreachable!("continue must be rewired"),
 					}
 				};
@@ -1099,6 +1107,7 @@ fn emit_loop(
 						},
 						Stmt::Break,
 					],
+					// invariant: continue edges are replaced by Succ::B edges during build_graph
 					Some(Succ::Cont) => unreachable!("continue must be rewired"),
 				}
 			}
@@ -1106,6 +1115,7 @@ fn emit_loop(
 			BlkBody::Loop(n2) => {
 				let exit = match node.blocks[i].succ[0] {
 					Succ::B(x) => x,
+					// invariant: BlkBody::Loop nodes are constructed with exactly one Succ::B exit edge
 					_ => panic!("loop node must have a single successor"),
 				};
 				let stl = stl_ident();

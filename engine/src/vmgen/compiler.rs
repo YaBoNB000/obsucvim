@@ -2,7 +2,7 @@
 use crate::ast::*;
 use crate::rng::Rng;
 use crate::symtab::SymTable;
-use crate::vmgen::isa::{self, Carrier, Const, Instr, Op, OpMap};
+use crate::vmgen::isa::{self, Carrier, Const, Instr, Op, OpMap, OperandRole, ScatterMap};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy)]
@@ -10,15 +10,6 @@ enum CellKind {
 	Plain(u16),
 	Slot(u16),
 	Up(u16),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum ORole {
-	Val,
-	Reg,
-	Base,
-	Const,
-	Up,
 }
 
 pub struct VmProgram {
@@ -39,7 +30,8 @@ pub struct VmProgram {
 	pub blob_kc: u32,
 	pub blob_seed: u32,
 	pub blob_step: u32,
-	pub section_tags: [u8; 8],
+	/// Phase B: per-prototype field layouts (index = fn slot, incl. main at fns.len()).
+	pub proto_layouts: Vec<super::proto_layout::ProtoFieldLayout>,
 	pub operand_sums: Vec<u64>,
 	pub operand_sums2: Vec<u64>,
 	pub chaff_folds: Vec<u16>,
@@ -89,6 +81,16 @@ struct Ctx<'a> {
 	labels: HashMap<u32, (Option<usize>, Vec<usize>)>,
 	loops: Vec<(Label, Label)>,
 	cell_loops: Vec<HashSet<SymId>>,
+	/// Phase 18 P1-2: ciphertexts whose references all live in one loop-free
+	/// function body, so their cache slot may be cleared after the last use.
+	str_clearable: &'a HashSet<Vec<u8>>,
+	/// Phase 18 P1-3: distributed runtime string-cache canaries are only emitted
+	/// for guard-enabled builds (the canary fail path is the guard abort path).
+	canary: bool,
+	/// CCPD (rebased plan): when on, `finish` builds the per-function
+	/// CFG + block variants and emits the id8 directory plus the variant
+	/// bank as the code section. Off: no extra work, no rng draws.
+	ccpd: bool,
 }
 
 fn derive_upvalue_permutation(seed: u64, fn_index: usize, count: usize, scatter: bool) -> Vec<usize> {
@@ -121,6 +123,21 @@ fn const_key(c: &Const) -> (u8, u64) {
 	}
 }
 
+/// CCPD runtime-audit ground truth (rebased plan 15.2): with
+/// `OBSUCVIM_CCPD_AUDIT=<path>` set in an audit-enabled build, the
+/// per-function CFG (incoming edge sets, edge table, closure sites)
+/// is appended to that file; `tests/ccpd_runtime_audit_test.py`
+/// cross-checks the runtime edge log against it. Production builds
+/// compile the gate away (see `audit_gate`).
+fn ccpd_audit_dump(line: &str) {
+	if let Some(path) = crate::audit_gate::audit_var("OBSUCVIM_CCPD_AUDIT") {
+		use std::io::Write;
+		if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+			let _ = writeln!(f, "{line}");
+		}
+	}
+}
+
 fn noise_audit(line: &str) {
 	if let Some(path) = crate::audit_gate::audit_var("OBSUCVIM_NOISE_AUDIT") {
 		use std::io::Write;
@@ -137,7 +154,7 @@ struct ScatterNoiseStats {
 	decoy_holes: usize,
 }
 
-fn operand_perm_from_code(code: u8) -> [u8; 4] {
+pub(crate) fn operand_perm_from_code(code: u8) -> [u8; 4] {
 	let mut rem = code as usize % 24;
 	let mut pool = vec![0u8, 1, 2, 3];
 	let mut out = [0u8; 4];
@@ -173,6 +190,9 @@ impl<'a> Ctx<'a> {
 		lua51: bool,
 		scatter: bool,
 		super_insn: bool,
+		str_clearable: &'a HashSet<Vec<u8>>,
+		canary: bool,
+		ccpd: bool,
 	) -> Ctx<'a> {
 		Ctx {
 			program,
@@ -195,6 +215,9 @@ impl<'a> Ctx<'a> {
 			labels: HashMap::new(),
 			loops: Vec::new(),
 			cell_loops: Vec::new(),
+			str_clearable,
+			canary,
+			ccpd,
 		}
 	}
 
@@ -284,6 +307,7 @@ impl<'a> Ctx<'a> {
 	}
 
 	fn declare(&mut self, s: SymId, k: CellKind) {
+		// invariant: push_scope() installs the root scope at compiler construction and pop_scope never removes it
 		self.scopes.last_mut().unwrap().insert(s, k);
 	}
 
@@ -299,45 +323,11 @@ impl<'a> Ctx<'a> {
 		self.scopes.pop();
 	}
 
-	fn op_roles(op: Op) -> [ORole; 4] {
-		use ORole::*;
-		match op {
-			Op::Jmp => [Val, Val, Val, Val],
-			Op::Jf | Op::Jt => [Reg, Val, Val, Val],
-			Op::LoadNil => [Base, Val, Val, Val],
-			Op::LoadK => [Reg, Const, Val, Val],
-			Op::LoadStr => [Reg, Const, Val, Val],
-			Op::Move => [Reg, Reg, Val, Val],
-			Op::Add
-			| Op::Sub
-			| Op::Mul
-			| Op::Div
-			| Op::Mod
-			| Op::Pow
-			| Op::Idiv
-			| Op::Concat
-			| Op::Lt
-			| Op::Le
-			| Op::Gt
-			| Op::Ge
-			| Op::Eq
-			| Op::Ne
-			| Op::GetTab
-			| Op::SetTab
-			| Op::TabN => [Reg, Reg, Reg, Val],
-			Op::Unm | Op::Not | Op::Len => [Reg, Reg, Val, Val],
-			Op::NewTab | Op::VarArgTab | Op::VarArgC => [Reg, Val, Val, Val],
-			Op::VarArgTabN => [Reg, Reg, Val, Val],
-			Op::CallT => [Base, Reg, Reg, Val],
-			Op::Closure => [Reg, Val, Val, Val],
-			Op::Call | Op::CallE | Op::CallM => [Base, Val, Val, Val],
-			Op::GetGlobal | Op::SetGlobal => [Reg, Const, Val, Val],
-			Op::GetUp => [Reg, Up, Val, Val],
-			Op::SetUp => [Up, Reg, Val, Val],
-			Op::Return => [Base, Val, Val, Val],
-			Op::Nop => [Val, Val, Val, Val],
-			Op::MkStr => [Reg, Val, Val, Val],
-		}
+	/// The canonical ISA table is the only operand-policy source.  Scatter
+	/// behavior is derived from each lane's semantic role, so compiler,
+	/// verifier, fusion, and CCPD cannot drift into separate role tables.
+	fn op_roles(op: Op) -> [OperandRole; 4] {
+		op.meta().roles()
 	}
 
 	fn scatter_operands(&mut self, nregs: u16) -> (Vec<u16>, ScatterNoiseStats) {
@@ -406,6 +396,7 @@ impl<'a> Ctx<'a> {
 		let mut consumed: Vec<usize> = (0..nu).collect();
 		self.rng.shuffle(&mut consumed);
 		let tau = self.up_perm.clone();
+		// invariant: up_perm is built by derive_upvalue_permutation(ups.len()) for this very frame, so its length is nu by construction
 		assert_eq!(tau.len(), nu, "upvalue permutation length mismatch");
 		let old_upsrc = std::mem::take(&mut self.upsrc);
 		self.upsrc.resize(nu, 0);
@@ -418,11 +409,11 @@ impl<'a> Ctx<'a> {
 			let ops = [ins.a, ins.b, ins.c, ins.d];
 			for k in 0..4 {
 				let v = ops[k] as usize;
-				let nv = match roles[k] {
-					ORole::Reg => sigma[v] - 1,
-					ORole::Const => kappa[v] as u16,
-					ORole::Up => tau[v] as u16,
-					_ => ops[k],
+				let nv = match roles[k].scatter() {
+					ScatterMap::RegisterZeroBased => sigma[v] - 1,
+					ScatterMap::ConstantPermutation => kappa[v] as u16,
+					ScatterMap::UpvaluePermutation => tau[v] as u16,
+					ScatterMap::Identity => ops[k],
 				};
 				match k {
 					0 => ins.a = nv,
@@ -434,6 +425,84 @@ impl<'a> Ctx<'a> {
 		}
 
 		(sigma, stats)
+	}
+
+	/// Phase 18 P1-1/P1-2: annotate every `LoadStr` operand with its cache
+	/// policy. Runs on the final instruction stream (after constant pruning and
+	/// operand scatter) so the flag bits can never be scrambled by a remap.
+	///
+	///   bit 15 (0x8000) = cached: the constant has >1 static reference, so the
+	///                    handler decodes once per frame and reuses the slot.
+	///   bit 14 (0x4000) = clear-after-use: this is the last static reference
+	///                    AND every reference lives in one loop-free function.
+	///
+	/// Single-reference constants keep a plain index: the handler decodes
+	/// inline and never touches the cache table.
+	/// Phase 18 P1-3: distribute the four runtime string-cache canaries over the
+	/// generated instruction stream.
+	///
+	/// The 4 split points are `floor(n / 5) * k` for `k = 1..4` (never the very
+	/// first or the very last instruction). Which canary id lands on which split
+	/// point is decided by `Rng::shuffle`, so the same source yields a different
+	/// distribution per seed. Programs shorter than 5 instructions get all four
+	/// canaries immediately before the final instruction instead of forcing a
+	/// five-way split of an already tiny stream.
+	///
+	/// Jump targets are absolute 1-based instruction indices at this point (the
+	/// label fixup pass already ran), so every insertion shifts the targets that
+	/// point at or after the insertion point.
+	fn insert_canaries(&mut self) {
+		if !self.canary {
+			return;
+		}
+		let n = self.code.len();
+		if n == 0 {
+			return;
+		}
+		let mut ids: Vec<u16> = vec![0, 1, 2, 3];
+		self.rng.shuffle(&mut ids);
+		// H3-6: never insert inside an open call-result window. The consumer
+		// instructions of a multi-result call address the window relative to
+		// the call, so a canary dropped between the call and its consumer
+		// shifts the window and corrupts the operands. Only window-free
+		// indices are used.
+		let window = call_window_mask(&self.code);
+		let allowed: Vec<usize> = (0..n).filter(|&i| !window[i]).collect();
+		if allowed.is_empty() {
+			return;
+		}
+		let mut placements: Vec<(usize, u16)> = Vec::with_capacity(4);
+		for k in 1..=4usize {
+			let ideal = if n >= 5 { (n / 5) * k } else { n - 1 };
+			// Nearest window-free index to the ideal split point (ties broken
+			// towards the lower index so placement stays seed-stable).
+			let mut best: Option<usize> = None;
+			let mut best_d = usize::MAX;
+			for &i in &allowed {
+				let d = i.abs_diff(ideal);
+				if d < best_d {
+					best_d = d;
+					best = Some(i);
+				}
+			}
+			if let Some(pos) = best {
+				if !placements.iter().any(|&(q, _)| q == pos) {
+					placements.push((pos, ids[k - 1]));
+				}
+			}
+		}
+		// Insert back to front so earlier split points stay valid. This runs
+		// before the H3 noise pass and the label fixup, so it must go through
+		// `insert_noise_instr` (which keeps `self.labels` in sync) instead of
+		// patching already-fixed absolute jump targets.
+		placements.sort_by(|a, b| b.0.cmp(&a.0));
+		for (pos, id) in placements {
+			self.insert_noise_instr(pos, Instr::abcd(Op::Canary, id, 0, 0, 0));
+		}
+	}
+
+	fn apply_loadstr_flags(&mut self) {
+		loadstr_flags(&mut self.code, &self.consts, self.str_clearable);
 	}
 
 	fn finish(
@@ -450,6 +519,12 @@ impl<'a> Ctx<'a> {
 			self.emit(Instr::abcd(Op::Return, 0, 0, 0, 0));
 		}
 		let base_code_len = self.code.len();
+		// Phase 18 P1-3: distribute the runtime canaries before the H3 noise pass.
+		// `nop_sites` records absolute 1-based instruction positions that the VM
+		// neutralizes at load time, so every insertion has to happen before those
+		// positions are computed (the noise pass and the label fixup both run
+		// after this point).
+		self.insert_canaries();
 		let nop_count: usize;
 		let mut active_count = 0usize;
 		let mut dead_regs = 0usize;
@@ -460,7 +535,9 @@ impl<'a> Ctx<'a> {
 			let dead_base = nregs;
 			nregs = nregs
 				.checked_add(dead_regs as u16)
-				.expect("H3 dead register overflow");
+				.unwrap_or_else(|| {
+					crate::limits::fatal("input exceeds compiler limit: H3 dead register overflow")
+				});
 			let decoy_k_count = nr.int(2, 5) as usize;
 			let mut decoy_ks = Vec::with_capacity(decoy_k_count);
 			for _ in 0..decoy_k_count {
@@ -522,6 +599,8 @@ impl<'a> Ctx<'a> {
 
 			let final_mask = call_window_mask(&self.code);
 			for (idx, ins) in self.code.iter().enumerate() {
+				// invariant: self-check of the H3-6 noise placer, which only ever targets
+				// dead registers outside open call-result windows by its own construction
 				let is_window_op = matches!(
 					ins.op,
 					Op::Call | Op::CallE | Op::CallM | Op::CallT | Op::Return
@@ -530,7 +609,7 @@ impl<'a> Ctx<'a> {
 					!(final_mask[idx]
 						&& !is_window_op
 						&& ins.op != Op::Nop
-						&& matches!(Self::op_roles(ins.op)[0], ORole::Reg | ORole::Base)
+						&& matches!(Self::op_roles(ins.op)[0], OperandRole::RegWrite | OperandRole::RegRange | OperandRole::RegBase | OperandRole::CallBase)
 						&& ins.a >= dead_base),
 					"H3-6 invariant violated: fn {} instruction {} targets dead \
 					 register {} inside an open call-result window",
@@ -542,7 +621,10 @@ impl<'a> Ctx<'a> {
 		} else {
 			nop_count = (self.code.len() / 10).max(1);
 			for _ in 0..nop_count {
-				let pos = self.rng.int(0, self.code.len() as i64) as usize;
+				// Never append past the final instruction: the stream must
+				// keep ending in Return (the bytecode verifier enforces
+				// this, and a trailing Nop would be dead weight anyway).
+				let pos = self.rng.int(0, self.code.len() as i64 - 1) as usize;
 				self.insert_noise_instr(pos, Instr::op(Op::Nop));
 			}
 		}
@@ -553,6 +635,17 @@ impl<'a> Ctx<'a> {
 					self.code[p - 1].b = target;
 				}
 			}
+		}
+		if let Err(e) = super::verify::verify_pre_scatter(
+			fn_index,
+			&self.code,
+			&self.consts,
+			self.upsrc.len(),
+			self.program.fns.len(),
+			nregs,
+			self.canary,
+		) {
+			crate::limits::fatal(&e.to_string());
 		}
 		let mut mkstr_candidates = HashSet::new();
 		for ins in self.code.iter_mut() {
@@ -588,12 +681,19 @@ impl<'a> Ctx<'a> {
 		let mk2 = self.program.mk2 as u32;
 		for ins in self.code.iter_mut() {
 			if ins.op == Op::MkStr {
+				// Structural invariant checked here, the last point where
+				// the packed length in d is still readable (the mask below
+				// intentionally scrambles it for the final record stream).
+				if ins.d / 256 > 5 {
+					crate::limits::fatal("bytecode verifier: MkStr packed length exceeds 5");
+				}
 				let msk = (mk1 * ins.a as u32 + mk2) % 65536;
 				ins.b = ((ins.b as u32 + msk) % 65536) as u16;
 				ins.c = ((ins.c as u32 + msk) % 65536) as u16;
 				ins.d = ((ins.d as u32 + msk) % 65536) as u16;
 			}
 		}
+		self.apply_loadstr_flags();
 		let map = self.program.opmap.clone();
 		let perm: [u8; 4] = if self.scatter {
 			self.program.slot_perms[fn_index]
@@ -724,8 +824,13 @@ impl<'a> Ctx<'a> {
 		let chaff_mod = 65_521u64;
 		let mut chaff = (((fn_index as u64 + 1) * self.program.chaff_fn as u64)
 			% chaff_mod) as u64;
+		// CCPD: the artifact carries no SA..SD streams for the runtime
+		// qf fold to read, so the fold is defined as empty and the
+		// template emits an empty QP list; `chaff_fold` then reduces to
+		// the base value the runtime reproduces exactly. Legacy path
+		// (ccpd off) folds Nop lanes as before, byte-for-byte.
 		for (p, r) in recs.iter().enumerate() {
-			if r.kind == super::fuse::FKind::Base(Op::Nop) {
+			if !self.ccpd && r.kind == super::fuse::FKind::Base(Op::Nop) {
 				let logical = [r.a as u64, r.b as u64, r.c as u64, r.d as u64];
 				let physical = [
 					logical[perm[0] as usize],
@@ -803,6 +908,100 @@ impl<'a> Ctx<'a> {
 				osum2 = (osum2 + (pos % 4294967296) * vals[k]) % 4294967296;
 			}
 		}
+		let final_limits = super::verify::VerifierLimits {
+			nregs,
+			max_register_value: if self.scatter { 4095 } else { nregs.saturating_sub(1) },
+			nconsts: self.consts.len(),
+			nupvalues: self.upsrc.len(),
+			nprototypes: self.program.fns.len(),
+			max_canary_id: if self.canary { Some(3) } else { None },
+		};
+		if let Err(e) = super::verify::verify_final_records(
+			fn_index,
+			&recs,
+			&final_limits,
+			&fv_vocab,
+			&leaders,
+		) {
+			crate::limits::fatal(&e.to_string());
+		}
+		// CCPD (rebased plan, Phase 1/4): with the final record stream and
+		// remapped leaders fixed, build the CFG + block variants and the
+		// id8 directory. The salt is domain-separated from the blob keys,
+		// exactly like the layout/chaff derivations above: toggling CCPD
+		// never perturbs the shared rng stream, and with CCPD off this
+		// block does not run at all.
+		let ccpd_data: Option<super::ccpd::CcpdFunctionData> = if self.ccpd {
+			let ccpd_salt = (self.program.blob_seed
+				^ self.program.blob_step.rotate_left(7)
+				^ 0x4343_5044)
+				% 268_435_456;
+			let fn_perm_code =
+				super::ccpd::perm_code_of(&perm).expect("slot permutation is a bijection");
+			Some(
+				super::ccpd::build_function_ccpd(
+					&recs,
+					&leaders,
+					&map,
+					self.program.s_indices[fn_index] as usize,
+					fn_index,
+					ccpd_salt,
+					fn_perm_code,
+				)
+				.unwrap_or_else(|e| {
+					crate::limits::fatal(&format!("input cannot be CCPD-encoded: {e}"))
+				}),
+			)
+		} else {
+			None
+		};
+		if let Some(data) = &ccpd_data {
+			// CCPD integrity anchor (replaces the legacy SA..SD lane
+			// sums, which do not exist in this representation): the
+			// runtime recomputes these over the payload bank bytes in
+			// parse_fn, and any bank tamper perturbs iz1/iz2/bz exactly
+			// like a legacy stream tamper does.
+			let (ck, ck2) = super::ccpd::bank_checksums(&data.bank);
+			osum = ck;
+			osum2 = ck2;
+			if crate::audit_gate::audit_var("OBSUCVIM_CCPD_AUDIT").is_some() {
+				ccpd_audit_dump(&format!(
+					"FN {} BLOCKS {} EDGES {} ENTRY {} SALT {}",
+					fn_index,
+					data.cfg.blocks.len(),
+					data.cfg.edges.len(),
+					data.entry_edge_id(),
+					data.build_salt
+				));
+				for b in &data.cfg.blocks {
+					let inc: Vec<String> = data
+						.cfg
+						.incoming(b.id)
+						.iter()
+						.map(|e| e.id.0.to_string())
+						.collect();
+					ccpd_audit_dump(&format!("FN {} INC {} {}", fn_index, b.id, inc.join(",")));
+				}
+				for e in &data.cfg.edges {
+					let tgt = if e.target_block == super::ccpd::EXIT_BLOCK {
+						"EXIT".to_string()
+					} else {
+						e.target_block.to_string()
+					};
+					ccpd_audit_dump(&format!(
+						"FN {} EDGE {} {:?} {} {}",
+						fn_index,
+						e.id.0,
+						e.kind,
+						e.source_pc.map(|pc| pc as u32).unwrap_or(0),
+						tgt
+					));
+				}
+				for (site, child) in &data.closure_sites {
+					ccpd_audit_dump(&format!("FN {fn_index} CSITE {site} {child}"));
+				}
+			}
+		}
 		let mut secs: Vec<(usize, Vec<u8>)> = Vec::new();
 		let mut head = Vec::new();
 		isa::encode_u16var(&mut head, nregs);
@@ -825,6 +1024,15 @@ impl<'a> Ctx<'a> {
 		for c in &self.consts {
 			c.encode(&mut csec, &mut lcg);
 		}
+		// Phase 18 P4 audit: the section length below is a `u16` varint; reject
+		// instead of wrapping it and emitting an unloadable artifact.
+		if csec.len() > crate::limits::MAX_CONSTS_SECTION_BYTES {
+			crate::limits::fatal(&format!(
+				"input exceeds compiler limit: constant section = {} bytes, max allowed = {} per function",
+				csec.len(),
+				crate::limits::MAX_CONSTS_SECTION_BYTES
+			));
+		}
 		let mut consts_sec = Vec::new();
 		isa::encode_u16var(&mut consts_sec, self.consts.len() as u16);
 		isa::encode_u16var(&mut consts_sec, csec.len() as u16);
@@ -841,8 +1049,19 @@ impl<'a> Ctx<'a> {
 		let mut code = Vec::new();
 		isa::encode_u16var(&mut code, recs.len() as u16);
 		let s_idx = self.program.s_indices[fn_index] as usize;
-		super::fuse::encode_soa_fused(&recs, &map, &perm, s_idx, &mut code);
+		if let Some(data) = &ccpd_data {
+			// CCPD code representation (plan 8.3): the section carries
+			// the variant payload bank and nothing else; no canonical
+			// SoA stream of this function remains in the artifact.
+			isa::encode_varint(&mut code, data.bank.len() as u32);
+			code.extend_from_slice(&data.bank);
+		} else {
+			super::fuse::encode_soa_fused(&recs, &map, &perm, s_idx, &mut code);
+		}
 		secs.push((5, code));
+		if let Some(data) = &ccpd_data {
+			secs.push((8, data.encode_section()));
+		}
 		// V17 P1-b：fv 段（每函数融合词汇→tail-less handler 码位对，+fvm 掩码后的 u16 流）。
 		// super 开时恒发（含空词汇 len=0），与模板 NSECT 口径一致。
 		if self.super_insn {
@@ -855,6 +1074,7 @@ impl<'a> Ctx<'a> {
 			for (j, &pair) in fv_vocab.iter().enumerate() {
 				let m = super::fuse::fv_mask_nl(fvm, j as u32 + 1);
 				let e = super::fuse::pack_fv_entry(pair, s_idx, m)
+					// invariant: the vocabulary pair table is a static whitelist; the lookup key is a compile-time opcode name
 					.expect("vocab pairs are whitelist-only by construction");
 				isa::encode_u16var(&mut fv, e);
 			}
@@ -868,7 +1088,7 @@ impl<'a> Ctx<'a> {
 			self.program.fv_sets[fn_index] = fv_vocab.clone();
 		}
 		self.rng.shuffle(&mut secs);
-		let tags = &self.program.section_tags;
+		let tags = self.program.proto_layouts[fn_index].as_tags();
 		let mut blob: Vec<u8> = Vec::with_capacity(self.code.len() * 6 + 96);
 		for (id, body) in &secs {
 			assert_ne!(*id, 6, "unread padding sections must not be emitted");
@@ -1406,6 +1626,62 @@ fn analyze(block: &Block, params: &[SymId]) -> FnAnalysis {
 }
 
 
+/// Phase 18 P1-1/P1-2: annotate every `LoadStr` operand with its cache policy.
+///
+///   bit 15 (0x8000) = cached: the constant has more than one static reference,
+///                    so the handler decodes once per frame and reuses the slot.
+///   bit 14 (0x4000) = clear-after-use: this is the last static reference AND
+///                    every reference lives in one loop-free function body.
+///
+/// Single-reference constants keep a plain index: the handler decodes inline
+/// and never touches the cache table. Returns `(cached, cleared)` counts.
+pub(crate) fn loadstr_flags(
+	code: &mut [Instr],
+	consts: &[Const],
+	clearable: &HashSet<Vec<u8>>,
+) -> (usize, usize) {
+	let mut counts: HashMap<u16, usize> = HashMap::new();
+	let mut last: HashMap<u16, usize> = HashMap::new();
+	for (i, ins) in code.iter().enumerate() {
+		if ins.op == Op::LoadStr {
+			*counts.entry(ins.b).or_insert(0) += 1;
+			last.insert(ins.b, i);
+		}
+	}
+	if counts.is_empty() {
+		return (0, 0);
+	}
+	let mut cached = 0usize;
+	let mut cleared = 0usize;
+	for (i, ins) in code.iter_mut().enumerate() {
+		if ins.op != Op::LoadStr {
+			continue;
+		}
+		let k = ins.b;
+		// no headroom for the policy bits: leave the index untouched
+		if k >= 0x4000 {
+			continue;
+		}
+		let is_cached = counts.get(&k).copied().unwrap_or(0) > 1;
+		let is_last = last.get(&k) == Some(&i);
+		let is_clearable = match consts.get(k as usize) {
+			Some(Const::Str(bytes)) => clearable.contains(bytes.as_slice()),
+			_ => false,
+		};
+		let clear = is_cached && is_last && is_clearable;
+		if is_cached {
+			cached += 1;
+		}
+		if clear {
+			cleared += 1;
+		}
+		ins.b = k
+			| if is_cached { 0x8000 } else { 0 }
+			| if clear { 0x4000 } else { 0 };
+	}
+	(cached, cleared)
+}
+
 fn prune_dead_short_string_constants(
 	code: &mut [Instr],
 	consts: &mut Vec<Const>,
@@ -1419,7 +1695,7 @@ fn prune_dead_short_string_constants(
 		let roles = Ctx::op_roles(ins.op);
 		let ops = ins.operands();
 		for i in 0..4 {
-			if roles[i] == ORole::Const {
+			if roles[i] == OperandRole::ConstIdx {
 				let idx = ops[i] as usize;
 				if idx < live.len() {
 					live[idx] = true;
@@ -1453,7 +1729,7 @@ fn prune_dead_short_string_constants(
 		let roles = Ctx::op_roles(ins.op);
 		let mut ops = ins.operands();
 		for i in 0..4 {
-			if roles[i] == ORole::Const {
+			if roles[i] == OperandRole::ConstIdx {
 				let old = ops[i] as usize;
 				debug_assert!(old < remap.len() && !remove[old]);
 				ops[i] = remap[old];
@@ -1475,11 +1751,16 @@ fn compile_chunk(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
+	canary: bool,
+	proto_layout: bool,
+	ccpd: bool,
 ) -> VmProgram {
+	let str_clearable = crate::vmgen::strseal::sealed_clearable(block);
 	let total = count_fns_count(block);
 	let has_loadstr = crate::vmgen::strseal::contains_sealed_literals(block);
 	let mut perm: Vec<u8> = vec![0, 1, 2, 3];
 	rng.shuffle(&mut perm);
+	// invariant: perm is built as a fixed 4-element permutation in compile()
 	let slot_perm: [u8; 4] = perm.try_into().unwrap();
 	let ck_km = (rng.int(1_048_577, 33_000_001) | 1) as u32;
 	let ck_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
@@ -1489,9 +1770,19 @@ fn compile_chunk(
 	let blob_kc = (rng.int(1_048_576, 268_000_000) | 1) as u32;
 	let blob_seed = rng.int(1_048_576, 268_435_455) as u32;
 	let blob_step = rng.int(1_048_576, 268_435_455) as u32;
-	let mut tag_pool: Vec<u8> = (1..=250).collect();
-	rng.shuffle(&mut tag_pool);
-	let section_tags: [u8; 8] = tag_pool[..8].try_into().unwrap();
+	// Phase B: per-prototype field layouts (`total` child functions plus the
+	// main chunk at index `total`). Disabled => one shared layout (legacy).
+	// Layout randomness comes from a domain-separated stream derived from
+	// the blob parameters (same pattern as chaff_rng below): toggling or
+	// resizing layouts must not perturb the main rng stream, so every other
+	// subsystem keeps its baseline draw sequence for a given seed.
+	let layout_seed = (blob_seed as u64)
+		^ (blob_step as u64).rotate_left(29)
+		^ (ck_kc as u64).rotate_left(11)
+		^ 0x4C41_5954_4F55_5431; // "LAYOUT1" domain separator
+	let mut layout_rng = Rng::new(layout_seed);
+	let proto_layouts =
+		super::proto_layout::program_layouts(&mut layout_rng, total + 1, proto_layout);
 	// V17 P1-b：fv 掩码常量——门控于 super_insn，off 态不消耗 rng（字节恒等前提）。
 	let (fv_m1, fv_mc) = if super_insn {
 		((rng.int(1, 65535) | 1) as u16, rng.int(1, 65535) as u16)
@@ -1549,7 +1840,7 @@ fn compile_chunk(
 		blob_kc,
 		blob_seed,
 		blob_step,
-		section_tags,
+		proto_layouts,
 		consts_mask_safe: true,
 		used_ops: [false; isa::N_OPS],
 		op_hist: [0; isa::N_OPS],
@@ -1566,7 +1857,17 @@ fn compile_chunk(
 	{
 		let main_index = program.fns.len();
         program.s_indices[main_index] = if scatter { rng.int(0, 3) as u8 } else { 0 };
-        let mut ctx = Ctx::new_main(&mut program, rng, table, lua51, scatter, super_insn);
+        let mut ctx = Ctx::new_main(
+        &mut program,
+        rng,
+        table,
+        lua51,
+        scatter,
+        super_insn,
+        &str_clearable,
+        canary,
+        ccpd,
+    );
 		ctx.compile_block(block);
 		let nregs = ctx.next_reg;
 		let (bytes, nops, osum, osum2, chaff, blocks) = ctx.finish(nregs, main_index);
@@ -1844,6 +2145,7 @@ impl<'a> Ctx<'a> {
 		if nv > 0 && (last_is_call || last_is_vararg) && npre < n {
 			let nres = n - npre;
 			if last_is_call {
+				// invariant: guarded by `if last_is_call` three lines above, which is derived from values[nv-1] being Some
 				let call = values[nv - 1].as_ref().unwrap();
 				let (nargs, has_vararg) = call_arg_info(call);
 				let freg = self.reserve(1 + nargs.max(1));
@@ -2149,9 +2451,18 @@ impl<'a> Ctx<'a> {
 				}
 				if iters.len() > 1 {
 					self.compile_expr(&iters[1], rstt);
+				} else {
+					self.emit(Instr::ab(Op::LoadNil, rstt, 1));
 				}
 				if iters.len() > 2 {
 					self.compile_expr(&iters[2], rctl);
+				} else {
+					// The control variable must start nil on EVERY entry to
+					// this loop.  Registers are frame slots that keep their
+					// values across statements, so without this the previous
+					// loop's final key leaks in and `next(t, lastkey)`
+					// terminates a re-entered loop immediately.
+					self.emit(Instr::ab(Op::LoadNil, rctl, 1));
 				}
 			}
 				let l_top = self.new_label();
@@ -2191,27 +2502,32 @@ impl<'a> Ctx<'a> {
 				self.here(&l_end);
 			}
 			Stmt::Break => {
+				// invariant: the parser rejects `break` outside a loop (parser.rs stat()), so loops is non-empty here
 				let (l_end, _) = *self.loops.last().expect("break outside loop");
 				self.jmp(Op::Jmp, 0, &l_end);
 			}
 			Stmt::Continue => {
+				// invariant: the parser rejects `continue` outside a loop (parser.rs stat()), so loops is non-empty here
 				let (_, l_cont) = *self.loops.last().expect("continue outside loop");
 				self.jmp(Op::Jmp, 0, &l_cont);
 			}
 				Stmt::Return(es) => {
 					if es.is_empty() {
 						self.emit(Instr::ab(Op::Return, 0, 0));
+					// invariant: the `es.is_empty()` branch returns before this line, so the slice is non-empty
 					} else if is_call(es.last().unwrap()) {
 						let pre = es.len() - 1;
 						let base = self.reserve(pre as u16);
 						for (i, e) in es.iter().take(pre).enumerate() {
 							self.compile_expr(e, base + i as u16);
 						}
+						// invariant: the enclosing `else if is_call(es.last().unwrap())` branch proved the last element exists
 						let call = es.last().unwrap().clone();
 						let (nargs, has_vararg) = call_arg_info(&call);
 						let freg = self.reserve(1 + nargs.max(1));
 						self.compile_call_into(&call, freg, 255, has_vararg);
 						self.emit(Instr::abcd(Op::Return, base, 255, 0, pre as u16));
+					// invariant: the `es.is_empty()` branch returns before this line, so the slice is non-empty
 					} else if matches!(es.last().unwrap(), Expr::Vararg) {
 						let pre = es.len() - 1;
 						let base = self.reserve(pre as u16);
@@ -2261,7 +2577,10 @@ impl<'a> Ctx<'a> {
 			}
 			Expr::SealedStr { bytes, seed, step } => {
 				let cipher = crate::vmgen::strseal::encode(bytes, *seed, *step);
-				let k = self.kidx_unique(Const::Str(cipher));
+				// Phase 18 P1-1: dedup the sealed constant so repeated
+				// references to the same plaintext share one pool slot (that is
+				// what makes the runtime cache and its reference count real).
+				let k = self.kidx(Const::Str(cipher));
 				self.program.has_loadstr = true;
 				self.emit(Instr::abcd(Op::LoadStr, dst, k, *seed, *step));
 			}
@@ -2375,6 +2694,7 @@ impl<'a> Ctx<'a> {
 						BinOp::Gt => Op::Gt,
 						BinOp::Le => Op::Le,
 						BinOp::Ge => Op::Ge,
+						// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 						_ => unreachable!(),
 					};
 					self.emit(Instr::abc(iop, dst, tl, tr));
@@ -2516,6 +2836,7 @@ let _ = has_vararg;
 		let (args, is_m) = match e {
 			Expr::Call { args, .. } => (args, false),
 			Expr::Method { args, .. } => (args, true),
+			// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 			_ => unreachable!(),
 		};
 		let has_tail = args.last().map(is_call).unwrap_or(false);
@@ -2560,6 +2881,7 @@ let _ = has_vararg;
 					self.compile_expr(a, freg + 2 + i as u16);
 				}
 			}
+			// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 			_ => unreachable!(),
 		}
 	}
@@ -2569,6 +2891,7 @@ let _ = has_vararg;
 		self.compile_call_prefix(e, freg, nfixed);
 		let mut d: u16 = 0;
 		if has_tail {
+			// invariant: the call is guarded by `is_call(e)` at the call site
 			let tail = Self::call_tail(e).unwrap().clone();
 			let (inargs, _) = call_arg_info(&tail);
 			let ifreg = freg + nfixed + 1;
@@ -2593,6 +2916,7 @@ let _ = has_vararg;
 		let (nfixed, has_tail) = Self::call_nfixed(e);
 		self.compile_call_prefix(e, freg, nfixed);
 		if has_tail {
+			// invariant: the call is guarded by `is_call(e)` at the call site
 			let tail = Self::call_tail(e).unwrap().clone();
 			let (inargs, _) = call_arg_info(&tail);
 			let ifreg = freg + nfixed + 1;
@@ -2611,6 +2935,7 @@ let _ = has_vararg;
 		self.compile_call_prefix(e, freg, nfixed);
 		let mut d = nfixed * 2;
 		if has_tail {
+			// invariant: the call is guarded by `is_call(e)` at the call site
 			let tail = Self::call_tail(e).unwrap().clone();
 			let (inargs, _) = call_arg_info(&tail);
 			let ifreg = freg + nfixed + 1;
@@ -2672,6 +2997,17 @@ let _ = has_vararg;
 
 		let child_index = self.next_fn_slot;
 		self.next_fn_slot += 1;
+		// C5 fail-closed path. The check has to precede *every* index derived
+		// from child_index (s_indices / block_starts / fns): `fns` has `total`
+		// entries but `s_indices` has `total + 1`, so an undercount of two or
+		// more used to escape this check and die as a bare index-out-of-bounds
+		// panic on the s_indices write instead (P4 audit). The precondition
+		// itself is an internal invariant: count_fns_count walks the same
+		// Block that is compiled and every compile_function call corresponds to
+		// exactly one counted node (Stmt::LocalFunc / Stmt::FuncDecl /
+		// Expr::Function); `c5_count_fns_matches_compiled_closure_slots`
+		// pins that for every syntactic closure position.
+		if child_index >= self.program.fns.len() { crate::limits::fatal(&format!("input exceeds compiler limit: slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot)); }
 		let up_seed = (self.program.blob_seed as u64)
 			^ (self.program.blob_km as u64).rotate_left(11)
 			^ (self.program.blob_kc as u64).rotate_left(23)
@@ -2694,13 +3030,14 @@ let _ = has_vararg;
 				Some(CellKind::Slot(sr)) => descriptors.push(sr + 1 | 0x8000),
 				Some(CellKind::Up(u)) => {
 					let parent_idx = *self.up_perm.get(u as usize)
+						// invariant: up_perm is built with one entry per upvalue slot by derive_upvalue_permutation
 						.expect("parent upvalue permutation missing");
 					descriptors.push(parent_idx as u16 + 1 | 0xC000);
 				}
-				None => panic!(
-					"upvalue descriptor miss: sym {} not in any enclosing scope (ups mis-analyzed?)",
+				None => crate::limits::fatal(&format!(
+					"input exceeds compiler limit: upvalue descriptor miss: sym {} not in any enclosing scope",
 					s
-				),
+				)),
 			}
 		}
 
@@ -2726,7 +3063,10 @@ let _ = has_vararg;
 			labels: HashMap::new(),
 			loops: Vec::new(),
 			cell_loops: Vec::new(),
+			str_clearable: self.str_clearable,
 			super_insn: self.super_insn,
+			canary: self.canary,
+			ccpd: self.ccpd,
 		};
 		for (i, s) in ups.iter().enumerate() {
 			child.upvals.insert(*s, i as u16);
@@ -2746,7 +3086,6 @@ let _ = has_vararg;
 		let (bytes, nops, osum, osum2, chaff, blocks) = child.finish(nregs, child_index);
 			self.program.block_starts[child_index] = blocks;
 		self.next_fn_slot = slot_end;
-		if child_index >= self.program.fns.len() { crate::limits::fatal(&format!("input exceeds compiler limit: slot overflow: child_index={} len={} next={}", child_index, self.program.fns.len(), self.next_fn_slot)); }
 		self.program.fns[child_index] = bytes;
 		self.program.nop_sites[child_index] = nops;
 		self.program.operand_sums[child_index] = osum;
@@ -2777,7 +3116,10 @@ let _ = has_vararg;
 				self.compile_expr(idx, kreg);
 				Target::Index2 { t: treg, k: kreg }
 			}
-			_ => panic!("invalid assignment target"),
+			// Not a resource-budget rejection: the AST accepted a target the
+			// compiler cannot store into (e.g. `f() = 1`). Report it as what it
+			// is, on the same single-line fail-closed channel.
+			_ => crate::limits::fatal("invalid assignment target"),
 		}
 	}
 
@@ -2805,7 +3147,7 @@ let _ = has_vararg;
 				} else if let Some(u) = self.upvals.get(s).copied() {
 					self.emit(Instr::ab(Op::SetUp, u, vreg));
 				} else {
-					panic!("store to unknown local");
+					crate::limits::fatal("input exceeds compiler limit: store to unknown local");
 				}
 			}
 			Target::Global(k) => {
@@ -2872,8 +3214,11 @@ pub fn compile(
 	lua51: bool,
 	scatter: bool,
 	super_insn: bool,
+	canary: bool,
+	proto_layout: bool,
+	ccpd: bool,
 ) -> VmProgram {
-	compile_chunk(block, table, rng, lua51, scatter, super_insn)
+	compile_chunk(block, table, rng, lua51, scatter, super_insn, canary, proto_layout, ccpd)
 }
 
 #[cfg(test)]
@@ -2925,10 +3270,9 @@ mod dbg {
 		while p < blob.len() {
 			let tag = blob[p];
 			p += 1;
-			let id = program
-				.section_tags
-				.iter()
-				.position(|&candidate| candidate == tag)
+			let id = program.proto_layouts[fi]
+				.field_of(tag)
+				.map(|f| f.id() as usize)
 				.expect("known section tag");
 			assert_ne!(id, 6, "unread padding sections must not be emitted");
 			seen.push(id);
@@ -2974,6 +3318,7 @@ mod dbg {
 						varint(&blob, &mut p);
 					}
 				}
+				// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 				_ => unreachable!(),
 			}
 		}
@@ -2990,7 +3335,7 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(4242);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, true);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, true, false, true, false);
 		assert!(prog.fv_sets.iter().any(|v| !v.is_empty()), "super on: vocab must be non-empty here");
 		for (fi, _) in prog.fns.iter().enumerate() {
 			let walk = section_walk(&prog, fi.min(prog.fns.len() - 1));
@@ -3014,10 +3359,9 @@ mod dbg {
 		while p < blob.len() {
 			let tag = blob[p];
 			p += 1;
-			let id = program
-				.section_tags
-				.iter()
-				.position(|&candidate| candidate == tag)
+			let id = program.proto_layouts[fi]
+				.field_of(tag)
+				.map(|f| f.id() as usize)
 				.expect("known section tag");
 			match id {
 				0 => {
@@ -3061,6 +3405,7 @@ mod dbg {
 						varint(&blob, &mut p);
 					}
 				}
+				// invariant: the match is exhaustive over the AST constructors that compile_expr accepts
 				_ => unreachable!(),
 			}
 		}
@@ -3131,7 +3476,7 @@ mod dbg {
 		};
 		let expected_cipher = crate::vmgen::strseal::encode(plain, seed, step);
 		let mut rng = crate::rng::Rng::new(77);
-		let program = compile_chunk(&block, &table, &mut rng, false, true, false);
+		let program = compile_chunk(&block, &table, &mut rng, false, true, false, false, true, false);
 		assert!(program.has_loadstr);
 		let strings = sealed_pool_strings(&program, program.fns.len() - 1);
 		assert!(strings.iter().any(|s| s == &expected_cipher));
@@ -3194,7 +3539,7 @@ mod dbg {
 			}
 		}
 		let mut rng = crate::rng::Rng::new(42);
-		let prog = compile_chunk(&block, &table, &mut rng, true, false, false);
+		let prog = compile_chunk(&block, &table, &mut rng, true, false, false, false, true, false);
 		eprintln!("fns={}", prog.fns.len());
 		let names = ["Jmp","Jf","Jt","LoadNil","LoadK","Move","Add","Sub","Mul","Div","Mod","Pow","Concat","Unm","Not","Len","Lt","Le","Gt","Ge","Eq","Ne","Idiv","NewTab","GetTab","SetTab","TabN","CallT","Closure","Call","VarArgTab","VarArgC","VarArgTabN","GetGlobal","SetGlobal","GetUp","SetUp","Return","Nop","CallE","CallM","MkStr","LoadStr"];
 		let mut wire2name: Vec<Option<&str>> = vec![None; 256];
@@ -3304,9 +3649,9 @@ mod dbg {
 		let mut block = parser::parse(src, true).unwrap();
 		let table = symtab::resolve(&mut block);
 		let mut rng = crate::rng::Rng::new(7);
-		let prog = compile_chunk(&block, &table, &mut rng, false, true, false);
+		let prog = compile_chunk(&block, &table, &mut rng, false, true, false, false, true, false);
 		let mut saw_scattered_operand = false;
-		let tags = &prog.section_tags;
+		let tags = &prog.proto_layouts;
 		for (fi, b) in prog.fns.iter().enumerate() {
 			let base = (prog.blob_seed as u64 + fi as u64 * prog.blob_step as u64) % 268_435_456;
 			let ksplit = b.len().min(64);
@@ -3336,6 +3681,7 @@ mod dbg {
 			let mut ncode = 0usize;
 			let mut streams = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 			let mut got = 0;
+			let tags = tags[fi].as_tags();
 			while got < 6 {
 				let tag = buf[p];
 				p += 1;
@@ -3440,3 +3786,224 @@ p += ncode;
 		}
 	}
 }
+
+#[cfg(test)]
+mod p1_cache {
+	use super::*;
+	use crate::parser;
+	use crate::vmgen::strseal;
+
+	fn seal(src: &str) -> Block {
+		let mut block = parser::parse(src, true).expect("test chunk parses");
+		strseal::seal_literals(&mut block, &mut Rng::new(4242));
+		block
+	}
+
+	/// P1-1 验收 1：10 个字符串常量，7 个单次引用、3 个多次引用。
+	/// 单次引用常量必须保持裸索引（不写缓存表）；多次引用常量必须带 cached 位。
+	#[test]
+	fn single_reference_constants_never_enter_the_cache() {
+		let mut src = String::new();
+		for i in 0..7 {
+			src.push_str(&format!("local s{i} = \"SINGLE_USE_MARKER_{i:02}\"\n"));
+		}
+		for i in 0..3 {
+			src.push_str(&format!(
+				"print(\"MULTI_USE_MARKER_{i:02}\", \"MULTI_USE_MARKER_{i:02}\", \"MULTI_USE_MARKER_{i:02}\")\n"
+			));
+		}
+		let mut block = seal(&src);
+		// Materialise the sealed literals the way the compiler does.
+		let mut code: Vec<Instr> = Vec::new();
+		let mut consts: Vec<Const> = Vec::new();
+		let mut idx: HashMap<Vec<u8>, u16> = HashMap::new();
+		let mut push = |bytes: &[u8], seed: u16, step: u16, code: &mut Vec<Instr>, consts: &mut Vec<Const>| {
+			let cipher = strseal::encode(bytes, seed, step);
+			let k = *idx.entry(cipher.clone()).or_insert_with(|| {
+				let k = consts.len() as u16;
+				consts.push(Const::Str(cipher.clone()));
+				k
+			});
+			code.push(Instr::abcd(Op::LoadStr, 0, k, seed, step));
+		};
+		for stmt in &block.stmts {
+			if let Stmt::Local { values, .. } = stmt {
+				for v in values.iter().flatten() {
+					if let Expr::SealedStr { bytes, seed, step } = v {
+						push(bytes, *seed, *step, &mut code, &mut consts);
+					}
+				}
+			}
+			if let Stmt::ExprStmt(Expr::Call { args, .. }) = stmt {
+				for a in args {
+					if let Expr::SealedStr { bytes, seed, step } = a {
+						push(bytes, *seed, *step, &mut code, &mut consts);
+					}
+				}
+			}
+		}
+		let clearable = strseal::sealed_clearable(&block);
+		let (cached, cleared) = loadstr_flags(&mut code, &consts, &clearable);
+		assert_eq!(cached, 9, "3 multi-use constants x 3 references");
+		assert_eq!(cleared, 3, "each multi-use constant clears after its last use");
+		let flagged_single = code
+			.iter()
+			.filter(|ins| ins.op == Op::LoadStr && ins.b & 0x8000 != 0)
+			.count();
+		assert_eq!(flagged_single, 9, "every reference of a multi-use constant is flagged");
+		let unflagged = code
+			.iter()
+			.filter(|ins| ins.op == Op::LoadStr && ins.b < 0x4000)
+			.count();
+		assert_eq!(unflagged, 7, "the 7 single-use constants stay out of the cache");
+		let cleared_flags = code
+			.iter()
+			.filter(|ins| ins.op == Op::LoadStr && ins.b & 0x4000 != 0)
+			.count();
+		assert_eq!(cleared_flags, 3);
+	}
+
+	/// P1-2 范围声明：循环体内的引用不允许清空（可能再次被执行）。
+	#[test]
+	fn constants_referenced_inside_a_loop_are_never_cleared() {
+		let block = seal("local s = \"LOOP_MARKER\"\nfor i = 1, 3 do print(s, s) end");
+		let clearable = strseal::sealed_clearable(&block);
+		assert!(clearable.is_empty(), "loop back-edge must veto clearing");
+	}
+
+	/// P1-2 范围声明：被内层闭包引用（跨函数）的常量不允许清空。
+	#[test]
+	fn constants_referenced_from_a_nested_closure_are_never_cleared() {
+		let block = seal(
+			"local function outer() return \"CAPTURE_MARKER\" end\nlocal function inner() return \"CAPTURE_MARKER\" end\nprint(outer(), inner())",
+		);
+		let total = strseal::sealed_total_counts(&block);
+		assert_eq!(total.len(), 1, "identical plaintext dedups to one constant");
+		assert_eq!(total.values().next().copied(), Some(2));
+		let clearable = strseal::sealed_clearable(&block);
+		assert!(
+			clearable.is_empty(),
+			"a constant referenced from two different frames must veto clearing"
+		);
+	}
+
+	/// P1-2 正向用例：同一函数、两次引用、无循环、无闭包 → 可清空。
+	#[test]
+	fn constants_used_twice_in_a_loop_free_function_are_clearable() {
+		let block = seal("local s = \"CLEAR_ME\"\nprint(s, s)");
+		let clearable = strseal::sealed_clearable(&block);
+		assert_eq!(clearable.len(), 1, "exactly the loop-free multi-use constant");
+	}
+
+	/// P1-1 前置：相同明文必须共享同一个密封常量，否则多次引用无从谈起。
+	#[test]
+fn identical_plaintexts_share_one_sealed_constant() {
+		let block = seal("local a = \"SAME\"\nlocal b = \"SAME\"\nprint(a, b)");
+		let mut seeds = Vec::new();
+		for stmt in &block.stmts {
+			if let Stmt::Local { values, .. } = stmt {
+				for v in values.iter().flatten() {
+					if let Expr::SealedStr { seed, step, .. } = v {
+						seeds.push((*seed, *step));
+					}
+				}
+			}
+		}
+		assert_eq!(seeds.len(), 2);
+		assert_eq!(seeds[0], seeds[1], "identical plaintext must dedup");
+	}
+}
+
+/// Phase 18 P0-3 场景 E / P4 审查补充：C5（`child_index >= fns.len()`）的前置条件是
+/// `count_fns_count` 漏计某个会被 `compile_function` 编译成子函数的 AST 节点。本用例把
+/// 闭包放进 `count_stmt` / `count_expr` 枚举到的**每一个**语法位置，断言
+/// 计数 == 实际编译出的子函数槽数（`program.fns.len() - 1`，main 占最后一槽）。
+/// 同时钉住 P4 审查发现的那条输入可达 panic：函数体内的 `break`/`continue`
+/// 不跨越函数边界，必须在解析阶段干净拒绝。
+#[cfg(test)]
+mod p0_c5_slots {
+	use super::*;
+	use crate::parser;
+	use crate::symtab;
+	use crate::vmgen::strseal;
+
+	const POSITIONS: &str = "local function lf() return 1 end
+local a = function() return 2 end
+local obj = {}
+function obj:m(x) return function() return x end end
+function obj.f() return 3 end
+local t = { function() return 4 end, k = function() return 5 end, [1] = function() return 6 end }
+local key = (function() return 9 end)()
+t[key] = 9
+print(function() return 7 end)
+local r = (function() return 8 end)()
+local x = true and function() return 10 end or 1
+local y = not function() return false end
+local i = t[function() return 1 end]
+local z = a and (function() return 1 end) or function() return 2 end
+local acc = 0
+if (function() return true end)() then acc = acc + (function() return 1 end)()
+elseif (function() return false end)() then acc = acc + (function() return 2 end)()
+else acc = acc + (function() return 3 end)() end
+while (function() return false end)() do local w = function() end end
+local u
+repeat u = function() acc = acc + 4 end until (function() return true end)()
+u()
+for i = (function() return 1 end)(), (function() return 2 end)(), (function() return 1 end)() do local b = function() return i end end
+for k, v in (function() return pairs({}) end)() do local c = function() end end
+do local d = function() acc = acc + 5 end d() end
+local e = (\"x\"):rep(1, (function() return \"\" end)())
+local m = (\"abc\"):sub((function() return 1 end)(), 2)
+local n = t.a
+local q = if x then function() return 11 end else function() return 12 end
+local up = 6
+local function o() return function() return function() return up end end end
+local s = \"x\" .. (function() return \"y\" end)()
+print(lf(), a(), obj.f(), obj:m(7)(), r, i, z, acc, e, m, q(), o()()(), s)
+";
+
+	fn counted_vs_compiled(src: &str) -> (usize, usize) {
+		// 与 main.rs 的流水线同序：parse -> symtab -> seal -> vmgen::compile。
+		let mut block = parser::parse(src, true).expect("test chunk parses");
+		let table = symtab::resolve(&mut block);
+		strseal::seal_literals(&mut block, &mut Rng::new(4242));
+		let counted = count_fns_count(&block);
+		let program = compile(&block, &table, &mut Rng::new(42), false, true, false, true, true, false);
+		(counted, program.fns.len() - 1)
+	}
+
+	#[test]
+	fn c5_count_fns_matches_compiled_closure_slots() {
+		let (counted, slots) = counted_vs_compiled(POSITIONS);
+		// 语料里没有注释/字符串包含 "function"，关键字个数就是闭包个数。
+		assert_eq!(POSITIONS.matches("function").count(), 40);
+		assert_eq!(counted, 40, "count_fns_count must see every closure");
+		assert_eq!(counted, slots, "count must equal the number of compiled closure slots");
+	}
+
+	#[test]
+	fn c5_break_or_continue_inside_function_inside_loop_is_a_parse_error() {
+		let cases = [
+			"while true do local function f() break end end",
+			"while true do local f = function() break end end",
+			"for i=1,2 do local f = function() continue end end",
+			"repeat local function f() break end until false",
+			"for k,v in pairs({}) do local function f() break end end",
+			"while true do pcall(function() break end) end",
+			"while true do local f = function() return function() break end end end",
+			"while true do t = { function() continue end } end",
+			"while true do local x = true and function() break end or 1 end",
+		];
+		for src in cases {
+			match parser::parse(src, true) {
+				Err(e) => assert!(e.msg.contains("outside of a loop"), "{src} -> {}", e.msg),
+				Ok(_) => panic!("must be rejected by the parser: {src}"),
+			}
+		}
+		// 对照：合法位置（循环体内、非函数体）仍然接受。
+		assert!(parser::parse("for i=1,2 do if i==2 then break end end", true).is_ok());
+		assert!(parser::parse("for i=1,2 do if i==2 then continue end end", true).is_ok());
+		assert!(parser::parse("while true do local f = function() return 1 end f() break end", true).is_ok());
+	}
+}
+

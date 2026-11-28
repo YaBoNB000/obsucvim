@@ -28,7 +28,9 @@ done
 for preset in low medium high vm max; do
     out="$TMP/$preset.lua"
     "$BIN" --preset "$preset" --dialect luau --seed 84021 "$SOURCE" "$out"
-    [[ "$(head -n 1 "$out")" == "-- This file was obfuscated by Obsucvim." ]]
+    # Stage D removed the plaintext watermark header; the artifact must
+    # simply be a non-empty transform of the source, never the source itself.
+    [[ -s "$out" ]] && ! cmp -s "$out" "$SOURCE"
     "$LUAUC" "$out" >/dev/null
     timeout 120 "$LUAU" "$out" >"$TMP/$preset.out"
     diff -u "$TMP/expected.out" "$TMP/$preset.out"
@@ -37,7 +39,7 @@ done
 # v15 no longer requires executor attestation APIs; the artifact should run in
 # stock Luau and preserve the same observable results as the source.
 "$BIN" --preset v15 --dialect luau --seed 84021 "$SOURCE" "$TMP/v15.lua"
-[[ "$(head -n 1 "$TMP/v15.lua")" == "-- This file was obfuscated by Obsucvim." ]]
+[[ -s "$TMP/v15.lua" ]] && ! cmp -s "$TMP/v15.lua" "$SOURCE"
 "$LUAUC" "$TMP/v15.lua" >/dev/null
 timeout 120 "$LUAU" "$TMP/v15.lua" >"$TMP/v15.out"
 # Luau formats the same comparison type error with/without a space after '<'

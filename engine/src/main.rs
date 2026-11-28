@@ -22,7 +22,6 @@ mod vmgen;
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const OUTPUT_WATERMARK: &str = "-- This file was obfuscated by Obsucvim.\n";
 
 struct Options {
 dialect: &'static str,
@@ -45,11 +44,8 @@ dialect: &'static str,
 	bind_env: Option<String>,
 	env_check: bool,
 	super_insn: bool,
-	polymorphic_vm: bool,
-	encrypt_consts: bool,
-	integrity_checks: bool,
-	opaque_pred: bool,
-	reg_perturb: bool,
+	proto_layout: bool,
+	do_ccpd: bool,
 }
 
 fn apply_preset(opts: &mut Options, name: &str) -> Result<(), String> {
@@ -185,6 +181,10 @@ Options:
                          仅 --preset v15）：按每个函数的指令流数据统计/选择
                          top-4 白名单相邻对，塌缩为 fused 记录（trampoline
                          经 pf.fv 现解本函数词汇，tail-less 双段连跑）。
+                         --polymorphic-vm 是它的历史别名（同一效果）。
+  --proto-layout         每-prototype 字段布局随机化（默认开）：每个函数的
+                         section tag 映射独立洗牌；--no-proto-layout 关闭
+                         （全函数共享同一布局，旧行为）。
   -h, --help             show this help
   --version              show version
 ",
@@ -215,11 +215,8 @@ fn main() -> ExitCode {
 		bind_env: None,
 		env_check: false,
 		super_insn: false,
-		polymorphic_vm: false,
-		encrypt_consts: false,
-		integrity_checks: true,
-		opaque_pred: false,
-		reg_perturb: false,
+		proto_layout: true,
+		do_ccpd: false,
 	};
 	let mut i = 0;
 	let mut positional: Vec<String> = Vec::new();
@@ -319,15 +316,26 @@ fn main() -> ExitCode {
 			}
 			"--env-check" => opts.env_check = true,
 			"--super-insn" => opts.super_insn = true,
-			"--polymorphic-vm" => {
-				opts.polymorphic_vm = true;
-				opts.super_insn = true;
+			"--proto-layout" => opts.proto_layout = true,
+			"--no-proto-layout" => opts.proto_layout = false,
+			"--ccpd" => opts.do_ccpd = true,
+			"--no-ccpd" => opts.do_ccpd = false,
+			// Historical alias with exactly one real effect (enabling
+			// super-insn fusion); kept under its true name in --help.
+			"--polymorphic-vm" => opts.super_insn = true,
+			// Removed no-op flags: these were parsed for years but never
+			// consumed anywhere in the pipeline, so accepting them would
+			// silently pretend a feature exists.  Fail loudly instead.
+			"--encrypt-consts" | "--integrity-checks" | "--no-integrity-checks"
+			| "--opaque-pred" | "--reg-perturb" => {
+				eprintln!(
+					"error: {} was removed: it never had any effect in this pipeline \
+					 (constant sealing, integrity anchoring, and register scatter are \
+					 unconditional parts of the VM presets, not opt-in flags)",
+					args[i]
+				);
+				return ExitCode::FAILURE;
 			}
-			"--encrypt-consts" => opts.encrypt_consts = true,
-			"--integrity-checks" => opts.integrity_checks = true,
-			"--no-integrity-checks" => opts.integrity_checks = false,
-			"--opaque-pred" => opts.opaque_pred = true,
-			"--reg-perturb" => opts.reg_perturb = true,
 s if s.starts_with('-') => {
 				eprintln!("error: unknown option '{}'", s);
 				print_help();
@@ -420,6 +428,16 @@ s if s.starts_with('-') => {
 		return ExitCode::FAILURE;
 	}
 
+	if opts.do_ccpd && !(opts.do_vm && opts.do_v15) {
+		eprintln!(
+			"error: --ccpd requires --preset v15 (Luau VM)\n  \
+			 CCPD block variants ride the v15 block decoder and closure \
+			 factory; legacy VM and non-VM modes have no bdec/makefn \
+			 surface to attach edge context to."
+		);
+		return ExitCode::FAILURE;
+	}
+
 	let result = (|| -> Result<String, String> {
 		let mut block = parser::parse(&src, luau).map_err(|e| e.to_string())?;
 		let mut table = symtab::resolve(&mut block);
@@ -447,7 +465,17 @@ s if s.starts_with('-') => {
 			let vm_raw = audit_gate::audit_enabled("OBSUCVIM_VM_RAW");
 			let (mut block, mut table, v15_done) = if opts.do_vm {
 			let program =
-				vmgen::compile(&block, &table, &mut rng, !luau, opts.do_v15, opts.super_insn);
+				vmgen::compile(
+					&block,
+					&table,
+					&mut rng,
+					!luau,
+					opts.do_v15,
+					opts.super_insn,
+					opts.do_guard,
+					opts.proto_layout,
+					opts.do_ccpd,
+				);
 			let caps = vmgen::caps::CapabilityManifest::from_program(
 				&program,
 				opts.do_guard,
@@ -491,7 +519,7 @@ s if s.starts_with('-') => {
 					program.blob_seed,
 					program.blob_step,
 				),
-				program.section_tags,
+				&program.proto_layouts.iter().map(|l| l.as_tags()).collect::<Vec<_>>(),
 				program.consts_mask_safe,
 				&program.block_starts,
 				&program.s_indices,
@@ -501,7 +529,9 @@ s if s.starts_with('-') => {
 				env_slots.as_ref(),
 				opts.env_check,
 				opts.do_guard,
+				opts.do_guard,
 				&caps,
+				opts.do_ccpd,
 			);
 			if audit_gate::audit_enabled("OBSUCVIM_VM_TSRC") {
 				let path = audit_gate::audit_var("OBSUCVIM_VM_TSRC_PATH")
@@ -602,6 +632,7 @@ let kg = slot_pool[3];
 					&kfrag,
 					&st_slots,
 					&ttable.globals,
+					opts.do_guard,
 				);
 				let mut exclude: Vec<i64> = vec![r1, r2, ks, kg, d1, d2, sb_slot, sc_slot];
 				exclude.extend_from_slice(&bw_slots);
@@ -744,7 +775,7 @@ let kg = slot_pool[3];
 		}
 	})();
 
-	match result.map(|out| format!("{OUTPUT_WATERMARK}{out}")) {
+	match result {
 		Ok(out) => match &opts.output {
 			Some(path) => match std::fs::write(path, out) {
 				Ok(()) => {}
@@ -756,7 +787,7 @@ let kg = slot_pool[3];
 			None => print!("{}", out),
 		},
 		Err(e) => {
-			eprintln!("obsucvim: {}", e);
+			eprintln!("error: {}", e);
 			return ExitCode::FAILURE;
 		}
 	}

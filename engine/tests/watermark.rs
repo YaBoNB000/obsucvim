@@ -31,14 +31,14 @@ impl Drop for Fixture {
 
 fn check(output: &Output) {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    assert!(output.stdout.starts_with(HEADER.as_bytes()));
     let text = std::str::from_utf8(&output.stdout).unwrap();
-    assert_eq!(text.matches(HEADER).count(), 1);
-    assert!(!text[HEADER.len()..].trim().is_empty());
+    assert!(!text.contains(HEADER), "release artifact must not carry the brand watermark");
+    assert!(!text.to_lowercase().contains("obsucvim"), "release artifact must not carry brand text");
+    assert!(!text.trim().is_empty());
 }
 
 #[test]
-fn every_preset_and_minify_mode_has_one_first_line_watermark() {
+fn every_preset_and_minify_mode_has_no_brand_watermark() {
     let f = Fixture::new();
     for preset in ["v15", "low", "medium", "high", "vm", "max"] {
         for mode in ["--minify", "--no-minify"] {
@@ -56,7 +56,7 @@ fn every_preset_and_minify_mode_has_one_first_line_watermark() {
 }
 
 #[test]
-fn default_and_output_flag_use_same_watermark_and_seed_is_deterministic() {
+fn default_and_output_flag_match_and_seed_is_deterministic() {
     let f = Fixture::new();
     let first = f.run(&["--seed", "42", "input.lua"]);
     check(&first);
@@ -83,7 +83,7 @@ fn help_version_and_failed_generation_are_not_watermarked() {
 }
 
 #[test]
-fn source_watermark_comment_does_not_duplicate_output_watermark() {
+fn source_watermark_comment_is_not_carried_into_output() {
     let f = Fixture::new();
     std::fs::write(f.0.join("input.lua"), format!("{HEADER}print('ok')\n")).unwrap();
     check(&f.run(&["--preset", "low", "--seed", "42", "input.lua"]));

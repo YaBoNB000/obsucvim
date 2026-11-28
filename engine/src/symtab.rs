@@ -52,6 +52,7 @@ impl<'a> Resolver<'a> {
 			keep_name: false,
 		});
 		let id = (self.table.syms.len() - 1) as SymId;
+		// invariant: push_scope() installs the root scope in SymbolTable::new and pop_scope never removes it
 		self.scopes.last_mut().unwrap().push((name.to_string(), id));
 		id
 	}

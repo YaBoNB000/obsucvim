@@ -185,9 +185,42 @@ bash "$ROOT/tests/protected_meta_compat_test.sh"
 # one per-shard record, while both v15 and legacy VM semantics remain equal.
 bash "$ROOT/tests/micro_fusion_test.sh"
 
+# Phase 18 P0-3: pre-compilation resource-budget limits. Every calibrated
+# dimension is exercised at its threshold (must compile cleanly) and at
+# threshold+1 (must be rejected with a single-line `error:` diagnostic).
+source "$ROOT/tests/robustness_test.sh"
+
 # Core VM byte/sub/char primitives must not be fetched through a loader's
 # replaceable global string table. Verify copied-library hooks miss the VM.
 bash "$ROOT/tests/string_primitive_hook_test.sh"
+
+# Phase 18 P1-1/P1-2: string-cache hardening harvest simulation. Proves that a
+# constant with a single static reference never enters the persistent cache,
+# that multi-use constants do (negative control), and that clear-after-last-use
+# respects the loop / cross-frame scope boundaries. Needs the audit build.
+if ! python3 "$ROOT/tests/string_cache_dump_test.py"; then
+	echo "FAIL [string-cache-dump] string cache hardening harvest simulation"
+	fail=$((fail + 1)); failed+=("p1/string-cache-dump")
+fi
+
+# Phase 18 P1-3: distributed runtime canaries. A guard build must trip the
+# bounded fail-closed path when string.char is swapped mid-execution, the same
+# payload must still run to completion under --no-guard, and canary placement
+# must be seed-dependent (no fixed offset to fingerprint).
+if ! python3 "$ROOT/tests/canary_runtime_test.py"; then
+	echo "FAIL [canary-runtime] distributed string-cache canary runtime"
+	fail=$((fail + 1)); failed+=("p1/canary-runtime")
+fi
+
+# Phase G (spec section 6/G4): API capability slots + staged closures.
+# Entry closures survive being stored and called after their parent
+# returned, coroutine resume continues execution, slot remapping across
+# builds changes bytes but not behavior, and a host missing a required
+# API fails deterministically.
+if ! python3 "$ROOT/tests/phase_g_api_test.py"; then
+	echo "FAIL [phase-g-api] API slots / staged closure runtime"
+	fail=$((fail + 1)); failed+=("phase-g/api")
+fi
 
 # R064 nested upvalues crossed parent/child scatter permutations used to map
 # a child capture to the wrong parent upvalue. Recheck the full handoff canary
@@ -209,6 +242,9 @@ if ! bash "$ROOT/tests/wtf_port_test.sh"; then
 	echo "FAIL [wtf-port] environment check battery regression"
 	fail=$((fail + 1)); failed+=("wtf-port/env-check")
 fi
+
+# Phase 18 P3-1: engine/tests/attack_blackbox/*.py 是黑盒分析性测试，结果见
+# HANDOFF §18，不计入本脚本的 PASS/FAIL 统计（按任务书要求保持独立）。
 
 echo "=================================================="
 echo "PASS checks: $pass   FAIL: $fail"

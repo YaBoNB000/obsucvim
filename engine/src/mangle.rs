@@ -135,6 +135,7 @@ impl CompactNames {
 			)
 		})?;
 		self.active.insert(name.clone());
+		// invariant: push_scope() installs the root scope in SymbolTable::new and pop_scope never removes it
 		self.scopes.last_mut().expect("root name scope").push(name.clone());
 		table.syms[id as usize].name = name;
 		Ok(())

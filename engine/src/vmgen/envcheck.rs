@@ -176,6 +176,155 @@ d=(d*{p}+(okl and 0 or 1))%{m}",
 	)
 }
 
+
+/// Plaintext-surface repair: the probe is spliced into artifacts, so its
+/// vocabulary must not survive as readable Lua. `seal_probe` rewrites the
+/// generated source to numeric char codes before it reaches the template:
+/// string literals become `C(<codes>)`, library dot access becomes
+/// `lib[C(<codes>)]`, bare globals become environment lookups
+/// `E[C(<codes>)]`, and metamethod constructor keys become `[C(<codes>)]`.
+/// The factory header binds `C` (string.char via the `("")` anchor) and
+/// `E` (the global environment table), so sealed probes observe exactly
+/// the same host objects as the readable form did.
+fn codes_expr(s: &str) -> String {
+	let codes: Vec<String> = s.bytes().map(|b| b.to_string()).collect();
+	format!("C({})", codes.join(","))
+}
+
+fn is_ident_start(c: char) -> bool {
+	c.is_ascii_alphabetic() || c == '_'
+}
+
+fn is_ident_char(c: char) -> bool {
+	c.is_ascii_alphanumeric() || c == '_'
+}
+
+fn seal_probe(src: &str) -> String {
+	// 1. String literals -> C(<byte codes>); decode Lua escapes.
+	let chars: Vec<char> = src.chars().collect();
+	let mut out = String::new();
+	let mut i = 0;
+	while i < chars.len() {
+		if chars[i] != '"' {
+			out.push(chars[i]);
+			i += 1;
+			continue;
+		}
+		i += 1;
+		let mut bytes: Vec<u8> = Vec::new();
+		while i < chars.len() && chars[i] != '"' {
+			if chars[i] == '\\' && i + 1 < chars.len() {
+				let n = chars[i + 1];
+				if n.is_ascii_digit() {
+					let mut j = i + 1;
+					let mut num = String::new();
+					while j < chars.len() && chars[j].is_ascii_digit() && num.len() < 3 {
+						num.push(chars[j]);
+						j += 1;
+					}
+					bytes.push(num.parse::<u32>().unwrap_or(0) as u8);
+					i = j;
+				} else {
+					bytes.push(match n {
+						'n' => b'\n',
+						't' => b'\t',
+						'r' => b'\r',
+						_ => n as u8,
+					});
+					i += 2;
+				}
+			} else {
+				let mut buf = [0u8; 4];
+				bytes.extend_from_slice(chars[i].encode_utf8(&mut buf).as_bytes());
+				i += 1;
+			}
+		}
+		i += 1; // closing quote
+		let codes: Vec<String> = bytes.iter().map(|b| b.to_string()).collect();
+		out.push_str(&format!("C({})", codes.join(",")));
+	}
+
+	// 2. Metamethod constructor keys: __index= -> [C(<codes>)]=
+	for name in [
+		"__index", "__newindex", "__add", "__sub", "__mul", "__div", "__mod",
+		"__pow", "__unm", "__len", "__concat", "__lt", "__le", "__eq",
+		"__call", "__tostring", "__metatable", "__iter", "__mode",
+	] {
+		out = out.replace(&format!("{name}="), &format!("[{}]=", codes_expr(name)));
+		out = out.replace(&format!("{name} ="), &format!("[{}] =", codes_expr(name)));
+	}
+
+	// 3. Dot access lib.member -> lib[C(<codes>)] (token scan; numbers are
+	// safe because the left side must be an identifier).
+	let chars: Vec<char> = out.chars().collect();
+	let mut out2 = String::new();
+	let mut i = 0;
+	while i < chars.len() {
+		if is_ident_start(chars[i]) {
+			let mut j = i;
+			while j < chars.len() && is_ident_char(chars[j]) {
+				j += 1;
+			}
+			let word: String = chars[i..j].iter().collect();
+			// Only known library tables get sealed members: user fields
+			// (x.v, t1.zz) must stay dot access so sanitize_frag renames
+			// them consistently with table-constructor keys ({v=13}).
+			const LIBS: [&str; 6] = ["bit32", "buffer", "string", "table", "math", "coroutine"];
+			if LIBS.contains(&word.as_str())
+				&& j + 1 < chars.len() && chars[j] == '.' && is_ident_start(chars[j + 1]) {
+				let mut k = j + 1;
+				while k < chars.len() && is_ident_char(chars[k]) {
+					k += 1;
+				}
+				let member: String = chars[j + 1..k].iter().collect();
+				out2.push_str(&word);
+				out2.push('[');
+				out2.push_str(&codes_expr(&member));
+				out2.push(']');
+				i = k;
+			} else {
+				out2.push_str(&word);
+				i = j;
+			}
+		} else {
+			out2.push(chars[i]);
+			i += 1;
+		}
+	}
+
+	// 4. Bare globals -> E[C(<codes>)].
+	const GLOBALS: [&str; 21] = [
+		"bit32", "buffer", "string", "table", "math", "coroutine", "loadstring",
+		"load", "select", "pcall", "xpcall", "setmetatable", "getmetatable",
+		"rawequal", "rawget", "rawset", "tostring", "tonumber", "type", "error",
+		"next",
+	];
+	let chars: Vec<char> = out2.chars().collect();
+	let mut out3 = String::new();
+	let mut i = 0;
+	while i < chars.len() {
+		if is_ident_start(chars[i]) {
+			let mut j = i;
+			while j < chars.len() && is_ident_char(chars[j]) {
+				j += 1;
+			}
+			let word: String = chars[i..j].iter().collect();
+			if GLOBALS.contains(&word.as_str()) {
+				out3.push_str("E[");
+				out3.push_str(&codes_expr(&word));
+				out3.push(']');
+			} else {
+				out3.push_str(&word);
+			}
+			i = j;
+		} else {
+			out3.push(chars[i]);
+			i += 1;
+		}
+	}
+	out3
+}
+
 pub fn build(rng: &mut Rng) -> String {
 	let mut groups = vec![
 		g_arith(rng),
@@ -187,8 +336,18 @@ pub fn build(rng: &mut Rng) -> String {
 		g_compile(rng),
 	];
 	rng.shuffle(&mut groups);
-	let mut out = String::from("return function()\n");
-	out.push_str(
+	let mut out = String::from(
+		// The probe must validate the environment the payload will actually
+		// run in: the CHUNK environment (getfenv(1) from inside the factory),
+		// not the thread environment (getfenv(0)).  A harness that swaps the
+		// chunk env (setfenv) otherwise leaves the probe reading pristine
+		// real libraries while the payload executes against the mocked ones,
+		// silently disarming every library challenge below.  This mirrors
+		// the prim bootstrap's _BENV = _BGFE(1) decision.
+		"return function()\nlocal C = (\"\")[\"char\"] local E = getfenv(1)\n",
+	);
+	let mut rest = String::new();
+	rest.push_str(
 		"local r1=bit32 local r2=buffer local r3=string local r4=table 
 local r5=math local r6=coroutine local r7=loadstring local r8=select 
 local r9=pcall local r10=setmetatable local r11=rawequal local r12=rawget 
@@ -197,10 +356,10 @@ local r16=string.byte local r17=coroutine.resume\n",
 	);
 	out.push_str("local d=0\n");
 	for g in &groups {
-		out.push_str(g);
-		out.push('\n');
+		rest.push_str(g);
+		rest.push('\n');
 	}
-	out.push_str(&format!(
+	rest.push_str(&format!(
 		"local q1=(bit32==r1 and buffer==r2 and string==r3 and table==r4 and math==r5 
 and coroutine==r6 and loadstring==r7 and select==r8 and pcall==r9 and setmetatable==r10 
 and rawequal==r11 and rawget==r12 and tostring==r13 and bit32.bxor==r14 
@@ -209,7 +368,8 @@ d=(d*{p}+(q1 and 0 or 1))%{m}\n",
 		p = mul(rng),
 		m = MOD,
 	));
-	out.push_str("return d\nend");
+	rest.push_str("return d\nend");
+	out.push_str(&seal_probe(&rest));
 	out
 }
 
@@ -224,15 +384,22 @@ mod tests {
 		assert!(src.starts_with("return function()\n"));
 		assert!(src.ends_with("return d\nend"));
 		for needle in [
-			"select(\"#\"",
-			"bit32.bxor(",
-			"buffer.fromstring(",
-			"table.freeze",
-			"coroutine.create(",
-			"loadstring(",
-			"rawequal(t1,t1)",
+			"E[C(115,101,108,101,99,116)](C(35)",
+			"E[C(98,105,116,51,50)][C(98,120,111,114)](",
+			"E[C(98,117,102,102,101,114)][C(102,114,111,109,115,116,114,105,110,103)](",
+			"E[C(116,97,98,108,101)][C(102,114,101,101,122,101)]",
+			"E[C(99,111,114,111,117,116,105,110,101)][C(99,114,101,97,116,101)](",
+			"E[C(108,111,97,100,115,116,114,105,110,103)](",
+			"E[C(114,97,119,101,113,117,97,108)](t1,t1)",
 		] {
-			assert!(src.contains(needle), "missing {needle}");
+			assert!(src.contains(needle), "missing sealed probe form: {needle}");
+		}
+		for readable in [
+			"bit32.bxor", "buffer.fromstring", "string.char", "coroutine.create",
+			"loadstring(\"", "__index=", "__add=", "__tostring=",
+			"\"abcdef\"", "\"function\"", "\"dead\"",
+		] {
+			assert!(!src.contains(readable), "readable probe text survived: {readable}");
 		}
 		for banned in ["rawget(t1,\"v\")", "==\"zz\"", "return k end"] {
 			assert!(!src.contains(banned), "rename-unsafe pattern: {banned}");

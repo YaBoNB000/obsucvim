@@ -349,6 +349,77 @@ pub(crate) fn build_loader(
 	let f1 = ident(&n1, Some(s1));
 	let f2 = ident(&n2, Some(s2));
 	let f3 = ident(&n3, Some(s3));
+	// Plaintext-surface repair: resolve string.byte / table.concat
+	// through the chunk environment with numeric char-code names,
+	// anchored on the documented ("")["char"] bootstrap, instead of
+	// printing readable `string.byte` / `table.concat` dot access.
+	let nch = next_name(reserved, rng);
+	let nenv = next_name(reserved, rng);
+	let nsb = next_name(reserved, rng);
+	let ntc = next_name(reserved, rng);
+	let sch = new_sym(table, nch.clone());
+	let senv = new_sym(table, nenv.clone());
+	let ssb = new_sym(table, nsb.clone());
+	let stc = new_sym(table, ntc.clone());
+	let ch_id = ident(&nch, Some(sch));
+	let env_id = ident(&nenv, Some(senv));
+	let sb_id = ident(&nsb, Some(ssb));
+	let tc_id = ident(&ntc, Some(stc));
+	let codes = |text: &str| -> Expr {
+		Expr::Call {
+			func: Box::new(ch_id.clone()),
+			args: text
+				.bytes()
+				.map(|b| Expr::Num { value: b as f64, isfloat: false })
+				.collect(),
+		}
+	};
+	let env_lib = |lib: &str, member: &str| -> Expr {
+		Expr::Index {
+			obj: Box::new(Expr::Index {
+				obj: Box::new(env_id.clone()),
+				idx: Box::new(codes(lib)),
+			}),
+			idx: Box::new(codes(member)),
+		}
+	};
+	let boot_stmts: Vec<Stmt> = vec![
+		Stmt::Local {
+			names: vec![nch],
+			syms: vec![sch],
+			values: vec![Some(Expr::Index {
+				obj: Box::new(Expr::Str { bytes: Vec::new(), is_binary: false }),
+				idx: Box::new(Expr::Str { bytes: b"char".to_vec(), is_binary: false }),
+			})],
+		},
+		Stmt::Local {
+			names: vec![nenv],
+			syms: vec![senv],
+			values: vec![Some(Expr::Bin {
+				op: BinOp::Or,
+				l: Box::new(Expr::Bin {
+					op: BinOp::And,
+					l: Box::new(ident("getfenv", None)),
+					r: Box::new(Expr::Call {
+						func: Box::new(ident("getfenv", None)),
+						args: vec![Expr::Num { value: 1.0, isfloat: false }],
+					}),
+				}),
+				r: Box::new(ident("_G", None)),
+			})],
+		},
+		Stmt::Local {
+			names: vec![nsb],
+			syms: vec![ssb],
+			values: vec![Some(env_lib("string", "byte"))],
+		},
+		Stmt::Local {
+			names: vec![ntc],
+			syms: vec![stc],
+			values: vec![Some(env_lib("table", "concat"))],
+		},
+	];
+
 	let kref = ident(&nk, Some(sk));
 	let ktref = ident(&kt, Some(skt));
 	let i2ref = ident(&ni2, Some(si2));
@@ -385,11 +456,7 @@ pub(crate) fn build_loader(
 					op: BinOp::Sub,
 					l: Box::new(Expr::Bin {
 						op: BinOp::Sub,
-						l: Box::new(global_call(
-							"string",
-							"byte",
-							vec![s.clone(), i.clone()],
-						)),
+						l: Box::new(Expr::Call { func: Box::new(sb_id.clone()), args: vec![s.clone(), i.clone()] }),
 						r: Box::new(k.clone()),
 					}),
 					r: Box::new(i.clone()),
@@ -428,7 +495,7 @@ pub(crate) fn build_loader(
 					obj: Box::new(o.clone()),
 					idx: Box::new(i.clone()),
 				}],
-				values: vec![global_call("string", "char", vec![r.clone()])],
+				values: vec![Expr::Call { func: Box::new(ch_id.clone()), args: vec![r.clone()] }],
 			},
 		],
 	};
@@ -524,7 +591,7 @@ pub(crate) fn build_loader(
 				},
 				Stmt::Assign {
 					targets: vec![hit_id.clone()],
-					values: vec![global_call("table", "concat", vec![o])],
+					values: vec![Expr::Call { func: Box::new(tc_id.clone()), args: vec![o] }],
 				},
 				Stmt::Assign {
 					targets: vec![Expr::Index {
@@ -561,7 +628,7 @@ pub(crate) fn build_loader(
 				Stmt::Local {
 					names: vec![ns.clone()],
 					syms: vec![ss],
-					values: vec![Some(global_call("table", "concat", vec![p]))],
+					values: vec![Some(Expr::Call { func: Box::new(tc_id.clone()), args: vec![p] })],
 				},
 				Stmt::Local {
 					names: vec![no.clone()],
@@ -579,7 +646,7 @@ pub(crate) fn build_loader(
 					step: None,
 					body: loop_body,
 				},
-				Stmt::Return(vec![global_call("table", "concat", vec![o])]),
+				Stmt::Return(vec![Expr::Call { func: Box::new(tc_id.clone()), args: vec![o] }]),
 			],
 		};
 		(None, vec![], vec![], true, body)
@@ -589,7 +656,8 @@ pub(crate) fn build_loader(
 	let k2 = key[KEY_LEN / 3..KEY_LEN * 2 / 3].to_vec();
 	let k3 = key[KEY_LEN * 2 / 3..KEY_LEN].to_vec();
 
-	let mut loader = vec![
+	let mut loader = boot_stmts;
+	loader.extend(vec![
 		Stmt::Local {
 			names: vec![n1, n2, n3],
 			syms: vec![s1, s2, s3],
@@ -632,15 +700,11 @@ pub(crate) fn build_loader(
 					obj: Box::new(ktref),
 					idx: Box::new(i2ref.clone()),
 				}],
-				values: vec![global_call(
-					"string",
-					"byte",
-					vec![kref, i2ref],
-				)],
+				values: vec![Expr::Call { func: Box::new(sb_id.clone()), args: vec![kref, i2ref] }],
 			}],
 		},
 	},
-	];
+	]);
 	if let Some(cs) = cache_stmt_opt {
 		loader.push(cs);
 	}

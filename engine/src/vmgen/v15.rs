@@ -5,23 +5,48 @@ use crate::rng::Rng;
 use crate::vmgen::caps::ScaffoldPrim;
 use crate::vmgen::isa::CARRIER_SPECIALS;
 
+/// `("")["char"](<codes...>)` — builds a name from numeric char codes
+/// using only the documented bootstrap anchor (the string literal
+/// `"char"` on the empty-string metatable). No readable name survives.
+fn char_call(name: &str) -> Expr {
+	Expr::Call {
+		func: Box::new(Expr::Index {
+			obj: Box::new(Expr::Str { bytes: Vec::new(), is_binary: false }),
+			idx: Box::new(Expr::Str { bytes: b"char".to_vec(), is_binary: false }),
+		}),
+		args: name
+			.bytes()
+			.map(|b| Expr::Num { value: b as f64, isfloat: false })
+			.collect(),
+	}
+}
+
+/// `_G[<char codes for name>]` — global resolved through the `_G`
+/// bootstrap anchor with a numeric-code name.
+fn sealed_global(name: &str) -> Expr {
+	Expr::Index {
+		obj: Box::new(Expr::Ident { name: "_G".to_string(), sym: None }),
+		idx: Box::new(char_call(name)),
+	}
+}
+
 fn dot_value(path: &str) -> Expr {
+	// invariant: path comes from the static v15 template table and always contains a dot
 	let (lib, name) = path.split_once('.').unwrap();
 	if lib == "string" && matches!(name, "byte" | "sub" | "char") {
+		// Core string primitives keep bypassing the replaceable
+		// library table (capability contract), now with sealed names.
 		return Expr::Index {
 			obj: Box::new(Expr::Str { bytes: Vec::new(), is_binary: false }),
-			idx: Box::new(Expr::Str {
-				bytes: name.as_bytes().to_vec(),
-				is_binary: false,
-			}),
+			idx: Box::new(char_call(name)),
 		};
 	}
-	Expr::Dot {
-		obj: Box::new(Expr::Ident {
-			name: lib.to_string(),
-			sym: None,
-		}),
-		name: name.to_string(),
+	// Library members resolve through the environment anchor with
+	// numeric-code names: no `bit32.bxor` / `table.concat` style
+	// readable member path appears in the artifact.
+	Expr::Index {
+		obj: Box::new(sealed_global(lib)),
+		idx: Box::new(char_call(name)),
 	}
 }
 
@@ -31,11 +56,15 @@ fn parse_expr(src: &str) -> Expr {
 		Ok(b) => b,
 		Err(e) => {
 			eprintln!("v15 emitter bug: {:?}\nsource:\n{}", e, chunk);
+			// invariant: the v15 template sources are static strings that parse by construction
 			panic!("v15 static source")
 		}
 	};
+	// invariant: the v15 template source always contains at least one statement
 	match block.stmts.pop().unwrap() {
+		// invariant: the v15 template source ends with a single local declaration carrying one value
 		ast::Stmt::Local { mut values, .. } => values.pop().unwrap().unwrap(),
+		// invariant: the v15 template source ends with a local declaration by construction
 		_ => unreachable!(),
 	}
 }
@@ -118,7 +147,7 @@ pub fn module_fields(
 				let value = if path.contains('.') {
 					dot_value(path)
 				} else {
-					Expr::Ident { name: path.to_string(), sym: None }
+					sealed_global(path)
 				};
 				fields.push(TableField::Key {
 					key: Expr::Num { value: *n as f64, isfloat: false },
@@ -129,6 +158,7 @@ pub fn module_fields(
 		}
 	}
 	for states in [2usize, 3usize] {
+		// invariant: the slot-name iterator is sized to the number of static slots consumed here
 		let n = it.next().unwrap();
 		fields.push(TableField::Key {
 			key: Expr::Num {
@@ -139,6 +169,7 @@ pub fn module_fields(
 		});
 	}
 	{
+		// invariant: the slot-name iterator is sized to the number of static slots consumed here
 		let n = it.next().unwrap();
 		fields.push(TableField::Key {
 			key: Expr::Num {
@@ -152,15 +183,15 @@ pub fn module_fields(
 		});
 	}
 
+	// Field values are runtime literals (type names, metamethod keys,
+	// format/pattern text): emit them as numeric char-code calls so no
+	// readable value appears in the artifact (plaintext-surface repair).
 	let named_str = |name: &str, val: &str| TableField::Key {
 		key: Expr::Str {
 			bytes: name.as_bytes().to_vec(),
 			is_binary: false,
 		},
-		value: Expr::Str {
-			bytes: val.as_bytes().to_vec(),
-			is_binary: false,
-		},
+		value: char_call(val),
 	};
 	fields.push(named_str("AL", "n"));
 	fields.push(named_str("BL", "__index"));
@@ -172,10 +203,7 @@ pub fn module_fields(
 			bytes: b"gL".to_vec(),
 			is_binary: false,
 		},
-		value: Expr::Str {
-			bytes: b":(%d+)[:\r\n]".to_vec(),
-			is_binary: false,
-		},
+		value: char_call(":(%d+)[:\r\n]"),
 	});
 	fields.push(TableField::Key {
 		key: Expr::Str {
@@ -538,7 +566,14 @@ fn dispatch_tree(
 	hi: usize,
 ) -> String {
 	if hi - lo == 1 {
-		return leaves[lo].1.clone();
+		// Exact-state leaf: the threshold tree only narrows the search, so
+		// a value that lands here without equalling the leaf state is a
+		// corrupt transition and fails closed (bounded boolean-index
+		// fault) instead of executing the wrong staging step.
+		return format!(
+			"if {}=={} then {} else local _ivz=false _ivz=_ivz[_ivz] end",
+			vname, leaves[lo].0, leaves[lo].1
+		);
 	}
 	let mid = (lo + hi) / 2;
 	let thr = leaves[mid - 1].0;
@@ -580,6 +615,7 @@ fn draw_state_names(nm: &mut Names) -> [String; 6] {
 		forbid.push(n.clone());
 		out.push(n);
 	}
+	// invariant: the loop above pushes exactly six names
 	out.try_into().unwrap()
 }
 
@@ -621,6 +657,7 @@ pub fn scaffold(
 	kfrag: &[i64],
 	st_slots: &[i64],
 	interp_globals: &[String],
+	guard: bool,
 ) -> (Vec<TableField>, String) {
 	let carrier_tokens: &[String] = &carrier.tokens;
 	let mut nm = Names::new(rng);
@@ -891,6 +928,7 @@ let start_word = all_words.len() + 1;
 	fields.push(slotted(kfrag[3], split_field(bc0_a, rng)));
 	fields.push(slotted(kfrag[4], split_field(bc0_b, rng)));
 	let n_slots_needed = (all_words.len() + BW_SLOT_WORDS - 1) / BW_SLOT_WORDS;
+	// invariant: all_words and bw_slots both derive from the static v15 template source (include_str), never from user input
 	assert!(
 		n_slots_needed <= bw_slots.len(),
 		"not enough BW slots: need {} have {}",
@@ -1104,12 +1142,12 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				)
 			} else if trim_style {
 				format!(
-					"(\"\")[\"sub\"](b[{s_tc}]({t},nil,1,{nw}),1,{blen})",
+					"(\"\")[(\"\")[\"char\"](115, 117, 98)](b[{s_tc}]({t},nil,1,{nw}),1,{blen})",
 					s_tc = s_tcat, t = nt, nw = nw, blen = blen
 				)
 			} else {
 				format!(
-					"(\"\")[\"sub\"](b[{s_tc}]({t}),1,{blen})",
+					"(\"\")[(\"\")[\"char\"](115, 117, 98)](b[{s_tc}]({t}),1,{blen})",
 					s_tc = s_tcat, t = nt, blen = blen
 				)
 			};
@@ -1361,11 +1399,13 @@ let (st, _ret) = step(&mut state_i);
 			})
 			.collect();
 		let tree = dispatch_tree(&sv, &wrapped, 0, wrapped.len());
+		// invariant: dispatch_tree always emits at least one leaf
 		let max_leaf = leaves.last().unwrap().0;
 		let src = format!(
 			"function(b,C,{lhs6}) while true do if {sv}<={} then {} \
-			 else local h,E=b:{}(C,{sv}); if h==2 then return 2,E end; {sv}=h end end end",
-			max_leaf, tree, ctl, lhs6 = lhs6, sv = sv
+			 elseif {sv}=={} then local h,E=b:{}(C,{sv}); if h==2 then return 2,E end; {sv}=h \
+			 else local _ivz=false _ivz=_ivz[_ivz] end end end",
+			max_leaf, tree, sdone, ctl, lhs6 = lhs6, sv = sv
 		);
 		fields.push(named(loop_name.clone(), parse_expr(&src)));
 	}
@@ -1382,13 +1422,24 @@ let (st, _ret) = step(&mut state_i);
 	}
 
 	{
+		// Guard builds fail closed when the staged entry resolves to a
+		// non-function (e.g. a tampered primitive silently corrupted the
+		// bootstrap): without this, the chunk tail calls nil and the
+		// corruption masquerades as an ordinary runtime error instead of
+		// the guard's bounded boolean-index abort.
+		let entry_check = if guard {
+			"if _G[(\"\")[\"char\"](116, 121, 112, 101)](B)~=(\"\")[\"char\"](102, 117, 110, 99, 116, 105, 111, 110) then local _gf=false _gf=_gf[_gf] end "
+		} else {
+			""
+		};
 		let src = format!(
 			"function(b,...) local u,z,Z,o,w,K,G,q,M,F,H,E=b:{init}(); \
-			 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
+		 local {lhs6},C=z,Z,o,w,K,G,{{}}; C[{ss}]=0; C[{ax}]=0; \
 		 do local u=1; local w=u+1-1; local o=w-u; if o~=0 then C[{ss}]=o end end; \
-			 local J={{[4]='{xl}',[7]='{xl}'}}; \
-			 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
-			if h2==2 then return B end end end",
+		 local J={{[4]='{xl}',[7]='{xl}'}}; \
+		 while u do local h2,B=b[J[4]](b,C,{sv},{rhs5}); \
+		if h2==2 then {entry_check}return B end end end",
+			entry_check = entry_check,
 			init = init,
 			ss = sumslot,
 			ax = auxslot,
@@ -1421,7 +1472,21 @@ let (st, _ret) = step(&mut state_i);
 
 #[cfg(test)]
 mod tests {
-	use super::idle_local;
+	use super::{dispatch_tree, idle_local};
+
+	#[test]
+	fn dispatch_tree_leaves_require_exact_state() {
+		let leaves: Vec<(i64, String)> = vec![
+			(10, "STEP_A;".to_string()),
+			(25, "STEP_B;".to_string()),
+			(40, "STEP_C;".to_string()),
+		];
+		let tree = dispatch_tree("sv", &leaves, 0, leaves.len());
+		for st in [10, 25, 40] {
+			assert!(tree.contains(&format!("if sv=={st} then")), "{tree}");
+		}
+		assert_eq!(tree.matches("_ivz=_ivz[_ivz]").count(), 3, "{tree}");
+	}
 
 	#[test]
 	fn idle_local_never_shadows_target_when_name_is_underscore_t() {

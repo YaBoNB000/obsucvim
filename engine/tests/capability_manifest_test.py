@@ -7,11 +7,13 @@ Verifies end-to-end on emitted artifacts:
      (`buffer.`, `vector.`, `Vector2`, `Vector3`, `typeof`, `coroutine.`,
      `rawget`, `rawset`, `rawequal`, `xpcall`, `newproxy`, `next`, `table.pack`)
      and ZERO algebraic tautology predicates.
-   - Emitted `v15` and `vm` artifacts carry the exact `VmPrim::lua_bind_expr()`
-     3-tier Scheme A fallback (`unpack -> table.unpack -> pure-Lua _uf`),
-     `getfenv` fallback, and (when calls exist on Luau `v15`) `table.pack`
-     fallback `{n=select("#",...),...}`, with zero raw `unpack or table.unpack`
-     bypass in `LoadStr`.
+   - Emitted `v15` and `vm` artifacts carry the sealed 3-tier Scheme A
+     fallback (`unpack -> table.unpack -> pure-Lua _uf`), the `getfenv`
+     bootstrap fallback, and (when calls exist on Luau `v15`) the
+     `table.pack` fallback, all resolved through numeric char-code
+     names (`VmPrim::sealed_bind_expr`); no readable `table.unpack` /
+     `table.pack` member path and no raw `unpack or table.unpack`
+     bypass appears in `LoadStr` or anywhere else.
    - `--bind-env roblox` injects `Vector3` / `typeof`; `--env-check` runs cleanly
      on stock Luau; same-seed builds are byte-for-byte deterministic.
 2. Runtime fallback equivalence across 6 seeds (`1, 7, 42, 4242, 31337, 999999`)
@@ -276,20 +278,22 @@ def main() -> int:
         check(
             "vm_emits_scheme_a_unpack_and_getfenv_fallbacks_without_bypass",
             bool(re.search(r"\bgetfenv\b", vm_txt))
-            and bool(re.search(r"\btable\.unpack\b", vm_txt))
+            and not bool(re.search(r"\btable\.unpack\b", vm_txt))
             and not bool(re.search(r"\bunpack\s+or\s+table\.unpack\b", vm_txt))
             and not bool(re.search(r"\btable\.pack\b", vm_txt))
             and not bool(re.search(r"\bnext\b", vm_txt)),
-            "vm binds getfenv + Scheme A unpack fallback, zero raw LoadStr unpack bypass",
+            "vm binds getfenv + sealed Scheme A unpack fallback, zero readable member paths",
         )
         check(
             "v15_emits_scheme_a_fallbacks_and_gates_next_on_guard",
             bool(re.search(r"\bgetfenv\b", g_txt))
-            and bool(re.search(r"\btable\.unpack\b", g_txt))
-            and bool(re.search(r"\btable\.pack\b", g_txt))
-            and bool(re.search(r"\bnext\b", g_txt))
+            and "117,110,112,97,99,107" in g_txt.replace(" ", "")
+            and "112,97,99,107" in g_txt.replace(" ", "")
+            and not bool(re.search(r"\btable\.(unpack|pack)\b", g_txt))
+            and "110,101,120,116" in g_txt.replace(" ", "")
+            and "110,101,120,116" not in ng_txt.replace(" ", "")
             and not bool(re.search(r"\bnext\b", ng_txt)),
-            "v15 binds Scheme A fallbacks; next present iff guard=true",
+            "v15 binds sealed Scheme A fallbacks; next sealed-name present iff guard=true",
         )
 
         # 3. Runtime fallback equivalence across ALL 6 seeds (guard=true, guard=false, and --preset vm)
@@ -358,8 +362,11 @@ def main() -> int:
         btxt = bnd_art.read_text()
         check(
             "bind_env_roblox_emits_target_apis",
-            bool(re.search(r"\bVector3\b", btxt)) and bool(re.search(r"\btypeof\b", btxt)),
-            "Vector3 + typeof present",
+            "86,101,99,116,111,114,51" in btxt.replace(" ", "")
+            and "116,121,112,101,111,102" in btxt.replace(" ", "")
+            and not bool(re.search(r"\bVector3\b", btxt))
+            and not bool(re.search(r"\btypeof\b", btxt)),
+            "Vector3 + typeof bound via sealed char-code names, no readable target API names",
         )
         envchk_art = tmp / "envchk.art.lua"
         p3_env_src = tmp / "p3_envchk.lua"
