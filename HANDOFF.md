@@ -1201,3 +1201,29 @@ payload 边界）、本节所在提交（P3 audit 回归）。全部为内部自
 **32/32 PASS**、`security_fingerprint.py example.txt <print777 源>`
 **5/5 PASS**。关闭态参考不变，仍以
 `engine/examples/basics.v15.luau.lua`（seed 42）为准。
+
+### 20.5 CCPD 运行时明文标记清理（2026-11-28）
+
+依 `obsucvim_CCPD_plaintext_leak_repair.md` 完成三步修复：
+`768cbe7` 将 CCPD block decoder 与 control-transfer 的五类运行时
+`error()` 文案从带 `ccpd:` 前缀和 `fn/block/variant/po/pl` 动态
+字段的诊断文本，替换为发布版通用文案 `invalid runtime payload`
+与 `invalid control transfer`；触发条件、边界比较和 fail-closed
+行为未改。`01bd91b` 在 `ccpd_diff_test.py` 新增 D 区，直接扫描
+最终生成 Lua 文件（seed 7/42/123、minify 与 `--no-minify`、CCPD
+off 对照），断言大小写不敏感的 `ccpd` 子串不存在。
+`a62ce6c` 将 payload 边界 harness 的期望改为同一通用文案并断言
+错误文本不含内部标记/字段，同时在 runtime audit 中锁定生产产物
+使用 sanitized failure messages 且不含 CCPD 明文标记。
+
+验证：`cargo test --release` 147+4；`ccpd_mirror_test.py` 13/13；
+`ccpd_diff_test.py` 270/270；`ccpd_runtime_audit_test.py` 34/34；
+`ccpd_exit_edge_test.py` 64/64；`ccpd_payload_bounds_test.py`
+12/12；关闭态 37 个 examples 重生后变更数为 0。
+
+根目录 `example.txt` 已用清理后的引擎（`a62ce6c`）按同一口径
+重生成：`--preset v15 --dialect luau --seed 42 --ccpd`，输入
+`print(777)\n`，新产物 **121,240 B**，SHA-256
+`4f4b108759c34a30668adbda1ab0a4ab498ffdf4e43222e72caabf769de884b6`。
+扫描确认最终产物 `ccpd` 命中 **0** 次；stock Luau 输出 `777`
+（exit 0）；`luau-compile` exit 0；v15 指纹 32/32、安全指纹 5/5。
