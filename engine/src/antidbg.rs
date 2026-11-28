@@ -184,6 +184,12 @@ fn wrapper(
 	reserved: &mut HashSet<String>,
 ) -> Vec<Stmt> {
 	let (t_t0, t_t0_name) = fresh(table, rng, reserved);
+	// Plaintext-surface repair: the wrapper must not print readable host
+	// references. All globals/libraries are resolved through the chunk
+	// environment with numeric char-code names, anchored on the
+	// documented ("")["char"] bootstrap.
+	let (t_ac, t_ac_name) = fresh(table, rng, reserved);
+	let (t_ae, t_ae_name) = fresh(table, rng, reserved);
 
 	let (t_sum, t_sum_name) = fresh(table, rng, reserved);
 	let (t_buf, t_buf_name) = fresh(table, rng, reserved);
@@ -195,8 +201,60 @@ fn wrapper(
 	}
 	let expected = expected.rem_euclid(prime);
 
+	let codes = |text: &str| -> Expr {
+		Expr::Call {
+			func: Box::new(Expr::Ident {
+				name: t_ac_name.clone(),
+				sym: Some(t_ac),
+			}),
+			args: text.bytes().map(|b| num(b as i64)).collect(),
+		}
+	};
+	let env_get = |name: &str| -> Expr {
+		Expr::Index {
+			obj: Box::new(Expr::Ident {
+				name: t_ae_name.clone(),
+				sym: Some(t_ae),
+			}),
+			idx: Box::new(codes(name)),
+		}
+	};
+	let lib_get = |lib: &str, member: &str| -> Expr {
+		Expr::Index {
+			obj: Box::new(env_get(lib)),
+			idx: Box::new(codes(member)),
+		}
+	};
+	let call = |func: Expr, args: Vec<Expr>| -> Expr {
+		Expr::Call { func: Box::new(func), args }
+	};
+
 	let mut out: Vec<Stmt> = Vec::new();
-	out.push(local1(t_t0_name, t_t0, global_call("os", "clock", Vec::new())));
+	out.push(local1(
+		t_ac_name.clone(),
+		t_ac,
+		Expr::Index {
+			obj: Box::new(str_s(b"")),
+			idx: Box::new(str_s(b"char")),
+		},
+	));
+	out.push(local1(
+		t_ae_name.clone(),
+		t_ae,
+		Expr::Bin {
+			op: BinOp::Or,
+			l: Box::new(Expr::Bin {
+				op: BinOp::And,
+				l: Box::new(global("getfenv")),
+				r: Box::new(Expr::Call {
+					func: Box::new(global("getfenv")),
+					args: vec![num(1)],
+				}),
+			}),
+			r: Box::new(global("_G")),
+		},
+	));
+	out.push(local1(t_t0_name, t_t0, call(lib_get("os", "clock"), Vec::new())));
 	out.push(local1(t_buf_name, t_buf, chunks_concat));
 	out.push(local1(t_sum_name, t_sum, num(0)));
 	out.push(Stmt::ForNum {
@@ -214,9 +272,8 @@ fn wrapper(
 				values: vec![Expr::Bin {
 					op: BinOp::Add,
 					l: Box::new(ident(t_sum, table)),
-					r: Box::new(global_call(
-						"string",
-						"byte",
+					r: Box::new(call(
+						lib_get("string", "byte"),
 						vec![ident(t_buf, table), ident(t_i, table)],
 					)),
 				}],
@@ -245,7 +302,7 @@ fn wrapper(
 
 	let run = Expr::Call {
 		func: Box::new(Expr::Call {
-			func: Box::new(global("loadstring")),
+			func: Box::new(env_get("loadstring")),
 			args: vec![dec_call],
 		}),
 		args: Vec::new(),
@@ -254,7 +311,7 @@ fn wrapper(
 		names: vec![t_ok_name, t_err_name],
 		syms: vec![t_ok, t_err],
 		values: vec![Some(Expr::Call {
-			func: Box::new(global("pcall")),
+			func: Box::new(env_get("pcall")),
 			args: vec![Expr::Function {
 				params: Vec::new(),
 				param_syms: Vec::new(),
@@ -277,46 +334,44 @@ fn wrapper(
 				Stmt::If {
 					cond: Box::new(Expr::Bin {
 						op: BinOp::Eq,
-						l: Box::new(global_call("type", "", vec![err()])),
-						r: Box::new(str_s(b"string")),
+						l: Box::new(call(env_get("type"), vec![err()])),
+						r: Box::new(codes("string")),
 					}),
 					thenb: Block {
 						stmts: vec![
 							local1(
 								t_line_name.clone(),
 								t_line,
-								Expr::Method {
-									obj: Box::new(err()),
-									name: "match".to_string(),
-									args: vec![str_s(b"[(:](%d+)")],
-								},
+								call(
+									lib_get("string", "match"),
+									vec![err(), codes("[(:](%d+)")],
+								),
 							),
 							Stmt::If {
 								cond: Box::new(line()),
 								thenb: Block {
 									stmts: vec![Stmt::Assign {
 										targets: vec![err()],
-										values: vec![Expr::Method {
-											obj: Box::new(err()),
-											name: "gsub".to_string(),
-											args: vec![
-												str_s(b"([(:])%d+"),
-												Expr::Bin {
-													op: BinOp::Concat,
-													l: Box::new(str_s(b"%1")),
-													r: Box::new(Expr::Bin {
-														op: BinOp::Add,
-														l: Box::new(global_call(
-															"tonumber",
-															"",
-															vec![line()],
-														)),
-														r: Box::new(num(offset)),
-													}),
-												},
-												num(1),
-											],
-										}],
+									values: vec![call(
+										lib_get("string", "gsub"),
+										vec![
+											err(),
+											codes("([(:])%d+"),
+											Expr::Bin {
+												op: BinOp::Concat,
+												l: Box::new(codes("%1")),
+												r: Box::new(Expr::Bin {
+													op: BinOp::Add,
+													l: Box::new(call(
+														env_get("tonumber"),
+														vec![line()],
+													)),
+													r: Box::new(num(offset)),
+												}),
+											},
+											num(1),
+										],
+									)],
 									}],
 								},
 								elsifs: Vec::new(),
@@ -327,10 +382,7 @@ fn wrapper(
 					elsifs: Vec::new(),
 					elseb: None,
 				},
-				Stmt::ExprStmt(Expr::Call {
-					func: Box::new(global("error")),
-					args: vec![err(), num(0)],
-				}),
+				Stmt::ExprStmt(call(env_get("error"), vec![err(), num(0)])),
 			],
 		},
 		elsifs: Vec::new(),
@@ -343,7 +395,7 @@ fn wrapper(
 			op: BinOp::Gt,
 			l: Box::new(Expr::Bin {
 				op: BinOp::Sub,
-				l: Box::new(global_call("os", "clock", Vec::new())),
+				l: Box::new(call(lib_get("os", "clock"), Vec::new())),
 				r: Box::new(ident(t_t0, table)),
 			}),
 			r: Box::new(num(threshold)),

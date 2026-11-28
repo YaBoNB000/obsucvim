@@ -1227,3 +1227,34 @@ off 对照），断言大小写不敏感的 `ccpd` 子串不存在。
 `4f4b108759c34a30668adbda1ab0a4ab498ffdf4e43222e72caabf769de884b6`。
 扫描确认最终产物 `ccpd` 命中 **0** 次；stock Luau 输出 `777`
 （exit 0）；`luau-compile` exit 0；v15 指纹 32/32、安全指纹 5/5。
+
+### 20.6 全量发射面明文密封与 fail-closed 环境一致性修复（2026-11-28）
+
+在 §20.5 审计确认的主要方言、权威产物、legacy 发射路径和环境检查路径上，
+继续清理可读主机 API 名称、成员路径、元方法名、格式串和内部身份细节。
+
+- 阶段 A（`9e0d549`）：删除产物注释/水印；CCPD fail-closed 错误改为
+  level-0 数值哨兵，不再携带统一文案；水印测试改为反向断言。
+- 阶段 B/C（`3e311cd`）：VM 模板中的核心原语、库成员和数值哨兵统一走
+  密封绑定；能力清单测试与 37 个示例随后同步（`1f70754`）。
+- 环境一致性：`_BENV` 必须由 chunk 环境 `getfenv(1)` 取得，`G` 保持
+  `getfenv(0)`。canary 的 string/rawequal 同样必须从 chunk 环境密封取得；
+  若改走线程环境，替换/删除 chunk 环境 API 时会错误放行 payload。
+  `phase_g_api_test.py` 已覆盖该回归并全部通过。
+- 新增 `plaintext_surface_test.py`：进行词法级静态扫描、运行时字符串哨兵、
+  环境动态语义和配置矩阵检查；当前 88/88。
+- guard prelude 与 guard stages 共用同一密封清单；`--env-check` 探针的六个
+  已知库成员采用密封访问，用户字段保留原结构。antidbg wrapper 与字符串
+  loader 的可避免主机引用同样密封。
+- 根目录 `example.txt` 已按 `--preset v15 --dialect luau --seed 42 --ccpd`
+ 、输入 `print(777)\n` 重生成：120,292 B，SHA-256
+  `4b0ed54798267551deb6950568bef70004dc1cf4a7f51b0cac027b289440a3ef`；
+  输出 `777`，编译通过，明文静态扫描 0 失败，v15 指纹 32/32，
+  安全指纹 5/5。
+- 最终验证：Rust 147+4；guard matrix 80/0；plaintext surface 88/88；
+  canary、vm_tamper、phase G API、robustness 16/16、exit-edge 64/64、
+  runtime-audit 34/34、payload-bounds 12/12、CCPD mirror 13/13、
+  CCPD diff 270/270、capability 11、mobile print 6/6、string cache dump 全绿。
+
+边界仍然明确：该工作降低静态识别和定位便利性，不宣称密码学保密；
+Rubber-band、可信宿主、字符串编码和其它层级的限制不变。

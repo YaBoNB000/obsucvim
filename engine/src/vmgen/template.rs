@@ -2015,7 +2015,7 @@ __FVARM__        else
 	// from numeric char codes and resolved through the environment
 	// table at VM entry (same timing as the previous direct binding).
 	let mut p_fill = String::from(
-		"local _BCH = (\"\")[\"char\"]\n  local _BGFE = getfenv\n  local _BENV = nil\n  if _BGFE then _BENV = _BGFE(0) end\n  if _BENV == nil then _BENV = _G end\n  if _BENV == nil then _BENV = {} end\n  local _BTYP = _BENV[_BCH(116, 121, 112, 101)]\n  local P = {}\n",
+		"local _BCH = (\"\")[\"char\"]\n  local _BGFE = getfenv\n  local _BENV = nil\n  if type(_BGFE) == _BCH(102, 117, 110, 99, 116, 105, 111, 110) then _BENV = _BGFE(1) end\n  if _BENV == nil then _BENV = _G end\n  if _BENV == nil then _BENV = {} end\n  local _BTYP = _BENV[_BCH(116, 121, 112, 101)]\n  local P = {}\n",
 	);
 	for &i in &bind_idx {
 		let prim = VmPrim::ALL[i];
@@ -4215,7 +4215,7 @@ let f_ty = fold31("Vector3Vector3");
 			// Declared next to `PD` (the guard's bounded fail-closed abort) so
 			// the micro-op factory can capture them as upvalues.
 			canary_locals = if guard && canary {
-				"local STBL = GFE(0)[CHAR(115, 116, 114, 105, 110, 103)] local RAWEQ = GFE(0)[CHAR(114, 97, 119, 101, 113, 117, 97, 108)] "
+				"local STBL = _BENV[CHAR(115, 116, 114, 105, 110, 103)] local RAWEQ = _BENV[CHAR(114, 97, 119, 101, 113, 117, 97, 108)] "
 			} else {
 				""
 			},

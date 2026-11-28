@@ -159,17 +159,19 @@ fn assemble_guard(rng: &mut Rng) -> String {
 	src
 }
 
-pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
-	let mut guard_src = assemble_guard(rng);
-	let chars = |s: &str| {
-		format!(
-			"CHAR({})",
-			s.bytes().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
-		)
-	};
-	for name in ["__tostring", "__metatable", "__concat", "__call", "__iter"] {
+
+/// Replace readable guard literals with char-code expressions built by
+/// `chars`. Dot/ctor metamethod forms are rewritten too, so a stage body
+/// cannot leak `.__index` or `__tostring =` shapes. Both guard emission
+/// paths (HBOOT embed and legacy prelude) share this one list.
+fn seal_guard_text(src: &str, chars: &dyn Fn(&str) -> String) -> String {
+	let mut out = src.to_string();
+	for name in [
+		"__tostring", "__metatable", "__concat", "__call", "__iter", "__index",
+		"__newindex", "__len", "__mode", "__eq", "__lt", "__le", "__unm",
+	] {
 		let expr = chars(name);
-		guard_src = guard_src
+		out = out
 			.replace(&format!(".{}", name), &format!("[{}]", expr))
 			.replace(&format!("{} =", name), &format!("[{}] =", expr))
 			.replace(&format!("\"{}\"", name), &expr);
@@ -184,8 +186,19 @@ pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
 		// Phase 18 P1-3 string-cache canary stage literals.
 		"char", "byte", "A", "Z", "abc",
 	] {
-		guard_src = guard_src.replace(&format!("\"{}\"", text), &chars(text));
+		out = out.replace(&format!("\"{}\"", text), &chars(text));
 	}
+	out
+}
+
+pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
+	let chars = |s: &str| {
+		format!(
+			"CHAR({})",
+			s.bytes().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+		)
+	};
+	let guard_src = seal_guard_text(&assemble_guard(rng), &chars);
 	let mangled = match parser::parse(&guard_src, true).ok() {
 		Some(mut block) => {
 			let mut table = crate::symtab::resolve(&mut block);
@@ -212,19 +225,7 @@ pub fn guard_prelude(rng: &mut Rng, luau: bool) -> String {
 			s.bytes().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
 		)
 	};
-	let mut sealed = assemble_guard(rng);
-	for text in [
-		"type", "pcall", "xpcall", "error", "rawget", "rawset",
-		"getmetatable", "setmetatable", "tostring", "tonumber", "select", "string",
-		"gmatch", "unpack", "next", "table", "print", "warn", "newproxy", "debug",
-		"info", "os", "clock", "getfenv", "_G", "function", "number",
-		"boolean", "l", "s", "#", "[C]", ":(%d+):", "loadstring", "load",
-		"tddxhpfcpi", "lsphhfstdm", "vymgglkhqr",
-		"char", "byte", "A", "Z", "abc",
-		"__tostring", "__metatable", "__concat", "__call", "__iter",
-	] {
-		sealed = sealed.replace(&format!("\"{}\"", text), &chars(text));
-	}
+	let sealed = seal_guard_text(&assemble_guard(rng), &chars);
 	let guard_src = format!(
 		"local EV, NXT = nil, nil\nlocal _gc = (\"\")[\"char\"]\n{}",
 		sealed
