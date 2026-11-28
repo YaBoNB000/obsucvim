@@ -186,7 +186,7 @@ local function {fn_name}(descriptors, states, decode_field)
         if v == {fn_name}_NIL then return nil end
         return v
       end
-      if st == 2 then error("lazy field: recursive resolution", 0) end
+      if st == 2 then error(2, 0) end
       if st == 4 then error(errs[key] or "lazy field: resolution failed", 0) end
       local descriptor = descriptors[key]
       if descriptor == nil then return nil end

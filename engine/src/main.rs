@@ -22,7 +22,6 @@ mod vmgen;
 use std::process::ExitCode;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const OUTPUT_WATERMARK: &str = "-- This file was obfuscated by Obsucvim.\n";
 
 struct Options {
 dialect: &'static str,
@@ -778,7 +777,7 @@ let kg = slot_pool[3];
 		}
 	})();
 
-	match result.map(|out| format!("{OUTPUT_WATERMARK}{out}")) {
+	match result {
 		Ok(out) => match &opts.output {
 			Some(path) => match std::fs::write(path, out) {
 				Ok(()) => {}

@@ -416,9 +416,10 @@ def main():
         check("production artifact carries no audit channel", chan not in txt_prod)
         check("production artifact carries no CCPD plaintext marker",
               re.search(r"ccpd", txt_prod, re.IGNORECASE) is None)
-        check("production runtime failures use sanitized messages",
-              "invalid runtime payload" in txt_prod
-              and "invalid control transfer" in txt_prod
+        check("production runtime failures use opaque numeric sentinels",
+              "invalid runtime payload" not in txt_prod
+              and "invalid control transfer" not in txt_prod
+              and "error(0, 0)" in txt_prod and "error(1, 0)" in txt_prod
               and "fn=" not in txt_prod and "variant=" not in txt_prod)
         check("audit binary without env carries no audit channel", chan not in txt_noenv)
         check("audit binary without env is byte-identical to production",
