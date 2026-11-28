@@ -37,6 +37,7 @@ Usage: python3 tests/ccpd_runtime_audit_test.py
 Exit code: 0 = all assertions hold, 1 = at least one failed.
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -413,6 +414,12 @@ def main():
         txt_prod = open(prod_art, encoding="utf-8", errors="surrogateescape").read() if ok1 else ""
         txt_noenv = open(audit_noenv, encoding="utf-8", errors="surrogateescape").read() if ok2 else ""
         check("production artifact carries no audit channel", chan not in txt_prod)
+        check("production artifact carries no CCPD plaintext marker",
+              re.search(r"ccpd", txt_prod, re.IGNORECASE) is None)
+        check("production runtime failures use sanitized messages",
+              "invalid runtime payload" in txt_prod
+              and "invalid control transfer" in txt_prod
+              and "fn=" not in txt_prod and "variant=" not in txt_prod)
         check("audit binary without env carries no audit channel", chan not in txt_noenv)
         check("audit binary without env is byte-identical to production",
               ok1 and ok2 and txt_prod == txt_noenv)
