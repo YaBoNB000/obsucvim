@@ -262,7 +262,7 @@ pub const ANTI_CORE: &str = r###"	local function stage_core()
 "###;
 
 pub const ANTI_ENV: &str = r###"	local function stage_env()
-		local gfe = pick("getfenv", getfenv)
+		local gfe = pick("getfenv", nil)
 		if gfe ~= nil then
 			if type(gfe) ~= "function" then
 				failed = true
@@ -323,7 +323,7 @@ pub const ANTI_DEBUG: &str = r###"	local function stage_debug()
 
 		local infoFn = debugInfo
 		if type(infoFn) ~= "function" then
-			local gfe = pick("getfenv", getfenv)
+			local gfe = pick("getfenv", nil)
 			if type(gfe) == "function" then
 				local ok0, g0 = pcall(gfe, 0)
 				if ok0 and type(g0) == "table" then

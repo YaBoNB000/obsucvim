@@ -316,7 +316,7 @@ mod tests {
 		assert!(lua.contains("states[key] = 2"), "resolving state");
 		assert!(lua.contains("states[key] = 3"), "resolved state");
 		assert!(lua.contains("states[key] = 4"), "failed state");
-		assert!(lua.contains("recursive resolution"), "recursion error");
+		assert!(lua.contains("error(2, 0)"), "opaque numeric recursion sentinel");
 		assert!(lua.contains("__index = function(self, key)"), "proxy shape");
 	}
 }

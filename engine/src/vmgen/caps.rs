@@ -377,6 +377,67 @@ impl VmPrim {
 		self.meta().lua_bind_expr
 	}
 
+	/// Release-artifact binding expression (plaintext-surface repair):
+	/// acquires the primitive through the template bootstrap locals
+	/// `_BCH` (string.char anchor), `_BENV` (environment table obtained
+	/// via the `getfenv`/`_G` bootstrap anchors) and `_BTYP` (the env's
+	/// own `type`), so no global/library/member name ever appears as a
+	/// readable identifier or string literal in the emitted artifact.
+	/// Fallback semantics mirror `lua_bind_expr` exactly: native global,
+	/// then library member, then the pure-Lua fallback where one exists.
+	/// The only readable anchors left in the artifact are `getfenv`,
+	/// `_G` and the single string literal `"char"` used to obtain
+	/// `string.char`; every other name is built from numeric char codes
+	/// at runtime (see template.rs prim bootstrap).
+	pub fn sealed_bind_expr(self) -> String {
+		fn codes(name: &str) -> String {
+			name.bytes().map(|b| b.to_string()).collect::<Vec<_>>().join(", ")
+		}
+		fn env(name: &str) -> String { format!("_BENV[_BCH({})]", codes(name)) }
+		fn member(lib: &str, name: &str) -> String {
+			format!("_BENV[_BCH({})][_BCH({})]", codes(lib), codes(name))
+		}
+		let fn_t = codes("function");
+		let tbl_t = codes("table");
+		match self {
+			VmPrim::StrByte => format!("(\"\")[_BCH({})]", codes("byte")),
+			VmPrim::StrSub => format!("(\"\")[_BCH({})]", codes("sub")),
+			VmPrim::StrChar => "_BCH".to_string(),
+			VmPrim::EnvGet => format!(
+				"(_BTYP(_BGFE) == _BCH({fn_t}) and _BGFE) or function() return _BTYP(_G) == _BCH({tbl_t}) and _G or {{}} end"
+			),
+			VmPrim::Unpack => {
+				let u = env("unpack");
+				let t = env("table");
+				let tu = member("table", "unpack");
+				format!(
+					"(_BTYP({u}) == _BCH({fn_t}) and {u}) or (_BTYP({t}) == _BCH({tbl_t}) and _BTYP({tu}) == _BCH({fn_t}) and {tu}) or (function() local function _uf(t, i, j) if i == nil then i = 1 end if j == nil then j = #t end if i > j then return end local r = j - i if r == 0 then return t[i] elseif r == 1 then return t[i], t[i + 1] elseif r == 2 then return t[i], t[i + 1], t[i + 2] elseif r == 3 then return t[i], t[i + 1], t[i + 2], t[i + 3] end return t[i], t[i + 1], t[i + 2], t[i + 3], _uf(t, i + 4, j) end return _uf end)()"
+				)
+			}
+			VmPrim::MathFloor => member("math", "floor"),
+			VmPrim::Type => "_BTYP".to_string(),
+			VmPrim::RawGet => env("rawget"),
+			VmPrim::RawSet => env("rawset"),
+			VmPrim::SetMetatable => env("setmetatable"),
+			VmPrim::Pcall => env("pcall"),
+			VmPrim::ToString => env("tostring"),
+			VmPrim::TableConcat => member("table", "concat"),
+			VmPrim::Error => env("error"),
+			VmPrim::GetMetatable => env("getmetatable"),
+			VmPrim::Select => env("select"),
+			VmPrim::ToNumber => env("tonumber"),
+			VmPrim::TablePack => {
+				let t = env("table");
+				let tp = member("table", "pack");
+				let sel = env("select");
+				format!(
+					"(_BTYP({t}) == _BCH({tbl_t}) and _BTYP({tp}) == _BCH({fn_t}) and {tp}) or function(...) return {{[_BCH(110)] = {sel}(_BCH(35), ...), ...}} end"
+				)
+			}
+			VmPrim::Next => env("next"),
+		}
+	}
+
 	pub const fn is_luau_only(self) -> bool {
 		self.meta().luau_only
 	}
@@ -686,25 +747,29 @@ mod tests {
 	}
 
 	#[test]
-	fn template_consumes_caps_lua_bind_expr_and_gates_luau_and_guard_prims() {
-		// 1. v15 + guard + call: must emit fallback expressions from VmPrim::lua_bind_expr
-		//    and bind `next` (`VmPrim::Next`).
+	fn template_consumes_caps_sealed_bind_expr_and_gates_luau_and_guard_prims() {
+		// 1. v15 + guard + call: must emit the sealed (indirect) binding
+		//    expressions and bind `next` (`VmPrim::Next`) via char codes.
 		let t_guard_call = emit_template_for("print(1, 2)", 42, true, true, true);
 		assert!(
-			t_guard_call.contains(VmPrim::EnvGet.lua_bind_expr()),
-			"template must emit VmPrim::EnvGet::lua_bind_expr()"
+			t_guard_call.contains(&VmPrim::EnvGet.sealed_bind_expr()),
+			"template must emit VmPrim::EnvGet::sealed_bind_expr()"
 		);
 		assert!(
-			t_guard_call.contains(VmPrim::Unpack.lua_bind_expr()),
-			"template must emit VmPrim::Unpack::lua_bind_expr()"
+			t_guard_call.contains(&VmPrim::Unpack.sealed_bind_expr()),
+			"template must emit VmPrim::Unpack::sealed_bind_expr()"
 		);
 		assert!(
-			t_guard_call.contains(VmPrim::TablePack.lua_bind_expr()),
-			"template must emit VmPrim::TablePack::lua_bind_expr() when calls exist"
+			t_guard_call.contains(&VmPrim::TablePack.sealed_bind_expr()),
+			"template must emit VmPrim::TablePack::sealed_bind_expr() when calls exist"
 		);
 		assert!(
-			t_guard_call.contains("= next\n"),
-			"guard=true v15 template must bind VmPrim::Next"
+			t_guard_call.contains("_BCH(110, 101, 120, 116)"),
+			"guard=true v15 template must bind VmPrim::Next via sealed name"
+		);
+		assert!(
+			!t_guard_call.contains("table.pack") && !t_guard_call.contains("table.unpack"),
+			"sealed template must not carry readable library member paths"
 		);
 		let _ = parser::parse(&t_guard_call, true).expect("t_guard_call parses as valid Luau");
 
@@ -712,7 +777,7 @@ mod tests {
 		let t_min_noguard = emit_template_for("return 42", 42, true, true, false);
 		assert!(!t_min_noguard.contains("table.pack"), "no call -> no table.pack");
 		assert!(!t_min_noguard.contains("TPACK"), "no call -> no unbound TPACK local");
-		assert!(!t_min_noguard.contains("= next\n"), "guard=false -> no next binding");
+		assert!(!t_min_noguard.contains("_BCH(110, 101, 120, 116)"), "guard=false -> no next binding");
 		assert!(!t_min_noguard.contains("NXT"), "guard=false -> no unbound NXT local");
 		let _ = parser::parse(&t_min_noguard, true).expect("t_min_noguard parses as valid Luau");
 
@@ -721,8 +786,8 @@ mod tests {
 		let t_lua51 = emit_template_for("print(1, 2)", 42, false, false, false);
 		assert!(!t_lua51.contains("table.pack"), "non-Luau template must not bind table.pack");
 		assert!(!t_lua51.contains("TPACK"), "non-Luau template must not emit TPACK");
-		assert!(t_lua51.contains(VmPrim::EnvGet.lua_bind_expr()));
-		assert!(t_lua51.contains(VmPrim::Unpack.lua_bind_expr()));
+		assert!(t_lua51.contains(&VmPrim::EnvGet.sealed_bind_expr()));
+		assert!(t_lua51.contains(&VmPrim::Unpack.sealed_bind_expr()));
 		let _ = parser::parse(&t_lua51, false).expect("t_lua51 parses as valid Lua 5.1");
 	}
 }

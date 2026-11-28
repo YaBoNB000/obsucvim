@@ -61,7 +61,7 @@ def build_harness():
     cases = r'''
 local function mkE(bank, blocks)
   return { bt = { sx = PM + 1, csa = 0, cd = { blocks = blocks, ne = 1, clos = -1 }, bk = bank },
-           er = 0, bv = {}, bch = {}, bq = {}, edge = 0, fctx = 1 }
+           er = 0, bv = {}, bch = {}, bq = {}, edge = 0, fctx = 1, [16] = error }
 end
 local function mkblocks(vs, sp, ep)
   -- bdec picks one of the four variants via CCPDV; the pool must be

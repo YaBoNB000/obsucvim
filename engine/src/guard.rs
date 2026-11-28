@@ -26,6 +26,21 @@ const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 		abort()
 	end
 
+	-- Bootstrap env (plaintext-surface repair): `getfenv`/`_G`/`type`/
+	-- `pcall` are the guard's documented bootstrap anchors. Every other
+	-- host name is resolved through this env table with sealed keys, so
+	-- no bare API identifier is needed as a pick() fallback.
+	local _genv
+	if getfenv then
+		local _okg, _g0 = _raw_pcall(getfenv, 0)
+		if _okg and _raw_type(_g0) == "table" then
+			_genv = _g0
+		end
+	end
+	if _raw_type(_genv) ~= "table" then
+		_genv = _G
+	end
+
 	local function pick(k, fb)
 		if _raw_type(EV) == "table" then
 			local ok, v = _raw_pcall(function()
@@ -49,26 +64,37 @@ const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 				return v
 			end
 		end
+		if _raw_type(_genv) == "table" then
+			local ok, v = _raw_pcall(function()
+				return _genv[k]
+			end)
+			if not ok then
+				return false
+			end
+			if v ~= nil then
+				return v
+			end
+		end
 		return fb
 	end
 
-	local type = pick("type", type)
-	local pcall = pick("pcall", pcall)
-	local xpcall = pick("xpcall", xpcall)
-	local error = pick("error", error)
-	local rawget = pick("rawget", rawget)
-	local rawset = pick("rawset", rawset)
-	local getmetatable = pick("getmetatable", getmetatable)
-	local setmetatable = pick("setmetatable", setmetatable)
-	local tostring = pick("tostring", tostring)
-	local tonumber = pick("tonumber", tonumber)
-	local selectFn = pick("select", select)
-	local print = pick("print", print)
+	local type = pick("type", nil)
+	local pcall = pick("pcall", nil)
+	local xpcall = pick("xpcall", nil)
+	local error = pick("error", nil)
+	local rawget = pick("rawget", nil)
+	local rawset = pick("rawset", nil)
+	local getmetatable = pick("getmetatable", nil)
+	local setmetatable = pick("setmetatable", nil)
+	local tostring = pick("tostring", nil)
+	local tonumber = pick("tonumber", nil)
+	local selectFn = pick("select", nil)
+	local print = pick("print", nil)
 	local warn = pick("warn", nil)
 	local newproxy = pick("newproxy", nil)
 	local nextFn = pick("next", NXT)
-	local osTable = pick("os", os)
-	local dbgTable = pick("debug", debug)
+	local osTable = pick("os", nil)
+	local dbgTable = pick("debug", nil)
 	local debugInfo
 	if _raw_type(dbgTable) == "table" then
 		local okd, di = _raw_pcall(function()
@@ -80,8 +106,8 @@ const GUARD_PREAMBLE: &str = r###"local _guard = (function()
 			debugInfo = false
 		end
 	end
-	local unpackFn = pick("unpack", unpack)
-	local tblTable = pick("table", table)
+	local unpackFn = pick("unpack", nil)
+	local tblTable = pick("table", nil)
 	local tableUnpackFn
 	if _raw_type(tblTable) == "table" then
 		local oku, tu = _raw_pcall(function()
@@ -178,7 +204,31 @@ pub fn hboot_guard_source(rng: &mut Rng) -> (String, String) {
 }
 
 pub fn guard_prelude(rng: &mut Rng, luau: bool) -> String {
-	let guard_src = format!("local EV, NXT = nil, next\n{}", assemble_guard(rng));
+	// Seal the same name list as hboot_guard_source, using a locally
+	// built char function (the prelude has no CHAR prim in scope).
+	let chars = |s: &str| {
+		format!(
+			"_gc({})",
+			s.bytes().map(|b| b.to_string()).collect::<Vec<_>>().join(",")
+		)
+	};
+	let mut sealed = assemble_guard(rng);
+	for text in [
+		"type", "pcall", "xpcall", "error", "rawget", "rawset",
+		"getmetatable", "setmetatable", "tostring", "tonumber", "select", "string",
+		"gmatch", "unpack", "next", "table", "print", "warn", "newproxy", "debug",
+		"info", "os", "clock", "getfenv", "_G", "function", "number",
+		"boolean", "l", "s", "#", "[C]", ":(%d+):", "loadstring", "load",
+		"tddxhpfcpi", "lsphhfstdm", "vymgglkhqr",
+		"char", "byte", "A", "Z", "abc",
+		"__tostring", "__metatable", "__concat", "__call", "__iter",
+	] {
+		sealed = sealed.replace(&format!("\"{}\"", text), &chars(text));
+	}
+	let guard_src = format!(
+		"local EV, NXT = nil, nil\nlocal _gc = (\"\")[\"char\"]\n{}",
+		sealed
+	);
 	let parsed = parser::parse(&guard_src, luau).ok();
 	if let Some(mut block) = parsed {
 		let mut table = crate::symtab::resolve(&mut block);

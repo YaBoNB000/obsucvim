@@ -5,24 +5,48 @@ use crate::rng::Rng;
 use crate::vmgen::caps::ScaffoldPrim;
 use crate::vmgen::isa::CARRIER_SPECIALS;
 
+/// `("")["char"](<codes...>)` — builds a name from numeric char codes
+/// using only the documented bootstrap anchor (the string literal
+/// `"char"` on the empty-string metatable). No readable name survives.
+fn char_call(name: &str) -> Expr {
+	Expr::Call {
+		func: Box::new(Expr::Index {
+			obj: Box::new(Expr::Str { bytes: Vec::new(), is_binary: false }),
+			idx: Box::new(Expr::Str { bytes: b"char".to_vec(), is_binary: false }),
+		}),
+		args: name
+			.bytes()
+			.map(|b| Expr::Num { value: b as f64, isfloat: false })
+			.collect(),
+	}
+}
+
+/// `_G[<char codes for name>]` — global resolved through the `_G`
+/// bootstrap anchor with a numeric-code name.
+fn sealed_global(name: &str) -> Expr {
+	Expr::Index {
+		obj: Box::new(Expr::Ident { name: "_G".to_string(), sym: None }),
+		idx: Box::new(char_call(name)),
+	}
+}
+
 fn dot_value(path: &str) -> Expr {
 	// invariant: path comes from the static v15 template table and always contains a dot
 	let (lib, name) = path.split_once('.').unwrap();
 	if lib == "string" && matches!(name, "byte" | "sub" | "char") {
+		// Core string primitives keep bypassing the replaceable
+		// library table (capability contract), now with sealed names.
 		return Expr::Index {
 			obj: Box::new(Expr::Str { bytes: Vec::new(), is_binary: false }),
-			idx: Box::new(Expr::Str {
-				bytes: name.as_bytes().to_vec(),
-				is_binary: false,
-			}),
+			idx: Box::new(char_call(name)),
 		};
 	}
-	Expr::Dot {
-		obj: Box::new(Expr::Ident {
-			name: lib.to_string(),
-			sym: None,
-		}),
-		name: name.to_string(),
+	// Library members resolve through the environment anchor with
+	// numeric-code names: no `bit32.bxor` / `table.concat` style
+	// readable member path appears in the artifact.
+	Expr::Index {
+		obj: Box::new(sealed_global(lib)),
+		idx: Box::new(char_call(name)),
 	}
 }
 
@@ -123,7 +147,7 @@ pub fn module_fields(
 				let value = if path.contains('.') {
 					dot_value(path)
 				} else {
-					Expr::Ident { name: path.to_string(), sym: None }
+					sealed_global(path)
 				};
 				fields.push(TableField::Key {
 					key: Expr::Num { value: *n as f64, isfloat: false },
@@ -159,15 +183,15 @@ pub fn module_fields(
 		});
 	}
 
+	// Field values are runtime literals (type names, metamethod keys,
+	// format/pattern text): emit them as numeric char-code calls so no
+	// readable value appears in the artifact (plaintext-surface repair).
 	let named_str = |name: &str, val: &str| TableField::Key {
 		key: Expr::Str {
 			bytes: name.as_bytes().to_vec(),
 			is_binary: false,
 		},
-		value: Expr::Str {
-			bytes: val.as_bytes().to_vec(),
-			is_binary: false,
-		},
+		value: char_call(val),
 	};
 	fields.push(named_str("AL", "n"));
 	fields.push(named_str("BL", "__index"));
@@ -179,10 +203,7 @@ pub fn module_fields(
 			bytes: b"gL".to_vec(),
 			is_binary: false,
 		},
-		value: Expr::Str {
-			bytes: b":(%d+)[:\r\n]".to_vec(),
-			is_binary: false,
-		},
+		value: char_call(":(%d+)[:\r\n]"),
 	});
 	fields.push(TableField::Key {
 		key: Expr::Str {
@@ -1114,12 +1135,12 @@ let local_lo = (g - 1) % BW_SLOT_WORDS + 1;
 				)
 			} else if trim_style {
 				format!(
-					"(\"\")[\"sub\"](b[{s_tc}]({t},nil,1,{nw}),1,{blen})",
+					"(\"\")[(\"\")[\"char\"](115, 117, 98)](b[{s_tc}]({t},nil,1,{nw}),1,{blen})",
 					s_tc = s_tcat, t = nt, nw = nw, blen = blen
 				)
 			} else {
 				format!(
-					"(\"\")[\"sub\"](b[{s_tc}]({t}),1,{blen})",
+					"(\"\")[(\"\")[\"char\"](115, 117, 98)](b[{s_tc}]({t}),1,{blen})",
 					s_tc = s_tcat, t = nt, blen = blen
 				)
 			};
@@ -1399,7 +1420,7 @@ let (st, _ret) = step(&mut state_i);
 		// corruption masquerades as an ordinary runtime error instead of
 		// the guard's bounded boolean-index abort.
 		let entry_check = if guard {
-			"if type(B)~=\"function\" then local _gf=false _gf=_gf[_gf] end "
+			"if _G[(\"\")[\"char\"](116, 121, 112, 101)](B)~=(\"\")[\"char\"](102, 117, 110, 99, 116, 105, 111, 110) then local _gf=false _gf=_gf[_gf] end "
 		} else {
 			""
 		};

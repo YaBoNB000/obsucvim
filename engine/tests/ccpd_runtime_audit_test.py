@@ -419,7 +419,7 @@ def main():
         check("production runtime failures use opaque numeric sentinels",
               "invalid runtime payload" not in txt_prod
               and "invalid control transfer" not in txt_prod
-              and "error(0, 0)" in txt_prod and "error(1, 0)" in txt_prod
+              and re.search(r"\[16\]\(0,\s*0\)", txt_prod) is not None
               and "fn=" not in txt_prod and "variant=" not in txt_prod)
         check("audit binary without env carries no audit channel", chan not in txt_noenv)
         check("audit binary without env is byte-identical to production",
