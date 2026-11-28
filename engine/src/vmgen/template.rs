@@ -1378,10 +1378,25 @@ fn chain_epilogue(rng: &mut Rng, wk: &[String; 4], ccpd: bool) -> String {
 		// bdec re-selects the variant for the new edge. Plain
 		// fallthrough takes the per-PC fallthrough edge. The edge is
 		// single-use: bdec consumes it and the epilogue clears it.
+		//
+		// EXIT (CCPD repair plan P1): a control target of `cd.tn + 1`
+		// (one past the last record) is the compiler's branch-merge
+		// point at the function tail. The legacy VM has no block
+		// there either, and running off the end of the record stream
+		// is the implicit zero-value return of the source function:
+		// no `bdec`, no block-cache/variant selection, just the same
+		// frame teardown the Return micro-op performs (empty output
+		// table, zero count, `E.done`, direct return out of the
+		// handler chain). A target past that point means a corrupt
+		// transfer and fails closed with a real error, never a hang.
+		let out_slot = frame_slot(2);
+		let total_slot = frame_slot(3);
 		format!(
-			"if E.echg or {np} < E.bp or {np} > E.be then if E.edge == nil then E.edge = E.bt.ft[{np} - 1] end E.bdec(E, E.bm[{np}]) end E.edge = nil E.echg = nil; local {bi} = {np} - E.bp + 1",
+			"if E.echg or {np} < E.bp or {np} > E.be then if E.edge == nil then E.edge = E.bt.ft[{np} - 1] end if {np} == E.bt.cd.tn + 1 then {out_slot} = {{}} {total_slot} = 0 E.done = (E.vd + E.cs) % 65521 E.edge = nil E.echg = nil return end if {np} > E.bt.cd.tn + 1 then error(\"ccpd: control transfer past end of function\") end E.bdec(E, E.bm[{np}]) end E.edge = nil E.echg = nil; local {bi} = {np} - E.bp + 1",
 			np = np,
-			bi = bi
+			bi = bi,
+			out_slot = out_slot,
+			total_slot = total_slot
 		)
 	} else {
 		format!(

@@ -87,8 +87,12 @@ const MOD28: u32 = 268_435_456;
 /// Sentinel `target_block` for edges whose target PC is `n + 1` (one
 /// past the last record): the compiler emits such jumps for branch
 /// merges at the function tail. They are exit edges - no block owns
-/// them as incoming, and well-formed code never dereferences them at
-/// runtime (the legacy VM has no block there either).
+/// them as incoming. They ARE reachable whenever a non-returning
+/// branch falls through to the tail merge (the legacy VM has no
+/// block there either and historically faulted on the same path);
+/// the CCPD epilogue therefore routes `pc == cd.tn + 1` to the
+/// frame's implicit zero-value return instead of `bdec`
+/// (CCPD repair plan P1).
 pub const EXIT_BLOCK: u16 = u16::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1401,6 +1405,55 @@ mod tests {
 		assert_eq!(e.kind, CcpdEdgeKind::Jump);
 		assert!(cfg.blocks.iter().all(|b| cfg.incoming(b.id).iter().all(|x| x.id != e.id)),
 			"exit edge is incoming to no block");
+	}
+
+	#[test]
+	fn cfg_tail_taken_is_exit_edge() {
+		// 1: LoadK ; 2: Jf -> 4 (= n + 1) ; 3: Return
+		// The taken outcome leaves the function at the tail while the
+		// fallthrough outcome lands on the Return record.
+		let recs = vec![
+			rec(Op::LoadK, 1, 2, 0, 0),
+			rec(Op::Jf, 0, 4, 0, 0),
+			rec(Op::Return, 0, 0, 0, 0),
+		];
+		let cfg = build_cfg(&recs, &[1, 3]).expect("cfg");
+		let taken = cfg.edges[cfg.branch_taken_edge_by_pc[1].expect("taken edge") as usize];
+		assert_eq!(taken.kind, CcpdEdgeKind::BranchTaken);
+		assert_eq!(taken.target_block, EXIT_BLOCK);
+		let fall = cfg.edges[cfg.branch_fallthrough_edge_by_pc[1].expect("fall edge") as usize];
+		assert_eq!(fall.kind, CcpdEdgeKind::BranchFallthrough);
+		assert_eq!(fall.target_block, 1, "fallthrough lands on the Return block");
+	}
+
+	#[test]
+	fn cfg_tail_fallthrough_is_exit_edge() {
+		// 1: LoadK ; 2: Jf -> 1 (last record: taken loops back,
+		// fallthrough leaves the function at the tail)
+		let recs = vec![rec(Op::LoadK, 1, 2, 0, 0), rec(Op::Jf, 0, 1, 0, 0)];
+		let cfg = build_cfg(&recs, &[1, 2]).expect("cfg");
+		let taken = cfg.edges[cfg.branch_taken_edge_by_pc[1].expect("taken edge") as usize];
+		assert_eq!(taken.kind, CcpdEdgeKind::BranchTaken);
+		assert_eq!(taken.target_block, 0);
+		assert!(taken.backedge, "taken edge loops back to the first block");
+		let fall = cfg.edges[cfg.branch_fallthrough_edge_by_pc[1].expect("fall edge") as usize];
+		assert_eq!(fall.kind, CcpdEdgeKind::BranchFallthrough);
+		assert_eq!(fall.target_block, EXIT_BLOCK);
+		assert!(cfg.blocks.iter().all(|b| cfg.incoming(b.id).iter().all(|x| x.id != fall.id)),
+			"exit edge is incoming to no block");
+	}
+
+	#[test]
+	fn cfg_tail_plain_fallthrough_has_no_exit_edge() {
+		// 1: LoadK ; 2: LoadK (stream ending on a plain record). The
+		// compiler always terminates real functions with a Return
+		// record, so this shape has no declared exit edge; the
+		// runtime epilogue still treats pc == cd.tn + 1 as the exit
+		// continuation, which needs no edge id (repair plan P1).
+		let recs = vec![rec(Op::LoadK, 1, 2, 0, 0), rec(Op::LoadK, 3, 4, 0, 0)];
+		let cfg = build_cfg(&recs, &[1]).expect("cfg");
+		assert_eq!(cfg.edges.len(), 1, "only the Entry edge");
+		assert!(cfg.fallthrough_edge_by_pc.iter().all(|e| e.is_none()));
 	}
 
 	#[test]
