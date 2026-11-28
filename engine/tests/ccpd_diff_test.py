@@ -19,12 +19,16 @@ Sections:
      independence, --no-ccpd byte equality with the off artifact,
      default-preset equality, and fail-closed rejection of legacy
      presets / the 5.1 dialect.
+  D. Final-artifact plaintext scan (CCPD plaintext leak repair):
+     generated Lua files must not contain the internal CCPD marker
+     in any case, across seeds and minify/no-minify outputs.
 
 Usage: python3 tests/ccpd_diff_test.py
 Exit code: 0 = all assertions hold, 1 = at least one failed.
 """
 import glob
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -370,6 +374,44 @@ def section_c():
         check("C off seed42 basics byte-identical to shipped example", same, err)
 
 
+def section_d():
+    print("ccpd_diff_test D: final artifacts carry no CCPD plaintext markers")
+    body = r"""
+local function f(a) if a then print("then") else return 99 end end
+local mt = {}
+mt.__add = function(a, b) return setmetatable({v = a.v + b.v}, mt) end
+local a = setmetatable({v = 3}, mt)
+local b = setmetatable({v = 4}, mt)
+print(f(true), f(false), (a + b).v)
+"""
+    configs = [
+        ("ccpd seed=7 minify", 7, ["--ccpd"]),
+        ("ccpd seed=42 minify", 42, ["--ccpd"]),
+        ("ccpd seed=123 minify", 123, ["--ccpd"]),
+        ("ccpd seed=42 no-minify", 42, ["--ccpd", "--no-minify"]),
+        ("ccpd off control seed=42", 42, []),
+    ]
+    with tempfile.TemporaryDirectory() as td:
+        src = os.path.join(td, "marker.lua")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write(body)
+        for label, seed, extra in configs:
+            out = os.path.join(td, "marker.out.lua")
+            ok, err = gen(src, out, seed, extra)
+            if not ok:
+                check(f"D marker scan {label}", False, f"generation failed: {err[:200]}")
+                continue
+            with open(out, encoding="utf-8", errors="surrogateescape") as fh:
+                text = fh.read()
+            hit = re.search(r"ccpd", text, re.IGNORECASE)
+            detail = ""
+            if hit:
+                lo = max(0, hit.start() - 40)
+                hi = min(len(text), hit.end() + 40)
+                detail = f"hit at {hit.start()}: {text[lo:hi]!r}"
+            check(f"D marker scan {label}", hit is None, detail)
+
+
 def main():
     if not os.path.isfile(BIN):
         print(f"obsucvim binary not found at {BIN}; build with cargo build --release")
@@ -380,6 +422,7 @@ def main():
     section_a()
     section_b()
     section_c()
+    section_d()
     failed = [n for n, ok in checks if not ok]
     print(f"ccpd_diff_test: {len(checks) - len(failed)}/{len(checks)} checks passed")
     if failed:
