@@ -1341,3 +1341,51 @@ Stage 2（有界 trap）推进到全量门禁验收，并修复验收过程中�
   既有差异（手维护 tab 风格），不作为门禁；新增代码按 rustfmt
   结构书写、缩进沿用 tab。rustfmt 1.88 已补进 `.tools/bin`
   （`@rustbin/rustfmt` + `cargo-fmt`）。
+
+### 20.9 Stage 1.1 收口：OpMeta 语义验证强化（2026-11-28）
+
+- 起始 HEAD `7250098`（远端 fetch 后经 blob hash 校验 reset 对齐）。
+  全部改动仅 `engine/src/vmgen/verify.rs`（+ 本节文档）：OpMeta 仍是
+  操作数角色唯一真源，未新增第二套 44×4 角色表。
+- `validate_op_meta()` 在原结构不变量之上增加两层语义验证，且仍由
+  `vmgen::compile()` 入口经 `ensure_metadata_complete()` 一次性执行
+  （compiler.rs:3237，失败走 `limits::fatal`），无逐指令开销：
+  (1) 位置律——无条件跳转须恰为 [Unused, JumpTarget, Unused,
+  Unused]、条件跳转 JumpTarget 须在 b 道且 a 道为条件寄存器、c/d
+  未用；ConstIdx 仅许 b 道（全部 handler 常量读均为 `C[b + 1]`）；
+  UpvalIdx 至多一道；FrameReturn 的 a 道须 RegBase。
+  (2) handler 证据比对——新增 `handler_lane_access()`：从
+  `handlers::gen` 生成的 handler 文本（全部 fmt × legacy/v15 ×
+  MkStr 掩码抽样）机械提取每道真实访问（寄存器读/写/窗口、常量
+  读、原型读、upvalue、`pc =` 跳转、裸立即数；含别名解析、字符串
+  字面量剥离、Nop 死局部消除），逐道与 role 的操作语义对账。
+  错误信息含 opcode 名、lane 字母与索引、失败原因。
+- 负向电池（`stage11_semantic_negative_battery`，每项断言拒绝且
+  错误含 op 名+lane）：LoadK b ConstIdx→ImmVal、Jmp/Jf/Jt 的
+  JumpTarget 分别移至 a/c/d 道、Move b RegRead→Unused、LoadK a
+  RegWrite→ImmVal、Jmp c Unused→RegRead（同时断言 scatter 本会
+  重映射该道、派生 unused 会收缩，验证器在消费者之前拒绝）；
+  另加 Closure b ProtoIdx→ConstIdx、GetUp b UpvalIdx→RegRead、
+  Return a RegBase→RegWrite 三项类交换。真实表 44 op 全部通过。
+- 覆盖分层（不得混同）：metadata 结构覆盖 = ensure + 证据覆盖
+  测试（44×4 道逐道断言 role 与 handler 访问有无一致）；
+  scatter/unscatter 覆盖 = `stage11_scatter_unscatter_roundtrip_
+  all_ops`（期望 ScatterMap 由 handler 证据独立推导，变换复刻
+  compiler 散射臂，逆变换建模 handler 运行时读 `V[s+1]`/`C[k+1]`/
+  `ups[t+1]`，含同指令内寄存器×常量同值不冲突检查）；
+  真实 handler 语义覆盖 = 上述证据提取本身（文本级）；端到端
+  执行覆盖 = run_tests.sh 与独立门禁（见下）。
+- 本轮实测：`cargo test --release` 164+4 通过 0 失败（1 ignored
+  为既有 `dbg_header`）；`bash engine/tests/run_tests.sh` 192/0
+  rc=0；独立门禁 vm_tamper 60/0、ccpd_diff 274/274、
+  payload_bounds 12/12、exit_edge 64/64、runtime_audit 34/34、
+  guard 80/0、plaintext 88/88；新旧二进制（stash 基线对比）对
+  10 个语料 × 2 preset × 3 seed 共 60 次编译输出逐字节一致，
+  example.txt 未重生。`cargo fmt --check` 与基线同为 rc=1（见
+  §20.8 备注，非本轮引入）。
+- 边界（如实声明）：提取器覆盖 `handlers::gen` 文本（luau_target
+  以 false 抽样，lane 习语与目标无关、仅错误字面量不同）；
+  template.rs 的 `nop::body(rng)` 填充文本不属于 opcode dispatch
+  证据（其形状按构造写入永不回读的死局部）；RegRange 的验证律
+  已定义但当前无 op 使用；TabN b / VarArgTabN b / CallT c 为
+  「读+原地更新」计数器道，建模为 RegRead 允许伴随写。
