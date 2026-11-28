@@ -1009,6 +1009,7 @@ pub fn decode_section(bytes: &[u8], bank_len: usize) -> Result<CcpdSection, Stri
 	let total_records = r.var()?;
 	let mut blocks = Vec::with_capacity(block_count);
 	let mut edge_ids: Vec<u32> = Vec::new();
+	let mut spans: Vec<(u64, u64)> = Vec::new();
 	let mut expected_start = 1u32;
 	for i in 0..block_count {
 		let block_id = r.var()?;
@@ -1055,6 +1056,14 @@ pub fn decode_section(bytes: &[u8], bank_len: usize) -> Result<CcpdSection, Stri
 			if end > bank_len as u64 {
 				return Err("ccpd section: payload out of bank bounds".to_string());
 			}
+			// Format minimum (repair plan P2): every record needs one
+			// opcode byte plus four one-byte varints, so a shorter
+			// payload cannot decode this block. The runtime parser
+			// enforces the same rule over `pl`.
+			if (payload_len as u64) < 5 * (end_pc as u64 - start_pc as u64 + 1) {
+				return Err("ccpd section: payload shorter than format minimum".to_string());
+			}
+			spans.push((payload_offset as u64, end));
 			variants.push(CcpdBlockVariant {
 				variant_id,
 				operand_perm: super::compiler::operand_perm_from_code(operand_perm_code),
@@ -1081,6 +1090,19 @@ pub fn decode_section(bytes: &[u8], bank_len: usize) -> Result<CcpdSection, Stri
 	}
 	if !edge_ids.contains(&entry_edge_id) {
 		return Err("ccpd section: entry edge not declared".to_string());
+	}
+	// The encoder appends payloads back-to-back in block/variant
+	// order, so the spans must tile the bank exactly: no overlap,
+	// no gap (repair plan P2; the runtime parser mirrors this).
+	let mut cursor = 0u64;
+	for (start, end) in &spans {
+		if *start != cursor {
+			return Err("ccpd section: payload spans overlap or leave a gap".to_string());
+		}
+		cursor = *end;
+	}
+	if cursor != bank_len as u64 {
+		return Err("ccpd section: payload spans do not cover the bank".to_string());
 	}
 	let map_count = r.var()?;
 	if map_count != total_records {
@@ -1528,6 +1550,72 @@ mod tests {
 		// Transition map referencing an unknown edge.
 		let mut tampered = data.clone();
 		tampered.cfg.jump_edge_by_pc[0] = Some(4000);
+		assert!(decode_section(&tampered.encode_section(), data.bank.len()).is_err());
+	}
+
+	#[test]
+	fn payload_bounds_reject_truncation_and_trailing() {
+		let mut rng = Rng::new(5);
+		let map = OpMap::new(&mut rng);
+		let recs = sample_recs();
+		let data = build_function_ccpd(&recs, &[1, 5, 6], &map, 2, 3, 7, 7).expect("data");
+		let bv = &data.blocks[0];
+		let v = &bv.variants[0];
+		let payload = &data.bank
+			[v.payload_offset as usize..(v.payload_offset + v.payload_len) as usize];
+		let decode = |p: &[u8]| {
+			decode_variant_payload(
+				p,
+				bv.record_count as usize,
+				&v.operand_perm,
+				v.mask_seed,
+				v.page_epoch,
+				v.mask_step,
+				3,
+				bv.block_id as u32,
+			)
+		};
+		decode(payload).expect("well-formed payload decodes");
+		// One byte short: the last lane column is truncated.
+		assert!(decode(&payload[..payload.len() - 1]).is_err());
+		// One trailing byte the decoder never consumes.
+		let mut trailing = payload.to_vec();
+		trailing.push(0);
+		assert!(decode(&trailing).is_err(), "trailing byte must be rejected");
+		// A varint whose continuation byte is cut off at the end.
+		let mut cut = payload.to_vec();
+		*cut.last_mut().expect("payload nonempty") = 0xFF;
+		assert!(decode(&cut).is_err(), "truncated varint must be rejected");
+	}
+
+	#[test]
+	fn section_span_rules() {
+		let mut rng = Rng::new(5);
+		let map = OpMap::new(&mut rng);
+		let recs = sample_recs();
+		let data = build_function_ccpd(&recs, &[1, 5, 6], &map, 2, 3, 99, 7).expect("data");
+		// Exact bank length is accepted.
+		assert!(decode_section(&data.encode_section(), data.bank.len()).is_ok());
+		// Declared bank one byte short or long: spans no longer
+		// cover the bank exactly.
+		assert!(decode_section(&data.encode_section(), data.bank.len() - 1).is_err());
+		assert!(decode_section(&data.encode_section(), data.bank.len() + 1).is_err());
+		// Length extended by one: total span exceeds the bank.
+		let mut tampered = data.clone();
+		tampered.blocks[0].variants[0].payload_len += 1;
+		assert!(decode_section(&tampered.encode_section(), data.bank.len()).is_err());
+		// Below the format minimum of five bytes per record.
+		let mut tampered = data.clone();
+		tampered.blocks[0].variants[0].payload_len = 4;
+		assert!(decode_section(&tampered.encode_section(), data.bank.len()).is_err());
+		// Zero length.
+		let mut tampered = data.clone();
+		tampered.blocks[0].variants[0].payload_len = 0;
+		assert!(decode_section(&tampered.encode_section(), data.bank.len()).is_err());
+		// Overlapping span: variant 1 starts inside variant 0.
+		let mut tampered = data.clone();
+		tampered.blocks[0].variants[1].payload_offset =
+			tampered.blocks[0].variants[0].payload_offset;
 		assert!(decode_section(&tampered.encode_section(), data.bank.len()).is_err());
 	}
 }
